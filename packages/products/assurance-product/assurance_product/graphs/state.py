@@ -131,7 +131,6 @@ class ProductStateDocument(FrozenModel):
     requirement: str
     run_mode: str
     candidate_test_families: list[str]
-    resolved_plan_ref: EvidenceArtifactRefV1 | None
     selected_test_families: list[str]
     plan_digest: str
     plan_ref: EvidenceArtifactRefV1
@@ -260,7 +259,6 @@ class ProductState(CheckpointBridgeState, total=False):
     requirement: str
     run_mode: str
     candidate_test_families: list[str]
-    resolved_plan_ref: dict[str, str] | None
     selected_test_families: list[str]
     plan_digest: str
     plan_ref: dict[str, str]

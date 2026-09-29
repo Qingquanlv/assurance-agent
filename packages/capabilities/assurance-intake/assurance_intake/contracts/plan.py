@@ -248,39 +248,6 @@ class ResolvePlanInputV1(FrozenModel):
         return self
 
 
-class LoadPlanInputV1(FrozenModel):
-    change_id: str = Field(min_length=1)
-    requirement_digest: str = Field(pattern=_SHA256)
-    resolved_plan_ref: EvidenceArtifactRefV1
-    budgets: PlanBudgetsV1
-    policy_resource_id: str
-    policy_digest: str = Field(pattern=_SHA256)
-    source_resource_digests: tuple[tuple[str, str], ...]
-    capability_leafs: tuple[str, ...]
-
-    @field_validator("change_id")
-    @classmethod
-    def _change_id(cls, value: str) -> str:
-        return _canonical_segment(value, "change_id")
-
-    @field_validator("policy_resource_id")
-    @classmethod
-    def _policy_resource_id(cls, value: str) -> str:
-        return _qualified_id(value, "policy_resource_id")
-
-    @field_validator("source_resource_digests")
-    @classmethod
-    def _source_resource_digests(cls, value: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
-        return validate_resource_digests(value)
-
-    @field_validator("capability_leafs")
-    @classmethod
-    def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if value != tuple(sorted(set(value))):
-            raise ValueError("capability_leafs must be sorted and unique")
-        return value
-
-
 class ResolvePlanOutputV1(FrozenModel):
     plan: ResolvedAssurancePlan
     plan_ref: EvidenceArtifactRefV1
@@ -306,7 +273,6 @@ def plan_artifact_ref(plan: ResolvedAssurancePlan) -> EvidenceArtifactRefV1:
 
 __all__ = [
     "FallbackDetail",
-    "LoadPlanInputV1",
     "PlanBudgetsV1",
     "PreparedQualityGoalV1",
     "ResolutionReasonCode",

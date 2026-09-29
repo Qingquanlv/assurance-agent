@@ -62,9 +62,7 @@ def _stable_product_state_projection() -> dict[str, JSONValue]:
 
 EXPECTED_RECURSION_LIMITS = {
     "intake": 2048,
-    "case": 1024,
     "full": 8192,
-    "execute": 4096,
     "init": 512,
     "archive": 512,
     "retro": 2048,
@@ -86,8 +84,8 @@ def thin_graphs() -> ThinEntrypointGraphs:
 
 def test_thin_graphs_and_contracts_have_exact_keys(thin_graphs: ThinEntrypointGraphs) -> None:
     assert set(ENTRYPOINT_CONTRACTS) == set(PRODUCT_ENTRYPOINTS)
-    assert set(thin_graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS) - {"full", "execute"}
-    assert len(thin_graphs.entrypoints) == 13
+    assert set(thin_graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS) - {"full"}
+    assert len(thin_graphs.entrypoints) == 12
 
 
 def test_entrypoint_digest_changes_with_schema_or_limit_not_compiled_repr() -> None:
@@ -100,12 +98,12 @@ def test_entrypoint_digest_changes_with_schema_or_limit_not_compiled_repr() -> N
 
 def test_exact_limit_table_uses_the_current_state_schema() -> None:
     assert set(EXPECTED_RECURSION_LIMITS) == set(PRODUCT_ENTRYPOINTS)
-    assert STATE_SCHEMA_VERSION == "3"
+    assert STATE_SCHEMA_VERSION == "4"
     for name, contract in ENTRYPOINT_CONTRACTS.items():
         assert isinstance(contract, EntrypointGraphContract)
         assert contract.name == name
         assert contract.recursion_limit == EXPECTED_RECURSION_LIMITS[name]
-        assert contract.state_schema_version == "3"
+        assert contract.state_schema_version == "4"
 
 
 def test_graph_revision_keeps_agent_routes_out_of_inspection_result() -> None:

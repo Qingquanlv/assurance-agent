@@ -12,8 +12,6 @@ from tests.product.test_feature_graph_bundles import PUBLIC_BUNDLE_FIELDS
 PUBLIC_ENTRYPOINTS = {
     "full",
     "intake",
-    "case",
-    "execute",
     "init",
     "archive",
     "retro",
@@ -28,12 +26,12 @@ PUBLIC_ENTRYPOINTS = {
 }
 
 
-def test_product_entrypoints_are_fifteen_python_roots() -> None:
+def test_product_entrypoints_are_thirteen_python_roots() -> None:
     assert set(PRODUCT_ENTRYPOINTS) == PUBLIC_ENTRYPOINTS
     assert set(ENTRYPOINT_CONTRACTS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(ENTRYPOINT_CONTRACTS) == 15
+    assert len(ENTRYPOINT_CONTRACTS) == 13
     assert set(THIN_ENTRYPOINTS) <= set(PRODUCT_ENTRYPOINTS)
-    assert len(THIN_ENTRYPOINTS) == 13
+    assert len(THIN_ENTRYPOINTS) == 12
 
 
 def test_feature_bundles_cover_six_owners() -> None:

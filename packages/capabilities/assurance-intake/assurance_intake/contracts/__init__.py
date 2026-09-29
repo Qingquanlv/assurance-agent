@@ -33,7 +33,6 @@ from assurance_intake.contracts.obligations import (
     SourceRefV1,
 )
 from assurance_intake.contracts.plan import (
-    LoadPlanInputV1,
     PlanBudgetsV1,
     PreparedQualityGoalV1,
     ResolutionReasonV1,
@@ -91,7 +90,6 @@ __all__ = [
     "RiskTier",
     "TestFamily",
     "TEST_FAMILY_ORDER",
-    "LoadPlanInputV1",
     "PlanBudgetsV1",
     "PreparedQualityGoalV1",
     "ResolutionReasonV1",

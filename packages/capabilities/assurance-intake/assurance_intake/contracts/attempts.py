@@ -20,7 +20,7 @@ from assurance_intake.contracts.agent import (
     IntakeInputV1,
 )
 from assurance_intake.contracts.review import CaseReviewResultV1
-from assurance_intake.contracts.plan import LoadPlanInputV1, ResolvePlanInputV1, ResolvePlanOutputV1
+from assurance_intake.contracts.plan import ResolvePlanInputV1, ResolvePlanOutputV1
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _EXPLORER = "assurance-v1-explorer"
@@ -182,21 +182,8 @@ _RESOLVE_PLAN = TaskAttemptContract(
     timeout=_TIMEOUT,
     validators=(),
 )
-_LOAD_PLAN = TaskAttemptContract(
-    contract_id="assurance.intake.task.load-plan",
-    owner_id="assurance.intake",
-    handler_id="assurance.intake.load-plan",
-    input_model=LoadPlanInputV1,
-    output_model=ResolvePlanOutputV1,
-    resources=ResourceClaims(
-        reads=(".aa", "qa"),
-    ),
-    retry=_TASK_RETRY,
-    timeout=_TIMEOUT,
-    validators=(),
-)
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
-    {"resolve-plan": _RESOLVE_PLAN, "load-plan": _LOAD_PLAN}
+    {"resolve-plan": _RESOLVE_PLAN}
 )
 INTAKE_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
     "assurance.intake.agent.intake.v1",

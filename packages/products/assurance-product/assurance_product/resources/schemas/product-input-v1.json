@@ -27,13 +27,6 @@
       "uniqueItems": true,
       "items": { "enum": ["api", "e2e", "fuzz", "performance"] }
     },
-    "resolved_plan_ref": {
-      "anyOf": [
-        { "$ref": "#/$defs/artifactRef" },
-        { "type": "null" }
-      ],
-      "default": null
-    },
     "case_delta_paths": {
       "type": "array",
       "uniqueItems": true,
@@ -109,15 +102,6 @@
     ]
   },
   "$defs": {
-    "artifactRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "digest"],
-      "properties": {
-        "path": { "type": "string", "minLength": 1 },
-        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-      }
-    },
     "resourceRef": {
       "type": "object",
       "additionalProperties": false,

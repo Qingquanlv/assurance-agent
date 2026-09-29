@@ -15,7 +15,6 @@ from assurance_improvement.feature import ImprovementGraphs
 from assurance_intake.task import IntakeGraphs
 from assurance_product.graphs.entrypoints import (
     build_archive_root,
-    build_case_root,
     build_improvement_apply_root,
     build_improvement_evaluate_root,
     build_improvement_export_root,
@@ -102,7 +101,6 @@ def build_thin_entrypoint_graphs(
         "intake": build_intake_root(
             context, bundles.intake.prepare, bundles.generation.init_runtime, bundles.intake.case
         ),
-        "case": build_case_root(context, bundles.intake.load_plan, bundles.intake.case),
         "init": build_init_root(context, bundles.generation.init_runtime),
         "archive": build_archive_root(context, bundles.improvement.archive),
         "retro": build_retro_root(context, bundles.improvement.retro),
@@ -115,8 +113,8 @@ def build_thin_entrypoint_graphs(
         "improvement-apply": build_improvement_apply_root(context, bundles.improvement.apply),
         "improvement-rollback": build_improvement_rollback_root(context, bundles.improvement.rollback),
     }
-    if set(entrypoints) != set(THIN_ENTRYPOINTS) or len(entrypoints) != 13:
-        raise ValueError("thin roots must be the 13 declared entrypoints")
+    if set(entrypoints) != set(THIN_ENTRYPOINTS):
+        raise ValueError("thin roots must match the declared entrypoints")
     return ThinEntrypointGraphs(entrypoints=MappingProxyType(entrypoints))
 
 
@@ -138,8 +136,6 @@ def _closed_entrypoints(entrypoints: Mapping[str, CompiledStateGraph]) -> Mappin
         raise ValueError(f"missing product entrypoints: {sorted(missing)}")
     if extra:
         raise ValueError(f"extra product entrypoints: {sorted(extra)}")
-    if len(entrypoints) != 15:
-        raise ValueError("product roots must be the 15 declared entrypoints")
     return MappingProxyType(dict(entrypoints))
 
 
@@ -149,7 +145,7 @@ def build_product_graphs(
     features: Mapping[str, object],
     runtime_snapshot: Callable[[], Awaitable[EvidenceArtifactRefV1]] | None = None,
 ) -> ProductGraphs:
-    from assurance_product.graphs.execute import build_execute_root, build_execute_tail
+    from assurance_product.graphs.execute import build_execute_tail
     from assurance_product.graphs.full import build_full_root
 
     bundles = coerce_feature_bundles(features)
@@ -161,11 +157,9 @@ def build_product_graphs(
     stale_tail_nodes = _FORBIDDEN_PRODUCT_TAIL_NODES.intersection(execute_tail.nodes)
     if stale_tail_nodes:
         raise ValueError(f"obsolete Product coverage nodes are reachable: {sorted(stale_tail_nodes)}")
-    execute = build_execute_root(context, bundles, bundles.intake.load_plan, execute_tail)
     full = build_full_root(context, bundles, execute_tail)
     entrypoints = {
         **dict(thin.entrypoints),
-        "execute": execute,
         "full": full,
     }
     return ProductGraphs(entrypoints=_closed_entrypoints(entrypoints), contracts=ENTRYPOINT_CONTRACTS)

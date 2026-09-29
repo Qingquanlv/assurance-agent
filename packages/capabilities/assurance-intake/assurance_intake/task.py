@@ -167,7 +167,6 @@ class CaseDesignTask:
 @dataclass(frozen=True, slots=True)
 class IntakeGraphs:
     prepare: CompiledStateGraph
-    load_plan: CompiledStateGraph
     case: CompiledStateGraph
 
 

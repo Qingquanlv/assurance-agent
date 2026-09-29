@@ -409,12 +409,12 @@ def check_compile_ok(
 
     contracts = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
-    if len(PRODUCT_ENTRYPOINTS) != 15:
-        raise SystemExit(f"15 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
+    if len(PRODUCT_ENTRYPOINTS) != 13:
+        raise SystemExit(f"13 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
     if len(contracts) != 26:
         raise SystemExit(f"26 Agent contracts expected, found {len(contracts)}")
-    if len(contracts) + len(tasks) != 45:
-        raise SystemExit(f"45 Attempt contracts expected, found {len(contracts) + len(tasks)}")
+    if len(contracts) + len(tasks) != 44:
+        raise SystemExit(f"44 Attempt contracts expected, found {len(contracts) + len(tasks)}")
     if not callable(runtime_bindings_from_composition):
         raise SystemExit("runtime_bindings_from_composition is missing")
     if not callable(raw_agent_runtime_binding_rows):

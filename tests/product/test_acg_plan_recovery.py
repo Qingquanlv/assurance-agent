@@ -11,7 +11,6 @@ import pytest
 from assurance_generation.contracts.agent import PlanInputV1
 from assurance_intake.contracts.explore import ExploreAdvisoryV1, PreparedExploreV1
 from assurance_intake.contracts.plan import (
-    LoadPlanInputV1,
     ResolvePlanInputV1,
     ResolvePlanOutputV1,
     TestFamilyPolicyV1 as FamilyPolicyV1,
@@ -20,7 +19,7 @@ from assurance_intake.contracts.plan import (
 )
 from assurance_intake.operations.plan_codec import seal_plan
 from assurance_intake.operations.obligations import normalize_obligation_drafts
-from assurance_intake.operations.plan_artifacts import ResolvePlanHandler, load_plan_artifact
+from assurance_intake.operations.plan_artifacts import ResolvePlanHandler
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.runtime_bindings import DeterministicTaskExecutor
 from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
@@ -180,23 +179,6 @@ def test_committed_plan_replay_does_not_resolve_again(tmp_path: Path) -> None:
         assert first.receipt == second.receipt
         assert scenario.executor.dispatch_count == 1
         assert (scenario.project / first.output.plan_ref.path).read_bytes() == plan_bytes(first.output.plan)
-        assert (
-            load_plan_artifact(
-                LoadPlanInputV1(
-                    **scenario.validated_input.model_dump(
-                        exclude={
-                            "candidate_test_families",
-                            "family_policy",
-                            "exploration_ref",
-                            "impact_inventory_ref",
-                        }
-                    ),
-                    resolved_plan_ref=first.output.plan_ref,
-                ),
-                project_root=scenario.project,
-            )
-            == first.output
-        )
     finally:
         scenario.store.close()
 

@@ -72,7 +72,6 @@ class GoalLoopScenario:
     report_fails: bool = False
     proposal_only: bool = False
     unchanged_case_bytes: bool = False
-    entrypoint: Literal["full", "execute"] = "full"
     candidate_families: tuple[str, ...] = ("api", "e2e")
     proposed_families: tuple[str, ...] = ("api",)
 
@@ -283,22 +282,6 @@ def _scenario_features(
             dispatches=dispatches,
             attempt_keys=attempt_keys,
             select_index=lambda state: 0,
-        ),
-        load_plan=_recording_graph(
-            root=root,
-            label="load-plan",
-            semantic_id="intake.load-plan",
-            updates=(
-                {
-                    "plan_digest": plan.plan_digest,
-                    "plan_ref": plan_ref,
-                    "selected_test_families": list(plan.selected_test_families),
-                    "status": "prepared",
-                },
-            ),
-            visits=visits,
-            dispatches=dispatches,
-            attempt_keys=attempt_keys,
         ),
         case=_recording_graph(
             root=root,
@@ -577,18 +560,14 @@ def _invoke_persisted(
             checkpointer=saver,
         )
         graphs = build_product_graphs(context=_build_context(saver), features=features)
-        graph = graphs.entrypoints[scenario.entrypoint]
-        config = _config(scenario.entrypoint)
+        graph = graphs.entrypoints["full"]
+        config = _config("full")
         if resume:
             state = graph.invoke(None, config=config)
         else:
-            _plan, plan_ref = _scenario_plan(root, scenario)
             payload = _public_input(
-                scenario.entrypoint,
-                candidate_test_families=(
-                    scenario.candidate_families if scenario.entrypoint == "full" else ()
-                ),
-                resolved_plan_ref=(plan_ref if scenario.entrypoint == "execute" else None),
+                "full",
+                candidate_test_families=scenario.candidate_families,
                 budgets={
                     "review_rounds": 2,
                     "coverage_rounds": scenario.coverage_rounds,
@@ -640,11 +619,9 @@ async def run_goal_loop(
     keys: dict[str, list[str]] = {}
     features = _scenario_features(root, scenario, visits, dispatches, keys)
     graphs = build_product_graphs(context=_build_context(), features=features)
-    _plan, plan_ref = _scenario_plan(root, scenario)
     payload = _public_input(
-        scenario.entrypoint,
-        candidate_test_families=(scenario.candidate_families if scenario.entrypoint == "full" else ()),
-        resolved_plan_ref=(plan_ref if scenario.entrypoint == "execute" else None),
+        "full",
+        candidate_test_families=scenario.candidate_families,
         budgets={
             "review_rounds": 2,
             "coverage_rounds": scenario.coverage_rounds,
@@ -652,7 +629,7 @@ async def run_goal_loop(
             "execution_retries": 1,
         },
     )
-    state = await asyncio.to_thread(invoke_product_root, graphs, scenario.entrypoint, payload)
+    state = await asyncio.to_thread(invoke_product_root, graphs, "full", payload)
     return _observed_run(root, state)
 
 

@@ -607,8 +607,8 @@ def _preflight_selected_root(
     reachable: Sequence[str],
 ) -> NetworkPolicy:
     semantic = getattr(composition, "semantic_attempt_contracts", {})
-    if len(semantic) != 45:
-        raise ValueError("composition must resolve all 45 semantic contracts")
+    if len(semantic) != 44:
+        raise ValueError("composition must resolve all 44 semantic contracts")
     missing_reachable = tuple(contract_id for contract_id in reachable if contract_id not in semantic)
     if missing_reachable:
         raise ValueError(f"missing required port for contract {missing_reachable[0]}")

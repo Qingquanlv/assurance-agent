@@ -44,7 +44,7 @@ def test_composition_has_exact_opencode_identity_and_binding_closure(opencode_co
     contracts = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     assert len(contracts) == 26
-    assert len(contracts) + len(tasks) == 45
+    assert len(contracts) + len(tasks) == 44
     assert not any(item.startswith("assurance.product.agent.") for item in bindings)
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         binding = bindings[contract_id]
@@ -66,7 +66,7 @@ def test_composition_has_exact_opencode_identity_and_binding_closure(opencode_co
     assert getattr(product_manifest, "workflow_module_resources", ()) == ()
     assert getattr(product_manifest, "workflow_slot_bindings", ()) == ()
     assert set(product_manifest.entrypoints) == set(PRODUCT_ENTRYPOINTS)
-    assert len(product_manifest.entrypoints) == 15
+    assert len(product_manifest.entrypoints) == 13
     assert set(PUBLIC_BUNDLE_FIELDS) == set(_FEATURE_OWNERS)
 
 

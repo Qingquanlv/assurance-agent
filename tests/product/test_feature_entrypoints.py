@@ -10,7 +10,7 @@ from graph_engine.boot import FeatureSpec
 @pytest.mark.parametrize(
     ("module", "owner", "agents", "tasks", "symbol"),
     [
-        ("assurance_intake", "assurance.intake", 4, 2, "build_intake_graphs"),
+        ("assurance_intake", "assurance.intake", 4, 1, "build_intake_graphs"),
         ("assurance_generation", "assurance.generation", 8, 3, "build_generation_graphs"),
         ("assurance_execution", "assurance.execution", 0, 2, "build_execution_graphs"),
         ("assurance_quality", "assurance.quality", 5, 3, "build_quality_graphs"),
@@ -55,7 +55,7 @@ def test_product_assembles_only_the_six_explicit_features() -> None:
     validate_feature_set(FEATURES)
     assert FEATURE_GRAPH_FACTORIES == tuple(feature.graph_factory for feature in FEATURES)
     assert len(all_feature_agent_contracts()) == len(_AGENT_TASK_TYPES) == 26
-    assert len(all_feature_task_contracts()) == 19
+    assert len(all_feature_task_contracts()) == 18
     assert len(OutputRouteCatalog().aliases()) == 26
     with pytest.raises(ValueError, match="feature owners"):
         validate_feature_set((*FEATURES[:-1], FEATURES[0]))

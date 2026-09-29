@@ -222,9 +222,7 @@ def common_lifecycle_args(
     overrides = {
         "candidate_test_families": (candidate_families if entrypoint in {"full", "intake"} else ()),
         "change_id": change_id,
-        "case_delta_paths": (
-            ("qa/cases/system/dept/case.yaml",) if entrypoint in {"full", "intake", "case"} else ()
-        ),
+        "case_delta_paths": (("qa/cases/system/dept/case.yaml",) if entrypoint in {"full", "intake"} else ()),
         **dict(extra or {}),
     }
     input_path = write_product_input(

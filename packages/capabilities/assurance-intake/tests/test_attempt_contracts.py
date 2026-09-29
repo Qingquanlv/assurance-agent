@@ -253,16 +253,12 @@ def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:
     )
 
 
-def test_intake_owns_resolve_and_read_only_load_plan_tasks() -> None:
-    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-plan", "load-plan")
+def test_intake_owns_resolve_plan_task() -> None:
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-plan",)
     resolve = TASK_ATTEMPT_CONTRACTS["resolve-plan"]
-    load = TASK_ATTEMPT_CONTRACTS["load-plan"]
     assert resolve.contract_id == "assurance.intake.task.resolve-plan"
     assert resolve.handler_id == "assurance.intake.resolve-plan"
     assert resolve.resources.writes == ("qa/results/explore/exploration.json", "qa/results/plan")
-    assert load.contract_id == "assurance.intake.task.load-plan"
-    assert load.handler_id == "assurance.intake.load-plan"
-    assert load.resources.writes == ()
 
 
 def test_review_round_advance_is_not_a_task_contract() -> None:

@@ -7,9 +7,7 @@ from tests.product.test_feature_graph_bundles import PUBLIC_BUNDLE_FIELDS
 
 _PUBLIC_ENTRYPOINTS = (
     "intake",
-    "case",
     "full",
-    "execute",
     "init",
     "archive",
     "retro",
@@ -26,13 +24,12 @@ _PUBLIC_ENTRYPOINTS = (
 
 def test_public_entrypoints_are_the_python_product_roots() -> None:
     assert set(PRODUCT_ENTRYPOINTS) == set(_PUBLIC_ENTRYPOINTS)
-    assert len(PRODUCT_ENTRYPOINTS) == 15
+    assert len(PRODUCT_ENTRYPOINTS) == 13
 
 
-def test_intake_bundle_exposes_prepare_load_and_case_graphs() -> None:
-    assert PUBLIC_BUNDLE_FIELDS["assurance.intake"] == ("prepare", "load_plan", "case")
+def test_intake_bundle_exposes_prepare_and_case_graphs() -> None:
+    assert PUBLIC_BUNDLE_FIELDS["assurance.intake"] == ("prepare", "case")
     assert "prepare" in IntakeGraphs.__dataclass_fields__
-    assert "load_plan" in IntakeGraphs.__dataclass_fields__
     assert "case" in IntakeGraphs.__dataclass_fields__
     assert build_intake_graphs is not None
 

@@ -334,8 +334,6 @@ TEST_FAMILY_ORDER: tuple[Literal["api", "e2e", "fuzz", "performance"], ...] = (
 FAMILY_NONEMPTY_ENTRYPOINTS = frozenset({"full", "intake"})
 FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     {
-        "case",
-        "execute",
         "init",
         "archive",
         "retro",
@@ -350,7 +348,7 @@ FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     }
 )
 PRODUCT_ENTRYPOINTS = FAMILY_NONEMPTY_ENTRYPOINTS | FAMILY_EMPTY_ENTRYPOINTS
-THIN_ENTRYPOINTS = PRODUCT_ENTRYPOINTS - {"full", "execute"}
+THIN_ENTRYPOINTS = PRODUCT_ENTRYPOINTS - {"full"}
 
 
 def _canonical_token(value: str, label: str) -> str:
@@ -453,7 +451,6 @@ class ProductInputV1(FrozenModel):
     requirement: str
     run_mode: Literal["case", "implement", "verify"]
     candidate_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...] = ()
-    resolved_plan_ref: ArtifactRefV1 | None = None
     case_delta_paths: tuple[str, ...] = ()
     capability_leafs: tuple[str, ...]
     capability_catalog: ResourceRefV1
@@ -549,19 +546,11 @@ class ProductInputV1(FrozenModel):
 
     def validate_for_entrypoint(self, entrypoint: str) -> ProductInputV1:
         validate_entrypoint_families(entrypoint, self.candidate_test_families)
-        creator = entrypoint in {"full", "intake"}
-        consumer = entrypoint in {"case", "execute"}
-        if creator and self.resolved_plan_ref is not None:
-            raise ValueError(f"{entrypoint} creates a plan and cannot accept resolved_plan_ref")
-        if consumer and self.resolved_plan_ref is None:
-            raise ValueError(f"{entrypoint} requires resolved_plan_ref")
-        if not creator and not consumer and self.resolved_plan_ref is not None:
-            raise ValueError(f"{entrypoint} does not consume resolved_plan_ref")
-        # full / intake / case all lock case files from Explore inventory.
+        # full / intake lock case files from Explore inventory.
         # Empty case_delta_paths is the operator contract; case-design infers
         # every implied qa/cases/<module>/case.yaml (one requirement can span
         # several modules).
-        if entrypoint not in {"full", "intake", "case"} and self.case_delta_paths:
+        if entrypoint not in {"full", "intake"} and self.case_delta_paths:
             raise ValueError(f"{entrypoint} does not consume case_delta_paths")
         if entrypoint != "retro" and self.retro_window is not None:
             raise ValueError(f"{entrypoint} does not consume retro_window")

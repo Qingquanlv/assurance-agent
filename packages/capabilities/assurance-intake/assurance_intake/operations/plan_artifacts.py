@@ -33,7 +33,6 @@ from assurance_intake.operations.impact_validation import validate_inventory_clo
 from assurance_intake.contracts.plan import (
     PreparedQualityGoalV1,
     ResolvePlanInputV1,
-    LoadPlanInputV1,
     ResolvePlanOutputV1,
     TestFamilyPolicyV1,
     plan_artifact_ref,
@@ -46,7 +45,6 @@ from assurance_intake.contracts.quality_goals import (
     SufficiencyPolicyV1,
 )
 from assurance_intake.operations.resolve_plan import derive_family_proposal, resolve_plan
-from assurance_intake.operations.plan_codec import decode_plan
 from assurance_intake.operations.explore_context import load_exploration_document
 
 _RESOURCE_PATHS = {
@@ -262,58 +260,6 @@ def resolve_plan_artifact(
     return output
 
 
-def load_plan_artifact(
-    request: LoadPlanInputV1,
-    *,
-    project_root: Path,
-) -> ResolvePlanOutputV1:
-    data = _read_regular_bytes(
-        project_root,
-        request.resolved_plan_ref.path,
-        request.resolved_plan_ref.digest,
-    )
-    plan = decode_plan(data, request.resolved_plan_ref)
-    if plan.change_id != request.change_id:
-        raise ValueError("plan change_id does not match loader input")
-    if plan.requirement_digest != request.requirement_digest:
-        raise ValueError("plan requirement_digest does not match loader input")
-    if plan.resolved_budgets != request.budgets:
-        raise ValueError("plan budgets do not match loader input")
-    if plan.policy_resource_id != request.policy_resource_id or plan.policy_digest != request.policy_digest:
-        raise ValueError("plan policy identity does not match loader input")
-    if plan.quality_goal.source_resource_digests != request.source_resource_digests:
-        raise ValueError("plan source identities do not match loader input")
-
-    policy = _mapping_yaml(
-        _read_regular_bytes(project_root, _POLICY_PATH, request.policy_digest),
-        "product policy",
-    )
-    family_policy = TestFamilyPolicyV1.model_validate(policy.get("test_family_policy"))
-    resolve_input = ResolvePlanInputV1(
-        change_id=request.change_id,
-        requirement_digest=request.requirement_digest,
-        candidate_test_families=plan.candidate_test_families,
-        budgets=request.budgets,
-        policy_resource_id=request.policy_resource_id,
-        policy_digest=request.policy_digest,
-        family_policy=family_policy,
-        exploration_ref=plan.exploration_ref,
-        impact_inventory_ref=plan.impact_inventory_ref,
-        source_resource_digests=request.source_resource_digests,
-        capability_leafs=request.capability_leafs,
-    )
-    advisory, inventory, goal, _obligations = prepare_quality_goal(resolve_input, project_root=project_root)
-    expected = resolve_plan(
-        request=resolve_input,
-        proposed=derive_family_proposal(advisory.test_strategy),
-        quality_goal=goal,
-        inventory=inventory,
-    )
-    if expected != plan:
-        raise ValueError("stored plan does not match its authenticated inputs")
-    return ResolvePlanOutputV1(plan=plan, plan_ref=request.resolved_plan_ref)
-
-
 class ResolvePlanHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
@@ -328,20 +274,8 @@ class ResolvePlanHandler:
         return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
 
 
-class LoadPlanHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            validated = LoadPlanInputV1.model_validate(request.input)
-            output = load_plan_artifact(validated, project_root=context.project_root)
-        except (ValueError, ValidationError, OSError) as error:
-            return TaskOutcome.failed("invalid_input", str(error), retryable=True)
-        return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
-
-
 __all__ = [
-    "LoadPlanHandler",
     "ResolvePlanHandler",
-    "load_plan_artifact",
     "prepare_quality_goal",
     "resolve_plan_artifact",
 ]

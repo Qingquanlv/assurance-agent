@@ -75,7 +75,6 @@ def drive_coverage_loop(
     coverage_rounds: int = 1,
     measured_sequence: tuple[float, ...] = (),
     threshold: float = 0.90,
-    entrypoint: str = "execute",
 ) -> ExecutionLoopTrace:
     return drive_execution_loop(
         execution_sequence=("passed",),
@@ -86,7 +85,6 @@ def drive_coverage_loop(
         repair_statuses=repair_statuses,
         measured_sequence=measured_sequence,
         threshold=threshold,
-        entrypoint=entrypoint,
     )
 
 
@@ -101,7 +99,6 @@ def drive_execution_loop(
     repair_statuses: tuple[str, ...] = (),
     measured_sequence: tuple[float, ...] = (),
     threshold: float = 0.90,
-    entrypoint: str = "execute",
 ) -> ExecutionLoopTrace:
     if _INSTALLED_SOURCES is None:
         raise AssertionError("installed_sources fixture is not bound")
@@ -118,7 +115,6 @@ def drive_execution_loop(
     return _synthesize_loop_trace(
         host=host,
         composition=None,
-        entrypoint=entrypoint,
         execution_sequence=execution_sequence,
         classifications=classifications,
         fix_eligible=fix_eligible,
@@ -142,7 +138,7 @@ class _SyntheticActivation:
 @dataclass
 class _SyntheticGraph:
     graph_instance_id: str = "root"
-    graph_id: str = "product-execute"
+    graph_id: str = "product-full"
     parent_graph_instance_id: str | None = None
 
 
@@ -156,7 +152,6 @@ def _synthesize_loop_trace(
     *,
     host: _ExecutionLoopHost,
     composition,
-    entrypoint: str,
     execution_sequence: tuple[str, ...],
     classifications: tuple[str, ...],
     fix_eligible: tuple[bool, ...],
@@ -228,7 +223,7 @@ def _synthesize_loop_trace(
             _export("quality", "quality.assess")
             if coverage_state == "satisfied":
                 _export("quality-report", "quality.report")
-                terminal = "achieved" if entrypoint == "full" else "done"
+                terminal = "achieved"
                 break
             if coverage_state == "needs_human":
                 status = "interrupted"
@@ -265,24 +260,20 @@ def _synthesize_loop_trace(
         status = "interrupted"
         terminal = "interrupted"
 
-    if entrypoint == "full":
-        graph_id = "product-full"
-        if terminal != "interrupted":
-            activations.append(
-                _SyntheticActivation(
-                    node_id="execute-tail",
-                    output={"coverage_state": last_coverage},
-                )
+    if terminal != "interrupted":
+        activations.append(
+            _SyntheticActivation(
+                node_id="execute-tail",
+                output={"coverage_state": last_coverage},
             )
-        if terminal == "achieved":
-            activations.append(_SyntheticActivation(node_id="retro"))
-            activations.append(_SyntheticActivation(node_id="achieved"))
-    else:
-        graph_id = "product-execute"
+        )
+    if terminal == "achieved":
+        activations.append(_SyntheticActivation(node_id="retro"))
+        activations.append(_SyntheticActivation(node_id="achieved"))
 
     projection = _SyntheticProjection(
         activations=tuple(activations),
-        graph_instances=(_SyntheticGraph(graph_id=graph_id),),
+        graph_instances=(_SyntheticGraph(),),
     )
     return ExecutionLoopTrace(
         public_exports=tuple(exports),
@@ -574,9 +565,7 @@ def _terminal_name(projection: InvocationProjection, status: str) -> str:
             continue
         graph = graphs[activation.graph_instance_id]
         graph_id = graph.graph_id
-        if graph.parent_graph_instance_id is None or graph_id.endswith(
-            (".product-full", "product-full", ".product-execute", "product-execute")
-        ):
+        if graph.parent_graph_instance_id is None or graph_id.endswith((".product-full", "product-full")):
             ends.append(activation.node_id)
     if "achieved" in ends:
         return "achieved"

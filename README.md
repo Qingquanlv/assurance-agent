@@ -81,26 +81,10 @@ Explore. Their public input supplies candidates rather than a selected family:
 }
 ```
 
-The standalone `case` and `execute` entrypoints import that committed plan.
-They use an empty candidate set and the exact content-addressed reference:
-
-```json
-{
-  "schema_version": "1",
-  "change_id": "CH-123",
-  "requirement": "Protect the account recovery journey",
-  "run_mode": "case",
-  "candidate_test_families": [],
-  "resolved_plan_ref": {"path": "qa/results/plan/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/resolved-assurance-plan.json", "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
-  "case_delta_paths": ["qa/cases/account-recovery/case.yaml"],
-  "capability_leafs": ["account.recovery.complete"],
-  "capability_catalog": {"resource_id": "assurance.product.configuration.capability-catalog", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-  "product_policy": {"resource_id": "assurance.product.configuration.product-policy", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-  "data_knowledge": {"resource_id": "assurance.product.configuration.data-knowledge", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
-  "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
-  "budgets": {"review_rounds": 2, "coverage_rounds": 2, "healing_rounds": 1, "execution_retries": 1}
-}
-```
+Standalone `case` and `execute` entrypoints are not supported. Start with `full`
+(or `intake` for preparation and case review only); use `aa resume` to recover an
+existing invocation. Public input does not accept `resolved_plan_ref`. Internal
+case and execution subgraphs still use the plan produced earlier in the workflow.
 
 Product tests live in `tests/product/`. The live OpenCode benchmark lives in
 `benchmark/assurance-product/`; it is an optional operator/research tool, not a
@@ -114,7 +98,7 @@ the review histories, inspection and report. Test verdicts come from execution;
 inspection `analyzed` only means classification finished. Inspection must bind the
 same execution digest, change and batch. Report-only evidence is incomplete.
 
-Full/execute diagnostic flows snapshot redacted Kernel journal evidence before Retro at
+Full diagnostic flows snapshot redacted Kernel journal evidence before Retro at
 `qa/results/workflow/<invocation-id-digest>/pre-retro/<snapshot-sha256>/workflow-evidence.json` and bind
 its exact digest to Retro. Non-Retro `aa run` and `aa resume` also export a post-run
 projection to
