@@ -16,10 +16,44 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run lint-imports
+uv run python scripts/build_wheels.py --check
+uv run python scripts/build_wheels.py --package assurance-intake --out-dir dist
 bash scripts/graph_engine_smoke_test.sh
 bash scripts/assurance_capability_wheel_smoke_test.sh
 bash scripts/assurance_product_wheel_smoke_test.sh
 ```
+
+### Python plugin registration and generated declarations
+
+Author handlers, schemas, resources, and validators in each wheel's `plugin.py`.
+Task lifecycle definitions stay in `task.py` (Intake) and topology stays in
+`graphs/`. Do not hand-edit `plugin-declaration.json`: it is generated from the
+provider's `descriptor()`, including its attempt-contract digests.
+
+Run the build entry point from the repository root after `uv sync --dev`:
+
+```bash
+# Regenerate declarations, then build the selected wheel(s).
+uv run python scripts/build_wheels.py --package assurance-intake --out-dir dist
+# Omit --package to build all workspace members; repeat it to select several.
+
+# Refresh declarations for editable development without building wheels.
+uv run python scripts/build_wheels.py --declarations-only
+# CI checks for missing/stale generated files without modifying them.
+uv run python scripts/build_wheels.py --check
+```
+
+Commit regenerated declarations with Python changes. They remain checked in so
+isolated builds and source review have the same static metadata. Direct
+`uv build` only packages existing files; use the entry point above to refresh
+them automatically. All three packaging smoke scripts use this entry point.
+
+Generation imports only this trusted workspace's explicitly declared plugin
+entry points, with source coordinates checked against `pyproject.toml`. It does
+not scan the SUT or generate metadata at runtime. Installed-wheel loading still
+validates the static dependency closure before loading providers, checks live
+registrations against the declaration, and authenticates wheel bytes. Product
+declarations and deployment binding generation are unchanged.
 
 `aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`,
 `aa bindings build`, `aa lock show`, and `aa retro show` operate on an installed

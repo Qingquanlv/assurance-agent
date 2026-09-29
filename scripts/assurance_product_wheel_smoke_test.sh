@@ -31,26 +31,18 @@ mkdir -p "$source_root" "$dist_root" "$bindings_root"
 
 cd "$source_root"
 test -d "$source_root/packages/products/assurance-product/assurance_product"
-for package in \
-  graph-engine \
-  agent-runtime-contracts \
-  assurance-intake \
-  assurance-generation \
-  assurance-execution \
-  assurance-healing \
-  assurance-quality \
-  assurance-improvement \
-  assurance-product \
-  agent-runtime-opencode
-do
-  uv build \
-    --offline \
-    --wheel \
-    --no-sources \
-    --python 3.11 \
-    --package "$package" \
-    --out-dir "$dist_root"
-done
+uv run --offline --all-packages --no-dev python scripts/build_wheels.py \
+  --offline --out-dir "$dist_root" \
+  --package graph-engine \
+  --package agent-runtime-contracts \
+  --package assurance-intake \
+  --package assurance-generation \
+  --package assurance-execution \
+  --package assurance-healing \
+  --package assurance-quality \
+  --package assurance-improvement \
+  --package assurance-product \
+  --package agent-runtime-opencode
 
 wheel_for() {
   local pattern="$1"

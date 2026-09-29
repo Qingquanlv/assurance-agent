@@ -19,9 +19,9 @@ git -C "$repo_root" archive HEAD | tar -x -C "$source_root"
 
 cd "$source_root"
 test -d "$source_root/packages/framework/graph-engine/graph_engine"
-uv build --offline --wheel --package graph-engine --out-dir "$dist_root"
-uv build --offline --wheel --package graph-engine-toy-a --out-dir "$dist_root"
-uv build --offline --wheel --package graph-engine-toy-b --out-dir "$dist_root"
+uv run --offline --all-packages --no-dev python scripts/build_wheels.py \
+  --offline --out-dir "$dist_root" \
+  --package graph-engine --package graph-engine-toy-a --package graph-engine-toy-b
 
 engine_wheel="$(find "$dist_root" -maxdepth 1 -type f -name 'graph_engine-*.whl' -print -quit)"
 toy_a_wheel="$(find "$dist_root" -maxdepth 1 -type f -name 'graph_engine_toy_a-*.whl' -print -quit)"

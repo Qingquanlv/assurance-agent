@@ -19,6 +19,8 @@ jobs:
           python-version: "3.11"
           enable-cache: true
       - run: uv sync --dev
+      - name: generated plugin declarations
+        run: uv run python scripts/build_wheels.py --check
       - name: ruff check
         run: uv run ruff check .
       - name: ruff format --check

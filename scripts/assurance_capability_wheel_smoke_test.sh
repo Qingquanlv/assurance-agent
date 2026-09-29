@@ -34,24 +34,16 @@ mkdir -p "$source_root" "$dist_root"
 git -C "$repo_root" archive HEAD | tar -x -C "$source_root"
 
 cd "$source_root"
-for package in \
-  graph-engine \
-  agent-runtime-contracts \
-  assurance-intake \
-  assurance-generation \
-  assurance-execution \
-  assurance-healing \
-  assurance-quality \
-  assurance-improvement
-do
-  uv build \
-    --offline \
-    --wheel \
-    --no-sources \
-    --python 3.11 \
-    --package "$package" \
-    --out-dir "$dist_root"
-done
+uv run --offline --all-packages --no-dev python scripts/build_wheels.py \
+  --offline --out-dir "$dist_root" \
+  --package graph-engine \
+  --package agent-runtime-contracts \
+  --package assurance-intake \
+  --package assurance-generation \
+  --package assurance-execution \
+  --package assurance-healing \
+  --package assurance-quality \
+  --package assurance-improvement
 
 wheel_for() {
   local pattern="$1"
