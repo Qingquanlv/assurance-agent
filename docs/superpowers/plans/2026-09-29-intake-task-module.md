@@ -188,23 +188,23 @@ def decode_plan(data: bytes, ref: EvidenceArtifactRefV1) -> ResolvedAssurancePla
 
 ### Task 5: Put workflow computation beside its consumers
 
-**Files:** Modify `contracts/decisions.py`, `contracts/workflow.py`, `contracts/loop_history.py`, `contracts/__init__.py`, `operations/workflow_state.py`, `operations/case_review_seal.py`, `graphs/state.py`, `graphs/nodes.py`, and their tests.
+**Files:** Modify `contracts/decisions.py`, `contracts/workflow.py`, `contracts/loop_history.py`, `contracts/__init__.py`, `operations/workflow_state.py`, `operations/case_review_seal.py`, `graphs/state.py`, `graphs/nodes.py`, and their tests; add `operations/history_refs.py` and `operations/loop_history.py`; update cross-wheel callers and `.importlinter`.
 
-**Interfaces:** Keep `ReviewRoundAdvanceInput/Output`, `EvidenceArtifactRefV1`, and `LoopRoundHistoryV1` in `contracts/`; move `advance_review_round` to `operations/workflow_state.py`, `merge_history_refs` to `graphs/state.py`, and `build_loop_round_history` to `operations/case_review_seal.py` with current signatures and behavior.
+**Interfaces:** Keep `ReviewRoundAdvanceInput/Output`, `EvidenceArtifactRefV1`, and `LoopRoundHistoryV1` in `contracts/`; move `advance_review_round` to `operations/workflow_state.py`, `merge_history_refs` to `operations/history_refs.py`, and `build_loop_round_history` to `operations/loop_history.py` with current signatures and behavior. Shared operations avoid cross-Feature `graphs` imports and case-review-specific coupling.
 
 - [ ] **Step 1: Update import assertions first** in `test_attempt_contracts.py`, `test_graph_interrupts.py`, and `test_product_input.py`:
 
 ```python
 from assurance_intake.operations.workflow_state import advance_review_round
-from assurance_intake.graphs.state import merge_history_refs
-from assurance_intake.operations.case_review_seal import build_loop_round_history
+from assurance_intake.operations.history_refs import merge_history_refs
+from assurance_intake.operations.loop_history import build_loop_round_history
 ```
 
 - [ ] **Step 2: Run red:** `uv run pytest packages/capabilities/assurance-intake/tests/test_graph_interrupts.py::test_advance_review_round_node_is_the_moved_pure_function tests/product/test_product_input.py -q --tb=short`; expect import errors for the moved names.
 - [ ] **Step 3: Move the existing function bodies without altering validation or reducer order**, update `graphs/nodes.py` and old exports, and keep model modules independent from operations:
 
 ```python
-# graphs/state.py
+# graphs/state.py imports from operations.history_refs
 history_refs: Annotated[list[dict[str, str]], merge_history_refs]
 
 # operations/workflow_state.py

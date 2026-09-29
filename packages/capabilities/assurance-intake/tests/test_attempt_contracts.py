@@ -38,10 +38,9 @@ from assurance_intake.contracts.attempts import (
 from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceInput,
     ReviewRoundAdvanceOutput,
-    advance_review_round,
 )
 from assurance_intake.contracts.review import CaseReviewResultV1
-from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler
+from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler, advance_review_round
 from assurance_intake.plugin import IntakePlugin
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOBS
 from assurance_quality.plugin import QualityPlugin

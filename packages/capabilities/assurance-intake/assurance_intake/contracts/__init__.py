@@ -45,7 +45,6 @@ from assurance_intake.contracts.plan import (
 from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceInput,
     ReviewRoundAdvanceOutput,
-    advance_review_round,
 )
 from assurance_intake.contracts.review import CaseReviewFindingV1, CaseReviewResultV1, ReviewDecision
 from assurance_intake.contracts.workflow import (
@@ -54,7 +53,7 @@ from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
 )
-from assurance_intake.contracts.loop_history import LoopRoundHistoryV1, build_loop_round_history
+from assurance_intake.contracts.loop_history import LoopRoundHistoryV1
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
@@ -100,8 +99,6 @@ __all__ = [
     "ResolvePlanOutputV1",
     "ResolvedAssurancePlan",
     "TestFamilyPolicyV1",
-    "advance_review_round",
     "LoopRoundHistoryV1",
-    "build_loop_round_history",
     "attempt_contract_refs",
 ]

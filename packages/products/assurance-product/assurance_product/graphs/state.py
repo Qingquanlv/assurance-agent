@@ -11,7 +11,6 @@ from assurance_intake.contracts.workflow import (
     CaseReworkContextV1,
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
-    merge_history_refs,
 )
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
@@ -19,6 +18,7 @@ from assurance_quality.contracts.assessment import (
     ReportOutcomeV1,
     ReportPurpose,
 )
+from assurance_intake.operations.history_refs import merge_history_refs
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState

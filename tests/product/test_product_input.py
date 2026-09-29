@@ -190,7 +190,7 @@ def test_full_retro_binds_pre_retro_snapshot_and_all_review_rounds() -> None:
 
 
 def test_history_ref_reducer_accumulates_rounds_and_rejects_digest_conflicts() -> None:
-    from assurance_intake.contracts.workflow import merge_history_refs
+    from assurance_intake.operations.history_refs import merge_history_refs
 
     first = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
     second = {"path": "qa/cases/reviews/epochs/0/rounds/1.json", "digest": "b" * 64}

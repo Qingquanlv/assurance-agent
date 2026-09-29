@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ReviewRoundAdvanceInput(BaseModel):
@@ -21,21 +21,7 @@ class ReviewRoundAdvanceOutput(BaseModel):
     rounds_budget: int = Field(ge=1)
 
 
-def advance_review_round(data: object) -> ReviewRoundAdvanceOutput:
-    try:
-        payload = ReviewRoundAdvanceInput.model_validate(data)
-    except ValidationError as error:
-        raise error
-    if payload.rounds_used >= payload.rounds_budget:
-        raise ValueError("rounds_used must be below rounds_budget")
-    return ReviewRoundAdvanceOutput(
-        rounds_used=payload.rounds_used + 1,
-        rounds_budget=payload.rounds_budget,
-    )
-
-
 __all__ = [
     "ReviewRoundAdvanceInput",
     "ReviewRoundAdvanceOutput",
-    "advance_review_round",
 ]

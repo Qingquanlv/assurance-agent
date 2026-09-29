@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Annotated, Literal, TypedDict
 
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
-from assurance_intake.contracts.workflow import merge_history_refs
+from assurance_intake.operations.history_refs import merge_history_refs
 
 CASE_REVIEW_PREDECESSORS = (
     "review-round-advance",

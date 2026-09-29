@@ -12,7 +12,7 @@ from assurance_intake.contracts.agent import (
     ExploreInputV1,
     IntakeInputV1,
 )
-from assurance_intake.contracts.decisions import advance_review_round
+from assurance_intake.operations.workflow_state import advance_review_round
 from assurance_intake.contracts.workflow import (
     CaseFlowResultV1,
     EvidenceArtifactRefV1,

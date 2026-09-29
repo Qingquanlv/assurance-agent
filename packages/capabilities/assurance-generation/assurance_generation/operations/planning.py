@@ -39,9 +39,9 @@ from assurance_intake.contracts import (
     CaseYamlAuthoring,
     EvidenceArtifactRefV1,
     LoopRoundHistoryV1,
-    build_loop_round_history,
 )
 from assurance_intake.operations.planning_facts import build_planning_facts
+from assurance_intake.operations.loop_history import build_loop_round_history
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.operations.plan_consistency import check_plan_consistency
 

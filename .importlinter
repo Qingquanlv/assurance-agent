@@ -26,7 +26,9 @@ ignore_imports =
     assurance_generation.operations.cycle -> assurance_intake.operations.explore_context
     assurance_generation.operations.cycle -> assurance_intake.operations.plan_codec
     assurance_generation.operations.planning -> assurance_intake.operations.planning_facts
+    assurance_generation.operations.planning -> assurance_intake.operations.loop_history
     assurance_generation.operations.resolve_inputs -> assurance_intake.operations.plan_codec
+    assurance_generation.graphs.state -> assurance_intake.operations.history_refs
 source_modules =
     assurance_generation
 forbidden_modules =
@@ -64,6 +66,8 @@ forbidden_modules =
 [importlinter:contract:healing-assurance-contracts-only]
 name = healing may import only intake, generation, and execution contracts
 type = forbidden
+ignore_imports =
+    assurance_healing.operations.application -> assurance_intake.operations.loop_history
 source_modules =
     assurance_healing
 forbidden_modules =

@@ -13,7 +13,8 @@ from pydantic import ValidationError
 
 from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_intake.contracts.decisions import ReviewRoundAdvanceOutput, advance_review_round
+from assurance_intake.contracts.decisions import ReviewRoundAdvanceOutput
+from assurance_intake.operations.workflow_state import advance_review_round
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.graphs.factory import build_intake_graphs
 
