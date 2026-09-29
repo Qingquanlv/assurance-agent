@@ -210,8 +210,7 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
         RetroTask,
         RetroWorkflowAnalysisTask,
     )
-    from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
-    from assurance_intake.operations.case_design import CaseDesignTask
+    from assurance_intake.task import CaseDesignTask, CaseReviewTask, ExploreTask, IntakeTask
     from assurance_quality.operations.agent_tasks import (
         FactBaselineTask,
         InspectTask,
@@ -652,7 +651,7 @@ def test_bound_case_design_task_runs_all_hooks_through_installed_host_phases(
 
     from assurance_intake.contracts.agent import CaseDesignInputV1
     from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-    from assurance_intake.operations.case_design import CaseDesignTask
+    from assurance_intake.task import CaseDesignTask
 
     payload = {"output_files": ["qa/.qa.yaml"]}
     run_result = AgentRunResult.model_validate(

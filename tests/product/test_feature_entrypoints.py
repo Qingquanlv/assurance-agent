@@ -21,7 +21,8 @@ from graph_engine.boot import FeatureSpec
 def test_capability_feature_exports_existing_contracts_and_graph_factory(
     module: str, owner: str, agents: int, tasks: int, symbol: str
 ) -> None:
-    feature: FeatureSpec = import_module(f"{module}.feature").FEATURE
+    entry = "task" if module == "assurance_intake" else "feature"
+    feature: FeatureSpec = import_module(f"{module}.{entry}").FEATURE
 
     assert feature.graph_factory.owner_id == owner
     assert feature.graph_factory.symbol == f"{module}.graphs.factory:{symbol}"
@@ -106,6 +107,36 @@ def test_product_rejects_duplicate_task_catalog_key() -> None:
     ],
 )
 def test_feature_exposes_its_graph_bundle_type(module: str, bundle_name: str) -> None:
-    feature = import_module(f"{module}.feature")
+    entry = "task" if module == "assurance_intake" else "feature"
+    feature = import_module(f"{module}.{entry}")
     factory = import_module(f"{module}.graphs.factory")
     assert getattr(feature, bundle_name) is getattr(factory, bundle_name)
+
+
+def test_intake_task_module_owns_lifecycle_classes() -> None:
+    import subprocess
+    import sys
+
+    from assurance_intake.plugin import IntakePlugin
+    from assurance_intake.task import (
+        FEATURE,
+        CaseDesignTask,
+        CaseReviewTask,
+        ExploreTask,
+        IntakeTask,
+    )
+
+    assert FEATURE.plugin is IntakePlugin
+    assert FEATURE.agent_task_types == (
+        IntakeTask,
+        ExploreTask,
+        CaseDesignTask,
+        CaseReviewTask,
+    )
+    assert all(task.__module__ == "assurance_intake.task" for task in FEATURE.agent_task_types)
+    assert IntakePlugin.descriptor().attempt_contracts
+    for first, second in (("task", "plugin"), ("plugin", "task")):
+        subprocess.run(
+            [sys.executable, "-c", f"import assurance_intake.{first}; import assurance_intake.{second}"],
+            check=True,
+        )

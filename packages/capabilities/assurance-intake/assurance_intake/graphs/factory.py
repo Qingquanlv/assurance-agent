@@ -6,7 +6,7 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from assurance_intake.feature import IntakeGraphs
+from assurance_intake.task import IntakeGraphs
 from assurance_intake.graphs.case import build_case_graph
 from assurance_intake.graphs.nodes import (
     activation_case_design,

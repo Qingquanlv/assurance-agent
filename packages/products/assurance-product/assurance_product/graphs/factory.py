@@ -12,7 +12,7 @@ from assurance_execution.feature import ExecutionGraphs
 from assurance_generation.feature import GenerationGraphs
 from assurance_healing.feature import HealingGraphs
 from assurance_improvement.feature import ImprovementGraphs
-from assurance_intake.feature import IntakeGraphs
+from assurance_intake.task import IntakeGraphs
 from assurance_product.graphs.entrypoints import (
     build_archive_root,
     build_case_root,

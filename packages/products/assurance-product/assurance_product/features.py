@@ -11,7 +11,7 @@ from assurance_execution.feature import FEATURE as EXECUTION
 from assurance_generation.feature import FEATURE as GENERATION
 from assurance_healing.feature import FEATURE as HEALING
 from assurance_improvement.feature import FEATURE as IMPROVEMENT
-from assurance_intake.feature import FEATURE as INTAKE
+from assurance_intake.task import FEATURE as INTAKE
 from assurance_quality.feature import FEATURE as QUALITY
 
 from assurance_product.source_catalog import product_source_catalog

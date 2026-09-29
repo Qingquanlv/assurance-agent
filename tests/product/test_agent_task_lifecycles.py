@@ -41,8 +41,7 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: str) -> None:
     from agent_runtime_contracts.lifecycle import validate_task_type
 
-    from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
-    from assurance_intake.operations.case_design import CaseDesignTask
+    from assurance_intake.task import CaseDesignTask, CaseReviewTask, ExploreTask, IntakeTask
     from assurance_generation.operations.agent_tasks import (
         ApiCodegenReviewTask,
         ApiCodegenTask,
