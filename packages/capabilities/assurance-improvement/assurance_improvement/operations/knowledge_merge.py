@@ -87,6 +87,14 @@ def collect_leaf_entries(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return leaves
 
 
+def _strip_none(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _strip_none(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_strip_none(item) for item in value]
+    return value
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
 
@@ -115,6 +123,7 @@ def merge_l2_into_l1(
     conflicts: list[PromoteConflict] = []
     merged_keys: list[str] = []
     for key, proposal_leaf in sorted(proposal_leaves.items()):
+        proposal_leaf = _strip_none(proposal_leaf)
         existing = l1_leaves.get(key)
         if existing is None:
             _set_nested(merged, key, proposal_leaf)

@@ -36,6 +36,27 @@ def test_merge_ignores_an_identical_leaf() -> None:
     assert merged.merged == l1
 
 
+def test_merge_omits_proposal_none_fields_as_identical() -> None:
+    l1 = {"entities": {"dept": {"required_fields": ["name"]}}}
+    merged = merge_l2_into_l1(
+        l1,
+        {
+            "entities": {
+                "dept": {
+                    "required_fields": ["name"],
+                    "notes": None,
+                    "constraints": None,
+                }
+            }
+        },
+    )
+
+    assert merged.changed is False
+    assert merged.conflicts == []
+    assert merged.merged_keys == []
+    assert merged.merged["entities"]["dept"] == {"required_fields": ["name"]}
+
+
 def test_merge_reports_a_different_leaf_as_a_conflict() -> None:
     merged = merge_l2_into_l1(
         {"entities": {"dept": {"required_fields": ["name"]}}},
