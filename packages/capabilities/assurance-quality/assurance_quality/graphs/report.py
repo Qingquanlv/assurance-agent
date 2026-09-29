@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 from assurance_quality.graphs.nodes import (
     activation_one_shot,
@@ -24,18 +25,14 @@ _REPORT_ID = "assurance.quality.agent.report.v1"
 def build_report_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[QualityState] = StateGraph(QualityState)
     builder.add_node("clear-report", cast(Callable[..., Any], clear_report_state))
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "quality.report",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _REPORT_ID,
-                semantic_node_id="quality.report",
-                activation=activation_one_shot,
-                select=select_report,
-                publish=publish_report,
-            ),
-        ),
+        contract_id=_REPORT_ID,
+        activation=activation_one_shot,
+        select=select_report,
+        publish=publish_report,
     )
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
     builder.add_node("failed", cast(Callable[..., Any], terminal_done))

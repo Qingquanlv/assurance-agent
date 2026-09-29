@@ -25,6 +25,11 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
         ("coverage-repair", "assurance.healing.agent.coverage-repair.v1"),
         ("fix-proposal", "assurance.healing.agent.fix-proposal.v1"),
         ("apply-test-repair", "assurance.healing.agent.apply-test-repair.v1"),
+        ("fact-baseline", "assurance.quality.agent.fact-baseline.v1"),
+        ("inspect", "assurance.quality.agent.inspect.v1"),
+        ("issue-analysis", "assurance.quality.agent.issue-analysis.v1"),
+        ("issue-triage", "assurance.quality.agent.issue-triage.v1"),
+        ("report", "assurance.quality.agent.report.v1"),
     ),
 )
 def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: str) -> None:
@@ -47,6 +52,13 @@ def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: s
         CoverageRepairTask,
         FixProposalTask,
     )
+    from assurance_quality.operations.agent_tasks import (
+        FactBaselineTask,
+        InspectTask,
+        IssueAnalysisTask,
+        IssueTriageTask,
+        ReportTask,
+    )
 
     task_type = {
         "intake": IntakeTask,
@@ -64,6 +76,11 @@ def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: s
         "coverage-repair": CoverageRepairTask,
         "fix-proposal": FixProposalTask,
         "apply-test-repair": ApplyTestRepairTask,
+        "fact-baseline": FactBaselineTask,
+        "inspect": InspectTask,
+        "issue-analysis": IssueAnalysisTask,
+        "issue-triage": IssueTriageTask,
+        "report": ReportTask,
     }[name]
     calls: list[tuple[str, object, object]] = []
 

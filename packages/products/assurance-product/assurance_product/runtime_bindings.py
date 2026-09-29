@@ -63,6 +63,13 @@ from assurance_healing.operations.agent_tasks import (
 )
 from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
 from assurance_intake.operations.case_design import CaseDesignTask
+from assurance_quality.operations.agent_tasks import (
+    FactBaselineTask,
+    InspectTask,
+    IssueAnalysisTask,
+    IssueTriageTask,
+    ReportTask,
+)
 
 from assurance_product.agent_contracts import (
     all_feature_agent_contracts,
@@ -96,6 +103,11 @@ _AGENT_TASK_CLASSES = (
     FixProposalTask,
     ApplyTestRepairTask,
     CoverageRepairTask,
+    FactBaselineTask,
+    InspectTask,
+    IssueAnalysisTask,
+    IssueTriageTask,
+    ReportTask,
 )
 _AGENT_TASK_TYPES = {task.contract.contract_id: task for task in _AGENT_TASK_CLASSES}
 

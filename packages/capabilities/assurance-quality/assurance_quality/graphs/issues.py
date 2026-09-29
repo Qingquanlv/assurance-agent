@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 from assurance_quality.graphs.nodes import (
     activation_one_shot,
@@ -43,18 +44,14 @@ def build_issue_graph(context: CapabilityBuildContext, *, export: IssueExport) -
     semantic_node_id = f"quality.{export}"
     builder: StateGraph[QualityState] = StateGraph(QualityState)
     if export == "issue-reconcile":
-        builder.add_node(
+        add_attempt_node(
+            builder,
+            context,
             semantic_node_id,
-            cast(
-                Callable[..., Any],
-                context.attempt(
-                    _ISSUE_RECONCILE_ID,
-                    semantic_node_id=semantic_node_id,
-                    activation=activation_issue_reconcile,
-                    select=select_reconcile_issues,
-                    publish=publish_issue_reconcile,
-                ),
-            ),
+            contract_id=_ISSUE_RECONCILE_ID,
+            activation=activation_issue_reconcile,
+            select=select_reconcile_issues,
+            publish=publish_issue_reconcile,
         )
         builder.add_node("failed", cast(Callable[..., Any], terminal_done))
         builder.add_edge("failed", END)
@@ -65,18 +62,14 @@ def build_issue_graph(context: CapabilityBuildContext, *, export: IssueExport) -
             _RECONCILE_PATHS,
         )
         return context.compile_subgraph(builder)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         semantic_node_id,
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _CONTRACT_BY_EXPORT[export],
-                semantic_node_id=semantic_node_id,
-                activation=activation_one_shot if export == "issue-review" else activation_issue_analysis,
-                select=select_quality,
-                publish=publish_issue_analysis if export == "issue-analyze" else publish_issue,
-            ),
-        ),
+        contract_id=_CONTRACT_BY_EXPORT[export],
+        activation=activation_one_shot if export == "issue-review" else activation_issue_analysis,
+        select=select_quality,
+        publish=publish_issue_analysis if export == "issue-analyze" else publish_issue,
     )
     for name in _FAILURE_PATHS:
         builder.add_node(str(name), cast(Callable[..., Any], terminal_done))

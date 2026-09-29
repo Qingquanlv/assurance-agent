@@ -520,7 +520,38 @@ def recording_context():
     )
 
 
-def test_quality_factory_exports_five_public_graphs(recording_context) -> None:
+def test_quality_factory_exports_five_public_graphs(
+    recording_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_quality.graphs.nodes import (
+        activation_issue_analysis,
+        activation_one_shot,
+        publish_issue,
+        publish_issue_analysis,
+        select_quality,
+    )
+
+    calls: list[tuple[str, str, object, object, object]] = []
+    original = recording_context.attempt
+
+    def record_attempt(
+        contract_id: str,
+        *,
+        semantic_node_id: str,
+        activation: object,
+        select: object,
+        publish: object,
+    ) -> object:
+        calls.append((contract_id, semantic_node_id, activation, select, publish))
+        return original(
+            contract_id,
+            semantic_node_id=semantic_node_id,
+            activation=activation,
+            select=select,
+            publish=publish,
+        )
+
+    monkeypatch.setattr(recording_context, "attempt", record_attempt)
     bundle = build_quality_graphs(recording_context)
     assert tuple(item.name for item in fields(bundle)) == (
         "assess",
@@ -534,9 +565,24 @@ def test_quality_factory_exports_five_public_graphs(recording_context) -> None:
     assert not hasattr(bundle, "nodes")
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
     assert len(set(recording_context.bound_contract_ids)) == 7
+    assert len(recording_context.bound_contract_ids) == 7
     assert recording_context.bound_contract_ids.count(_ISSUE_ANALYSIS_ID) == 1
     assert recording_context.bound_contract_ids.count(_ISSUE_RECONCILE_ID) == 1
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
+    assert (
+        "assurance.quality.agent.issue-triage.v1",
+        "quality.issue-review",
+        activation_one_shot,
+        select_quality,
+        publish_issue,
+    ) in calls
+    assert (
+        _ISSUE_ANALYSIS_ID,
+        "quality.issue-analyze",
+        activation_issue_analysis,
+        select_quality,
+        publish_issue_analysis,
+    ) in calls
 
 
 def test_target_graphs_contain_no_phase_nodes_or_private_table(recording_context) -> None:

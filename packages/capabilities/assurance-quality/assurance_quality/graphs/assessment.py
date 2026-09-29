@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 from assurance_quality.contracts.assessment import InspectionDisposition
 from assurance_quality.graphs.nodes import (
@@ -39,31 +40,23 @@ _ATTEMPT_PATHS: dict[Hashable, str] = {"ready": "quality.inspect", "failed": "fa
 
 def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[QualityState] = StateGraph(QualityState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "quality.materialize-assessment-inputs",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _MATERIALIZE_ID,
-                semantic_node_id="quality.materialize-assessment-inputs",
-                activation=activation_materialize_assessment,
-                select=select_materialize_assessment,
-                publish=publish_materialize_assessment,
-            ),
-        ),
+        contract_id=_MATERIALIZE_ID,
+        activation=activation_materialize_assessment,
+        select=select_materialize_assessment,
+        publish=publish_materialize_assessment,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "quality.inspect",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _INSPECT_ID,
-                semantic_node_id="quality.inspect",
-                activation=activation_assess,
-                select=select_inspect,
-                publish=publish_inspect,
-            ),
-        ),
+        contract_id=_INSPECT_ID,
+        activation=activation_assess,
+        select=select_inspect,
+        publish=publish_inspect,
     )
     for name in _COVERAGE_PATHS:
         if name == "analysis_required":
