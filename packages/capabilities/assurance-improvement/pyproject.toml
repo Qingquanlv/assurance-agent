@@ -13,6 +13,7 @@ dependencies = [
     "graph-engine",
     "langgraph==1.2.11",
     "pydantic>=2.7",
+    "ruamel.yaml>=0.18",
 ]
 
 [project.entry-points."graph_engine.plugins"]
