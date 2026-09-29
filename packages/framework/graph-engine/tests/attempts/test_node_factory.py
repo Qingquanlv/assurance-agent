@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
 from pydantic import BaseModel, ValidationError, model_validator
@@ -47,6 +47,45 @@ from graph_engine.stategraph.checkpoint_bridge import (
 )
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Interrupt
+
+
+def test_add_attempt_node_preserves_identity_and_hooks() -> None:
+    from unittest.mock import Mock
+
+    from langgraph.graph import END, START, StateGraph
+
+    from graph_engine.boot.boot import CapabilityBuildContext
+    from graph_engine.stategraph import add_attempt_node
+
+    class StringState(TypedDict):
+        value: str
+
+    def execute(state: StringState) -> StringState:
+        return {"value": state["value"] + "!"}
+
+    context = Mock(spec=CapabilityBuildContext)
+    context.attempt.return_value = execute
+    activation, select, publish = object(), object(), object()
+    builder = StateGraph(StringState)
+    add_attempt_node(
+        builder,
+        context,
+        "feature.repair",
+        contract_id="feature.task.v1",
+        activation=activation,
+        select=select,
+        publish=publish,
+    )
+    context.attempt.assert_called_once_with(
+        "feature.task.v1",
+        semantic_node_id="feature.repair",
+        activation=activation,
+        select=select,
+        publish=publish,
+    )
+    builder.add_edge(START, "feature.repair")
+    builder.add_edge("feature.repair", END)
+    assert builder.compile().invoke({"value": "ok"}) == {"value": "ok!"}
 
 
 class RunInput(BaseModel):
@@ -542,6 +581,10 @@ async def test_nonretryable_failure_ignores_unused_retry_budget(monkeypatch: pyt
 
 
 def test_owner_context_rejects_foreign_contract_and_node_site_authority() -> None:
+    from langgraph.graph import StateGraph
+
+    from graph_engine.stategraph import add_attempt_node
+
     kernel = ScriptedKernel()
     factory = _factory(kernel)
     own = TaskAttemptContract(
@@ -569,6 +612,16 @@ def test_owner_context_rejects_foreign_contract_and_node_site_authority() -> Non
         intake_context.attempt(
             "assurance.generation.agent.api.plan.v1",
             semantic_node_id="intake.foreign",
+            activation=activation,
+            select=select,
+            publish=publish,
+        )
+    with pytest.raises(ContractOwnershipError):
+        add_attempt_node(
+            StateGraph(dict),
+            intake_context,
+            "intake.foreign",
+            contract_id="assurance.generation.agent.api.plan.v1",
             activation=activation,
             select=select,
             publish=publish,
