@@ -1558,6 +1558,8 @@ def _write_case_delta(workspace: Path, document: object) -> str:
 async def _finalize_review_with_written_cases(
     workspace: Path,
     document: JSONValue,
+    *,
+    staged_review: bytes | None = None,
 ) -> TaskOutcome:
     _, write_root = dual_roots(workspace)
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
@@ -1566,7 +1568,7 @@ async def _finalize_review_with_written_cases(
     review_relative = "qa/results/review/case-review.json"
     review_path = write_root / review_relative
     review_path.parent.mkdir(parents=True, exist_ok=True)
-    review_path.write_text(json.dumps(document), encoding="utf-8")
+    review_path.write_bytes(json.dumps(document).encode() if staged_review is None else staged_review)
     summary_relative = "qa/results/review/case-review-summary.md"
     (write_root / summary_relative).write_text("# Case review\n", encoding="utf-8")
     case_refs = [
@@ -1603,10 +1605,136 @@ async def _finalize_review_with_written_cases(
     return executed.outcome
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("staged_review", [b'{"decision":"reject"}', b"not json", None])
+async def test_case_review_rejects_invalid_or_divergent_staged_document(
+    tmp_path: Path, staged_review: bytes | None
+) -> None:
+    _write_review_matrix(tmp_path, missing=[])
+    reply = _case_review_document(missing=[])
+    assert isinstance(reply, dict)
+    if staged_review is None:
+        staged_review = json.dumps({**reply, "decision": "reject", "next_action": "stop"}).encode()
+    outcome = await _finalize_review_with_written_cases(tmp_path, reply, staged_review=staged_review)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert "staged case review" in outcome.failure.message
+    _, stage = dual_roots(tmp_path)
+    assert (stage / "qa/results/review/case-review.json").read_bytes() == staged_review
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "marker",
+    [None, "invalid: [unterminated\n", "null\n", "change_id: 123\n", "change_id: CH-OTHER\n"],
+)
+async def test_intake_rejects_invalid_or_missing_change_marker(tmp_path: Path, marker: str | None) -> None:
+    project, stage = dual_roots(tmp_path)
+    (stage / "qa").mkdir(parents=True, exist_ok=True)
+    (stage / "qa/requirement.md").write_text("# Requirement\n")
+    if marker is not None:
+        (stage / "qa/.qa.yaml").write_text(marker)
+    result = await _finalize_files(
+        IntakeFinalizeHandler(),
+        {"output_files": ["qa/requirement.md"] if marker is None else ["qa/.qa.yaml"]},
+        project,
+        ["qa/.qa.yaml", "qa/requirement.md"],
+        change_id="CH-DEMO-001",
+        write_root=stage,
+    )
+    assert result.status == "failed"
+    assert result.failure.kind == "invalid_output"
+    assert ".qa.yaml" in result.failure.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempt", [0, 1])
+@pytest.mark.parametrize("invalid_kind", ["syntax", "missing_fields", "wrong_change"])
+async def test_case_design_validates_complete_change_marker(
+    tmp_path: Path, attempt: int, invalid_kind: str
+) -> None:
+    project, stage = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
+    outputs = _write_case_design_outputs(stage, authored)
+    marker = stage / "qa/.qa.yaml"
+    if invalid_kind == "syntax":
+        marker.write_text("invalid: [unterminated\n")
+    elif invalid_kind == "missing_fields":
+        marker.write_text("change_id: CH-DEMO-001\n")
+    else:
+        document = yaml.safe_load((_FIXTURES / "qa-valid.yaml").read_bytes())
+        document["change"]["change_id"] = "CH-OTHER"
+        marker.write_text(yaml.safe_dump(document))
+    result = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        outputs,
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=stage,
+        validation_attempt=attempt,
+    )
+    if attempt == 0:
+        assert result.status == "succeeded"
+        assert result.output["validation_status"] == "needs_fix"
+        assert ".qa.yaml" in result.output["validation_error"]
+    else:
+        assert result.status == "failed"
+        assert result.failure.kind == "invalid_output"
+        assert ".qa.yaml" in result.failure.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["intake", "case-design"])
+async def test_finalize_rejects_change_marker_replaced_after_digest_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    from assurance_intake.operations import finalize
+
+    project, stage = dual_roots(tmp_path)
+    if phase == "case-design":
+        authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
+        outputs = _write_case_design_outputs(stage, authored)
+        handler = CaseDesignFinalizeHandler()
+    else:
+        (stage / "qa").mkdir(parents=True, exist_ok=True)
+        (stage / "qa/.qa.yaml").write_text("change_id: CH-DEMO-001\n")
+        (stage / "qa/requirement.md").write_text("# Requirement\n")
+        outputs = ["qa/.qa.yaml"]
+        handler = IntakeFinalizeHandler()
+    read = finalize._read_regular_bytes
+
+    def replace_before_validation(workspace: Path, relative: str, *, kind: str) -> bytes:
+        if workspace == stage and relative == "qa/.qa.yaml":
+            path = workspace / relative
+            path.write_bytes(path.read_bytes() + b"# concurrent change\n")
+        return read(workspace, relative, kind=kind)
+
+    monkeypatch.setattr(finalize, "_read_regular_bytes", replace_before_validation)
+    result = await _finalize_files(
+        handler,
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        outputs,
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=stage,
+        validation_attempt=0,
+    )
+    if phase == "case-design":
+        assert result.output["validation_status"] == "needs_fix"
+        assert "qa/.qa.yaml changed" in result.output["validation_error"]
+    else:
+        assert result.status == "failed"
+        assert "qa/.qa.yaml changed" in result.failure.message
+
+
 def _write_case_design_outputs(workspace: Path, document: object) -> list[str]:
     change_root = workspace / "qa"
     change_root.mkdir(parents=True, exist_ok=True)
-    (change_root / ".qa.yaml").write_text("approval:\n  mode: autonomous\n", encoding="utf-8")
+    (change_root / ".qa.yaml").write_bytes((_FIXTURES / "qa-valid.yaml").read_bytes())
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     relative = _write_case_delta(workspace, document)
     matrix_relative = "qa/results/trace/minimum-coverage-matrix.json"
@@ -2138,10 +2266,12 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
     path.write_bytes(payload)
     requirement = b"# Requirement\n"
     (write_root / "qa/requirement.md").write_bytes(requirement)
+    marker = b"change_id: CH-DEMO-001\n"
+    (write_root / "qa/.qa.yaml").write_bytes(marker)
 
     executed = await _finalize_files(
         IntakeFinalizeHandler(),
-        {"output_files": [relative]},
+        {"output_files": ["qa/.qa.yaml", relative]},
         project,
         [
             "qa/.qa.yaml",
@@ -2153,10 +2283,12 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
             "qa/tests",
         ],
         write_root=write_root,
+        change_id="CH-DEMO-001",
     )
     assert executed.status == "succeeded"
     assert executed.output == {
         "artifacts": [
+            {"path": "qa/.qa.yaml", "digest": hashlib.sha256(marker).hexdigest()},
             {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
             {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
         ]
@@ -2194,10 +2326,10 @@ async def test_intake_finalize_rejects_file_outside_locked_prefix(tmp_path: Path
 @pytest.mark.asyncio
 async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/results/explore/advisory.json"
+    relative = "qa/.qa.yaml"
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = b'{"ok":true}'
+    payload = b"change_id: CH-DEMO-001\n"
     path.write_bytes(payload)
     requirement = b"# Requirement\n"
     (write_root / "qa/requirement.md").parent.mkdir(parents=True, exist_ok=True)
@@ -2208,12 +2340,13 @@ async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
         project,
         [relative, "qa/requirement.md"],
         write_root=write_root,
+        change_id="CH-DEMO-001",
     )
     assert executed.status == "succeeded"
     assert executed.output == {
         "artifacts": [
-            {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
             {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
+            {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
         ]
     }
     AGENT_JOB_CONTRACTS["intake"].output_model.model_validate(executed.output)

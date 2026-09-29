@@ -170,7 +170,7 @@ def _write_outputs(
                 e2e_row.update({"category": "e2e", "layer": "e2e"})
             rows.append(e2e_row)
     documents = {
-        f"{_ROOT}/.qa.yaml": "approval:\n  mode: autonomous\n",
+        f"{_ROOT}/.qa.yaml": (_FIXTURE.parent / "qa-valid.yaml").read_text(encoding="utf-8"),
         f"{_ROOT}/proposal.md": "# Menu coverage\n",
         _CASE: yaml.safe_dump(authored),
         _MATRIX: json.dumps(rows),

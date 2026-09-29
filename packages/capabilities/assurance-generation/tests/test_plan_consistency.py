@@ -72,6 +72,27 @@ def test_summary_capability_column_is_checked_regardless_of_heading_case(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", [b"", b" \n\t", b"\xff"])
+async def test_finalize_rejects_empty_or_non_utf8_plan_documents(tmp_path: Path, content: bytes) -> None:
+    files = family_plan_files("api")
+    stage = tmp_path / ".stage"
+    for relative in files:
+        path = stage / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_mapping().model_dump_json().encode() if relative.endswith(".json") else content)
+    outcome = await execute_task(
+        planning_handler("api", "finalize"),
+        {**fake_agent_result(valid_plan_result("api")), "artifact_paths": list(files)},
+        tmp_path,
+        write_root=stage,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert "plan Markdown must be" in outcome.failure.message
+
+
+@pytest.mark.asyncio
 async def test_finalize_rejects_mapping_drift_across_staged_and_unchanged_repair_files(
     tmp_path: Path,
 ) -> None:
