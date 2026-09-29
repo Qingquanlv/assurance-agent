@@ -197,6 +197,11 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
         PerformanceCodegenReviewTask,
         PerformanceCodegenTask,
     )
+    from assurance_healing.operations.agent_tasks import (
+        ApplyTestRepairTask,
+        CoverageRepairTask,
+        FixProposalTask,
+    )
     from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
     from assurance_intake.operations.case_design import CaseDesignTask
 
@@ -214,6 +219,9 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
         FuzzCodegenReviewTask,
         PerformanceCodegenTask,
         PerformanceCodegenReviewTask,
+        FixProposalTask,
+        ApplyTestRepairTask,
+        CoverageRepairTask,
     ):
         selected = registry[task_type.contract.contract_id]
         assert isinstance(selected.executor, ResolvedRawAgentExecutor)

@@ -56,6 +56,11 @@ from assurance_generation.operations.agent_tasks import (
     PerformanceCodegenReviewTask,
     PerformanceCodegenTask,
 )
+from assurance_healing.operations.agent_tasks import (
+    ApplyTestRepairTask,
+    CoverageRepairTask,
+    FixProposalTask,
+)
 from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
 from assurance_intake.operations.case_design import CaseDesignTask
 
@@ -88,6 +93,9 @@ _AGENT_TASK_CLASSES = (
     FuzzCodegenReviewTask,
     PerformanceCodegenTask,
     PerformanceCodegenReviewTask,
+    FixProposalTask,
+    ApplyTestRepairTask,
+    CoverageRepairTask,
 )
 _AGENT_TASK_TYPES = {task.contract.contract_id: task for task in _AGENT_TASK_CLASSES}
 

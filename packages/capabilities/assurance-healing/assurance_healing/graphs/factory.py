@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 from assurance_healing.graphs.nodes import (
     activation_repair,
@@ -99,31 +100,23 @@ def _build_repair_failure_graph(context: CapabilityBuildContext) -> CompiledStat
     builder.add_node("needs-review", cast(Callable[..., Any], terminal_needs_review))
     builder.add_node("approval", cast(Callable[..., Any], proposal_approval))
     builder.add_edge("needs-review", END)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "healing.fix-proposal",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _FIX_PROPOSAL_ID,
-                semantic_node_id="healing.fix-proposal",
-                activation=activation_repair,
-                select=select_failure,
-                publish=publish_proposal,
-            ),
-        ),
+        contract_id=_FIX_PROPOSAL_ID,
+        activation=activation_repair,
+        select=select_failure,
+        publish=publish_proposal,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "healing.apply-test-repair",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _APPLICATION_ID,
-                semantic_node_id="healing.apply-test-repair",
-                activation=activation_repair,
-                select=select_application,
-                publish=publish_applied_repair,
-            ),
-        ),
+        contract_id=_APPLICATION_ID,
+        activation=activation_repair,
+        select=select_application,
+        publish=publish_applied_repair,
     )
     builder.add_conditional_edges(
         "admit",
@@ -146,18 +139,14 @@ def _build_repair_failure_graph(context: CapabilityBuildContext) -> CompiledStat
 def _build_repair_coverage_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[HealingState] = StateGraph(HealingState)
     _add_shared_terminals(builder)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "healing.coverage-repair",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _COVERAGE_ID,
-                semantic_node_id="healing.coverage-repair",
-                activation=activation_repair,
-                select=select_coverage,
-                publish=publish_repair,
-            ),
-        ),
+        contract_id=_COVERAGE_ID,
+        activation=activation_repair,
+        select=select_coverage,
+        publish=publish_repair,
     )
     builder.add_node("needs-review", cast(Callable[..., Any], coverage_review))
     builder.add_conditional_edges(

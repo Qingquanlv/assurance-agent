@@ -22,6 +22,9 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
         ("fuzz.codegen-review", "assurance.generation.agent.fuzz.codegen-review.v1"),
         ("performance.codegen", "assurance.generation.agent.performance.codegen.v1"),
         ("performance.codegen-review", "assurance.generation.agent.performance.codegen-review.v1"),
+        ("coverage-repair", "assurance.healing.agent.coverage-repair.v1"),
+        ("fix-proposal", "assurance.healing.agent.fix-proposal.v1"),
+        ("apply-test-repair", "assurance.healing.agent.apply-test-repair.v1"),
     ),
 )
 def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: str) -> None:
@@ -39,6 +42,11 @@ def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: s
         PerformanceCodegenReviewTask,
         PerformanceCodegenTask,
     )
+    from assurance_healing.operations.agent_tasks import (
+        ApplyTestRepairTask,
+        CoverageRepairTask,
+        FixProposalTask,
+    )
 
     task_type = {
         "intake": IntakeTask,
@@ -53,6 +61,9 @@ def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: s
         "fuzz.codegen-review": FuzzCodegenReviewTask,
         "performance.codegen": PerformanceCodegenTask,
         "performance.codegen-review": PerformanceCodegenReviewTask,
+        "coverage-repair": CoverageRepairTask,
+        "fix-proposal": FixProposalTask,
+        "apply-test-repair": ApplyTestRepairTask,
     }[name]
     calls: list[tuple[str, object, object]] = []
 
