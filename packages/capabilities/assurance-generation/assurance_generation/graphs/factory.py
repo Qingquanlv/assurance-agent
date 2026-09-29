@@ -24,6 +24,7 @@ from assurance_generation.graphs.nodes import (
 from assurance_generation.graphs.routes import route_attempt_result, route_families
 from assurance_generation.graphs.state import GenerationState
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,22 +38,17 @@ class GenerationGraphs:
     resolve_inputs: CompiledStateGraph
 
 
-def _resolve_inputs_attempt(context: CapabilityBuildContext) -> Callable[..., Any]:
-    return cast(
-        Callable[..., Any],
-        context.attempt(
-            "assurance.generation.resolve-inputs",
-            semantic_node_id="generation.resolve-inputs",
-            activation=activation_generation_inputs,
-            select=select_generation_inputs,
-            publish=publish_generation_inputs,
-        ),
-    )
-
-
 def _build_resolve_inputs_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
-    builder.add_node("generation.resolve-inputs", _resolve_inputs_attempt(context))
+    add_attempt_node(
+        builder,
+        context,
+        "generation.resolve-inputs",
+        contract_id="assurance.generation.resolve-inputs",
+        activation=activation_generation_inputs,
+        select=select_generation_inputs,
+        publish=publish_generation_inputs,
+    )
     builder.add_node(
         "done",
         cast(
@@ -75,9 +71,14 @@ def _build_root_graph(
     performance: CompiledStateGraph,
 ) -> CompiledStateGraph:
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "generation.resolve-inputs",
-        _resolve_inputs_attempt(context),
+        contract_id="assurance.generation.resolve-inputs",
+        activation=activation_generation_inputs,
+        select=select_generation_inputs,
+        publish=publish_generation_inputs,
     )
     builder.add_node("fanout", cast(Callable[..., Any], lambda _state: {}))
     builder.add_node("api", api)
@@ -86,18 +87,14 @@ def _build_root_graph(
     builder.add_node("performance", performance)
     builder.add_node("join-selected", cast(Callable[..., Any], join_selected))
     builder.add_node("complete", cast(Callable[..., Any], complete_generation_node))
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "generation.publish-cycle",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                "assurance.generation.publish-cycle",
-                semantic_node_id="generation.publish-cycle",
-                activation=activation_generation_cycle,
-                select=select_generation_cycle,
-                publish=publish_generation_cycle,
-            ),
-        ),
+        contract_id="assurance.generation.publish-cycle",
+        activation=activation_generation_cycle,
+        select=select_generation_cycle,
+        publish=publish_generation_cycle,
     )
     builder.add_node("done", cast(Callable[..., Any], generation_done))
     builder.add_edge(START, "generation.resolve-inputs")

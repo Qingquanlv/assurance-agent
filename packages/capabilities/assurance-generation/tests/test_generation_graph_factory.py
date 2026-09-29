@@ -11,7 +11,15 @@ from pydantic import ValidationError
 
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_generation.graphs.factory import GenerationGraphs, build_generation_graphs
-from assurance_generation.graphs.nodes import activation_codegen, terminal_done
+from assurance_generation.graphs.nodes import (
+    activation_codegen,
+    activation_codegen_review,
+    publish_codegen,
+    publish_codegen_review,
+    select_codegen,
+    select_codegen_review,
+    terminal_done,
+)
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.testing import GraphHarness, committed
@@ -185,7 +193,30 @@ def recording_context():
     )
 
 
-def test_generation_factory_exports_root_and_four_families(recording_context) -> None:
+def test_generation_factory_exports_root_and_four_families(
+    recording_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, str, object, object, object]] = []
+    original = recording_context.attempt
+
+    def record_attempt(
+        contract_id: str,
+        *,
+        semantic_node_id: str,
+        activation: object,
+        select: object,
+        publish: object,
+    ) -> object:
+        calls.append((contract_id, semantic_node_id, activation, select, publish))
+        return original(
+            contract_id,
+            semantic_node_id=semantic_node_id,
+            activation=activation,
+            select=select,
+            publish=publish,
+        )
+
+    monkeypatch.setattr(recording_context, "attempt", record_attempt)
     bundle = build_generation_graphs(recording_context)
     assert tuple(item.name for item in fields(bundle)) == (
         "generation",
@@ -198,6 +229,8 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
     )
     assert isinstance(bundle, GenerationGraphs)
     unique = tuple(dict.fromkeys(recording_context.bound_contract_ids))
+    assert len(recording_context.bound_contract_ids) == 12
+    assert recording_context.bound_contract_ids.count("assurance.generation.resolve-inputs") == 2
     assert len(unique) == 11
     assert set(recording_context.bound_contract_ids) == set(unique)
     assert set(unique) == {
@@ -206,6 +239,21 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
     }
     assert all(item not in unique for item in _PURE_IDS)
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
+    for family in _FAMILIES:
+        assert (
+            f"assurance.generation.agent.{family}.codegen.v1",
+            f"generation.{family}.codegen",
+            activation_codegen,
+            select_codegen,
+            publish_codegen,
+        ) in calls
+        assert (
+            f"assurance.generation.agent.{family}.codegen-review.v1",
+            f"generation.{family}.codegen-review",
+            activation_codegen_review,
+            select_codegen_review,
+            publish_codegen_review,
+        ) in calls
 
 
 @pytest.mark.parametrize("failed", (False, True))

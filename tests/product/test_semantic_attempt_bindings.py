@@ -184,14 +184,37 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
         assert type(resolved[contract_id].executor).__name__ == "DeterministicTaskExecutor"
 
 
-def test_product_selects_all_intake_tasks(opencode_composition) -> None:
+def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
     from agent_runtime_contracts import ResolvedRawAgentExecutor
 
+    from assurance_generation.operations.agent_tasks import (
+        ApiCodegenReviewTask,
+        ApiCodegenTask,
+        E2ECodegenReviewTask,
+        E2ECodegenTask,
+        FuzzCodegenReviewTask,
+        FuzzCodegenTask,
+        PerformanceCodegenReviewTask,
+        PerformanceCodegenTask,
+    )
     from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
     from assurance_intake.operations.case_design import CaseDesignTask
 
     registry = opencode_composition.semantic_attempt_contracts
-    for task_type in (IntakeTask, ExploreTask, CaseDesignTask, CaseReviewTask):
+    for task_type in (
+        IntakeTask,
+        ExploreTask,
+        CaseDesignTask,
+        CaseReviewTask,
+        ApiCodegenTask,
+        ApiCodegenReviewTask,
+        E2ECodegenTask,
+        E2ECodegenReviewTask,
+        FuzzCodegenTask,
+        FuzzCodegenReviewTask,
+        PerformanceCodegenTask,
+        PerformanceCodegenReviewTask,
+    ):
         selected = registry[task_type.contract.contract_id]
         assert isinstance(selected.executor, ResolvedRawAgentExecutor)
         assert selected.executor._task_type is task_type

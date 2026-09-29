@@ -46,6 +46,16 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 
+from assurance_generation.operations.agent_tasks import (
+    ApiCodegenReviewTask,
+    ApiCodegenTask,
+    E2ECodegenReviewTask,
+    E2ECodegenTask,
+    FuzzCodegenReviewTask,
+    FuzzCodegenTask,
+    PerformanceCodegenReviewTask,
+    PerformanceCodegenTask,
+)
 from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
 from assurance_intake.operations.case_design import CaseDesignTask
 
@@ -65,7 +75,20 @@ _PROVIDER = "opencode"
 _ACTIVITY_RECOVERY = "adopt-observe-reconcile-v1"
 _CAPABILITY_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
 _FinalOutputT = TypeVar("_FinalOutputT", bound=BaseModel)
-_AGENT_TASK_CLASSES = (IntakeTask, ExploreTask, CaseDesignTask, CaseReviewTask)
+_AGENT_TASK_CLASSES = (
+    IntakeTask,
+    ExploreTask,
+    CaseDesignTask,
+    CaseReviewTask,
+    ApiCodegenTask,
+    ApiCodegenReviewTask,
+    E2ECodegenTask,
+    E2ECodegenReviewTask,
+    FuzzCodegenTask,
+    FuzzCodegenReviewTask,
+    PerformanceCodegenTask,
+    PerformanceCodegenReviewTask,
+)
 _AGENT_TASK_TYPES = {task.contract.contract_id: task for task in _AGENT_TASK_CLASSES}
 
 

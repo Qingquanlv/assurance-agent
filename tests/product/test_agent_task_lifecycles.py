@@ -14,19 +14,45 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
         ("explore", "assurance.intake.agent.explore.v1"),
         ("case-design", "assurance.intake.agent.case-design.v1"),
         ("case-review", "assurance.intake.agent.case-review.v1"),
+        ("api.codegen", "assurance.generation.agent.api.codegen.v1"),
+        ("api.codegen-review", "assurance.generation.agent.api.codegen-review.v1"),
+        ("e2e.codegen", "assurance.generation.agent.e2e.codegen.v1"),
+        ("e2e.codegen-review", "assurance.generation.agent.e2e.codegen-review.v1"),
+        ("fuzz.codegen", "assurance.generation.agent.fuzz.codegen.v1"),
+        ("fuzz.codegen-review", "assurance.generation.agent.fuzz.codegen-review.v1"),
+        ("performance.codegen", "assurance.generation.agent.performance.codegen.v1"),
+        ("performance.codegen-review", "assurance.generation.agent.performance.codegen-review.v1"),
     ),
 )
-def test_intake_task_phases_delegate_to_injected_phases(name: str, contract_id: str) -> None:
+def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: str) -> None:
     from agent_runtime_contracts.lifecycle import validate_task_type
 
     from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
     from assurance_intake.operations.case_design import CaseDesignTask
+    from assurance_generation.operations.agent_tasks import (
+        ApiCodegenReviewTask,
+        ApiCodegenTask,
+        E2ECodegenReviewTask,
+        E2ECodegenTask,
+        FuzzCodegenReviewTask,
+        FuzzCodegenTask,
+        PerformanceCodegenReviewTask,
+        PerformanceCodegenTask,
+    )
 
     task_type = {
         "intake": IntakeTask,
         "explore": ExploreTask,
         "case-design": CaseDesignTask,
         "case-review": CaseReviewTask,
+        "api.codegen": ApiCodegenTask,
+        "api.codegen-review": ApiCodegenReviewTask,
+        "e2e.codegen": E2ECodegenTask,
+        "e2e.codegen-review": E2ECodegenReviewTask,
+        "fuzz.codegen": FuzzCodegenTask,
+        "fuzz.codegen-review": FuzzCodegenReviewTask,
+        "performance.codegen": PerformanceCodegenTask,
+        "performance.codegen-review": PerformanceCodegenReviewTask,
     }[name]
     calls: list[tuple[str, object, object]] = []
 

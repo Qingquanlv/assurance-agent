@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 from assurance_generation.graphs.nodes import (
     activation_init_runtime,
@@ -26,18 +27,14 @@ def terminal_done(state: Mapping[str, object]) -> dict[str, object]:
 
 def build_init_runtime_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "generation.init-test-runtime",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _INIT_TEST_RUNTIME_ID,
-                semantic_node_id="generation.init-test-runtime",
-                activation=activation_init_runtime,
-                select=select_init_runtime,
-                publish=publish_init_runtime,
-            ),
-        ),
+        contract_id=_INIT_TEST_RUNTIME_ID,
+        activation=activation_init_runtime,
+        select=select_init_runtime,
+        publish=publish_init_runtime,
     )
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
     builder.add_node("failed", cast(Callable[..., Any], terminal_done))
