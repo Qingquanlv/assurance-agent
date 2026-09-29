@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Literal
 
@@ -31,13 +33,18 @@ from agent_runtime_contracts import (
     AgentExecutionContract,
     AgentPhaseWriteClaims,
     AgentRunResult,
+    after,
+    before,
     canonical_digest,
 )
 from agent_runtime_contracts.attempt_executor import (
+    FinalizePhase,
+    PreparePhase,
     RawAgentRuntimeOutcome,
     RawFinalizeBundle,
     ReadOnlyRawWorkspace,
     ResolvedRawAgentExecutor,
+    RuntimePhase,
 )
 from agent_runtime_contracts.schema import thaw_json
 
@@ -221,6 +228,35 @@ def _contract() -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult
     )
 
 
+@dataclass
+class RecordingTask:
+    contract = _contract()
+    prepare_phase: PreparePhase[CaseDesignInput, CaseDesignPrepared]
+    opencode: RuntimePhase[CaseDesignPrepared]
+    finalize_phase: FinalizePhase[
+        CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult, CaseDesignOutput
+    ]
+
+    @before
+    async def prepare(
+        self, validated_input: CaseDesignInput, scope: AuthorizedAttemptScope
+    ) -> CaseDesignPrepared | PermanentTaskFailure:
+        return await self.prepare_phase.execute(validated_input, scope)
+
+    async def run(
+        self, prepared: CaseDesignPrepared, scope: AuthorizedAttemptScope
+    ) -> RawAgentRuntimeOutcome | PermanentTaskFailure:
+        return await self.opencode.execute(prepared, scope)
+
+    @after
+    async def finalize(
+        self,
+        bundle: RawFinalizeBundle[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult],
+        scope: AuthorizedAttemptScope,
+    ) -> CaseDesignOutput | PermanentTaskFailure:
+        return await self.finalize_phase.execute(bundle, scope)
+
+
 def _contract_with_prepare_write_claim(
     claim: str,
 ) -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult, CaseDesignOutput]:
@@ -259,16 +295,21 @@ def _executor(
     prepare: RecordingPrepare,
     runtime: RecordingRuntime,
     finalize: RecordingFinalize,
+    task_type: type[RecordingTask] | None = None,
 ) -> ResolvedRawAgentExecutor[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult, CaseDesignOutput]:
     return ResolvedRawAgentExecutor(
         _contract(),
         prepare=prepare,
         runtime=runtime,
         finalize=finalize,
+        task_type=task_type,
     )
 
 
-def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(tmp_path: Path) -> None:
+@pytest.mark.parametrize("task_type", (None, RecordingTask))
+def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(
+    tmp_path: Path, task_type: type[RecordingTask] | None
+) -> None:
     validated_input = CaseDesignInput(change_id="CH-1", path="primary")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases")
     expected_agent_result = CaseDesignAgentResult(output_files=("qa/proposal.md",))
@@ -283,7 +324,7 @@ def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(tmp_p
     finalize = RecordingFinalize(expected_output, order)
 
     output = asyncio.run(
-        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize, task_type=task_type).execute(
             validated_input, _scope(tmp_path)
         )
     )
@@ -302,7 +343,65 @@ def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(tmp_p
     assert output.output == expected_output
 
 
-def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
+def test_agent_task_hooks_run_on_a_fresh_instance_each_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, RecordingTask]] = []
+    for name in ("prepare", "run", "finalize"):
+        original = getattr(RecordingTask, name)
+
+        @wraps(original)
+        async def recorded(self: RecordingTask, *args: object, _name=name, _original=original):
+            calls.append((_name, self))
+            return await _original(self, *args)
+
+        monkeypatch.setattr(RecordingTask, name, recorded)
+
+    order: list[str] = []
+    executor = _executor(
+        prepare=RecordingPrepare(
+            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), order
+        ),
+        runtime=RecordingRuntime(
+            CaseDesignAgentResult(output_files=("qa/proposal.md",)).model_dump(),
+            _workspace(tmp_path),
+            order,
+        ),
+        finalize=RecordingFinalize(_success_output(), order),
+        task_type=RecordingTask,
+    )
+    scope = _scope(tmp_path)
+    for _ in range(2):
+        result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), scope))
+        assert isinstance(result, ExecutedAttemptResult)
+
+    assert [name for name, _ in calls] == ["prepare", "run", "finalize"] * 2
+    assert calls[0][1] is calls[1][1] is calls[2][1]
+    assert calls[3][1] is calls[4][1] is calls[5][1]
+    assert calls[0][1] is not calls[3][1]
+
+
+def test_agent_task_contract_must_match_executor(tmp_path: Path) -> None:
+    class MismatchedTask(RecordingTask):
+        contract = _contract_with_prepare_write_claim("qa/wrong")
+
+    with pytest.raises(ValueError, match="contract does not match"):
+        _executor(
+            prepare=RecordingPrepare(
+                CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), []
+            ),
+            runtime=RecordingRuntime(
+                CaseDesignAgentResult(output_files=()).model_dump(), _workspace(tmp_path), []
+            ),
+            finalize=RecordingFinalize(_success_output(), []),
+            task_type=MismatchedTask,
+        )
+
+
+@pytest.mark.parametrize("task_type", (None, RecordingTask))
+def test_invalid_raw_result_fails_before_finalize(
+    tmp_path: Path, task_type: type[RecordingTask] | None
+) -> None:
     validated_input = CaseDesignInput(change_id="CH-1")
     order: list[str] = []
     prepare = RecordingPrepare(
@@ -315,7 +414,7 @@ def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
     )
 
     result = asyncio.run(
-        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize, task_type=task_type).execute(
             validated_input, _scope(tmp_path)
         )
     )
@@ -327,7 +426,8 @@ def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
     assert finalize.seen is None
 
 
-def test_invalid_output_fails_after_finalize(tmp_path: Path) -> None:
+@pytest.mark.parametrize("task_type", (None, RecordingTask))
+def test_invalid_output_fails_after_finalize(tmp_path: Path, task_type: type[RecordingTask] | None) -> None:
     validated_input = CaseDesignInput(change_id="CH-1")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases")
     expected_agent_result = CaseDesignAgentResult(output_files=("qa/proposal.md",))
@@ -338,7 +438,7 @@ def test_invalid_output_fails_after_finalize(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError):
         asyncio.run(
-            _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+            _executor(prepare=prepare, runtime=runtime, finalize=finalize, task_type=task_type).execute(
                 validated_input, _scope(tmp_path)
             )
         )
@@ -543,7 +643,7 @@ class _RawExecutorFixture:
 
 
 @pytest.fixture
-def raw_executor_fixture(tmp_path: Path) -> _RawExecutorFixture:
+def raw_executor_fixture(tmp_path: Path, request: pytest.FixtureRequest) -> _RawExecutorFixture:
     from agent_runtime_contracts import AgentPhaseWriteClaims
 
     claims = AgentPhaseWriteClaims(
@@ -591,7 +691,18 @@ def raw_executor_fixture(tmp_path: Path) -> _RawExecutorFixture:
         "qa/finalize.txt",
         b"finalize\n",
     )
-    executor = ResolvedRawAgentExecutor(contract, prepare=prepare, runtime=runtime, finalize=finalize)
+    claimed_contract = contract
+
+    class ClaimedTask(RecordingTask):
+        contract = claimed_contract
+
+    executor = ResolvedRawAgentExecutor(
+        contract,
+        prepare=prepare,
+        runtime=runtime,
+        finalize=finalize,
+        task_type=ClaimedTask if getattr(request, "param", False) else None,
+    )
     return _RawExecutorFixture(
         executor,
         claims,
@@ -654,6 +765,7 @@ def test_unreadable_phase_file_returns_typed_failure(tmp_path: Path, when: str) 
         target.chmod(0o600)
 
 
+@pytest.mark.parametrize("raw_executor_fixture", (False, True), indirect=True)
 def test_raw_executor_persists_phase_deltas_into_host_receipt(
     raw_executor_fixture: _RawExecutorFixture,
 ) -> None:
@@ -813,6 +925,37 @@ def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path, existing: 
     )
 
     result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), scope))
+
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert "undeclared" in result.message
+    assert order == ["prepare"]
+
+
+def test_task_hook_undeclared_write_is_rejected(tmp_path: Path) -> None:
+    class WritingTask(RecordingTask):
+        @before
+        async def prepare(
+            self, validated_input: CaseDesignInput, scope: AuthorizedAttemptScope
+        ) -> CaseDesignPrepared | PermanentTaskFailure:
+            target = scope.workspace.write_root / "qa/undeclared.txt"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"unclaimed")
+            return await super().prepare(validated_input, scope)
+
+    order: list[str] = []
+    executor = _executor(
+        prepare=RecordingPrepare(
+            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), order
+        ),
+        runtime=RecordingRuntime(
+            CaseDesignAgentResult(output_files=()).model_dump(), _workspace(tmp_path), order
+        ),
+        finalize=RecordingFinalize(_success_output(), order),
+        task_type=WritingTask,
+    )
+
+    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
 
     assert isinstance(result, PermanentTaskFailure)
     assert result.kind == "invalid_output"

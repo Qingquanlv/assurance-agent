@@ -29,6 +29,7 @@ from graph_engine.plugin_api import EffectIntent, ResourceClaimTemplate, TaskOut
 from agent_runtime_contracts.schema import canonical_digest, thaw_json, validate_local_agent_result
 
 from agent_runtime_contracts.execution_contract import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.lifecycle import validate_task_type
 from agent_runtime_contracts.models import AgentRunResult
 
 
@@ -187,6 +188,31 @@ class FinalizePhase(Protocol[InputT, PreparedT, AgentResultT, _OutputT_co]):
     ) -> _OutputT_co | PermanentTaskFailure: ...
 
 
+class AgentTask(Protocol[InputT, PreparedT, AgentResultT, OutputT]):
+    contract: AgentExecutionContract[InputT, AgentResultT, OutputT]
+
+    def __init__(
+        self,
+        prepare_phase: PreparePhase[InputT, PreparedT],
+        opencode: RuntimePhase[PreparedT],
+        finalize_phase: FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
+    ) -> None: ...
+
+    async def prepare(
+        self, validated_input: InputT, scope: AuthorizedAttemptScope
+    ) -> PreparedT | ExecutorResolution: ...
+
+    async def run(
+        self, prepared: PreparedT, scope: AuthorizedAttemptScope
+    ) -> RawAgentRuntimeOutcome | ExecutorResolution: ...
+
+    async def finalize(
+        self,
+        bundle: RawFinalizeBundle[InputT, PreparedT, AgentResultT],
+        scope: AuthorizedAttemptScope,
+    ) -> OutputT | ExecutorResolution: ...
+
+
 _PHASE_RESOLUTIONS = (
     PermanentTaskFailure,
     RejectedTaskResult,
@@ -209,6 +235,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         prepare: PreparePhase[InputT, PreparedT],
         runtime: RuntimePhase[PreparedT],
         finalize: FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
+        task_type: type[AgentTask[InputT, PreparedT, AgentResultT, OutputT]] | None = None,
         result_context: Mapping[str, object] | None = None,
         host: object | None = None,
         graph_revision: str = "",
@@ -218,6 +245,14 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         self._prepare = prepare
         self._runtime = runtime
         self._finalize = finalize
+        if task_type is not None:
+            validate_task_type(task_type)
+            task_contract = getattr(task_type, "contract", None)
+            if not isinstance(task_contract, AgentExecutionContract):
+                raise TypeError("agent task requires an AgentExecutionContract")
+            if task_contract.canonical_projection() != contract.canonical_projection():
+                raise ValueError("agent task contract does not match executor contract")
+        self._task_type = task_type
         self._result_context = None if result_context is None else dict(result_context)
         self._host = host
         self._graph_revision = graph_revision
@@ -257,6 +292,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
                 FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
                 bind_phase(self._finalize),
             ),
+            task_type=self._task_type,
             result_context=self._result_context,
             host=host,
             graph_revision=graph_revision,
@@ -272,6 +308,15 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
 
     def resolve(self) -> ResolvedAttemptContract[InputT, OutputT]:
         return resolve_contract(self._contract.to_task_contract(), executor=self)
+
+    def _new_task(self) -> AgentTask[InputT, PreparedT, AgentResultT, OutputT] | None:
+        if self._task_type is None:
+            return None
+        return self._task_type(
+            prepare_phase=self._prepare,
+            opencode=self._runtime,
+            finalize_phase=self._finalize,
+        )
 
     async def execute(
         self,
@@ -292,9 +337,13 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
                 scope.execution.attempt_key, "finalize", self._contract.finalize_handler_id
             ),
         }
+        task = self._new_task()
+        prepare_action = self._prepare.execute if task is None else task.prepare
+        runtime_action = self._runtime.execute if task is None else task.run
+        finalize_action = self._finalize.execute if task is None else task.finalize
         prepared = await self._run_phase(
             "prepare",
-            lambda: self._prepare.execute(validated_input, scope),
+            lambda: prepare_action(validated_input, scope),
             scope,
         )
         prepared_failure = _typed_failure(prepared)
@@ -303,7 +352,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         prepared_value = cast(PreparedT, prepared)
         outcome = await self._run_phase(
             "runtime",
-            lambda: self._runtime.execute(prepared_value, scope),
+            lambda: runtime_action(prepared_value, scope),
             scope,
         )
         outcome_failure = _typed_failure(outcome)
@@ -312,7 +361,13 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         runtime_outcome = cast(RawAgentRuntimeOutcome, outcome)
         output = await self._run_phase(
             "finalize",
-            lambda: self._finalize_outcome(validated_input, prepared_value, runtime_outcome, scope),
+            lambda: self._finalize_outcome(
+                validated_input,
+                prepared_value,
+                runtime_outcome,
+                scope,
+                finalize_action=finalize_action,
+            ),
             scope,
         )
         output_failure = _typed_failure(output)
@@ -444,6 +499,12 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         prepared: PreparedT,
         outcome: RawAgentRuntimeOutcome,
         scope: AuthorizedAttemptScope,
+        *,
+        finalize_action: Callable[
+            [RawFinalizeBundle[InputT, PreparedT, AgentResultT], AuthorizedAttemptScope],
+            Awaitable[OutputT | ExecutorResolution],
+        ]
+        | None = None,
     ) -> OutputT | ExecutorResolution:
         try:
             _exact, _digest, agent_result = validate_local_agent_result(
@@ -463,7 +524,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
             run_evidence=outcome.run_result,
             raw_workspace=outcome.raw_workspace,
         )
-        output = await self._finalize.execute(bundle, scope)
+        output = await (finalize_action or self._finalize.execute)(bundle, scope)
         failure = _typed_failure(output)
         if failure is not None:
             return failure
