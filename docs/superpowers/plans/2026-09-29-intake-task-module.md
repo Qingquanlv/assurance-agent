@@ -226,9 +226,9 @@ def advance_review_round(data: object) -> ReviewRoundAdvanceOutput:
 
 ### Task 6: Move cross-document normalization to operations
 
-**Files:** Modify `contracts/quality_goals.py`, `contracts/impact.py`, `operations/obligations.py`, `operations/resolve_plan.py`, `operations/plan_artifacts.py`, `operations/finalize.py`; create `operations/impact_validation.py`; update Intake and Product tests importing moved functions.
+**Files:** Modify `contracts/quality_goals.py`, `contracts/impact.py`, `operations/obligations.py`, `operations/resolve_plan.py`, `operations/plan_artifacts.py`, `operations/finalize.py`; create `operations/impact_validation.py`; update Intake, Generation, Quality, and Product callers, their tests, and `.importlinter`.
 
-**Interfaces:** `operations.obligations` owns `normalize_obligation_drafts`, `normalize_goal_obligations`, and `required_goal_families`; `operations.impact_validation` owns `validate_inventory_references`, `validate_inventory_closed_keys`, and `impact_required_families`. The underlying model types remain under `contracts/`.
+**Interfaces:** `operations.obligations` owns `normalize_obligation_drafts`, `normalize_goal_obligations`, `required_goal_families`, and the external-document reader `journey_keys_from_document`; `operations.impact_validation` owns `validate_inventory_references`, `validate_inventory_closed_keys`, and `impact_required_families`. The underlying model types and model-local policy remain under `contracts/`.
 
 - [ ] **Step 1: Change the relevant test imports first** in `test_prepared_quality_goals.py`, `test_obligation_normalization.py`, and `test_impact_contracts.py`:
 

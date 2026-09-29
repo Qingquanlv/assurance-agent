@@ -22,8 +22,10 @@ name = generation may import only intake contracts
 type = forbidden
 ignore_imports =
     assurance_generation.operations.codegen -> assurance_intake.operations.explore_context
+    assurance_generation.operations.codegen -> assurance_intake.operations.obligations
     assurance_generation.operations.codegen -> assurance_intake.operations.plan_codec
     assurance_generation.operations.cycle -> assurance_intake.operations.explore_context
+    assurance_generation.operations.cycle -> assurance_intake.operations.obligations
     assurance_generation.operations.cycle -> assurance_intake.operations.plan_codec
     assurance_generation.operations.planning -> assurance_intake.operations.planning_facts
     assurance_generation.operations.planning -> assurance_intake.operations.loop_history
@@ -106,7 +108,9 @@ name = quality may import only intake, generation, execution, and healing contra
 type = forbidden
 ignore_imports =
     assurance_quality.operations.assessment -> assurance_intake.operations.explore_context
+    assurance_quality.operations.assessment -> assurance_intake.operations.obligations
     assurance_quality.operations.assessment -> assurance_intake.operations.plan_codec
+    assurance_quality.operations.obligations -> assurance_intake.operations.obligations
     assurance_quality.operations.obligations -> assurance_intake.operations.explore_context
     assurance_quality.operations.obligations -> assurance_intake.operations.plan_codec
 source_modules =

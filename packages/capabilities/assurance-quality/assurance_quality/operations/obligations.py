@@ -21,7 +21,7 @@ from assurance_intake.contracts.obligations import PreparedObligationV1, Verific
 from assurance_intake.contracts.explore import PreparedExploreV1
 from assurance_intake.operations.explore_context import load_exploration_document
 from assurance_intake.operations.plan_codec import decode_plan
-from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
+from assurance_intake.operations.obligations import normalize_obligation_drafts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
 from assurance_quality.contracts.obligations import (

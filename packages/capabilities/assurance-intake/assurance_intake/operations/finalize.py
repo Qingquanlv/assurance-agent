@@ -44,6 +44,7 @@ from assurance_intake.contracts.explore import (
 from assurance_intake.operations.obligations import (
     apply_scope_exclusions,
     authenticate_source,
+    journey_keys_from_document,
     normalize_goal_obligations,
     normalize_obligation_drafts,
     resolve_requirement_quote,
@@ -52,11 +53,11 @@ from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
 from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObligationV1, SourceRefV1
 from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.contracts.cases import _require_impact_row_coverage
-from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
+from assurance_intake.operations.impact_validation import validate_inventory_references
 from assurance_intake.operations.case_modules import infer_case_delta_paths
 from assurance_intake.operations.explore_context import load_exploration_document
 from assurance_intake.contracts.case_selection import selection_path
-from assurance_intake.contracts.quality_goals import journey_keys_from_document
 from assurance_intake.contracts.review import (
     CaseMinimumCoverageReview,
     normalized_auto_fix_case_id,

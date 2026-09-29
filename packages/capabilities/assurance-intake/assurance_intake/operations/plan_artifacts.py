@@ -22,8 +22,14 @@ from assurance_intake.contracts.explore import (
 )
 from assurance_intake.contracts.obligations import SourceRefV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.obligations import apply_scope_exclusions, normalize_goal_obligations
-from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_closed_keys
+from assurance_intake.operations.obligations import (
+    apply_scope_exclusions,
+    journey_keys_from_document,
+    normalize_goal_obligations,
+    required_goal_families,
+)
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
+from assurance_intake.operations.impact_validation import validate_inventory_closed_keys
 from assurance_intake.contracts.plan import (
     PreparedQualityGoalV1,
     ResolvePlanInputV1,
@@ -38,8 +44,6 @@ from assurance_intake.contracts.quality_goals import (
     COVERAGE_GOAL_ORDER,
     CoverageGoalPolicyV1,
     SufficiencyPolicyV1,
-    journey_keys_from_document,
-    required_goal_families,
 )
 from assurance_intake.operations.resolve_plan import derive_family_proposal, resolve_plan
 from assurance_intake.operations.plan_codec import decode_plan

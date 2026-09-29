@@ -32,9 +32,8 @@ from assurance_intake.contracts.quality_goals import (
     MrcCategory,
     MrcLayer,
     PreparedObligationV1,
-    journey_keys_from_document,
-    normalize_goal_obligations,
 )
+from assurance_intake.operations.obligations import journey_keys_from_document, normalize_goal_obligations
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.operations.plan_codec import decode_plan

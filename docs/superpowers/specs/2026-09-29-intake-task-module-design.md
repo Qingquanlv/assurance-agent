@@ -41,8 +41,8 @@ types. It also retains runtime execution policy in `contracts/attempts.py`,
 including retry, timeout, resource claims, handler IDs, and output routes.
 Local field/model validators and private pure helpers required to define a
 model stay with it. Move unrelated filesystem reading, plan sealing/decoding,
-planning-fact collection, workflow decisions, and document normalization into
-the existing `operations/` or `graphs/` modules according to their callers. Keep
+planning-fact collection, workflow decisions, document normalization, and
+external knowledge-document readers into `operations/`. Keep
 `contracts/attempts.py` and its existing public policy exports.
 
 `operations/agent_skills.py` currently combines four prepare handlers,
