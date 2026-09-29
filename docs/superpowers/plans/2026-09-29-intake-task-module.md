@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Intake behavior only; direct import sites in other wheels may change to use Intake's read-only operations, but their behavior and the framework lifecycle interfaces do not change.
-- `.importlinter` permits only exact, reviewed cross-wheel imports of `operations.planning_facts`, `operations.explore_context`, and `operations.plan_codec`; all other cross-Feature operation and graph imports remain forbidden.
+- `.importlinter` permits only exact, reviewed cross-wheel imports of Intake's read-only operations; all other cross-Feature operation and graph imports remain forbidden.
 - Preserve every contract/handler/node ID, canonical digest, retry/timeout value, read/write claim, graph edge, output route, and plugin declaration.
 - OpenCode is injected through `RuntimePhase`; Task definitions never construct a client.
 - Wheel-local `resources/` and `validators/` remain packaged implementations; `.aa/` remains organization configuration, not executable code.
