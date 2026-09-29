@@ -14,8 +14,8 @@ from assurance_intake.contracts.plan import (
     ResolvedAssurancePlan,
     TestFamilyPolicyV1,
     resolution_reason_sort_key,
-    seal_plan,
 )
+from assurance_intake.operations.plan_codec import seal_plan
 
 
 class InputError(ValueError):

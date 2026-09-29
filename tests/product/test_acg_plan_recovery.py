@@ -17,8 +17,8 @@ from assurance_intake.contracts.plan import (
     TestFamilyPolicyV1 as FamilyPolicyV1,
     plan_artifact_ref,
     plan_bytes,
-    seal_plan,
 )
+from assurance_intake.operations.plan_codec import seal_plan
 from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
 from assurance_intake.operations.plan_artifacts import ResolvePlanHandler, load_plan_artifact
 from assurance_product.change_workspace import ChangeWorkspace

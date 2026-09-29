@@ -37,7 +37,7 @@ from assurance_improvement.contracts.retro import (
 from assurance_improvement.contracts.improvements import ImprovementSourceRefs
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_intake.contracts import EvidenceArtifactRefV1, LoopRoundHistoryV1
-from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.operations.plan_codec import decode_plan
 from assurance_quality.contracts.agent import InspectionResultV1
 from assurance_quality.contracts.coverage import CoverageGapsDocument
 from assurance_quality.contracts.issues import ChangeIssueSnapshot, ObservationDocument

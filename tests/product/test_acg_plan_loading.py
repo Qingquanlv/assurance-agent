@@ -11,7 +11,8 @@ import pytest
 from langgraph.graph import END, START, StateGraph
 
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_intake.contracts.plan import plan_artifact_ref, plan_bytes, seal_plan
+from assurance_intake.contracts.plan import plan_artifact_ref, plan_bytes
+from assurance_intake.operations.plan_codec import seal_plan
 from assurance_intake.graphs.factory import build_intake_graphs
 from assurance_intake.graphs.nodes import select_load_plan
 from assurance_intake.operations.plan_artifacts import load_plan_artifact

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 import hashlib
-import json
 from typing import Literal, Self, cast
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_core import to_jsonable_python
 
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
@@ -294,14 +292,6 @@ class ResolvePlanOutputV1(FrozenModel):
         return self
 
 
-def seal_plan(payload: dict[str, object]) -> ResolvedAssurancePlan:
-    if "plan_digest" in payload:
-        raise ValueError("unsealed plan payload cannot supply plan_digest")
-    projection = cast(JSONValue, to_jsonable_python(payload))
-    digest = canonical_digest(projection)
-    return ResolvedAssurancePlan.model_validate({**payload, "plan_digest": digest})
-
-
 def plan_bytes(plan: ResolvedAssurancePlan) -> bytes:
     return canonical_json_bytes(cast(JSONValue, plan.model_dump(mode="json")))
 
@@ -312,23 +302,6 @@ def plan_artifact_ref(plan: ResolvedAssurancePlan) -> EvidenceArtifactRefV1:
         path=(f"qa/results/plan/{plan.plan_digest}/resolved-assurance-plan.json"),
         digest=hashlib.sha256(data).hexdigest(),
     )
-
-
-def decode_plan(data: bytes, ref: EvidenceArtifactRefV1) -> ResolvedAssurancePlan:
-    try:
-        payload = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("plan is not valid JSON") from error
-    if not isinstance(payload, dict):
-        raise ValueError("plan document must be an object")
-    if canonical_json_bytes(cast(JSONValue, payload)) != data:
-        raise ValueError("plan bytes must be canonical JSON")
-    if hashlib.sha256(data).hexdigest() != ref.digest:
-        raise ValueError("plan_ref digest does not match plan bytes")
-    plan = ResolvedAssurancePlan.model_validate(payload)
-    if plan_artifact_ref(plan) != ref:
-        raise ValueError("plan_ref path does not match plan_digest")
-    return plan
 
 
 __all__ = [
@@ -343,9 +316,7 @@ __all__ = [
     "ResolvedAssurancePlan",
     "TestFamilyPolicyV1",
     "bind_impact_row_ids",
-    "decode_plan",
     "plan_artifact_ref",
     "plan_bytes",
-    "seal_plan",
     "resolution_reason_sort_key",
 ]

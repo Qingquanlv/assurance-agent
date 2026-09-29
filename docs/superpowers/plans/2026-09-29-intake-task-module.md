@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- Intake only; the other five wheels and the framework lifecycle interfaces do not change.
+- Intake behavior only; direct import sites in other wheels may change to use Intake's read-only operations, but their behavior and the framework lifecycle interfaces do not change.
+- `.importlinter` permits only exact, reviewed cross-wheel imports of `operations.planning_facts`, `operations.explore_context`, and `operations.plan_codec`; all other cross-Feature operation and graph imports remain forbidden.
 - Preserve every contract/handler/node ID, canonical digest, retry/timeout value, read/write claim, graph edge, output route, and plugin declaration.
 - OpenCode is injected through `RuntimePhase`; Task definitions never construct a client.
 - Wheel-local `resources/` and `validators/` remain packaged implementations; `.aa/` remains organization configuration, not executable code.
@@ -148,7 +149,7 @@ from assurance_intake.operations.planning_facts import source_path_hints
 
 ### Task 4: Separate plan sealing from plan models
 
-**Files:** Create `operations/plan_codec.py`; modify `contracts/plan.py`, `operations/resolve_plan.py`, `operations/plan_artifacts.py`, `operations/finalize.py`, `operations/prepare_evidence.py`, and plan tests.
+**Files:** Create `operations/plan_codec.py`; modify `contracts/plan.py`, `operations/resolve_plan.py`, `operations/plan_artifacts.py`, `operations/finalize.py`, `operations/prepare_evidence.py`, exact cross-wheel import sites, `.importlinter`, and plan tests.
 
 **Interfaces:** `operations.plan_codec.seal_plan(payload: dict[str, object]) -> ResolvedAssurancePlan` and `decode_plan(data: bytes, ref: EvidenceArtifactRefV1) -> ResolvedAssurancePlan`. `contracts.plan.plan_bytes` and `plan_artifact_ref` remain because the plan output model validates its own sealed reference with them.
 

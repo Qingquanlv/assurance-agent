@@ -36,7 +36,8 @@ from assurance_intake.contracts.quality_goals import (
     normalize_goal_obligations,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
+from assurance_intake.contracts.plan import ResolvedAssurancePlan
+from assurance_intake.operations.plan_codec import decode_plan
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
     MaterializeAssessmentInputV1,

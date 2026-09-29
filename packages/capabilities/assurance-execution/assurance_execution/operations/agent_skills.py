@@ -50,7 +50,7 @@ from assurance_generation.contracts import CodegenAuthoringV1
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.case_selection import CaseSelectionV1, selection_path
 from assurance_intake.contracts.cases import CaseEntryAuthoring
-from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.operations.plan_codec import decode_plan
 from assurance_intake.contracts.workflow import ReviewedCaseV1
 from assurance_execution.resource_loader import resource_bytes, resource_text
 

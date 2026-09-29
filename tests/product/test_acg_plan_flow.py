@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import cast
 
-from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
+from assurance_intake.contracts.plan import ResolvedAssurancePlan
+from assurance_intake.operations.plan_codec import decode_plan
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.product.goal_loop_fixture import GoalLoopRun, GoalLoopScenario, run_goal_loop
 

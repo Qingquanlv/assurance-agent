@@ -17,6 +17,13 @@ canonical digests, handler IDs, node IDs, graph edges, retry/timeout values,
 authorized read/write paths, source authentication, OpenCode execution, and
 Kernel sealing behavior.
 
+The user subsequently chose strict `contracts/` ownership when existing
+cross-wheel consumers exposed an import-boundary conflict. Read-only Intake
+operations used by other wheels are explicitly whitelisted by exact importer
+and imported module in `.importlinter`; the other wheels' behavior and the
+cross-Feature graph ban remain unchanged. `contracts/` must not add forwarding
+shims for those operations.
+
 ## Directory and interface
 
 `assurance_intake/task.py` replaces `feature.py` as the public Product import.
