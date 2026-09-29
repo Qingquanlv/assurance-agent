@@ -174,7 +174,7 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
     assert len(agents) == 26
-    assert len(tasks) == 18
+    assert len(tasks) == 19
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)
     for contract_id in agents:
@@ -277,7 +277,7 @@ def test_every_product_agent_has_its_declared_task(opencode_composition) -> None
     agents = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     assert len(agents) == len(_AGENT_TASK_CLASSES) == len(_AGENT_TASK_TYPES) == 26
-    assert len(tasks) == 18
+    assert len(tasks) == 19
     assert set(_AGENT_TASK_TYPES) == set(agents)
     assert set(_AGENT_TASK_TYPES).isdisjoint(item.contract_id for item in tasks.values())
     for contract_id, contract in agents.items():
