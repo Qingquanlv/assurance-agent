@@ -871,3 +871,99 @@ def test_directory_phase_write_claim_rejects_sibling_prefix(tmp_path: Path) -> N
     assert result.kind == "invalid_output"
     assert sibling_path in result.message
     assert order == ["prepare"]
+
+
+def test_lifecycle_decorator_preserves_callable_and_marks_role() -> None:
+    from agent_runtime_contracts import before
+
+    async def prepare(self: object, value: object, scope: object) -> object:
+        return value
+
+    decorated = before(prepare)
+    assert decorated is prepare
+    assert getattr(decorated, "__agent_lifecycle_phase__") == "before"
+    assert asyncio.iscoroutinefunction(decorated)
+
+
+def test_lifecycle_decorator_rejects_sync_function() -> None:
+    from agent_runtime_contracts import before
+
+    def prepare(self: object, value: object, scope: object) -> object:
+        return value
+
+    with pytest.raises(TypeError, match="async"):
+        before(prepare)
+
+
+def test_lifecycle_validation_accepts_fixed_async_methods_without_exit() -> None:
+    from agent_runtime_contracts import after, before
+    from agent_runtime_contracts.lifecycle import validate_task_type
+
+    class Task:
+        @before
+        async def prepare(self, value: object, scope: object) -> object:
+            return value
+
+        async def run(self, value: object, scope: object) -> object:
+            return value
+
+        @after
+        async def finalize(self, value: object, scope: object) -> object:
+            return value
+
+    validate_task_type(Task)
+
+
+@pytest.mark.parametrize("invalid", ["missing-run", "wrong-mark", "missing-scope", "extra-mark"])
+def test_lifecycle_validation_rejects_invalid_task(invalid: str) -> None:
+    from agent_runtime_contracts import after, before
+    from agent_runtime_contracts.lifecycle import validate_task_type
+
+    class Task:
+        @before
+        async def prepare(self, value: object, scope: object) -> object:
+            return value
+
+        async def run(self, value: object, scope: object) -> object:
+            return value
+
+        @after
+        async def finalize(self, value: object, scope: object) -> object:
+            return value
+
+    if invalid == "missing-run":
+        del Task.run
+    elif invalid == "wrong-mark":
+        Task.finalize.__agent_lifecycle_phase__ = "before"  # type: ignore[attr-defined]
+    elif invalid == "missing-scope":
+
+        async def run_without_scope(self: object, value: object) -> object:
+            return value
+
+        Task.run = run_without_scope  # type: ignore[assignment]
+    else:
+
+        @before
+        async def extra(self: object, value: object, scope: object) -> object:
+            return value
+
+        Task.extra = extra  # type: ignore[attr-defined]
+
+    with pytest.raises(TypeError):
+        validate_task_type(Task)
+
+
+def test_finally_context_is_read_only() -> None:
+    from dataclasses import FrozenInstanceError
+
+    from agent_runtime_contracts import FinallyContext
+
+    context = FinallyContext(
+        contract_id="assurance.intake.agent.case-design.v1",
+        attempt_key="a" * 64,
+        mode="execute",
+        last_phase="runtime",
+        outcome="resolution",
+    )
+    with pytest.raises(FrozenInstanceError):
+        context.outcome = "executed"  # type: ignore[misc]
