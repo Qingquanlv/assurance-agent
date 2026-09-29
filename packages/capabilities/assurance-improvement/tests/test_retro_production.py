@@ -218,6 +218,11 @@ async def test_public_retro_runs_real_contracts_and_handlers_with_only_agent_tra
     from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
     from assurance_improvement.graphs.retro import build_retro_graph
     from assurance_improvement.operations import improvement_handlers
+    from assurance_improvement.operations.agent_tasks import (
+        RetroEvalAnalysisTask,
+        RetroIssueAnalysisTask,
+        RetroWorkflowAnalysisTask,
+    )
     from tests.product.test_product_stategraph_flow import _flow_features, _product_graphs, _public_input
 
     contracts = {
@@ -236,47 +241,72 @@ async def test_public_retro_runs_real_contracts_and_handlers_with_only_agent_tra
             business = contract.input_model.model_validate(wire_input)
             calls.append(semantic_node_id)
             if isinstance(contract, AgentExecutionContract):
-                prepared = await execute_task(
-                    handlers[contract.prepare_handler_id],
-                    business.model_dump(mode="json"),
-                    tmp_path,
-                    binding_data=BINDING,
-                )
-                assert prepared.status == "succeeded", prepared.failure
-                request = AgentRunRequest.model_validate(prepared.output)
                 locked = business.model_dump(mode="json")
+                prepare_handler_id = contract.prepare_handler_id
+                finalize_handler_id = contract.finalize_handler_id
                 domain = locked.get("evidence_slice", {}).get("domain")
                 identity = locked.get("evidence_slice") or locked["context"]
                 if domain is None:
                     pytest.fail("zero-signal context must not dispatch a synthesis Agent")
-                failed = False
-                document = {
-                    "schema_version": "3",
-                    "retro_id": identity["retro_id"],
-                    "domain": domain,
-                    "analysis_status": "failed" if failed else "ok",
-                    "failure_reason": "cannot synthesize" if failed else None,
-                    "signals": [],
-                    "candidates": [],
-                }
-                # Substitute only the external model call, honoring the real prepare output path.
-                _, stage = __import__(
-                    "tests.product.test_change_local_output_routing", fromlist=["dual_roots"]
-                ).dual_roots(tmp_path)
-                destination = stage / request.workspace.allowed_outputs[0]
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(json.dumps(document))
-                result = await execute_task(
-                    handlers[contract.finalize_handler_id],
-                    {**locked, "agent_result": agent_result(document)},
-                    tmp_path,
+
+                async def prepare_phase(input_value, _scope):
+                    prepared = await execute_task(
+                        handlers[prepare_handler_id],
+                        input_value.model_dump(mode="json"),
+                        tmp_path,
+                        binding_data=BINDING,
+                    )
+                    assert prepared.status == "succeeded", prepared.failure
+                    return AgentRunRequest.model_validate(prepared.output)
+
+                async def runtime_phase(request, _scope):
+                    document = {
+                        "schema_version": "3",
+                        "retro_id": identity["retro_id"],
+                        "domain": domain,
+                        "analysis_status": "ok",
+                        "failure_reason": None,
+                        "signals": [],
+                        "candidates": [],
+                    }
+                    # Substitute only the external model call, honoring the real prepare output path.
+                    _, stage = __import__(
+                        "tests.product.test_change_local_output_routing", fromlist=["dual_roots"]
+                    ).dual_roots(tmp_path)
+                    destination = stage / request.workspace.allowed_outputs[0]
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_text(json.dumps(document))
+                    return agent_result(document)
+
+                async def finalize_phase(bundle, _scope):
+                    finalized = await execute_task(
+                        handlers[finalize_handler_id],
+                        {**locked, "agent_result": bundle.agent_result},
+                        tmp_path,
+                    )
+                    assert finalized.status == "succeeded", finalized.failure
+                    return contract.output_model.model_validate(finalized.output)
+
+                task_type = {
+                    "eval": RetroEvalAnalysisTask,
+                    "issue": RetroIssueAnalysisTask,
+                    "workflow": RetroWorkflowAnalysisTask,
+                }[domain]
+                task = task_type(
+                    prepare_phase=SimpleNamespace(execute=prepare_phase),
+                    opencode=SimpleNamespace(execute=runtime_phase),
+                    finalize_phase=SimpleNamespace(execute=finalize_phase),
                 )
+                request = await task.prepare(business, None)
+                raw = await task.run(request, None)
+                result = await task.finalize(SimpleNamespace(agent_result=raw), None)
             else:
                 result = await execute_task(
                     handlers[contract.handler_id], business.model_dump(mode="json"), tmp_path
                 )
-            assert result.status == "succeeded", result.failure
-            output = contract.output_model.model_validate(result.output)
+                assert result.status == "succeeded", result.failure
+                result = contract.output_model.model_validate(result.output)
+            output = contract.output_model.model_validate(result)
             return publish(state, output, {})
 
         return run

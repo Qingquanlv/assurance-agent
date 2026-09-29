@@ -35,6 +35,7 @@ from assurance_generation.graphs.routes import (
 )
 from assurance_generation.graphs.state import FamilyLaneOutput, GenerationState
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 _CODEGEN_REVIEW_PATHS: dict[Hashable, str] = {
     "done": "done",
@@ -95,18 +96,14 @@ def _compile_leaf(
 ) -> CompiledStateGraph:
     semantic_node_id = f"generation.{family}.{stage}"
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         semantic_node_id,
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _contract_id(family, stage),
-                semantic_node_id=semantic_node_id,
-                activation=activation,
-                select=select,
-                publish=publish,
-            ),
-        ),
+        contract_id=_contract_id(family, stage),
+        activation=activation,
+        select=select,
+        publish=publish,
     )
     builder.add_edge(START, semantic_node_id)
     builder.add_edge(semantic_node_id, END)

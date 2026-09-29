@@ -1,10 +1,14 @@
 from agent_runtime_contracts.attempt_executor import (
+    FinalizePhase,
+    PreparePhase,
     RawAgentRuntimeOutcome,
     RawFinalizeBundle,
     ReadOnlyRawWorkspace,
     ResolvedRawAgentExecutor,
+    RuntimePhase,
 )
 from agent_runtime_contracts.execution_contract import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.lifecycle import FinallyContext, after, before, finally_
 from agent_runtime_contracts.models import (
     AgentRunRequest,
     AgentRunResult,
@@ -41,6 +45,9 @@ __all__ = [
     "AgentRuntimeBinding",
     "AgentRuntimeCapabilities",
     "AgentRuntimePolicy",
+    "FinalizePhase",
+    "FinallyContext",
+    "PreparePhase",
     "RAW_AGENT_RUNTIME_BINDING_SCHEMA_VERSION",
     "RawAgentRuntimeBindingProjectionV1",
     "AgentWorkspaceV1",
@@ -53,9 +60,13 @@ __all__ = [
     "ReadOnlyRawWorkspace",
     "ResolvedRawAgentExecutor",
     "ResultContract",
+    "RuntimePhase",
+    "after",
+    "before",
     "bound_redacted_diagnostics",
     "canonical_digest",
     "canonical_json_bytes",
+    "finally_",
     "rebind_agent_run_workspace",
     "result_schema_from_model",
     "validate_local_agent_result",

@@ -284,7 +284,39 @@ def recording_context():
     )
 
 
-def test_healing_factory_exports_two_independent_graphs(recording_context) -> None:
+def test_healing_factory_exports_two_independent_graphs(
+    recording_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_healing.graphs.nodes import (
+        publish_applied_repair,
+        publish_proposal,
+        publish_repair,
+        select_application,
+        select_coverage,
+        select_failure,
+    )
+
+    calls: list[tuple[str, str, object, object, object]] = []
+    original = recording_context.attempt
+
+    def record_attempt(
+        contract_id: str,
+        *,
+        semantic_node_id: str,
+        activation: object,
+        select: object,
+        publish: object,
+    ) -> object:
+        calls.append((contract_id, semantic_node_id, activation, select, publish))
+        return original(
+            contract_id,
+            semantic_node_id=semantic_node_id,
+            activation=activation,
+            select=select,
+            publish=publish,
+        )
+
+    monkeypatch.setattr(recording_context, "attempt", record_attempt)
     bundle = build_healing_graphs(recording_context)
     assert tuple(item.name for item in fields(bundle)) == ("repair_failure", "repair_coverage")
     assert isinstance(bundle, HealingGraphs)
@@ -295,6 +327,36 @@ def test_healing_factory_exports_two_independent_graphs(recording_context) -> No
     assert recording_context.bound_contract_ids.count(_COVERAGE_ID) == 1
     assert _ADVANCE_ID not in recording_context.bound_contract_ids
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
+    assert len(calls) == 3
+
+    def stable_call(row):
+        return tuple((item.__module__, item.__qualname__) if callable(item) else item for item in row)
+
+    actual = [stable_call(row) for row in calls]
+    assert (
+        stable_call(
+            (_FIX_PROPOSAL_ID, "healing.fix-proposal", activation_repair, select_failure, publish_proposal)
+        )
+        in actual
+    )
+    assert (
+        stable_call(
+            (
+                _APPLICATION_ID,
+                "healing.apply-test-repair",
+                activation_repair,
+                select_application,
+                publish_applied_repair,
+            )
+        )
+        in actual
+    )
+    assert (
+        stable_call(
+            (_COVERAGE_ID, "healing.coverage-repair", activation_repair, select_coverage, publish_repair)
+        )
+        in actual
+    )
 
 
 def test_target_graphs_contain_no_phase_nodes_or_send(recording_context) -> None:
@@ -413,3 +475,22 @@ async def test_repair_exports_run_independently_and_publish_typed_output() -> No
 
 def test_production_agent_validators_stay_empty() -> None:
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
+
+
+def test_coverage_repair_handler_summary_does_not_match_raw_contract() -> None:
+    from agent_runtime_contracts.schema import validate_local_agent_result
+
+    from assurance_healing.contracts.coverage_repair import (
+        CoverageRepairApplySummary,
+        CoverageRepairStatus,
+    )
+
+    contract = AGENT_JOB_CONTRACTS["coverage-repair"]
+    summary = CoverageRepairApplySummary(
+        change_id="CH-COV-002", attempt=1, attempt_token="attempt-1", applied=True
+    )
+
+    assert contract.agent_result_model.model_json_schema() == CoverageRepairStatus.model_json_schema()
+    assert contract.output_model.model_json_schema() == CoverageRepairStatus.model_json_schema()
+    with pytest.raises(ValueError):
+        validate_local_agent_result(summary.model_dump(mode="json"), result_model=contract.agent_result_model)

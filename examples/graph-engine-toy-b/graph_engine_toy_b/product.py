@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, TypedDict, cast
+from typing import Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -15,6 +15,7 @@ from graph_engine.boot.generic import entrypoint_digest
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.composition import PluginRequirement, ProductManifest
 from graph_engine.plugin_api import ProviderSource
+from graph_engine.stategraph import add_attempt_node
 
 from graph_engine_toy_b.contracts import (
     CHILD_CONTRACT,
@@ -42,7 +43,7 @@ class ToyBState(TypedDict, total=False):
     child: bool
     combined: bool
     left_round: int
-    attempt_failure: dict[str, object]
+    attempt_failure: dict[str, object] | None
     review: str
 
 
@@ -107,18 +108,14 @@ def _add_attempt(
     activation: object,
     publish: object,
 ) -> None:
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        capability,
         name,
-        cast(
-            object,
-            capability.attempt(
-                contract_id,
-                semantic_node_id=name,
-                activation=activation,
-                select=_select_empty,
-                publish=publish,
-            ),
-        ),
+        contract_id=contract_id,
+        activation=activation,
+        select=_select_empty,
+        publish=publish,
     )
 
 

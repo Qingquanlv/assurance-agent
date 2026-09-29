@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Generic, Protocol, TypeVar, cast
+from typing import Generic, Literal, Protocol, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -29,6 +31,7 @@ from graph_engine.plugin_api import EffectIntent, ResourceClaimTemplate, TaskOut
 from agent_runtime_contracts.schema import canonical_digest, thaw_json, validate_local_agent_result
 
 from agent_runtime_contracts.execution_contract import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.lifecycle import FinallyContext, validate_task_type
 from agent_runtime_contracts.models import AgentRunResult
 
 
@@ -41,6 +44,7 @@ _PreparedT_contra = TypeVar("_PreparedT_contra", contravariant=True)
 _PreparedT_co = TypeVar("_PreparedT_co", covariant=True)
 _OutputT_co = TypeVar("_OutputT_co", bound=BaseModel, covariant=True)
 PhaseName = str
+logger = logging.getLogger(__name__)
 
 
 def _unprovable_raw_admission(snapshot: object) -> bool:
@@ -187,6 +191,31 @@ class FinalizePhase(Protocol[InputT, PreparedT, AgentResultT, _OutputT_co]):
     ) -> _OutputT_co | PermanentTaskFailure: ...
 
 
+class AgentTask(Protocol[InputT, PreparedT, AgentResultT, OutputT]):
+    contract: AgentExecutionContract[InputT, AgentResultT, OutputT]
+
+    def __init__(
+        self,
+        prepare_phase: PreparePhase[InputT, PreparedT],
+        opencode: RuntimePhase[PreparedT],
+        finalize_phase: FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
+    ) -> None: ...
+
+    async def prepare(
+        self, validated_input: InputT, scope: AuthorizedAttemptScope
+    ) -> PreparedT | ExecutorResolution: ...
+
+    async def run(
+        self, prepared: PreparedT, scope: AuthorizedAttemptScope
+    ) -> RawAgentRuntimeOutcome | ExecutorResolution: ...
+
+    async def finalize(
+        self,
+        bundle: RawFinalizeBundle[InputT, PreparedT, AgentResultT],
+        scope: AuthorizedAttemptScope,
+    ) -> OutputT | ExecutorResolution: ...
+
+
 _PHASE_RESOLUTIONS = (
     PermanentTaskFailure,
     RejectedTaskResult,
@@ -209,6 +238,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         prepare: PreparePhase[InputT, PreparedT],
         runtime: RuntimePhase[PreparedT],
         finalize: FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
+        task_type: type[AgentTask[InputT, PreparedT, AgentResultT, OutputT]] | None = None,
         result_context: Mapping[str, object] | None = None,
         host: object | None = None,
         graph_revision: str = "",
@@ -218,6 +248,14 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         self._prepare = prepare
         self._runtime = runtime
         self._finalize = finalize
+        if task_type is not None:
+            validate_task_type(task_type)
+            task_contract = getattr(task_type, "contract", None)
+            if not isinstance(task_contract, AgentExecutionContract):
+                raise TypeError("agent task requires an AgentExecutionContract")
+            if task_contract.canonical_projection() != contract.canonical_projection():
+                raise ValueError("agent task contract does not match executor contract")
+        self._task_type = task_type
         self._result_context = None if result_context is None else dict(result_context)
         self._host = host
         self._graph_revision = graph_revision
@@ -257,6 +295,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
                 FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
                 bind_phase(self._finalize),
             ),
+            task_type=self._task_type,
             result_context=self._result_context,
             host=host,
             graph_revision=graph_revision,
@@ -273,11 +312,30 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
     def resolve(self) -> ResolvedAttemptContract[InputT, OutputT]:
         return resolve_contract(self._contract.to_task_contract(), executor=self)
 
+    def _new_task(self) -> AgentTask[InputT, PreparedT, AgentResultT, OutputT] | None:
+        if self._task_type is None:
+            return None
+        return self._task_type(
+            prepare_phase=self._prepare,
+            opencode=self._runtime,
+            finalize_phase=self._finalize,
+        )
+
     async def execute(
         self,
         validated_input: InputT,
         scope: AuthorizedAttemptScope,
     ) -> ExecutorStepResult[OutputT]:
+        self._reset_phase_state(scope)
+        task = self._new_task()
+        return await self._run_segment(
+            task,
+            scope,
+            "execute",
+            lambda: self._execute_body(validated_input, scope, task),
+        )
+
+    def _reset_phase_state(self, scope: AuthorizedAttemptScope) -> None:
         self.phase_log = []
         self.phase_deltas = {"prepare": set(), "runtime": set(), "finalize": set()}
         self._phase_receipts = {}
@@ -292,9 +350,19 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
                 scope.execution.attempt_key, "finalize", self._contract.finalize_handler_id
             ),
         }
+
+    async def _execute_body(
+        self,
+        validated_input: InputT,
+        scope: AuthorizedAttemptScope,
+        task: AgentTask[InputT, PreparedT, AgentResultT, OutputT] | None,
+    ) -> ExecutorStepResult[OutputT]:
+        prepare_action = self._prepare.execute if task is None else task.prepare
+        runtime_action = self._runtime.execute if task is None else task.run
+        finalize_action = self._finalize.execute if task is None else task.finalize
         prepared = await self._run_phase(
             "prepare",
-            lambda: self._prepare.execute(validated_input, scope),
+            lambda: prepare_action(validated_input, scope),
             scope,
         )
         prepared_failure = _typed_failure(prepared)
@@ -303,7 +371,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         prepared_value = cast(PreparedT, prepared)
         outcome = await self._run_phase(
             "runtime",
-            lambda: self._runtime.execute(prepared_value, scope),
+            lambda: runtime_action(prepared_value, scope),
             scope,
         )
         outcome_failure = _typed_failure(outcome)
@@ -312,7 +380,13 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         runtime_outcome = cast(RawAgentRuntimeOutcome, outcome)
         output = await self._run_phase(
             "finalize",
-            lambda: self._finalize_outcome(validated_input, prepared_value, runtime_outcome, scope),
+            lambda: self._finalize_outcome(
+                validated_input,
+                prepared_value,
+                runtime_outcome,
+                scope,
+                finalize_action=finalize_action,
+            ),
             scope,
         )
         output_failure = _typed_failure(output)
@@ -330,8 +404,31 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         scope: AuthorizedAttemptScope,
         snapshot: object,
     ) -> ExecutorStepResult[OutputT]:
+        self._reset_phase_state(scope)
+        task = self._new_task()
+        return await self._run_segment(
+            task,
+            scope,
+            "reconcile",
+            lambda: self._reconcile_body(validated_input, scope, snapshot, task),
+        )
+
+    async def _reconcile_body(
+        self,
+        validated_input: InputT,
+        scope: AuthorizedAttemptScope,
+        snapshot: object,
+        task: AgentTask[InputT, PreparedT, AgentResultT, OutputT] | None,
+    ) -> ExecutorStepResult[OutputT]:
         context = scope.execution
-        prepared = await self._prepare.execute(validated_input, scope)
+        prepare_action = self._prepare.execute if task is None else task.prepare
+        finalize_action = self._finalize.execute if task is None else task.finalize
+        prepared = await self._run_phase(
+            "prepare",
+            lambda: prepare_action(validated_input, scope),
+            scope,
+            persist_receipt=False,
+        )
         prepared_failure = _typed_failure(prepared)
         if prepared_failure is not None:
             return prepared_failure
@@ -342,24 +439,112 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
                 kind="internal",
                 message="in-flight activity cannot be adopted",
             )
-        outcome = await runtime_reconcile(prepared_value, context, snapshot)
-        if isinstance(outcome, (IndeterminateTaskResult, PermanentTaskFailure)):
-            return outcome
+        outcome = await self._run_phase(
+            "runtime",
+            lambda: runtime_reconcile(prepared_value, context, snapshot),
+            scope,
+            persist_receipt=False,
+        )
+        outcome_failure = _typed_failure(outcome)
+        if outcome_failure is not None:
+            return outcome_failure
         if _unprovable_raw_admission(snapshot):
             return IndeterminateTaskResult(
                 reconciliation=SystemReference(reference_id="unprovable-admission")
             )
-        output = await self._finalize_outcome(validated_input, prepared_value, outcome, scope)
+        output = await self._run_phase(
+            "finalize",
+            lambda: self._finalize_outcome(
+                validated_input,
+                prepared_value,
+                cast(RawAgentRuntimeOutcome, outcome),
+                scope,
+                finalize_action=finalize_action,
+            ),
+            scope,
+            persist_receipt=False,
+        )
         output_failure = _typed_failure(output)
         if output_failure is not None:
             return output_failure
         return ExecutedAttemptResult(output=cast(OutputT, output), effects=self.effects)
+
+    async def _run_segment(
+        self,
+        task: AgentTask[InputT, PreparedT, AgentResultT, OutputT] | None,
+        scope: AuthorizedAttemptScope,
+        mode: Literal["execute", "reconcile"],
+        action: Callable[[], Awaitable[ExecutorStepResult[OutputT]]],
+    ) -> ExecutorStepResult[OutputT]:
+        try:
+            result = await action()
+        except BaseException as error:
+            await self._run_finally(task, scope, mode, "exception", error)
+            raise
+        outcome: Literal["resolution", "executed"] = (
+            "resolution" if _typed_failure(result) is not None else "executed"
+        )
+        failure = await self._run_finally(task, scope, mode, outcome, None)
+        return failure if failure is not None else result
+
+    async def _run_finally(
+        self,
+        task: AgentTask[InputT, PreparedT, AgentResultT, OutputT] | None,
+        scope: AuthorizedAttemptScope,
+        mode: Literal["execute", "reconcile"],
+        outcome: Literal["executed", "resolution", "exception"],
+        primary_error: BaseException | None,
+    ) -> PermanentTaskFailure | None:
+        on_exit = getattr(task, "on_exit", None)
+        if not callable(on_exit):
+            return None
+        on_exit = cast(Callable[[FinallyContext], Awaitable[None]], on_exit)
+        try:
+            before = _snapshot_files(scope.workspace.write_root)
+        except OSError:
+            return self._finally_audit_failure(primary_error)
+        context = FinallyContext(
+            contract_id=self._contract.contract_id,
+            attempt_key=scope.execution.attempt_key.digest,
+            mode=mode,
+            last_phase=cast(
+                "Literal['prepare', 'runtime', 'finalize'] | None",
+                self.phase_log[-1] if self.phase_log else None,
+            ),
+            outcome=outcome,
+            error_type=None if primary_error is None else type(primary_error).__name__,
+        )
+        try:
+            await on_exit(context)
+        except asyncio.CancelledError:
+            if not isinstance(primary_error, asyncio.CancelledError):
+                raise
+            logger.warning("agent task finally cancelled for attempt %s", context.attempt_key)
+        except Exception as error:
+            logger.warning(
+                "agent task finally raised %s for attempt %s", type(error).__name__, context.attempt_key
+            )
+        try:
+            after = _snapshot_files(scope.workspace.write_root)
+        except OSError:
+            return self._finally_audit_failure(primary_error)
+        if before != after:
+            return self._finally_audit_failure(primary_error)
+        return None
+
+    def _finally_audit_failure(self, primary_error: BaseException | None) -> PermanentTaskFailure | None:
+        logger.error("agent task finally staging audit failed for contract %s", self._contract.contract_id)
+        if primary_error is not None:
+            return None
+        return PermanentTaskFailure(kind="invalid_output", message="agent task finally staging audit failed")
 
     async def _run_phase(
         self,
         phase: PhaseName,
         action: Callable[[], Awaitable[_T]],
         scope: AuthorizedAttemptScope,
+        *,
+        persist_receipt: bool = True,
     ) -> _T | ExecutorResolution:
         try:
             before = _snapshot_files(scope.workspace.write_root)
@@ -368,13 +553,36 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
                 kind="invalid_output", message=f"cannot snapshot staging before {phase}: {error}"
             )
         self.phase_log.append(phase)
-        result = await action()
+        try:
+            result = await action()
+        except BaseException:
+            audit_failure, _delta = self._audit_phase(phase, before, scope)
+            if audit_failure is not None:
+                logger.error("agent phase %s staging audit failed after exception", phase)
+            raise
+        audit_failure, delta = self._audit_phase(phase, before, scope)
+        if audit_failure is not None:
+            return audit_failure
+        failure = _typed_failure(result)
+        if failure is not None:
+            return failure
+        self.phase_deltas[phase] = delta
+        if persist_receipt:
+            self._persist_phase_delta(phase, delta, scope, result)
+        return result
+
+    def _audit_phase(
+        self,
+        phase: PhaseName,
+        before: dict[str, tuple[str, int, int, int, int, int, int]],
+        scope: AuthorizedAttemptScope,
+    ) -> tuple[PermanentTaskFailure | None, set[str]]:
         try:
             after = _snapshot_files(scope.workspace.write_root)
         except OSError as error:
             return PermanentTaskFailure(
                 kind="invalid_output", message=f"cannot snapshot staging after {phase}: {error}"
-            )
+            ), set()
         delta = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
         allowed = self._allowed_paths(phase, scope)
         unexpected = {path for path in delta if not _covered_by_claims(path, allowed)}
@@ -382,13 +590,8 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
             return PermanentTaskFailure(
                 kind="invalid_output",
                 message=f"{phase} wrote undeclared staging paths: {sorted(unexpected)}",
-            )
-        failure = _typed_failure(result)
-        if failure is not None:
-            return failure
-        self.phase_deltas[phase] = delta
-        self._persist_phase_delta(phase, delta, scope, result)
-        return result
+            ), delta
+        return None, delta
 
     def _phase_handler_id(self, phase: PhaseName) -> str:
         if phase == "prepare":
@@ -444,6 +647,12 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         prepared: PreparedT,
         outcome: RawAgentRuntimeOutcome,
         scope: AuthorizedAttemptScope,
+        *,
+        finalize_action: Callable[
+            [RawFinalizeBundle[InputT, PreparedT, AgentResultT], AuthorizedAttemptScope],
+            Awaitable[OutputT | ExecutorResolution],
+        ]
+        | None = None,
     ) -> OutputT | ExecutorResolution:
         try:
             _exact, _digest, agent_result = validate_local_agent_result(
@@ -463,7 +672,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
             run_evidence=outcome.run_result,
             raw_workspace=outcome.raw_workspace,
         )
-        output = await self._finalize.execute(bundle, scope)
+        output = await (finalize_action or self._finalize.execute)(bundle, scope)
         failure = _typed_failure(output)
         if failure is not None:
             return failure

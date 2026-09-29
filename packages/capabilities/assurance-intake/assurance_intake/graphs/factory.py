@@ -31,6 +31,7 @@ from assurance_intake.graphs.prepare import build_load_plan_graph, build_prepare
 from assurance_intake.graphs.routes import route_case_design, route_case_design_repair
 from assurance_intake.graphs.state import IntakeState
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 _INTAKE_ID = "assurance.intake.agent.intake.v1"
 _EXPLORE_ID = "assurance.intake.agent.explore.v1"
@@ -116,18 +117,14 @@ def _compile_leaf(
     publish: object,
 ) -> CompiledStateGraph:
     builder: StateGraph[IntakeState] = StateGraph(IntakeState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         semantic_node_id,
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                contract_id,
-                semantic_node_id=semantic_node_id,
-                activation=activation,
-                select=select,
-                publish=publish,
-            ),
-        ),
+        contract_id=contract_id,
+        activation=activation,
+        select=select,
+        publish=publish,
     )
     builder.add_edge(START, semantic_node_id)
     builder.add_edge(semantic_node_id, END)
@@ -136,31 +133,23 @@ def _compile_leaf(
 
 def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[IntakeState] = StateGraph(IntakeState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "intake.case-design",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _CASE_DESIGN_ID,
-                semantic_node_id="intake.case-design",
-                activation=activation_case_design,
-                select=select_case_design,
-                publish=publish_case_design,
-            ),
-        ),
+        contract_id=_CASE_DESIGN_ID,
+        activation=activation_case_design,
+        select=select_case_design,
+        publish=publish_case_design,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "intake.case-design-repair",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _CASE_DESIGN_ID,
-                semantic_node_id="intake.case-design-repair",
-                activation=activation_case_design_repair,
-                select=select_case_design_repair,
-                publish=publish_case_design,
-            ),
-        ),
+        contract_id=_CASE_DESIGN_ID,
+        activation=activation_case_design_repair,
+        select=select_case_design_repair,
+        publish=publish_case_design,
     )
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
     builder.add_node("failed", cast(Callable[..., Any], terminal_failed))

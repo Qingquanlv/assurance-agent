@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Literal, cast
+from typing import Literal
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -20,6 +19,7 @@ from assurance_execution.graphs.nodes import (
 )
 from assurance_execution.graphs.state import ExecutionState
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 _EXECUTE_CONTRACT = "assurance.execution.execute"
 _RUN_CONTRACT = "assurance.execution.run"
@@ -61,18 +61,14 @@ def _compile_graph(
     select: object,
 ) -> CompiledStateGraph:
     builder: StateGraph[ExecutionState] = StateGraph(ExecutionState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         semantic_node_id,
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                contract_id,
-                semantic_node_id=semantic_node_id,
-                activation=activation,
-                select=select,
-                publish=partial(publish_execution, semantic_node_id=semantic_node_id),
-            ),
-        ),
+        contract_id=contract_id,
+        activation=activation,
+        select=select,
+        publish=partial(publish_execution, semantic_node_id=semantic_node_id),
     )
     builder.add_node("committed", terminal_committed)
     builder.add_node("failed", terminal_failed)

@@ -253,6 +253,73 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
     assert expected.total() == 27
 
 
+def test_all_attempt_occurrences_are_exact() -> None:
+    from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
+
+    agents = all_feature_agent_contracts()
+    tasks = all_feature_task_contracts()
+    ids = set(agents) | {item.contract_id for item in tasks.values()}
+    expected = Counter({contract_id: 1 for contract_id in ids})
+    expected["assurance.intake.agent.case-design.v1"] = 2
+    expected["assurance.generation.resolve-inputs"] = 2
+    expected["assurance.improvement.task.evaluate-memory-improvement"] = 2
+    actual = Counter(
+        contract_id
+        for owner in _FACTORY_BUILDERS
+        for contract_id in _build_owner(owner)[1].bound_contract_ids
+    )
+    assert len(ids) == 44
+    assert expected.total() == 47
+    assert actual == expected
+    assert sum(len(names) for names in IMPLEMENTED_BUNDLE_FIELDS.values()) == 27
+
+
+def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) -> None:
+    from inspect import isfunction
+
+    from graph_engine.stategraph import add_attempt_node
+
+    calls: list[tuple[str, str]] = []
+
+    def record(builder, context, node_id, *, contract_id, activation, select, publish) -> None:
+        assert node_id
+        assert activation is not None
+        assert callable(select)
+        assert callable(publish)
+        calls.append((node_id, contract_id))
+        add_attempt_node(
+            builder,
+            context,
+            node_id,
+            contract_id=contract_id,
+            activation=activation,
+            select=select,
+            publish=publish,
+        )
+
+    visited: set[int] = set()
+
+    def patch_graph_function(function: object) -> None:
+        if not isfunction(function) or id(function.__globals__) in visited:
+            return
+        namespace = function.__globals__
+        visited.add(id(namespace))
+        if namespace.get("add_attempt_node") is add_attempt_node:
+            monkeypatch.setitem(namespace, "add_attempt_node", record)
+        for value in tuple(namespace.values()):
+            if isfunction(value) and ".graphs." in value.__module__:
+                patch_graph_function(value)
+
+    for factory in _FACTORY_BUILDERS.values():
+        patch_graph_function(factory)
+    contexts = [_build_owner(owner)[1] for owner in _FACTORY_BUILDERS]
+    assert len(visited) >= 12
+    assert len(calls) == 47
+    assert Counter(contract_id for _, contract_id in calls) == Counter(
+        contract_id for context in contexts for contract_id in context.bound_contract_ids
+    )
+
+
 def test_product_allowlist_pairs_match_the_six_factory_builders() -> None:
     assert tuple((item.owner_id, item.symbol) for item in FEATURE_GRAPH_FACTORIES) == (
         ("assurance.intake", "assurance_intake.graphs.factory:build_intake_graphs"),

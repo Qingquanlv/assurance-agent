@@ -110,6 +110,25 @@ code review, the repository gate, wheel rebuild, and authenticated deployment.
 The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.
 
+### Agent Task authoring
+
+All 26 Agent contracts have named Task classes with `before`/`run`/`after` and
+optional `finally_` hooks. [CaseDesignTask](packages/capabilities/assurance-intake/assurance_intake/operations/case_design.py)
+is one example, not a special execution path. Product injects installed,
+authenticated phases; Task code does not create a client or own retries.
+
+[`add_attempt_node`](packages/framework/graph-engine/graph_engine/stategraph/registration.py)
+registers a normal Attempt node in a native LangGraph `StateGraph`, including
+the 18 deterministic Task contracts. Pure state nodes and compiled subgraphs
+still use native `add_node`. Routing, activation, selection and post-commit
+publication stay in the graph. All 27 Feature graph exports and 15 Product
+roots are covered.
+
+`after` validates business output before Kernel commit. `finally_` observes
+local execution-segment exit, not durable completion; terminal replay may
+skip it. Existing production in-flight recovery gaps are not closed by this
+authoring refactor.
+
 Execute and run are deterministic tasks. They do not call an LLM. Same-process
 `aa_observe` collection detects omitted or mismatched observations; it is not a
 cryptographic anti-forgery guarantee. `output_preexisting`, review, and fault

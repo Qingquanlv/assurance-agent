@@ -793,8 +793,14 @@ def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runt
     features = _real_features()
     dry = build_product_graphs(context=_build_context(None), features=features)
     runtime = build_product_graphs(context=_build_context(InMemorySaver()), features=features)
+    assert set(dry.entrypoints) == set(runtime.entrypoints) == set(PRODUCT_ENTRYPOINTS)
+    assert set(dry.contracts) == set(runtime.contracts) == set(PRODUCT_ENTRYPOINTS)
+    assert len(dry.entrypoints) == 15
     for name in PRODUCT_ENTRYPOINTS:
         assert set(dry.entrypoints[name].nodes) == set(runtime.entrypoints[name].nodes)
+        assert {(edge.source, edge.target) for edge in dry.entrypoints[name].get_graph().edges} == {
+            (edge.source, edge.target) for edge in runtime.entrypoints[name].get_graph().edges
+        }
         assert dry.entrypoints[name].checkpointer is None
         assert runtime.entrypoints[name].checkpointer is not None
         assert ENTRYPOINT_CONTRACTS[name].recursion_limit == ENTRYPOINT_RECURSION_LIMITS[name]

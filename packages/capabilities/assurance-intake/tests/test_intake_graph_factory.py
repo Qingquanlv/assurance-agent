@@ -220,7 +220,35 @@ def recording_context():
     )
 
 
-def test_intake_factory_exports_prepare_and_case(recording_context) -> None:
+def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch: pytest.MonkeyPatch) -> None:
+    from assurance_intake.graphs.nodes import (
+        activation_case_design,
+        activation_case_design_repair,
+        select_case_design,
+        select_case_design_repair,
+    )
+
+    calls: list[tuple[str, str, object, object]] = []
+    original = recording_context.attempt
+
+    def record_attempt(
+        contract_id: str,
+        *,
+        semantic_node_id: str,
+        activation: object,
+        select: object,
+        publish: object,
+    ) -> object:
+        calls.append((contract_id, semantic_node_id, activation, select))
+        return original(
+            contract_id,
+            semantic_node_id=semantic_node_id,
+            activation=activation,
+            select=select,
+            publish=publish,
+        )
+
+    monkeypatch.setattr(recording_context, "attempt", record_attempt)
     bundle = build_intake_graphs(recording_context)
     assert tuple(item.name for item in fields(bundle)) == ("prepare", "load_plan", "case")
     assert isinstance(bundle, IntakeGraphs)
@@ -236,6 +264,14 @@ def test_intake_factory_exports_prepare_and_case(recording_context) -> None:
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
     assert recording_context.bound_contract_ids.count(_CASE_DESIGN_ID) == 2
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
+    assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design")
+    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[4][2:]) == tuple(
+        (fn.__module__, fn.__qualname__) for fn in (activation_case_design, select_case_design)
+    )
+    assert calls[5][:2] == (_CASE_DESIGN_ID, "intake.case-design-repair")
+    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[5][2:]) == tuple(
+        (fn.__module__, fn.__qualname__) for fn in (activation_case_design_repair, select_case_design_repair)
+    )
 
 
 def test_prepare_contains_only_preparation_nodes(recording_context) -> None:
@@ -302,6 +338,12 @@ async def test_case_graph_runs_primary_and_repair_through_one_composite_attempt_
         _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
     ]
+    primary, repair, _ = result.select_values
+    assert isinstance(primary, dict)
+    assert isinstance(repair, dict)
+    assert primary["validation_attempt"] == 0
+    assert repair["validation_attempt"] == 1
+    assert repair["validation_error"] == "authored cases failed validation"
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "reviewed"

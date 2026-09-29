@@ -158,6 +158,8 @@ def test_improvement_factory_exports_seven_public_graphs(recording_context) -> N
     for name in _FORBIDDEN_GRAPHS:
         assert not hasattr(bundle, name)
     bound = recording_context.bound_contract_ids
+    assert len(bound) == 16
+    assert bound.count("assurance.improvement.retro-build-slices") == 1
     assert set(bound) >= set(AGENT_IDS)
     assert set(bound) >= set(TASK_IDS)
     assert len({item for item in bound if item in AGENT_IDS}) == 6

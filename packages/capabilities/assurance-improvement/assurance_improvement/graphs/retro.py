@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 from assurance_improvement.graphs.nodes import (
     activation_one_shot,
@@ -58,98 +59,71 @@ def _route_assembled(state: Mapping[str, object]) -> str:
     return "synthesize" if context.signal_count else "empty"
 
 
-def _attempt(
-    context: CapabilityBuildContext,
-    contract_id: str,
-    semantic_node_id: str,
-    select: object,
-    publish: object,
-) -> Any:
-    return context.attempt(
-        contract_id,
-        semantic_node_id=semantic_node_id,
-        activation=activation_one_shot,
-        select=select,
-        publish=publish,
-    )
-
-
 def build_retro_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[ImprovementState] = StateGraph(ImprovementState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.retro-build-slices",
-        cast(
-            Callable[..., Any],
-            _attempt(
-                context,
-                _BUILD_SLICES_ID,
-                "improvement.retro-build-slices",
-                select_build_slices,
-                publish_build_slices,
-            ),
-        ),
+        contract_id=_BUILD_SLICES_ID,
+        activation=activation_one_shot,
+        select=select_build_slices,
+        publish=publish_build_slices,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.retro-collect",
-        cast(
-            Callable[..., Any],
-            _attempt(context, _COLLECT_ID, "improvement.retro-collect", select_collect, publish_collect),
-        ),
+        contract_id=_COLLECT_ID,
+        activation=activation_one_shot,
+        select=select_collect,
+        publish=publish_collect,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.retro-eval-analysis",
-        cast(
-            Callable[..., Any],
-            _attempt(
-                context,
-                _EVAL_ID,
-                "improvement.retro-eval-analysis",
-                select_eval_analysis,
-                publish_eval_analysis,
-            ),
-        ),
+        contract_id=_EVAL_ID,
+        activation=activation_one_shot,
+        select=select_eval_analysis,
+        publish=publish_eval_analysis,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.retro-issue-analysis",
-        cast(
-            Callable[..., Any],
-            _attempt(
-                context,
-                _ISSUE_ID,
-                "improvement.retro-issue-analysis",
-                select_issue_analysis,
-                publish_issue_analysis,
-            ),
-        ),
+        contract_id=_ISSUE_ID,
+        activation=activation_one_shot,
+        select=select_issue_analysis,
+        publish=publish_issue_analysis,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.retro-workflow-analysis",
-        cast(
-            Callable[..., Any],
-            _attempt(
-                context,
-                _WORKFLOW_ID,
-                "improvement.retro-workflow-analysis",
-                select_workflow_analysis,
-                publish_workflow_analysis,
-            ),
-        ),
+        contract_id=_WORKFLOW_ID,
+        activation=activation_one_shot,
+        select=select_workflow_analysis,
+        publish=publish_workflow_analysis,
     )
     builder.add_node("assemble", cast(Callable[..., Any], assemble_analyses))
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.retro-reconcile",
-        cast(
-            Callable[..., Any],
-            _attempt(
-                context, _RECONCILE_ID, "improvement.retro-reconcile", select_reconcile, publish_reconcile
-            ),
-        ),
+        contract_id=_RECONCILE_ID,
+        activation=activation_one_shot,
+        select=select_reconcile,
+        publish=publish_reconcile,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.retro",
-        cast(
-            Callable[..., Any], _attempt(context, _RETRO_ID, "improvement.retro", select_retro, publish_retro)
-        ),
+        contract_id=_RETRO_ID,
+        activation=activation_one_shot,
+        select=select_retro,
+        publish=publish_retro,
     )
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
     builder.add_node("failed", cast(Callable[..., Any], terminal_failed))
