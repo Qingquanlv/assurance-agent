@@ -35,8 +35,8 @@
 - Create `operations/prepare.py`, `operations/prepare_evidence.py`, and `operations/case_design_prepare.py`; remove `operations/agent_skills.py` once imports move. `operations/finalize.py` keeps finalize handler behavior.
 - Create `operations/explore_context.py` and `operations/planning_facts.py` for existing project-file readers; `contracts/explore.py` keeps its data models and fixed path constants.
 - Create `operations/plan_codec.py` for plan sealing/decoding; retain `plan_bytes` and `plan_artifact_ref` in `contracts/plan.py` because `ResolvePlanOutputV1` uses them for its own model invariant.
-- Move `advance_review_round` to `operations/workflow_state.py`, `merge_history_refs` to `graphs/state.py`, and loop-history construction to `operations/case_review_seal.py`; leave their model classes in `contracts/`.
-- Move obligation normalization to `operations/obligations.py` and inventory cross-reference checks to `operations/impact_validation.py`; retain model-local validators in `contracts/`.
+- Move `advance_review_round` to `operations/workflow_state.py`, `merge_history_refs` to `operations/history_refs.py`, and loop-history construction to `operations/loop_history.py`; leave their model classes in `contracts/`. The architecture scan permits only the exact graph-to-pure-operation imports this requires.
+- Move obligation normalization and external journey-document reading to `operations/obligations.py`, and inventory cross-reference checks to `operations/impact_validation.py`; retain model-local validators in `contracts/`.
 - Update the Intake imports in Product, graph factories, tests, and `contracts/__init__.py` as each Task lands.
 
 ---
