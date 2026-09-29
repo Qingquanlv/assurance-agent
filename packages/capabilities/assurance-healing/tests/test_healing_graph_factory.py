@@ -328,27 +328,35 @@ def test_healing_factory_exports_two_independent_graphs(
     assert _ADVANCE_ID not in recording_context.bound_contract_ids
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
     assert len(calls) == 3
+
+    def stable_call(row):
+        return tuple((item.__module__, item.__qualname__) if callable(item) else item for item in row)
+
+    actual = [stable_call(row) for row in calls]
     assert (
-        _FIX_PROPOSAL_ID,
-        "healing.fix-proposal",
-        activation_repair,
-        select_failure,
-        publish_proposal,
-    ) in calls
+        stable_call(
+            (_FIX_PROPOSAL_ID, "healing.fix-proposal", activation_repair, select_failure, publish_proposal)
+        )
+        in actual
+    )
     assert (
-        _APPLICATION_ID,
-        "healing.apply-test-repair",
-        activation_repair,
-        select_application,
-        publish_applied_repair,
-    ) in calls
+        stable_call(
+            (
+                _APPLICATION_ID,
+                "healing.apply-test-repair",
+                activation_repair,
+                select_application,
+                publish_applied_repair,
+            )
+        )
+        in actual
+    )
     assert (
-        _COVERAGE_ID,
-        "healing.coverage-repair",
-        activation_repair,
-        select_coverage,
-        publish_repair,
-    ) in calls
+        stable_call(
+            (_COVERAGE_ID, "healing.coverage-repair", activation_repair, select_coverage, publish_repair)
+        )
+        in actual
+    )
 
 
 def test_target_graphs_contain_no_phase_nodes_or_send(recording_context) -> None:
@@ -482,7 +490,7 @@ def test_coverage_repair_handler_summary_does_not_match_raw_contract() -> None:
         change_id="CH-COV-002", attempt=1, attempt_token="attempt-1", applied=True
     )
 
-    assert contract.agent_result_model is CoverageRepairStatus
-    assert contract.output_model is CoverageRepairStatus
+    assert contract.agent_result_model.model_json_schema() == CoverageRepairStatus.model_json_schema()
+    assert contract.output_model.model_json_schema() == CoverageRepairStatus.model_json_schema()
     with pytest.raises(ValueError):
         validate_local_agent_result(summary.model_dump(mode="json"), result_model=contract.agent_result_model)

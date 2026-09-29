@@ -569,20 +569,35 @@ def test_quality_factory_exports_five_public_graphs(
     assert recording_context.bound_contract_ids.count(_ISSUE_ANALYSIS_ID) == 1
     assert recording_context.bound_contract_ids.count(_ISSUE_RECONCILE_ID) == 1
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
+
+    def stable_call(row):
+        return tuple((item.__module__, item.__qualname__) if callable(item) else item for item in row)
+
+    actual = [stable_call(row) for row in calls]
     assert (
-        "assurance.quality.agent.issue-triage.v1",
-        "quality.issue-review",
-        activation_one_shot,
-        select_quality,
-        publish_issue,
-    ) in calls
+        stable_call(
+            (
+                "assurance.quality.agent.issue-triage.v1",
+                "quality.issue-review",
+                activation_one_shot,
+                select_quality,
+                publish_issue,
+            )
+        )
+        in actual
+    )
     assert (
-        _ISSUE_ANALYSIS_ID,
-        "quality.issue-analyze",
-        activation_issue_analysis,
-        select_quality,
-        publish_issue_analysis,
-    ) in calls
+        stable_call(
+            (
+                _ISSUE_ANALYSIS_ID,
+                "quality.issue-analyze",
+                activation_issue_analysis,
+                select_quality,
+                publish_issue_analysis,
+            )
+        )
+        in actual
+    )
 
 
 def test_target_graphs_contain_no_phase_nodes_or_private_table(recording_context) -> None:

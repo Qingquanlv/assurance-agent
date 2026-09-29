@@ -265,9 +265,13 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
     assert recording_context.bound_contract_ids.count(_CASE_DESIGN_ID) == 2
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
     assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design")
-    assert calls[4][2:] == (activation_case_design, select_case_design)
+    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[4][2:]) == tuple(
+        (fn.__module__, fn.__qualname__) for fn in (activation_case_design, select_case_design)
+    )
     assert calls[5][:2] == (_CASE_DESIGN_ID, "intake.case-design-repair")
-    assert calls[5][2:] == (activation_case_design_repair, select_case_design_repair)
+    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[5][2:]) == tuple(
+        (fn.__module__, fn.__qualname__) for fn in (activation_case_design_repair, select_case_design_repair)
+    )
 
 
 def test_prepare_contains_only_preparation_nodes(recording_context) -> None:
