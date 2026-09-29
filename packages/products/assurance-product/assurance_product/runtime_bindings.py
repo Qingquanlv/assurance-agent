@@ -46,6 +46,9 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 
+from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
+from assurance_intake.operations.case_design import CaseDesignTask
+
 from assurance_product.agent_contracts import (
     all_feature_agent_contracts,
     all_feature_task_contracts,
@@ -62,6 +65,8 @@ _PROVIDER = "opencode"
 _ACTIVITY_RECOVERY = "adopt-observe-reconcile-v1"
 _CAPABILITY_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
 _FinalOutputT = TypeVar("_FinalOutputT", bound=BaseModel)
+_AGENT_TASK_CLASSES = (IntakeTask, ExploreTask, CaseDesignTask, CaseReviewTask)
+_AGENT_TASK_TYPES = {task.contract.contract_id: task for task in _AGENT_TASK_CLASSES}
 
 
 def _contract_digest(contract: AgentExecutionContract[Any, Any, Any]) -> str:
@@ -712,6 +717,7 @@ def _resolve_agent_contract(
             callable_path=finalize_callable,
             timeout_seconds=timeout_seconds,
         ),
+        task_type=_AGENT_TASK_TYPES.get(contract.contract_id),
         result_context=validation_context,
     )
     return resolve_contract(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from functools import wraps
 from pathlib import Path
 from typing import Any, cast
 
@@ -181,6 +182,20 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     for contract_id in task_ids:
         assert not isinstance(resolved[contract_id].executor, ResolvedRawAgentExecutor)
         assert type(resolved[contract_id].executor).__name__ == "DeterministicTaskExecutor"
+
+
+def test_product_selects_all_intake_tasks(opencode_composition) -> None:
+    from agent_runtime_contracts import ResolvedRawAgentExecutor
+
+    from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
+    from assurance_intake.operations.case_design import CaseDesignTask
+
+    registry = opencode_composition.semantic_attempt_contracts
+    for task_type in (IntakeTask, ExploreTask, CaseDesignTask, CaseReviewTask):
+        selected = registry[task_type.contract.contract_id]
+        assert isinstance(selected.executor, ResolvedRawAgentExecutor)
+        assert selected.executor._task_type is task_type
+        assert selected.validation_context == selected.executor._result_context
 
 
 @pytest.mark.parametrize(
@@ -496,6 +511,117 @@ def test_bound_agent_runtime_executes_through_host_with_runtime_authority(
     assert call.authorized_secret_handles == ("opencode.token",)  # type: ignore[attr-defined]
     assert call.capability_entrypoint == (  # type: ignore[attr-defined]
         "agent_runtime_opencode.handler:OpenCodeHandler.execute"
+    )
+
+
+def test_bound_case_design_task_runs_all_hooks_through_installed_host_phases(
+    tmp_path: Path,
+    opencode_composition,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_runtime_contracts import AgentRunResult, canonical_digest
+    from graph_engine.attempts import (
+        AttemptExecutionContext,
+        AttemptKey,
+        AuthorizedAttemptScope,
+        ExecutedAttemptResult,
+    )
+    from graph_engine.attempts.host_protocol import TaskHostCallResult, TaskHostExecuteCall
+    from graph_engine.attempts.workspace import TaskWorkspaceStore
+    from graph_engine.plugin_api import TaskOutcome
+
+    from agent_runtime_fixture.contracts import frozen_run_request
+
+    from assurance_intake.contracts.agent import CaseDesignInputV1
+    from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+    from assurance_intake.operations.case_design import CaseDesignTask
+
+    payload = {"output_files": ["qa/.qa.yaml"]}
+    run_result = AgentRunResult.model_validate(
+        {
+            "result_payload": payload,
+            "result_digest": canonical_digest(payload),
+            "evidence_digest": "b" * 64,
+            "adapter_id": "agent-runtime-fixture",
+            "adapter_version": "1.0.0",
+        }
+    )
+    outputs = {
+        "prepare": frozen_run_request().model_dump(mode="json"),
+        "runtime": run_result.model_dump(mode="json"),
+        "finalize": {"validation_status": "pass", "validation_attempt": 0, "artifacts": []},
+    }
+
+    class Host(_RecordingTaskHost):
+        async def execute(self, call: object) -> TaskHostCallResult:
+            self.calls.append(call)
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded(outputs[call.identity.phase]),  # type: ignore[attr-defined]
+            )
+
+    hooks: list[str] = []
+    for name in ("prepare", "run", "finalize"):
+        original = getattr(CaseDesignTask, name)
+
+        @wraps(original)
+        async def recorded(self: CaseDesignTask, *args: object, _name=name, _original=original):
+            hooks.append(_name)
+            return await _original(self, *args)
+
+        monkeypatch.setattr(CaseDesignTask, name, recorded)
+
+    host = Host()
+    resolved = opencode_composition.semantic_attempt_contracts[CaseDesignTask.contract.contract_id]
+
+    async def direct_handler_must_not_run(request: object, context: object) -> object:
+        del request, context
+        raise AssertionError("direct handler must not run")
+
+    for phase in (resolved.executor._prepare, resolved.executor._runtime, resolved.executor._finalize):
+        monkeypatch.setattr(type(phase._handler), "execute", direct_handler_must_not_run)
+    executor = resolved.executor.with_host(host, graph_revision="c" * 64, product_lock_digest="d" * 64)
+    validated_input = CaseDesignInputV1(
+        change_id="CH-1",
+        capability_leafs=(),
+        artifact_paths=(),
+        plan_digest="a" * 64,
+        plan_ref=EvidenceArtifactRefV1(path="qa/plan.json", digest="a" * 64),
+    )
+
+    project = tmp_path / "host-project"
+    project.mkdir()
+    store = TaskWorkspaceStore(project, tmp_path / "host-attempts", tmp_path / "host-receipts")
+    try:
+        binding = store.begin(task_id="task", attempt=1, output_paths=())
+        scope = AuthorizedAttemptScope(
+            execution=AttemptExecutionContext(
+                invocation_id="inv-1",
+                public_entrypoint="intake",
+                semantic_node_id="case-design",
+                attempt_key=AttemptKey(digest="a" * 64),
+                fencing_token=1,
+                authorization_id="b" * 64,
+            ),
+            workspace=binding,
+        )
+        result = asyncio.run(executor.execute(validated_input, scope))
+    finally:
+        store.close()
+
+    assert isinstance(result, ExecutedAttemptResult)
+    assert result.output.validation_status == "pass"
+    assert hooks == ["prepare", "run", "finalize"]
+    calls = [cast(TaskHostExecuteCall, call) for call in host.calls]
+    assert [call.identity.phase for call in calls] == ["prepare", "runtime", "finalize"]
+    assert calls[1].capability_id == "runtime.opencode.execute"
+    assert calls[1].authorized_secret_handles == ("opencode.token",)
+    assert all(call.identity.authorization_id == "b" * 64 for call in calls)
+    assert all(call.identity.graph_revision == "c" * 64 for call in calls)
+    assert all(call.identity.product_lock_digest == "d" * 64 for call in calls)
+    assert all(
+        call.attempt_root.workspace_identity.identity_digest == scope.workspace.identity.identity_digest
+        for call in calls
     )
 
 
