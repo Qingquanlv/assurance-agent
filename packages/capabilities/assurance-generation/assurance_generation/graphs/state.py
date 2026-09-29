@@ -215,6 +215,8 @@ class GenerationState(CheckpointBridgeState, total=False):
     families: dict[str, dict[str, bool]]
     status: str
     attempt_failure: dict[str, object]
+    ui_exploration_ref: dict[str, str]
+    api_discovery_ref: dict[str, str]
 
 
 __all__ = [

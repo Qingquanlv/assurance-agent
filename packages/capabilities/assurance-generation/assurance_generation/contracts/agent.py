@@ -196,6 +196,8 @@ class CodegenInputV1(FrozenModel):
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
+    ui_exploration_ref: EvidenceArtifactRefV1 | None = None
+    api_discovery_ref: EvidenceArtifactRefV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod

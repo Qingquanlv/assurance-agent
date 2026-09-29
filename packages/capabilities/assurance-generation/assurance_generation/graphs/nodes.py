@@ -183,19 +183,22 @@ def select_plan_review(state: Mapping[str, object]) -> PlanInputV1:
 
 
 def select_codegen(state: Mapping[str, object]) -> CodegenInputV1:
-    return CodegenInputV1.model_validate(
-        {
-            "change_id": state["change_id"],
-            "plan_digest": state["plan_digest"],
-            "plan_ref": state["plan_ref"],
-            "capability_leafs": state["capability_leafs"],
-            "codegen_output": state.get("codegen_output"),
-            "artifact_paths": state.get("allowed_artifact_paths") or (),
-            "coverage_epoch": state.get("coverage_epoch", 0),
-            "local_round": state.get("rounds_used", 0),
-            "reviewed_case": state.get("reviewed_case"),
-        }
-    )
+    payload: dict[str, object] = {
+        "change_id": state["change_id"],
+        "plan_digest": state["plan_digest"],
+        "plan_ref": state["plan_ref"],
+        "capability_leafs": state["capability_leafs"],
+        "codegen_output": state.get("codegen_output"),
+        "artifact_paths": state.get("allowed_artifact_paths") or (),
+        "coverage_epoch": state.get("coverage_epoch", 0),
+        "local_round": state.get("rounds_used", 0),
+        "reviewed_case": state.get("reviewed_case"),
+    }
+    if state.get("ui_exploration_ref") is not None:
+        payload["ui_exploration_ref"] = state["ui_exploration_ref"]
+    if state.get("api_discovery_ref") is not None:
+        payload["api_discovery_ref"] = state["api_discovery_ref"]
+    return CodegenInputV1.model_validate(payload)
 
 
 def select_codegen_review(state: Mapping[str, object]) -> CodegenInputV1:

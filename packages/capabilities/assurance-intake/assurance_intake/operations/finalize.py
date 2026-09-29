@@ -73,8 +73,6 @@ from assurance_intake.operations.case_review_seal import (
     expected_review_history,
     expected_reviewed_case,
 )
-from assurance_intake.operations.surface_guard import SurfaceMismatch, assert_cases_match_surface
-from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
 
 
 class OutputError(ValueError):
@@ -1472,6 +1470,16 @@ class CaseDesignFinalizeHandler:
                 except OutputError as error:
                     validation_errors.append(str(error))
             if payload.ui_exploration is not None and payload.api_discovery is not None:
+                # Lazy: avoid generation↔quality import cycle at module load.
+                from assurance_intake.operations.surface_guard import (
+                    SurfaceMismatch,
+                    assert_cases_match_surface,
+                )
+                from assurance_quality.contracts.surface import (
+                    ApiDiscoveryDocument,
+                    UiExplorationDocument,
+                )
+
                 try:
                     api_document = ApiDiscoveryDocument.model_validate(thaw_json(payload.api_discovery))
                     ui_document = UiExplorationDocument.model_validate(thaw_json(payload.ui_exploration))

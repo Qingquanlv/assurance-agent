@@ -31,6 +31,8 @@ class ExecuteTailInputV1(FrozenModel):
     allowed_artifact_paths: tuple[str, ...]
     budgets: BusinessBudgetsV1
     decision: str
+    ui_exploration_ref: EvidenceArtifactRefV1 | None = None
+    api_discovery_ref: EvidenceArtifactRefV1 | None = None
 
     @model_validator(mode="after")
     def _reviewed_case_matches_cycle(self) -> Self:

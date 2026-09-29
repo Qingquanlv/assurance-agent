@@ -48,7 +48,6 @@ from assurance_intake.contracts.review import (
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
-from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
 from assurance_intake.operations.case_modules import infer_case_delta_paths
 from assurance_intake.resource_loader import resource_bytes, resource_text
 
@@ -496,6 +495,10 @@ class CaseDesignPrepareHandler:
                 if exploration.context_ref != "explore/context.json":
                     raise InputError("exploration.json context_ref must be explore/context.json")
             business = business.model_copy(update={"exploration": exploration, "impact_inventory": inventory})
+            # Lazy: quality.contracts.surface must not load at intake import time
+            # (generation → intake → quality → execution → generation cycle).
+            from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
+
             surface_updates: dict[str, object] = {}
             if business.ui_exploration_ref is not None:
                 _authenticate_evidence_refs(context.project_root, (business.ui_exploration_ref,))
