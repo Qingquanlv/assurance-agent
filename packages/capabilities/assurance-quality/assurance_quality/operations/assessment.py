@@ -26,7 +26,7 @@ from assurance_intake.contracts.cases import (
     CaseYamlAuthoring,
     MinimumCoverageMatrixAuthoring,
 )
-from assurance_intake.contracts.explore import load_exploration_document
+from assurance_intake.operations.explore_context import load_exploration_document
 from assurance_intake.contracts.quality_goals import (
     CoverageGoal,
     MrcCategory,

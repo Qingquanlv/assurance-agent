@@ -28,13 +28,13 @@ from assurance_intake.contracts.agent import (
     ExploreInputV1,
     IntakeInputV1,
 )
-from assurance_intake.contracts.planning_facts import build_planning_facts
 from assurance_intake.contracts.explore import (
     EXPLORE_AGENT_OUTPUT_PATHS,
     REQUIREMENT_PATH,
     RUN_SPEC_SNAPSHOT_PATH,
-    build_explore_context,
 )
+from assurance_intake.operations.explore_context import build_explore_context
+from assurance_intake.operations.planning_facts import build_planning_facts
 from assurance_intake.resource_loader import resource_bytes, resource_text
 
 from assurance_intake.operations.prepare_evidence import (

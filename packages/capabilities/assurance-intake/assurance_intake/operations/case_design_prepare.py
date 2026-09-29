@@ -17,16 +17,16 @@ from assurance_intake.contracts.agent import (
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
-from assurance_intake.contracts.explore import load_exploration_document
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
-from assurance_intake.contracts.planning_facts import build_planning_facts
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
 from assurance_intake.operations.case_modules import infer_case_delta_paths
+from assurance_intake.operations.explore_context import load_exploration_document
+from assurance_intake.operations.planning_facts import build_planning_facts
 from assurance_intake.operations.prepare import (
     CASE_DESIGN_PERSONA,
     CASE_DESIGN_REPAIR_SKILL,

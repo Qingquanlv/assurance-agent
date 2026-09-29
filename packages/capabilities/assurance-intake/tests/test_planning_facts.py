@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from assurance_intake.contracts.planning_facts import build_planning_facts
+from assurance_intake.operations.planning_facts import build_planning_facts
 
 
 def _write(root: Path, path: str, text: str) -> None:

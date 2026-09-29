@@ -40,7 +40,6 @@ from assurance_intake.contracts.explore import (
     ExploreContextV1,
     PreparedExploreV1,
     REQUIREMENT_PATH,
-    load_exploration_document,
 )
 from assurance_intake.operations.obligations import (
     apply_scope_exclusions,
@@ -55,6 +54,7 @@ from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.contracts.cases import _require_impact_row_coverage
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
 from assurance_intake.operations.case_modules import infer_case_delta_paths
+from assurance_intake.operations.explore_context import load_exploration_document
 from assurance_intake.contracts.case_selection import selection_path
 from assurance_intake.contracts.quality_goals import journey_keys_from_document
 from assurance_intake.contracts.review import (

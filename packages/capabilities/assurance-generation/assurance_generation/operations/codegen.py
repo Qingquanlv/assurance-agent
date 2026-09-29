@@ -53,7 +53,8 @@ from assurance_generation.operations.planning import (
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
-from assurance_intake.contracts.explore import PreparedExploreV1, load_exploration_document
+from assurance_intake.contracts.explore import PreparedExploreV1
+from assurance_intake.operations.explore_context import load_exploration_document
 from assurance_intake.contracts.obligations import PreparedObligationV1
 from assurance_intake.contracts.plan import decode_plan
 from assurance_intake.contracts.quality_goals import normalize_obligation_drafts

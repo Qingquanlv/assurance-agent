@@ -18,7 +18,8 @@ from assurance_generation.contracts.obligation_methods import (
 from assurance_generation.contracts.plans import ObligationMethodPlanV1
 from assurance_generation.contracts.reviews import ObligationSemanticReviewV1
 from assurance_intake.contracts.obligations import PreparedObligationV1, VerificationRequirementV1
-from assurance_intake.contracts.explore import PreparedExploreV1, load_exploration_document
+from assurance_intake.contracts.explore import PreparedExploreV1
+from assurance_intake.operations.explore_context import load_exploration_document
 from assurance_intake.contracts.plan import decode_plan
 from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1

@@ -10,7 +10,7 @@ from typing import cast
 
 from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
 from assurance_intake.contracts.common import TestFamily
-from assurance_intake.contracts.explore import build_explore_context
+from assurance_intake.operations.explore_context import build_explore_context
 from assurance_intake.contracts.obligations import SourceRefV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.operations.obligations import (
