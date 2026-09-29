@@ -140,3 +140,12 @@ def test_intake_task_module_owns_lifecycle_classes() -> None:
             [sys.executable, "-c", f"import assurance_intake.{first}; import assurance_intake.{second}"],
             check=True,
         )
+
+
+def test_intake_plugin_contract_refs_match_task_catalog() -> None:
+    from assurance_intake.contracts.attempts import attempt_contract_refs
+    from assurance_intake.plugin import IntakePlugin
+    from assurance_intake.task import FEATURE
+
+    assert IntakePlugin.descriptor().attempt_contracts == attempt_contract_refs()
+    assert set(FEATURE.agent_contracts) == {"intake", "explore", "case-design", "case-review"}
