@@ -49,6 +49,9 @@ _INPUT_KEYS = (
     "artifacts",
     "retro_window",
     "decision",
+    "api_base_url",
+    "ui_base_url",
+    "ui_paths",
 )
 
 
@@ -156,6 +159,12 @@ def adapt_case(state: ProductState) -> dict[str, object]:
     }
     if rework_context is not None:
         feature_input["case_rework_context"] = rework_context
+    ui_exploration_ref = state.get("ui_exploration_ref")
+    if ui_exploration_ref is not None:
+        feature_input["ui_exploration_ref"] = ui_exploration_ref
+    api_discovery_ref = state.get("api_discovery_ref")
+    if api_discovery_ref is not None:
+        feature_input["api_discovery_ref"] = api_discovery_ref
     return {**feature_input, "feature_input": feature_input}
 
 

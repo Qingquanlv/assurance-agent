@@ -1469,6 +1469,31 @@ class CaseDesignFinalizeHandler:
                     _require_selected_test_families(authored, payload.selected_test_families)
                 except OutputError as error:
                     validation_errors.append(str(error))
+            if payload.ui_exploration is not None and payload.api_discovery is not None:
+                # Lazy: avoid generation↔quality import cycle at module load.
+                from assurance_intake.operations.surface_guard import (
+                    SurfaceMismatch,
+                    assert_cases_match_surface,
+                )
+                from assurance_quality.contracts.surface import (
+                    ApiDiscoveryDocument,
+                    UiExplorationDocument,
+                )
+
+                try:
+                    api_document = ApiDiscoveryDocument.model_validate(thaw_json(payload.api_discovery))
+                    ui_document = UiExplorationDocument.model_validate(thaw_json(payload.ui_exploration))
+                except ValidationError as error:
+                    raise OutputError(f"invalid surface document on case finalize: {error}") from error
+                try:
+                    assert_cases_match_surface(
+                        authored,
+                        api_document,
+                        ui_document,
+                        set(payload.selected_test_families),
+                    )
+                except SurfaceMismatch as error:
+                    validation_errors.append(str(error))
             if authored.added or authored.modified:
                 journey_keys = _authenticated_journey_keys(
                     context.project_root,

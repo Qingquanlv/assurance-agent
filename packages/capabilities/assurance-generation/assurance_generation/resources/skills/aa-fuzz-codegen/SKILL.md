@@ -31,6 +31,12 @@ exact reads, and never replace source-backed case facts with guesses from naming
 - `qa/tests/fuzz/**`
 - `qa/tests/testdata/domain/**`
 
+## Surface baseline
+
+When `api_discovery` is present, every generated request method and path must
+appear in `api_discovery.families[].operations` (the same set as
+`operation_keys`). Do not invent a path from a function name.
+
 ## Outputs
 
 When the host supplies non-empty \`verification_obligations\`, return one

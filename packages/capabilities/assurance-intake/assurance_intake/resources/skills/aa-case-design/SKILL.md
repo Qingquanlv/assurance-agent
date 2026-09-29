@@ -34,6 +34,15 @@ keys and MRC references consistent across every authored file. Preserve the froz
 owner oracle when the implementation differs. The inventory is evidence for
 source inspection, not permission to add cases or change the selected families.
 
+## Surface baseline
+
+When `ui_exploration` or `api_discovery` is present, it is the live surface for this run.
+
+- An API step `method` and `path` must be copied from `api_discovery.families[].operations`.
+- A fuzz endpoint and a performance `scenario.endpoint` must be copied from that same set.
+- An E2E step `path` must be copied from a feature whose `status` is `explored` or `partial`.
+- Do not invent a route or page that is absent from these documents.
+
 ## Context Contract
 
 Do not rely on prior conversation context.

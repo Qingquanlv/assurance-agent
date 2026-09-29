@@ -146,6 +146,17 @@ def build_effective_spec(
     if not isinstance(model, str) or not model.strip():
         raise OperatorError("invalid_input", "project config is missing execution.model_routing.default")
     try:
+        sut: dict[str, object] = {
+            "base_url": base_url,
+            "readiness_url": readiness,
+            "env": env,
+            "env_from_node": ["QA_ADMIN_PASSWORD"],
+        }
+        backend = urls.get("backend")
+        if isinstance(backend, str) and backend:
+            sut["api_base_url"] = backend
+        if isinstance(frontend, str) and frontend:
+            sut["ui_base_url"] = frontend
         return RunSpecV1.model_validate(
             {
                 "schema_version": "1",
@@ -154,12 +165,7 @@ def build_effective_spec(
                 "requirement": text,
                 "candidate_test_families": list(ordered),
                 "case_modules": [],
-                "sut": {
-                    "base_url": base_url,
-                    "readiness_url": readiness,
-                    "env": env,
-                    "env_from_node": ["QA_ADMIN_PASSWORD"],
-                },
+                "sut": sut,
                 "routes": {
                     "provider_model": model.strip(),
                     "worker_profile": "max",

@@ -45,7 +45,7 @@ def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) ->
 
     # The two Intake plan Tasks enter the live registry when Task 11 wires their
     # semantic nodes into the public graphs.
-    assert len(runtime_registry) == 44
+    assert len(runtime_registry) == 45
     assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 26
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
@@ -73,7 +73,7 @@ def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> 
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     composition = opencode_composition
-    assert len(composition.semantic_attempt_contracts) == 44
+    assert len(composition.semantic_attempt_contracts) == 45
     assert len(AGENT_EXECUTION_CONTRACTS) == 26
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
@@ -127,7 +127,7 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
 
     composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
-    assert len(resolved) == 44
+    assert len(resolved) == 45
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
     assert all(item.contract.validators == () for item in resolved.values())
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
@@ -174,7 +174,7 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
     assert len(agents) == 26
-    assert len(tasks) == 18
+    assert len(tasks) == 19
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)
     for contract_id in agents:
@@ -277,7 +277,7 @@ def test_every_product_agent_has_its_declared_task(opencode_composition) -> None
     agents = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     assert len(agents) == len(_AGENT_TASK_CLASSES) == len(_AGENT_TASK_TYPES) == 26
-    assert len(tasks) == 18
+    assert len(tasks) == 19
     assert set(_AGENT_TASK_TYPES) == set(agents)
     assert set(_AGENT_TASK_TYPES).isdisjoint(item.contract_id for item in tasks.values())
     for contract_id, contract in agents.items():

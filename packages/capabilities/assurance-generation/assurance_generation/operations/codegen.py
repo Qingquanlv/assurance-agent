@@ -57,6 +57,7 @@ from assurance_intake.contracts.explore import PreparedExploreV1, load_explorati
 from assurance_intake.contracts.obligations import PreparedObligationV1
 from assurance_intake.contracts.plan import decode_plan
 from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 CODEGEN_RESULT_ID = "assurance.generation.result.codegen.v1"
 _RESULT_FILES: Mapping[str, str] = {
@@ -70,6 +71,24 @@ _SKILL_FILES: Mapping[Family, str] = {
 }
 
 
+def _authenticate_surface_ref(workspace: Path, ref: EvidenceArtifactRefV1) -> Path:
+    path = workspace
+    for part in PurePosixPath(ref.path).parts:
+        path = path / part
+        if path.is_symlink():
+            raise InputError(f"surface document must not contain a symlink: {ref.path}")
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(workspace.resolve())
+    except (OSError, ValueError) as error:
+        raise InputError(f"surface document is missing: {ref.path}") from error
+    if resolved != path or not path.is_file() or path.stat().st_nlink != 1:
+        raise InputError(f"surface document must be a regular single-link file: {ref.path}")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
+        raise InputError(f"evidence digest changed after it was committed: {ref.path}")
+    return path
+
+
 def _verification_obligations(
     workspace: Path,
     *,
@@ -77,8 +96,6 @@ def _verification_obligations(
     family: Family,
     required: bool,
 ) -> tuple[PreparedObligationV1, ...]:
-    from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-
     model_dump = getattr(plan_ref, "model_dump", None)
     if callable(model_dump):
         plan_ref = model_dump(mode="json")
@@ -512,6 +529,31 @@ class CodegenPrepareHandler:
                     )
                 ],
             }
+            # Lazy: quality.contracts.surface must not load at generation import time.
+            if business.ui_exploration_ref is not None or business.api_discovery_ref is not None:
+                from assurance_quality.contracts.surface import (
+                    ApiDiscoveryDocument,
+                    UiExplorationDocument,
+                )
+
+                if business.ui_exploration_ref is not None:
+                    ui_path = _authenticate_surface_ref(context.project_root, business.ui_exploration_ref)
+                    try:
+                        ui_exploration = UiExplorationDocument.model_validate_json(ui_path.read_bytes())
+                    except (OSError, ValidationError, ValueError) as error:
+                        raise InputError(f"invalid ui-exploration.json: {error}") from error
+                    if ui_exploration.change_id != business.change_id:
+                        raise InputError("ui-exploration.json change_id does not match codegen change_id")
+                    context_payload["ui_exploration"] = ui_exploration.model_dump(mode="json")
+                if business.api_discovery_ref is not None:
+                    api_path = _authenticate_surface_ref(context.project_root, business.api_discovery_ref)
+                    try:
+                        api_discovery = ApiDiscoveryDocument.model_validate_json(api_path.read_bytes())
+                    except (OSError, ValidationError, ValueError) as error:
+                        raise InputError(f"invalid api-discovery.json: {error}") from error
+                    if api_discovery.change_id != business.change_id:
+                        raise InputError("api-discovery.json change_id does not match codegen change_id")
+                    context_payload["api_discovery"] = api_discovery.model_dump(mode="json")
             return prepare_codegen_outcome(
                 skill_path=_SKILL_FILES[family],
                 persona_path=PLAN_PERSONA,

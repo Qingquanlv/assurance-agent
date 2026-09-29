@@ -161,6 +161,17 @@ def _stub_export(state_schema: type, marker: str, *, status: str | None = None) 
                     "path": "qa/results/facts/fact-baseline.json",
                     "digest": _SHA,
                 }
+            if marker == "quality.surface_baseline":
+                update["ui_exploration_ref"] = {
+                    "path": "qa/results/facts/ui-exploration.json",
+                    "digest": _SHA,
+                }
+                update["api_discovery_ref"] = {
+                    "path": "qa/results/facts/api-discovery.json",
+                    "digest": _SHA,
+                }
+                update["ui_exploration_source"] = "unused"
+                update["api_discovery_source"] = "live"
         elif state_schema is ImprovementState:
             update["receipt_refs"] = [{"receipt_id": marker, "receipt_digest": _SHA}]
         else:
@@ -200,6 +211,7 @@ def _stub_features() -> dict[str, object]:
             issue_reconcile=_stub_export(QualityState, "quality.issue_reconcile"),
             report=_stub_export(QualityState, "quality.report"),
             fact_baseline=_stub_export(QualityState, "quality.fact_baseline"),
+            surface_baseline=_stub_export(QualityState, "quality.surface_baseline"),
         ),
         "assurance.healing": HealingGraphs(
             repair_failure=_stub_export(dict, "healing.repair_failure"),

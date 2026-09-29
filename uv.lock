@@ -200,6 +200,7 @@ dependencies = [
     { name = "graph-engine" },
     { name = "langgraph" },
     { name = "pydantic" },
+    { name = "ruamel-yaml" },
 ]
 
 [package.metadata]
@@ -213,6 +214,7 @@ requires-dist = [
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "langgraph", specifier = "==1.2.11" },
     { name = "pydantic", specifier = ">=2.7" },
+    { name = "ruamel-yaml", specifier = ">=0.18" },
 ]
 
 [[package]]

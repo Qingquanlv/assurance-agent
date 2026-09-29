@@ -24,6 +24,12 @@ from assurance_quality.contracts.baseline import (
     FactBaselineFull,
     FactBaselineUnavailable,
 )
+from assurance_quality.contracts.surface import (
+    API_DISCOVERY_PATH,
+    UI_EXPLORATION_PATH,
+    ApiDiscoveryDocument,
+    UiExplorationDocument,
+)
 from assurance_quality.contracts.c_layer import CLayerMetricEntry, CLayerMetricsDocument
 from assurance_quality.contracts.coverage import (
     CoverageGap,
@@ -134,6 +140,10 @@ __all__ = [
     "FactBaselineAuthoring",
     "FactBaselineFull",
     "FactBaselineUnavailable",
+    "UI_EXPLORATION_PATH",
+    "API_DISCOVERY_PATH",
+    "UiExplorationDocument",
+    "ApiDiscoveryDocument",
     "FailureAnalysis",
     "IssueAnalysisStatus",
     "IssueCandidateDocument",

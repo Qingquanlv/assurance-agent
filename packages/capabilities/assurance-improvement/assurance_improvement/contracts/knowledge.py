@@ -1,4 +1,8 @@
-"""Data-only knowledge-delta fields. Not a Phase 5 knowledge owner."""
+"""Leaf schema for a domain-knowledge delta.
+
+Promotion of a persisted delta into `.aa/data-knowledge.yaml` lives in
+`assurance_improvement.operations.knowledge_promote`.
+"""
 
 from __future__ import annotations
 

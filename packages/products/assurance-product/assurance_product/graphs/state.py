@@ -204,6 +204,10 @@ class ProductStateDocument(FrozenModel):
     execution_result: ExecutionCycleResultV1
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
+    ui_exploration_ref: EvidenceArtifactRefV1
+    api_discovery_ref: EvidenceArtifactRefV1
+    ui_exploration_source: str
+    api_discovery_source: str
     inspection_outcome: InspectionOutcomeV1
     tail_result: dict[str, Any]
     case_rework_context: CaseReworkContextV1
@@ -225,6 +229,9 @@ class ProductStateDocument(FrozenModel):
     issue_evidence_manifest_ref: EvidenceArtifactRefV1
     owned_evidence_ids: list[str]
     evidence_bundle_digest: str
+    api_base_url: str | None
+    ui_base_url: str | None
+    ui_paths: list[str]
     kind: str
     owner_id: str
     allowed_paths: list[str]
@@ -324,6 +331,10 @@ class ProductState(CheckpointBridgeState, total=False):
     execution_result: ExecutionCycleResultV1
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
+    ui_exploration_ref: EvidenceArtifactRefV1
+    api_discovery_ref: EvidenceArtifactRefV1
+    ui_exploration_source: str
+    api_discovery_source: str
     inspection_outcome: InspectionOutcomeV1
     tail_result: dict[str, object]
     case_rework_context: CaseReworkContextV1
@@ -345,6 +356,9 @@ class ProductState(CheckpointBridgeState, total=False):
     issue_evidence_manifest_ref: EvidenceArtifactRefV1
     owned_evidence_ids: list[str]
     evidence_bundle_digest: str
+    api_base_url: str | None
+    ui_base_url: str | None
+    ui_paths: list[str]
     kind: str
     owner_id: str
     allowed_paths: list[str]

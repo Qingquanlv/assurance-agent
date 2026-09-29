@@ -334,6 +334,9 @@ def prepare_composition(
         "allowed_origins": [_origin_from_base_url(spec.sut.base_url)],
         "execution_timeout_seconds": min(spec.timeout_seconds, 3600),
         "budgets": spec.budgets.model_dump(mode="json"),
+        "api_base_url": spec.sut.api_base_url,
+        "ui_base_url": spec.sut.ui_base_url,
+        "ui_paths": list(spec.sut.ui_paths),
     }
     value = ProductInputV1.model_validate(payload)
     value.validate_for_entrypoint(spec.entrypoint).authenticate_against(composition)

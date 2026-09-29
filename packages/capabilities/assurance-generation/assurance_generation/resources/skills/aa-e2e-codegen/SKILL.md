@@ -29,6 +29,11 @@ exact reads, and never replace source-backed case facts with guesses from naming
 - `qa/tests/e2e/**`
 - `qa/tests/testdata/domain/**`
 
+## Surface baseline
+
+When `ui_exploration` is present, every opened page path must appear on an
+`explored` or `partial` feature in `ui_exploration`.
+
 ## Outputs
 
 When the host supplies non-empty \`verification_obligations\`, return one

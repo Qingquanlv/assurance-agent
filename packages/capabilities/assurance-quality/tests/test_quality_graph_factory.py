@@ -35,6 +35,7 @@ _MATERIALIZE_ID = "assurance.quality.materialize-assessment-inputs"
 _ISSUE_TRIAGE_ID = "assurance.quality.agent.issue-triage.v1"
 _ISSUE_ANALYSIS_ID = "assurance.quality.agent.issue-analysis.v1"
 _ISSUE_RECONCILE_ID = "assurance.quality.reconcile-issues"
+_SURFACE_BASELINE_ID = "assurance.quality.surface-baseline"
 _REPORT_ID = "assurance.quality.agent.report.v1"
 _GRAPH_CONTRACT_IDS = (
     _MATERIALIZE_ID,
@@ -43,6 +44,7 @@ _GRAPH_CONTRACT_IDS = (
     _ISSUE_TRIAGE_ID,
     _ISSUE_ANALYSIS_ID,
     _ISSUE_RECONCILE_ID,
+    _SURFACE_BASELINE_ID,
     _REPORT_ID,
 )
 _PHASE_NODES = frozenset(
@@ -560,12 +562,13 @@ def test_quality_factory_exports_five_public_graphs(
         "issue_reconcile",
         "report",
         "fact_baseline",
+        "surface_baseline",
     )
     assert isinstance(bundle, QualityGraphs)
     assert not hasattr(bundle, "nodes")
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
-    assert len(set(recording_context.bound_contract_ids)) == 7
-    assert len(recording_context.bound_contract_ids) == 7
+    assert len(set(recording_context.bound_contract_ids)) == 8
+    assert len(recording_context.bound_contract_ids) == 8
     assert recording_context.bound_contract_ids.count(_ISSUE_ANALYSIS_ID) == 1
     assert recording_context.bound_contract_ids.count(_ISSUE_RECONCILE_ID) == 1
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)

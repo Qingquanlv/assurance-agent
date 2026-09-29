@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 import unicodedata
 from urllib.parse import urlparse
 
@@ -466,6 +466,9 @@ class ProductInputV1(FrozenModel):
     artifacts: tuple[ArtifactRefV1, ...] = ()
     retro_window: RetroWindow | None = None
     decision: str = "pass"
+    api_base_url: str | None = None
+    ui_base_url: str | None = None
+    ui_paths: tuple[Annotated[str, Field(pattern=r"^/")], ...] = ()
 
     @field_validator("change_id")
     @classmethod

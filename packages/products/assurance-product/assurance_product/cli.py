@@ -25,6 +25,13 @@ from graph_engine.attempts.secret_sources import (
     runtime_authorization_digest,
 )
 
+from assurance_improvement.operations.knowledge_promote import (
+    KnowledgePromoteError,
+    PromoteOutcome,
+    load_promotable_delta,
+    load_proposal_file,
+    promote_knowledge,
+)
 from assurance_improvement.operations.retro_dashboard import build_retro_dashboard
 
 from assurance_product.application import AssuranceProductApplication, SimpleRun
@@ -533,6 +540,58 @@ def retro_show(project_dir: str | None, change: str | None, as_json: bool) -> No
     except Exception as error:
         _fail(str(error), 40)
     _emit(dashboard.model_dump(mode="json"))
+
+
+def _promote_payload(outcome: PromoteOutcome) -> dict[str, object]:
+    return {
+        "written": outcome.written,
+        "merged_keys": list(outcome.merged_keys),
+        "conflicts_path": outcome.conflicts_path,
+        "conflicts": [item.key for item in outcome.conflicts],
+    }
+
+
+@app.group("knowledge")
+def knowledge() -> None:
+    """Promote a domain-knowledge delta into .aa/data-knowledge.yaml."""
+
+
+@knowledge.command("promote")
+@click.option("--project-dir", type=click.Path())
+@click.option("--improvement")
+@click.option("--from", "proposal_path", type=click.Path())
+@click.option("--yes", is_flag=True)
+@click.option("--force", is_flag=True)
+@click.option("--json", "as_json", is_flag=True)
+def knowledge_promote(
+    project_dir: str | None,
+    improvement: str | None,
+    proposal_path: str | None,
+    yes: bool,
+    force: bool,
+    as_json: bool,
+) -> None:
+    del as_json
+    _require_options({"project_dir": project_dir}, ("project_dir",))
+    if (improvement is None) == (proposal_path is None):
+        _fail("exactly one of --improvement or --from is required", 40)
+    try:
+        root = require_real_directory(Path(cast(str, project_dir)))
+        proposal = (
+            load_promotable_delta(root, improvement)
+            if improvement is not None
+            else load_proposal_file(Path(cast(str, proposal_path)))
+        )
+        outcome = promote_knowledge(root, proposal, yes=yes, force=force)
+    except KnowledgePromoteError as error:
+        if error.outcome is not None:
+            _emit(_promote_payload(error.outcome))
+        _fail(str(error), error.code)
+    except CommandError as error:
+        _fail(str(error), error.code)
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(_promote_payload(outcome))
 
 
 @app.group("operator")

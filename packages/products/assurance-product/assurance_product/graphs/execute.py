@@ -59,26 +59,31 @@ def adapt_execute_tail_input(
     source_artifacts = state.get("source_artifacts")
     if not isinstance(source_artifacts, list):
         source_artifacts = [item.model_dump(mode="json") for item in payload.artifacts]
-    tail_input = ExecuteTailInputV1.model_validate(
-        {
-            "change_id": payload.change_id,
-            "requirement": payload.requirement,
-            "run_mode": payload.run_mode,
-            "coverage_epoch": 0 if standalone else state.get("coverage_epoch", 0),
-            "plan_digest": state.get("plan_digest"),
-            "plan_ref": state.get("plan_ref"),
-            "reviewed_case": reviewed_case,
-            "source_artifacts": source_artifacts,
-            "selected_test_families": state.get("selected_test_families"),
-            "capability_leafs": payload.capability_leafs,
-            "capability_catalog": payload.capability_catalog,
-            "product_policy": payload.product_policy,
-            "data_knowledge": payload.data_knowledge,
-            "allowed_artifact_paths": payload.allowed_artifact_paths,
-            "budgets": payload.budgets,
-            "decision": payload.decision,
-        }
-    )
+    tail_payload: dict[str, object] = {
+        "change_id": payload.change_id,
+        "requirement": payload.requirement,
+        "run_mode": payload.run_mode,
+        "coverage_epoch": 0 if standalone else state.get("coverage_epoch", 0),
+        "plan_digest": state.get("plan_digest"),
+        "plan_ref": state.get("plan_ref"),
+        "reviewed_case": reviewed_case,
+        "source_artifacts": source_artifacts,
+        "selected_test_families": state.get("selected_test_families"),
+        "capability_leafs": payload.capability_leafs,
+        "capability_catalog": payload.capability_catalog,
+        "product_policy": payload.product_policy,
+        "data_knowledge": payload.data_knowledge,
+        "allowed_artifact_paths": payload.allowed_artifact_paths,
+        "budgets": payload.budgets,
+        "decision": payload.decision,
+    }
+    ui_exploration_ref = state.get("ui_exploration_ref")
+    if ui_exploration_ref is not None:
+        tail_payload["ui_exploration_ref"] = ui_exploration_ref
+    api_discovery_ref = state.get("api_discovery_ref")
+    if api_discovery_ref is not None:
+        tail_payload["api_discovery_ref"] = api_discovery_ref
+    tail_input = ExecuteTailInputV1.model_validate(tail_payload)
     update = tail_input.model_dump(mode="json")
     update["artifacts"] = list(update["source_artifacts"])
     update["healing_rounds_used"] = int(state.get("healing_rounds_used", 0))
@@ -121,7 +126,7 @@ def adapt_generation(state: ProductState) -> dict[str, object]:
     source_artifacts = state.get("source_artifacts")
     if not isinstance(source_artifacts, list):
         source_artifacts = [item.model_dump(mode="json") for item in payload.artifacts]
-    feature_input = {
+    feature_input: dict[str, object] = {
         "change_id": payload.change_id,
         "plan_digest": state.get("plan_digest"),
         "plan_ref": state.get("plan_ref"),
@@ -134,6 +139,12 @@ def adapt_generation(state: ProductState) -> dict[str, object]:
         "artifacts": [item.model_dump(mode="json") for item in payload.artifacts],
         "decision": payload.decision,
     }
+    ui_exploration_ref = state.get("ui_exploration_ref")
+    if ui_exploration_ref is not None:
+        feature_input["ui_exploration_ref"] = ui_exploration_ref
+    api_discovery_ref = state.get("api_discovery_ref")
+    if api_discovery_ref is not None:
+        feature_input["api_discovery_ref"] = api_discovery_ref
     return {**feature_input, "feature_input": feature_input}
 
 
