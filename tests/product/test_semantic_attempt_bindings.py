@@ -202,6 +202,14 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
         CoverageRepairTask,
         FixProposalTask,
     )
+    from assurance_improvement.operations.agent_tasks import (
+        ArchiveTask,
+        ImprovementReviewTask,
+        RetroEvalAnalysisTask,
+        RetroIssueAnalysisTask,
+        RetroTask,
+        RetroWorkflowAnalysisTask,
+    )
     from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
     from assurance_intake.operations.case_design import CaseDesignTask
     from assurance_quality.operations.agent_tasks import (
@@ -234,6 +242,12 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
         IssueAnalysisTask,
         IssueTriageTask,
         ReportTask,
+        ArchiveTask,
+        ImprovementReviewTask,
+        RetroEvalAnalysisTask,
+        RetroIssueAnalysisTask,
+        RetroWorkflowAnalysisTask,
+        RetroTask,
     ):
         selected = registry[task_type.contract.contract_id]
         assert isinstance(selected.executor, ResolvedRawAgentExecutor)

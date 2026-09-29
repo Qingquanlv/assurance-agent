@@ -61,6 +61,14 @@ from assurance_healing.operations.agent_tasks import (
     CoverageRepairTask,
     FixProposalTask,
 )
+from assurance_improvement.operations.agent_tasks import (
+    ArchiveTask,
+    ImprovementReviewTask,
+    RetroEvalAnalysisTask,
+    RetroIssueAnalysisTask,
+    RetroTask,
+    RetroWorkflowAnalysisTask,
+)
 from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
 from assurance_intake.operations.case_design import CaseDesignTask
 from assurance_quality.operations.agent_tasks import (
@@ -108,6 +116,12 @@ _AGENT_TASK_CLASSES = (
     IssueAnalysisTask,
     IssueTriageTask,
     ReportTask,
+    ArchiveTask,
+    ImprovementReviewTask,
+    RetroEvalAnalysisTask,
+    RetroIssueAnalysisTask,
+    RetroWorkflowAnalysisTask,
+    RetroTask,
 )
 _AGENT_TASK_TYPES = {task.contract.contract_id: task for task in _AGENT_TASK_CLASSES}
 

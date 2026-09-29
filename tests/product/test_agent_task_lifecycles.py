@@ -30,6 +30,12 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
         ("issue-analysis", "assurance.quality.agent.issue-analysis.v1"),
         ("issue-triage", "assurance.quality.agent.issue-triage.v1"),
         ("report", "assurance.quality.agent.report.v1"),
+        ("archive", "assurance.improvement.agent.archive.v1"),
+        ("improvement-review", "assurance.improvement.agent.improvement-review.v1"),
+        ("retro-eval-analysis", "assurance.improvement.agent.retro-eval-analysis.v1"),
+        ("retro-issue-analysis", "assurance.improvement.agent.retro-issue-analysis.v1"),
+        ("retro-workflow-analysis", "assurance.improvement.agent.retro-workflow-analysis.v1"),
+        ("retro", "assurance.improvement.agent.retro.v1"),
     ),
 )
 def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: str) -> None:
@@ -59,6 +65,14 @@ def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: s
         IssueTriageTask,
         ReportTask,
     )
+    from assurance_improvement.operations.agent_tasks import (
+        ArchiveTask,
+        ImprovementReviewTask,
+        RetroEvalAnalysisTask,
+        RetroIssueAnalysisTask,
+        RetroTask,
+        RetroWorkflowAnalysisTask,
+    )
 
     task_type = {
         "intake": IntakeTask,
@@ -81,6 +95,12 @@ def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: s
         "issue-analysis": IssueAnalysisTask,
         "issue-triage": IssueTriageTask,
         "report": ReportTask,
+        "archive": ArchiveTask,
+        "improvement-review": ImprovementReviewTask,
+        "retro-eval-analysis": RetroEvalAnalysisTask,
+        "retro-issue-analysis": RetroIssueAnalysisTask,
+        "retro-workflow-analysis": RetroWorkflowAnalysisTask,
+        "retro": RetroTask,
     }[name]
     calls: list[tuple[str, object, object]] = []
 

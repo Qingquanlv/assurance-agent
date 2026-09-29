@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.stategraph import add_attempt_node
 
 from assurance_improvement.graphs.nodes import (
     activation_one_shot,
@@ -71,22 +72,6 @@ _HUMAN_RESULT_PATHS: dict[Hashable, str] = {
 _EVALUATE_PATHS: dict[Hashable, str] = {"apply": "improvement.apply", "failed": "failed"}
 
 
-def _attempt(
-    context: CapabilityBuildContext,
-    contract_id: str,
-    semantic_node_id: str,
-    select: object,
-    publish: object,
-) -> Any:
-    return context.attempt(
-        contract_id,
-        semantic_node_id=semantic_node_id,
-        activation=activation_one_shot,
-        select=select,
-        publish=publish,
-    )
-
-
 def _add_shared_terminals(builder: StateGraph[ImprovementState]) -> None:
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
     builder.add_node("failed", cast(Callable[..., Any], terminal_failed))
@@ -103,9 +88,14 @@ def _build_one_shot(
     publish: object,
 ) -> CompiledStateGraph:
     builder: StateGraph[ImprovementState] = StateGraph(ImprovementState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         semantic_node_id,
-        cast(Callable[..., Any], _attempt(context, contract_id, semantic_node_id, select, publish)),
+        contract_id=contract_id,
+        activation=activation_one_shot,
+        select=select,
+        publish=publish,
     )
     _add_shared_terminals(builder)
     builder.add_edge(START, semantic_node_id)
@@ -167,46 +157,42 @@ def build_rollback_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
 
 def build_apply_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[ImprovementState] = StateGraph(ImprovementState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.apply-auto-review",
-        cast(
-            Callable[..., Any],
-            _attempt(
-                context,
-                _AUTO_REVIEW_ID,
-                "improvement.apply-auto-review",
-                select_auto_review,
-                publish_auto_review,
-            ),
-        ),
+        contract_id=_AUTO_REVIEW_ID,
+        activation=activation_one_shot,
+        select=select_auto_review,
+        publish=publish_auto_review,
     )
     builder.add_node("human-review", cast(Callable[..., Any], apply_human_interrupt))
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.apply-human-review",
-        cast(
-            Callable[..., Any],
-            _attempt(
-                context,
-                _HUMAN_REVIEW_ID,
-                "improvement.apply-human-review",
-                select_human_review,
-                publish_human_review,
-            ),
-        ),
+        contract_id=_HUMAN_REVIEW_ID,
+        activation=activation_one_shot,
+        select=select_human_review,
+        publish=publish_human_review,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.apply-evaluate",
-        cast(
-            Callable[..., Any],
-            _attempt(context, _EVALUATE_ID, "improvement.apply-evaluate", select_evaluate, publish_evaluate),
-        ),
+        contract_id=_EVALUATE_ID,
+        activation=activation_one_shot,
+        select=select_evaluate,
+        publish=publish_evaluate,
     )
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        context,
         "improvement.apply",
-        cast(
-            Callable[..., Any],
-            _attempt(context, _APPLY_ID, "improvement.apply", select_apply_memory, publish_apply_memory),
-        ),
+        contract_id=_APPLY_ID,
+        activation=activation_one_shot,
+        select=select_apply_memory,
+        publish=publish_apply_memory,
     )
     builder.add_node("rejected", cast(Callable[..., Any], terminal_rejected))
     builder.add_node("rework", cast(Callable[..., Any], terminal_rework))
