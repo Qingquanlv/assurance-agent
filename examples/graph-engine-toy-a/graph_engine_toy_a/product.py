@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -14,6 +14,7 @@ from graph_engine.boot.generic import entrypoint_digest
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.composition import PluginRequirement, ProductManifest
 from graph_engine.plugin_api import ProviderSource
+from graph_engine.stategraph import add_attempt_node
 
 from graph_engine_toy_a.contracts import GREET_CONTRACT, GreetInput
 
@@ -58,18 +59,14 @@ def build_toy_a_graphs(
     del features
     capability = context.for_capability("toy.a")
     builder: StateGraph[ToyAState] = StateGraph(ToyAState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        capability,
         "greet",
-        cast(
-            object,
-            capability.attempt(
-                GREET_CONTRACT.contract_id,
-                semantic_node_id="greet",
-                activation=BusinessActivation.one_shot(),
-                select=_select_greet,
-                publish=_publish_greet,
-            ),
-        ),
+        contract_id=GREET_CONTRACT.contract_id,
+        activation=BusinessActivation.one_shot(),
+        select=_select_greet,
+        publish=_publish_greet,
     )
     builder.add_edge(START, "greet")
     builder.add_edge("greet", END)

@@ -242,6 +242,27 @@ def test_feature_graph_modules_reject_foreign_and_implementation_imports() -> No
     assert violations == []
 
 
+def test_graph_attempts_use_registration_helper() -> None:
+    root = _repo_root()
+    examples = (
+        "examples/graph-engine-toy-a/graph_engine_toy_a/product.py",
+        "examples/graph-engine-toy-b/graph_engine_toy_b/product.py",
+        "examples/agent-runtime-fixture/agent_runtime_fixture/product.py",
+    )
+    paths = (*_graph_python_files(), *(root / relative for relative in examples))
+    violations = []
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        violations.extend(
+            f"{path}:{node.lineno}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "attempt"
+        )
+    assert violations == []
+
+
 def test_importlinter_keeps_graphs_forbidden_across_features() -> None:
     parser = ConfigParser()
     assert parser.read(_repo_root() / ".importlinter")

@@ -221,6 +221,7 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
     )
 
     registry = opencode_composition.semantic_attempt_contracts
+    host = object()
     for task_type in (
         IntakeTask,
         ExploreTask,
@@ -253,6 +254,66 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
         assert isinstance(selected.executor, ResolvedRawAgentExecutor)
         assert selected.executor._task_type is task_type
         assert selected.validation_context == selected.executor._result_context
+        bound = selected.executor.with_host(host, graph_revision="c" * 64, product_lock_digest="d" * 64)
+        task = bound._new_task()
+        assert isinstance(task, task_type)
+        for phase, handler_id in (
+            (task.prepare_phase, task_type.contract.prepare_handler_id),
+            (task.opencode, "runtime.opencode.execute"),
+            (task.finalize_phase, task_type.contract.finalize_handler_id),
+        ):
+            installed = cast(Any, phase)
+            assert installed.handler_id == handler_id
+            assert installed._host is host
+            assert installed._graph_revision == "c" * 64
+            assert installed._product_lock_digest == "d" * 64
+        assert cast(Any, task.opencode)._secret_handles == ("opencode.token",)
+
+
+def test_every_product_agent_has_its_declared_task(opencode_composition) -> None:
+    from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
+    from assurance_product.runtime_bindings import _AGENT_TASK_CLASSES, _AGENT_TASK_TYPES
+
+    agents = all_feature_agent_contracts()
+    tasks = all_feature_task_contracts()
+    assert len(agents) == len(_AGENT_TASK_CLASSES) == len(_AGENT_TASK_TYPES) == 26
+    assert len(tasks) == 18
+    assert set(_AGENT_TASK_TYPES) == set(agents)
+    assert set(_AGENT_TASK_TYPES).isdisjoint(item.contract_id for item in tasks.values())
+    for contract_id, contract in agents.items():
+        task_type = _AGENT_TASK_TYPES[contract_id]
+        resolved = opencode_composition.semantic_attempt_contracts[contract_id]
+        assert resolved.executor._task_type is task_type
+        assert task_type.contract.canonical_projection() == contract.canonical_projection()
+        assert resolved.validation_context == resolved.executor._result_context
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "extra", "drift"])
+def test_boot_rejects_invalid_agent_task_table(
+    mutation: str, opencode_composition, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from assurance_product import runtime_bindings
+
+    classes = runtime_bindings._AGENT_TASK_CLASSES
+    if mutation == "missing":
+        altered = classes[1:]
+    elif mutation == "duplicate":
+        altered = (*classes, classes[0])
+    else:
+        contract = replace(
+            classes[0].contract,
+            contract_id="assurance.intake.agent.forged.v1"
+            if mutation == "extra"
+            else classes[0].contract.contract_id,
+            skill_id="forged" if mutation == "drift" else classes[0].contract.skill_id,
+        )
+        forged = type("ForgedTask", (), {"contract": contract})
+        altered = (*classes, forged) if mutation == "extra" else (forged, *classes[1:])
+    monkeypatch.setattr(runtime_bindings, "_AGENT_TASK_CLASSES", altered)
+    with pytest.raises(ValueError, match=mutation):
+        runtime_bindings.boot_semantic_attempt_contracts(opencode_composition)
 
 
 @pytest.mark.parametrize(

@@ -774,7 +774,7 @@ def _resolve_agent_contract(
             callable_path=finalize_callable,
             timeout_seconds=timeout_seconds,
         ),
-        task_type=_AGENT_TASK_TYPES.get(contract.contract_id),
+        task_type=_AGENT_TASK_TYPES[contract.contract_id],
         result_context=validation_context,
     )
     return resolve_contract(
@@ -810,6 +810,21 @@ def boot_semantic_attempt_contracts(
     adapter_binding = _adapter_binding_from_composition(composition)
     validation_context = _attempt_validation_context(composition)
     agents = all_feature_agent_contracts()
+    task_ids = [task_type.contract.contract_id for task_type in _AGENT_TASK_CLASSES]
+    if len(task_ids) != len(set(task_ids)):
+        raise ValueError("duplicate agent Task contract ID")
+    missing = set(agents) - set(task_ids)
+    if missing:
+        raise ValueError(f"missing agent Task contracts: {sorted(missing)}")
+    extra = set(task_ids) - set(agents)
+    if extra:
+        raise ValueError(f"extra agent Task contracts: {sorted(extra)}")
+    for task_type in _AGENT_TASK_CLASSES:
+        contract_id = task_type.contract.contract_id
+        if task_type.contract.canonical_projection() != agents[contract_id].canonical_projection():
+            raise ValueError(f"agent Task contract drift: {contract_id}")
+        if _AGENT_TASK_TYPES.get(contract_id) is not task_type:
+            raise ValueError(f"agent Task table drift: {contract_id}")
     authenticate_raw_agent_runtime_bindings(
         tuple(
             project_raw_agent_runtime_binding(binding, agents[binding.contract_id])

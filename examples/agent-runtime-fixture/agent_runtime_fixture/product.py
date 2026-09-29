@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, TypedDict, cast
+from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -14,6 +14,7 @@ from graph_engine.boot.generic import entrypoint_digest
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.composition import PluginRequirement, ProductManifest
 from graph_engine.plugin_api import ProviderSource
+from graph_engine.stategraph import add_attempt_node
 
 from agent_runtime_fixture import fixture_config
 from agent_runtime_fixture.contracts import RUN_CONTRACT, frozen_run_request
@@ -59,18 +60,14 @@ def build_fixture_graphs(
     del features
     capability = context.for_capability("fixture.binding")
     builder: StateGraph[FixtureState] = StateGraph(FixtureState)
-    builder.add_node(
+    add_attempt_node(
+        builder,
+        capability,
         "run",
-        cast(
-            Any,
-            capability.attempt(
-                RUN_CONTRACT.contract_id,
-                semantic_node_id="run",
-                activation=BusinessActivation.one_shot(),
-                select=_select_run,
-                publish=_publish_run,
-            ),
-        ),
+        contract_id=RUN_CONTRACT.contract_id,
+        activation=BusinessActivation.one_shot(),
+        select=_select_run,
+        publish=_publish_run,
     )
     builder.add_edge(START, "run")
     builder.add_edge("run", END)
