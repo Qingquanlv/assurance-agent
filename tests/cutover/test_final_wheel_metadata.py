@@ -88,9 +88,8 @@ def test_no_workspace_wheel_ships_obsolete_orchestration_contracts(
 
 
 def test_final_smoke_builds_eleven_wheels_and_installs_aa(smoke_script: str) -> None:
-    assert '--package "$package"' in smoke_script
     for package in CLOSED_WHEEL_PACKAGES:
-        assert package in smoke_script
+        assert f"--package {package}" in smoke_script
     assert "aa-next compile" not in smoke_script
     assert "aa-next bindings" not in smoke_script
     assert 'if [[ ! -x "$venv/bin/aa" ]]; then' in smoke_script
