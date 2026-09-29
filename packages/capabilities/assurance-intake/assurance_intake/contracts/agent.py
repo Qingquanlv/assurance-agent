@@ -238,6 +238,10 @@ class CaseDesignInputV1(_SkillInputV1):
     case_delta_paths: tuple[str, ...] = ()
     exploration: PreparedExploreV1 | ExploreAdvisoryV1 | None = None
     impact_inventory: ChangeImpactInventoryV1 | None = None
+    ui_exploration_ref: EvidenceArtifactRefV1 | None = None
+    api_discovery_ref: EvidenceArtifactRefV1 | None = None
+    ui_exploration: FrozenJSONValue | None = None
+    api_discovery: FrozenJSONValue | None = None
     validation_attempt: Literal[0, 1] = 0
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
     review_repair: ReviewRepairContractV1 | None = None
@@ -422,3 +426,5 @@ class AgentFinalizeInputV1(FrozenModel):
 class CaseFinalizeInputV1(AgentFinalizeInputV1):
     plan_digest: str = Field(pattern=_SHA256)
     plan_ref: EvidenceArtifactRefV1
+    ui_exploration: FrozenJSONValue | None = None
+    api_discovery: FrozenJSONValue | None = None

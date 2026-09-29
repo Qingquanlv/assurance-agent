@@ -48,6 +48,7 @@ from assurance_intake.contracts.review import (
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
+from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
 from assurance_intake.operations.case_modules import infer_case_delta_paths
 from assurance_intake.resource_loader import resource_bytes, resource_text
 
@@ -495,6 +496,35 @@ class CaseDesignPrepareHandler:
                 if exploration.context_ref != "explore/context.json":
                     raise InputError("exploration.json context_ref must be explore/context.json")
             business = business.model_copy(update={"exploration": exploration, "impact_inventory": inventory})
+            surface_updates: dict[str, object] = {}
+            if business.ui_exploration_ref is not None:
+                _authenticate_evidence_refs(context.project_root, (business.ui_exploration_ref,))
+                try:
+                    ui_exploration = UiExplorationDocument.model_validate_json(
+                        context.project_root.joinpath(
+                            *business.ui_exploration_ref.path.split("/")
+                        ).read_bytes()
+                    )
+                except (OSError, ValidationError, ValueError) as error:
+                    raise InputError(f"invalid ui-exploration.json: {error}") from error
+                if ui_exploration.change_id != business.change_id:
+                    raise InputError("ui-exploration.json change_id does not match case-design change_id")
+                surface_updates["ui_exploration"] = ui_exploration.model_dump(mode="json")
+            if business.api_discovery_ref is not None:
+                _authenticate_evidence_refs(context.project_root, (business.api_discovery_ref,))
+                try:
+                    api_discovery = ApiDiscoveryDocument.model_validate_json(
+                        context.project_root.joinpath(
+                            *business.api_discovery_ref.path.split("/")
+                        ).read_bytes()
+                    )
+                except (OSError, ValidationError, ValueError) as error:
+                    raise InputError(f"invalid api-discovery.json: {error}") from error
+                if api_discovery.change_id != business.change_id:
+                    raise InputError("api-discovery.json change_id does not match case-design change_id")
+                surface_updates["api_discovery"] = api_discovery.model_dump(mode="json")
+            if surface_updates:
+                business = business.model_copy(update=surface_updates)
             try:
                 inferred = infer_case_delta_paths(inventory)
             except ValueError:

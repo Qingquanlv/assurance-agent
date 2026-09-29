@@ -193,19 +193,22 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
 
 
 def select_case_design(state: Mapping[str, object]) -> CaseDesignInputV1:
-    return CaseDesignInputV1.model_validate(
-        {
-            **_skill_payload(state),
-            "plan_digest": state["plan_digest"],
-            "plan_ref": state["plan_ref"],
-            "selected_test_families": state["selected_test_families"],
-            "case_delta_paths": state["case_delta_paths"],
-            "coverage_epoch": state.get("coverage_epoch", 0),
-            "preparation_refs": state.get("preparation_refs", ()),
-            "case_rework_context": state.get("case_rework_context"),
-            "validation_attempt": 0,
-        }
-    )
+    payload: dict[str, object] = {
+        **_skill_payload(state),
+        "plan_digest": state["plan_digest"],
+        "plan_ref": state["plan_ref"],
+        "selected_test_families": state["selected_test_families"],
+        "case_delta_paths": state["case_delta_paths"],
+        "coverage_epoch": state.get("coverage_epoch", 0),
+        "preparation_refs": state.get("preparation_refs", ()),
+        "case_rework_context": state.get("case_rework_context"),
+        "validation_attempt": 0,
+    }
+    if state.get("ui_exploration_ref") is not None:
+        payload["ui_exploration_ref"] = state["ui_exploration_ref"]
+    if state.get("api_discovery_ref") is not None:
+        payload["api_discovery_ref"] = state["api_discovery_ref"]
+    return CaseDesignInputV1.model_validate(payload)
 
 
 def select_case_design_retry(state: Mapping[str, object]) -> CaseDesignInputV1:
@@ -213,17 +216,20 @@ def select_case_design_retry(state: Mapping[str, object]) -> CaseDesignInputV1:
 
 
 def select_case_design_repair(state: Mapping[str, object]) -> CaseDesignInputV1:
-    return CaseDesignInputV1.model_validate(
-        {
-            **_skill_payload(state),
-            "plan_digest": state["plan_digest"],
-            "plan_ref": state["plan_ref"],
-            "selected_test_families": state["selected_test_families"],
-            "case_delta_paths": state["case_delta_paths"],
-            "validation_attempt": 1,
-            "validation_error": state["validation_error"],
-        }
-    )
+    payload: dict[str, object] = {
+        **_skill_payload(state),
+        "plan_digest": state["plan_digest"],
+        "plan_ref": state["plan_ref"],
+        "selected_test_families": state["selected_test_families"],
+        "case_delta_paths": state["case_delta_paths"],
+        "validation_attempt": 1,
+        "validation_error": state["validation_error"],
+    }
+    if state.get("ui_exploration_ref") is not None:
+        payload["ui_exploration_ref"] = state["ui_exploration_ref"]
+    if state.get("api_discovery_ref") is not None:
+        payload["api_discovery_ref"] = state["api_discovery_ref"]
+    return CaseDesignInputV1.model_validate(payload)
 
 
 def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:

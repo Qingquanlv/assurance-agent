@@ -167,6 +167,8 @@ class IntakeState(CheckpointBridgeState, total=False):
     reviewed_case: dict[str, object]
     case_receipt: dict[str, str]
     receipt: dict[str, str]
+    ui_exploration_ref: dict[str, str]
+    api_discovery_ref: dict[str, str]
 
 
 __all__ = [
