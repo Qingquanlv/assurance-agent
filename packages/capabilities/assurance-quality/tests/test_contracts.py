@@ -39,6 +39,7 @@ from assurance_quality.contracts.issues import IssueReconcileStatusDocument, Iss
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.obligations import ObligationAssessmentV1
 from assurance_quality.plugin import QualityPlugin
+from tests.capabilities.import_boundary_exceptions import is_declared_cross_wheel_import
 
 _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.quality.schema.adversarial-yield.v1": (
@@ -252,6 +253,8 @@ def forbidden_quality_imports() -> set[str]:
         if "__pycache__" in path.parts:
             continue
         for module_name in _imported_modules(ast.parse(path.read_text(encoding="utf-8"))):
+            if is_declared_cross_wheel_import(root, path, module_name):
+                continue
             if any(module_name == item or module_name.startswith(f"{item}.") for item in _LEGACY_ROOTS):
                 found.add(module_name)
             if (

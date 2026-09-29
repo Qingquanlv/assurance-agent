@@ -19,6 +19,7 @@ from assurance_execution.contracts import (
     SelectedTargets,
 )
 from assurance_execution.plugin import ExecutionPlugin
+from tests.capabilities.import_boundary_exceptions import is_declared_cross_wheel_import
 
 _TESTS_ROOT = Path(__file__).resolve().parent
 _WHEEL_ROOT = _TESTS_ROOT.parent
@@ -121,6 +122,8 @@ def forbidden_execution_imports() -> set[str]:
         if "__pycache__" in path.parts:
             continue
         for module_name in _imported_modules(ast.parse(path.read_text(encoding="utf-8"))):
+            if is_declared_cross_wheel_import(root, path, module_name):
+                continue
             if any(module_name == item or module_name.startswith(f"{item}.") for item in _LEGACY_ROOTS):
                 found.add(module_name)
             if module_name.startswith("assurance_intake.") or module_name.startswith("assurance_generation."):
