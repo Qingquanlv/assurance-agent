@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal
 
-from pydantic import Field, JsonValue, model_serializer
+from pydantic import Field, model_serializer
 
 from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.schema import canonical_digest, reject_credentials_in_digest_input, thaw_json
@@ -16,7 +15,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 
-from agent_runtime_opencode.transport.http import OpenCodeHttpClient
+from agent_runtime_opencode.transport.http import OpenCodeDiscoveryMetadata, OpenCodeHttpClient
 
 
 ADAPTER_VERSION = "0.2.0"
@@ -24,18 +23,6 @@ ADAPTER_VERSION = "0.2.0"
 
 class OpenCodeDispatchIncomplete(Exception):
     """Raised when execute cannot bind before prompt admission."""
-
-
-class OpenCodeDiscoveryMetadata(FrozenModel):
-    schema_version: Literal["1"] = "1"
-    invocation_id: str = Field(min_length=1)
-    task_id: str = Field(min_length=1)
-    activation_id: str = Field(min_length=1)
-    attempt: int = Field(ge=1)
-    activity_id: str = Field(min_length=1)
-    request_digest: str = Field(min_length=64, max_length=64)
-    workspace_identity_digest: str = Field(min_length=64, max_length=64)
-    adapter_source_digest: str = Field(min_length=64, max_length=64)
 
 
 class OpenCodeActivityReference(FrozenModel):
@@ -57,18 +44,6 @@ class OpenCodeActivityReference(FrozenModel):
                 if serialized.get(key) is None:
                     serialized.pop(key, None)
         return serialized
-
-
-class OpenCodeSessionMetadata(FrozenModel):
-    discovery: OpenCodeDiscoveryMetadata
-    workspace_binding: dict[str, JsonValue]
-
-
-class OpenCodeSessionCreateRequest(FrozenModel):
-    title: str = Field(min_length=1)
-    metadata: OpenCodeSessionMetadata
-    agent: str | None = None
-    parentID: str | None = None
 
 
 def discovery_metadata_from_record(record: Mapping[str, object]) -> OpenCodeDiscoveryMetadata:
@@ -206,10 +181,7 @@ def _bind_match(
 __all__ = [
     "ADAPTER_VERSION",
     "OpenCodeActivityReference",
-    "OpenCodeDiscoveryMetadata",
     "OpenCodeDispatchIncomplete",
-    "OpenCodeSessionCreateRequest",
-    "OpenCodeSessionMetadata",
     "activation_identity",
     "adapter_source_digest",
     "agent_run_from_request",

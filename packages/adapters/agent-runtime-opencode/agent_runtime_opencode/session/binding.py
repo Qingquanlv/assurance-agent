@@ -19,15 +19,17 @@ from graph_engine.plugin_api import (
 
 from agent_runtime_opencode.session.discovery import (
     OpenCodeActivityReference,
-    OpenCodeDiscoveryMetadata,
-    OpenCodeSessionCreateRequest,
     _bind_match,
     discovery_metadata_from_record,
     metadata_match_digest,
 )
 from agent_runtime_opencode.session.identity import _reference_drifted
 from agent_runtime_opencode.transport.connection import PROVIDER_ERRORS
-from agent_runtime_opencode.transport.http import OpenCodeHttpClient
+from agent_runtime_opencode.transport.http import (
+    OpenCodeDiscoveryMetadata,
+    OpenCodeHttpClient,
+    OpenCodeSessionCreateRequest,
+)
 
 
 _ACTIVITY_LABEL_MAX = 120

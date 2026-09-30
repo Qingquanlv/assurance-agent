@@ -5,11 +5,11 @@ import base64
 import json
 import time
 from collections.abc import Mapping
-from typing import Any, Self
+from typing import Any, Literal, Self
 from urllib.parse import urljoin
 
 import httpx
-from pydantic import model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from agent_runtime_contracts.schema import canonical_json_bytes
 from graph_engine.plugin_api import FrozenModel
@@ -30,6 +30,30 @@ class _RedirectTarget(FrozenModel):
 
 def canonical_json_text(value: object) -> str:
     return canonical_json_bytes(value).decode("utf-8")
+
+
+class OpenCodeDiscoveryMetadata(FrozenModel):
+    schema_version: Literal["1"] = "1"
+    invocation_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    activation_id: str = Field(min_length=1)
+    attempt: int = Field(ge=1)
+    activity_id: str = Field(min_length=1)
+    request_digest: str = Field(min_length=64, max_length=64)
+    workspace_identity_digest: str = Field(min_length=64, max_length=64)
+    adapter_source_digest: str = Field(min_length=64, max_length=64)
+
+
+class OpenCodeSessionMetadata(FrozenModel):
+    discovery: OpenCodeDiscoveryMetadata
+    workspace_binding: dict[str, JsonValue]
+
+
+class OpenCodeSessionCreateRequest(FrozenModel):
+    title: str = Field(min_length=1)
+    metadata: OpenCodeSessionMetadata
+    agent: str | None = None
+    parentID: str | None = None
 
 
 def _path_segment(value: str, label: str) -> str:
@@ -75,8 +99,6 @@ class OpenCodeHttpClient:
         return await self._json("GET", "/session")
 
     async def create_session(self, body: Mapping[str, object]) -> dict[str, Any]:
-        from agent_runtime_opencode.session.discovery import OpenCodeSessionCreateRequest
-
         typed = OpenCodeSessionCreateRequest.model_validate(body)
         payload = typed.model_dump(mode="json", exclude_none=True)
         if "id" in payload:
