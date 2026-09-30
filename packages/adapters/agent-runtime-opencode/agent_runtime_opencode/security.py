@@ -190,3 +190,8 @@ def scan_for_canaries(
             for form in forms:
                 if form and form in data:
                     raise ValueError("canary credential leaked")
+
+
+def _secret_canaries(secret: bytes) -> tuple[str, ...]:
+    text = secret.decode("utf-8")
+    return (text,) if text else ()

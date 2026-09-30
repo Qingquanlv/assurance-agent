@@ -1,16 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-from pathlib import Path
 from typing import Any
 
-import httpx
-from pydantic import ValidationError
-
-from agent_runtime_contracts import AgentRunRequest, rebind_agent_run_workspace
-from agent_runtime_contracts.schema import canonical_digest, reject_credentials_in_digest_input, thaw_json
+from agent_runtime_contracts import AgentRunRequest
 from graph_engine.plugin_api import (
     SecretHandleUnauthorized,
     TaskActivityCancelResult,
@@ -23,70 +17,31 @@ from graph_engine.plugin_api import (
 )
 
 from agent_runtime_opencode.config import AdapterConfigurationError, OpenCodeAdapterConfig
-from agent_runtime_opencode.discovery import (
-    ADAPTER_VERSION,
-    OpenCodeActivityReference,
-    OpenCodeDiscoveryMetadata,
+from agent_runtime_opencode.observe.poll import _observe_bound, _observe_fingerprint
+from agent_runtime_opencode.prompt import _admit_prompt
+from agent_runtime_opencode.security import _secret_canaries
+from agent_runtime_opencode.session.binding import (
+    _create_and_bind,
+    _load_bound_session,
+    _verify_workspace_binding,
+    activity_label_for_session,
+)
+from agent_runtime_opencode.session.discovery import (
     OpenCodeDispatchIncomplete,
-    OpenCodeSessionCreateRequest,
+    _bind_match,
+    _list_sessions,
     adapter_source_digest,
-    agent_run_from_request,
     discovery_metadata,
-    discovery_metadata_from_record,
     exact_metadata_matches,
-    expected_message_id,
-    metadata_match_digest,
-    prompt_body_digest,
 )
-from agent_runtime_opencode.observation import (
-    classify_admission,
-    classify_provider_state,
-    parse_closed_terminal_result,
-    parse_sse_frames,
-    prompt_admission_body,
-    reduce_sse_frames,
-    user_prompt_already_admitted,
-)
-from agent_runtime_opencode.protocol import (
-    OpenCodeHttpClient,
-    canonical_json_text,
-    resolve_advertised_profile,
-)
-from agent_runtime_opencode.reducer import (
-    reduce_terminal,
-    result_candidate_satisfies_contract,
-    select_unique_contract_valid_result,
+from agent_runtime_opencode.session.identity import (
+    _dispatch_fingerprint,
+    _effective_agent_run,
+    _expected_reference_fields,
+    _identity_mismatch,
 )
 from agent_runtime_opencode.transport.connection import PROVIDER_ERRORS, open_client
-from agent_runtime_opencode.workspace_binding import (
-    activity_label_for_session,
-    child_session_title,
-    workspace_binding_for,
-)
-
-
-_BINDING_INVALID = "workspace binding is missing or invalid"
-
-
-def workspace_identity_digest_for(context: TaskContext) -> str:
-    return canonical_digest(
-        {
-            "project_root": str(context.project_root.resolve()),
-            "write_root": str(context.write_root.resolve()),
-        }
-    )
-
-
-def _dispatch_fingerprint(fingerprint: dict[str, Any], context: TaskContext) -> dict[str, Any]:
-    return {
-        **fingerprint,
-        "workspace_identity_digest": workspace_identity_digest_for(context),
-    }
-
-
-def _secret_canaries(secret: bytes) -> tuple[str, ...]:
-    text = secret.decode("utf-8")
-    return (text,) if text else ()
+from agent_runtime_opencode.transport.http import OpenCodeHttpClient
 
 
 def _activity_is_bound(context: TaskContext) -> bool:
@@ -103,7 +58,7 @@ class OpenCodeHandler:
         if context.secrets is None:
             raise SecretHandleUnauthorized("secret port is required")
         async with open_client(config, context) as connection:
-            return await self._observe_fingerprint(connection.client, config, connection.secret)
+            return await _observe_fingerprint(connection.client, config, connection.secret)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
@@ -175,18 +130,18 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="activity snapshot does not match the live port",
             )
-        mismatch = self._identity_mismatch(request, context, port.snapshot)
+        mismatch = _identity_mismatch(request, context, port.snapshot)
         if mismatch is not None:
             return TaskActivityCancelResult(status="indeterminate", reason=mismatch)
-        agent_run = self._effective_agent_run(request, context)
+        agent_run = _effective_agent_run(request, context)
         async with open_client(config, context) as connection:
             client = connection.client
             secret = connection.secret
             try:
                 context.heartbeat()
-                fingerprint = await self._observe_fingerprint(client, config, secret)
-                expected = self._expected_reference_fields(request, port.snapshot, fingerprint, agent_run)
-                bound = await self._load_bound_session(client, port.snapshot, expected)
+                fingerprint = await _observe_fingerprint(client, config, secret)
+                expected = _expected_reference_fields(request, port.snapshot, fingerprint, agent_run)
+                bound = await _load_bound_session(client, port.snapshot, expected)
                 if isinstance(bound, TaskActivityReconcileResult):
                     return TaskActivityCancelResult(
                         status="indeterminate",
@@ -194,7 +149,7 @@ class OpenCodeHandler:
                     )
                 reference, record = bound
                 canaries = _secret_canaries(secret)
-                observed = await self._observe_bound(
+                observed = await _observe_bound(
                     client,
                     request,
                     context,
@@ -218,7 +173,7 @@ class OpenCodeHandler:
                 await client.abort(reference.session_id or "")
                 deadline = time.monotonic() + config.cancel_timeout_seconds
                 while True:
-                    raced = await self._observe_bound(
+                    raced = await _observe_bound(
                         client,
                         request,
                         context,
@@ -262,21 +217,21 @@ class OpenCodeHandler:
         if port is None:
             raise ValueError("activity port is required")
         snapshot = port.snapshot
-        mismatch = self._identity_mismatch(request, context, snapshot)
+        mismatch = _identity_mismatch(request, context, snapshot)
         if mismatch is not None:
             if allow_create:
                 raise ValueError(mismatch)
             return TaskActivityReconcileResult(status="indeterminate", reason=mismatch)
-        agent_run = self._effective_agent_run(request, context)
+        agent_run = _effective_agent_run(request, context)
         async with open_client(config, context) as connection:
             client = connection.client
             secret = connection.secret
             canaries = _secret_canaries(secret)
             try:
                 context.heartbeat()
-                fingerprint = await self._observe_fingerprint(client, config, secret)
+                fingerprint = await _observe_fingerprint(client, config, secret)
                 dispatch_fingerprint = _dispatch_fingerprint(fingerprint, context)
-                expected = self._expected_reference_fields(request, snapshot, fingerprint, agent_run)
+                expected = _expected_reference_fields(request, snapshot, fingerprint, agent_run)
                 if snapshot.reference is not None:
                     return await self._reconcile_bound(
                         client,
@@ -293,7 +248,7 @@ class OpenCodeHandler:
                     )
                 was_prepared = snapshot.state == "prepared"
                 snapshot = port.mark_dispatch_started(dispatch_fingerprint)
-                expected = self._expected_reference_fields(request, snapshot, fingerprint, agent_run)
+                expected = _expected_reference_fields(request, snapshot, fingerprint, agent_run)
                 return await self._discover_or_create(
                     client,
                     port,
@@ -321,7 +276,7 @@ class OpenCodeHandler:
         fingerprint: dict[str, Any],
         expected: dict[str, str],
     ) -> TaskActivityReconcileResult:
-        sessions = await self._list_sessions(client)
+        sessions = await _list_sessions(client)
         metadata = discovery_metadata(
             request=request,
             snapshot=snapshot,
@@ -340,7 +295,7 @@ class OpenCodeHandler:
             )
         if len(matches) == 1:
             port.mark_dispatch_started(fingerprint)
-            return self._bind_match(port, matches[0], expected)
+            return _bind_match(port, matches[0], expected)
         return TaskActivityReconcileResult(status="not_dispatched")
 
     async def _discover_or_create(
@@ -355,7 +310,7 @@ class OpenCodeHandler:
         agent_run: AgentRunRequest,
         allow_create: bool,
     ) -> TaskActivityReconcileResult:
-        sessions = await self._list_sessions(client)
+        sessions = await _list_sessions(client)
         metadata = discovery_metadata(
             request=request,
             snapshot=snapshot,
@@ -373,9 +328,9 @@ class OpenCodeHandler:
                 reason="multiple exact metadata matches",
             )
         if len(matches) == 1:
-            return self._bind_match(port, matches[0], expected)
+            return _bind_match(port, matches[0], expected)
         if allow_create:
-            return await self._create_and_bind(
+            return await _create_and_bind(
                 client,
                 port,
                 request,
@@ -389,64 +344,6 @@ class OpenCodeHandler:
             reason="pending observation after ambiguous create",
         )
 
-    async def _create_and_bind(
-        self,
-        client: OpenCodeHttpClient,
-        port: TaskActivityPort,
-        request: TaskRequest,
-        context: TaskContext,
-        metadata: OpenCodeDiscoveryMetadata,
-        expected: dict[str, str],
-        *,
-        agent_run: AgentRunRequest,
-    ) -> TaskActivityReconcileResult:
-        try:
-            label = activity_label_for_session(agent_run, request.node_id)
-            binding = workspace_binding_for(
-                context,
-                agent_run.workspace,
-                activity_label=label,
-            )
-            title = child_session_title(
-                activity_label=label,
-                task_id=context.workspace_identity.task_id,
-                attempt=context.workspace_identity.attempt,
-            )
-            body = OpenCodeSessionCreateRequest.model_validate(
-                {
-                    "title": title,
-                    "metadata": {
-                        "discovery": metadata.model_dump(mode="json"),
-                        "workspace_binding": binding,
-                    },
-                    "agent": agent_run.workspace.agent_profile,
-                    "parentID": expected.get("parent_session_id"),
-                }
-            )
-        except ValueError:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason=_BINDING_INVALID,
-            )
-        payload = body.model_dump(mode="json", exclude_none=True)
-        if "id" in payload:
-            raise ValueError("create must not supply a session id")
-        record = await client.create_session(payload)
-        session_id = record.get("id") if isinstance(record, dict) else None
-        if isinstance(session_id, str) and session_id:
-            verified = await self._verify_workspace_binding(
-                client,
-                agent_run,
-                context,
-                session_id,
-                activity_label=label,
-                check_title=True,
-            )
-            if verified is not None:
-                self._bind_match(port, record, expected)
-                return verified
-        return self._bind_match(port, record, expected)
-
     async def _reconcile_bound(
         self,
         client: OpenCodeHttpClient,
@@ -458,7 +355,7 @@ class OpenCodeHandler:
         agent_run: AgentRunRequest,
         canaries: tuple[str, ...],
     ) -> TaskActivityReconcileResult:
-        bound = await self._load_bound_session(client, snapshot, expected)
+        bound = await _load_bound_session(client, snapshot, expected)
         if isinstance(bound, TaskActivityReconcileResult):
             return bound
         reference, record = bound
@@ -468,7 +365,7 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="bound session identity is unknown",
             )
-        verified = await self._verify_workspace_binding(
+        verified = await _verify_workspace_binding(
             client,
             agent_run,
             context,
@@ -478,10 +375,10 @@ class OpenCodeHandler:
         )
         if verified is not None:
             return verified
-        admitted = await self._admit_prompt(client, agent_run, reference)
+        admitted = await _admit_prompt(client, agent_run, reference)
         if admitted is not None:
             return admitted
-        return await self._observe_bound(
+        return await _observe_bound(
             client,
             request,
             context,
@@ -490,409 +387,6 @@ class OpenCodeHandler:
             agent_run=agent_run,
             canaries=canaries,
         )
-
-    async def _load_bound_session(
-        self,
-        client: OpenCodeHttpClient,
-        snapshot: TaskActivitySnapshot,
-        expected: dict[str, str],
-    ) -> TaskActivityReconcileResult | tuple[OpenCodeActivityReference, dict[str, Any]]:
-        try:
-            reference = OpenCodeActivityReference.model_validate(thaw_json(snapshot.reference))
-        except ValidationError:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="bound reference is not authentic",
-            )
-        if self._reference_drifted(reference, expected):
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="bound reference identity drifted",
-            )
-        if not reference.session_id:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="bound session identity is unknown",
-            )
-        try:
-            record = await client.get_session(reference.session_id)
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code == 404:
-                return TaskActivityReconcileResult(
-                    status="indeterminate",
-                    reason="formerly bound session is missing",
-                )
-            raise
-        parent = record.get("parentID") if isinstance(record, dict) else None
-        expected_parent = reference.parent_session_id
-        if expected_parent:
-            if parent != expected_parent:
-                return TaskActivityReconcileResult(
-                    status="indeterminate",
-                    reason="child session parent does not match the run root",
-                )
-            if reference.worktree:
-                directory = record.get("directory") if isinstance(record, dict) else None
-                if (
-                    not isinstance(directory, str)
-                    or not directory
-                    or Path(directory).resolve() != Path(reference.worktree).resolve()
-                ):
-                    return TaskActivityReconcileResult(
-                        status="indeterminate",
-                        reason="child session worktree does not match the run",
-                    )
-        elif isinstance(parent, str) and parent:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="parentID reconnect is forbidden",
-            )
-        if not isinstance(record, dict) or record.get("id") != reference.session_id:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="session identity drifted",
-            )
-        try:
-            observed = discovery_metadata_from_record(record)
-        except (ValidationError, ValueError):
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="foreign session metadata",
-            )
-        if metadata_match_digest(observed) != reference.metadata_match_digest:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="foreign session metadata",
-            )
-        return reference, record
-
-    async def _verify_workspace_binding(
-        self,
-        client: OpenCodeHttpClient,
-        agent_run: AgentRunRequest,
-        context: TaskContext,
-        session_id: str,
-        *,
-        activity_label: str,
-        check_title: bool,
-    ) -> TaskActivityReconcileResult | None:
-        try:
-            expected = workspace_binding_for(
-                context,
-                agent_run.workspace,
-                activity_label=activity_label,
-            )
-            title = child_session_title(
-                activity_label=activity_label,
-                task_id=context.workspace_identity.task_id,
-                attempt=context.workspace_identity.attempt,
-            )
-            agent = agent_run.workspace.agent_profile
-            record = await client.get_session(session_id)
-            metadata = record.get("metadata") if isinstance(record, dict) else None
-            binding = metadata.get("workspace_binding") if isinstance(metadata, dict) else None
-            if (
-                not isinstance(record, dict)
-                or record.get("id") != session_id
-                or record.get("agent") != agent
-                or binding != expected
-                or (check_title and record.get("title") != title)
-            ):
-                raise ValueError(_BINDING_INVALID)
-        except PROVIDER_ERRORS:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason=_BINDING_INVALID,
-            )
-        return None
-
-    async def _admit_prompt(
-        self,
-        client: OpenCodeHttpClient,
-        agent_run: AgentRunRequest,
-        reference: OpenCodeActivityReference,
-    ) -> TaskActivityReconcileResult | None:
-        session_id = reference.session_id
-        if not session_id:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="bound session identity is unknown",
-            )
-        expected_body = prompt_admission_body(agent_run, reference.expected_message_id)
-        try:
-            record = await client.get_message(session_id, reference.expected_message_id)
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code != 404:
-                raise
-            messages = await client.list_messages(session_id)
-            if user_prompt_already_admitted(messages, expected_body):
-                return None
-        else:
-            if classify_admission(record, expected_body) == "conflict":
-                return TaskActivityReconcileResult(
-                    status="indeterminate",
-                    reason="prompt identity conflict",
-                )
-            return None
-        try:
-            await client.admit_message(session_id, expected_body)
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code in {400, 409}:
-                return TaskActivityReconcileResult(
-                    status="indeterminate",
-                    reason="prompt identity conflict",
-                )
-            raise
-        return None
-
-    async def _observe_bound(
-        self,
-        client: OpenCodeHttpClient,
-        request: TaskRequest,
-        context: TaskContext,
-        reference: OpenCodeActivityReference,
-        record: dict[str, Any],
-        *,
-        agent_run: AgentRunRequest,
-        canaries: tuple[str, ...],
-    ) -> TaskActivityReconcileResult:
-        session_id = reference.session_id
-        if not session_id:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="bound session identity is unknown",
-            )
-        cursor: str | None = None
-        try:
-            payload = await client.open_sse()
-            reduced = reduce_sse_frames(
-                parse_sse_frames(payload),
-                session_id=session_id,
-                heartbeat=context.heartbeat,
-            )
-            if reduced.malformed:
-                return TaskActivityReconcileResult(
-                    status="indeterminate",
-                    reason="malformed identity-bearing SSE event",
-                )
-            cursor = reduced.cursor
-            if cursor:
-                follow = await client.open_sse(cursor=cursor)
-                follow_reduced = reduce_sse_frames(
-                    parse_sse_frames(follow),
-                    session_id=session_id,
-                    heartbeat=context.heartbeat,
-                )
-                if follow_reduced.malformed:
-                    return TaskActivityReconcileResult(
-                        status="indeterminate",
-                        reason="malformed identity-bearing SSE event",
-                    )
-        except httpx.TimeoutException:
-            pass
-        except (httpx.TransportError, json.JSONDecodeError, ValueError) as error:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason=str(error) or "provider observation is indeterminate",
-            )
-        context.heartbeat()
-        try:
-            status_map = await client.get_status()
-            session = await client.get_session(session_id)
-            if not isinstance(session, dict):
-                session = record
-            messages = await client.list_messages(session_id)
-        except PROVIDER_ERRORS as error:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason=str(error) or "provider observation is indeterminate",
-            )
-        kind = classify_provider_state(
-            session_id=session_id,
-            status_map=status_map,
-            session=session,
-            messages=messages,
-        )
-        dumped = thaw_json(reference.model_dump(mode="json"))
-        status_record = status_map.get(session_id) if isinstance(status_map, dict) else None
-        busy = isinstance(status_record, dict) and status_record.get("type") == "busy"
-        selected_result = None
-        if busy:
-            selected_result = select_unique_contract_valid_result(
-                messages,
-                agent_run=agent_run,
-                request=request,
-                canaries=canaries,
-            )
-            if selected_result is not None:
-                kind = "succeeded"
-        if kind == "running":
-            return TaskActivityReconcileResult(status="running", reference=dumped)
-        if kind == "succeeded":
-            if busy:
-                try:
-                    candidate = selected_result or parse_closed_terminal_result(messages)
-                except ValueError:
-                    return TaskActivityReconcileResult(status="running", reference=dumped)
-                if not result_candidate_satisfies_contract(
-                    candidate,
-                    agent_run=agent_run,
-                    request=request,
-                    canaries=canaries,
-                ):
-                    return TaskActivityReconcileResult(status="running", reference=dumped)
-                try:
-                    await client.abort(session_id)
-                except PROVIDER_ERRORS as error:
-                    return TaskActivityReconcileResult(
-                        status="indeterminate",
-                        reason=str(error) or "busy session abort is indeterminate",
-                    )
-        try:
-            diff = await client.get_session_diff(session_id)
-        except PROVIDER_ERRORS as error:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason=str(error) or "provider observation is indeterminate",
-            )
-        return TaskActivityReconcileResult(
-            status="terminal",
-            reference=dumped,
-            outcome=reduce_terminal(
-                kind=kind,
-                session=session,
-                messages=messages,
-                agent_run=agent_run,
-                request=request,
-                diff=diff,
-                canaries=canaries,
-                selected_result=selected_result,
-            ),
-        )
-
-    def _bind_match(
-        self,
-        port: TaskActivityPort,
-        record: object,
-        expected: dict[str, str],
-    ) -> TaskActivityReconcileResult:
-        if not isinstance(record, dict):
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="session record is not an object",
-            )
-        session_id = record.get("id")
-        if not isinstance(session_id, str) or not session_id:
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason="generated session id is missing",
-            )
-        reference = OpenCodeActivityReference(session_id=session_id, **expected)
-        dumped = reference.model_dump(mode="json")
-        reject_credentials_in_digest_input(dumped)
-        snapshot = port.bind(dumped)
-        return TaskActivityReconcileResult(status="running", reference=thaw_json(snapshot.reference))
-
-    async def _list_sessions(self, client: OpenCodeHttpClient) -> list[object]:
-        raw = await client.list_sessions()
-        if not isinstance(raw, list):
-            raise ValueError("session list shape must be a JSON array")
-        return raw
-
-    def _expected_reference_fields(
-        self,
-        request: TaskRequest,
-        snapshot: TaskActivitySnapshot,
-        fingerprint: dict[str, Any],
-        agent_run: AgentRunRequest,
-    ) -> dict[str, str]:
-        metadata = discovery_metadata(
-            request=request,
-            snapshot=snapshot,
-            adapter_source_digest=adapter_source_digest(),
-        )
-        fields = {
-            "profile_identity_digest": canonical_digest(fingerprint),
-            "metadata_match_digest": metadata_match_digest(metadata),
-            "request_digest": snapshot.request_digest,
-            "expected_message_id": expected_message_id(snapshot),
-            "prompt_body_digest": prompt_body_digest(agent_run),
-            "adapter_version": ADAPTER_VERSION,
-        }
-        config = OpenCodeAdapterConfig.from_request(request)
-        if config.parent_session_id:
-            fields["parent_session_id"] = config.parent_session_id
-            fields["worktree"] = str(config.project_scope)
-        return fields
-
-    def _reference_drifted(self, reference: OpenCodeActivityReference, expected: dict[str, str]) -> bool:
-        return (
-            reference.profile_identity_digest != expected["profile_identity_digest"]
-            or reference.metadata_match_digest != expected["metadata_match_digest"]
-            or reference.request_digest != expected["request_digest"]
-            or reference.expected_message_id != expected["expected_message_id"]
-            or reference.prompt_body_digest != expected["prompt_body_digest"]
-            or reference.adapter_version != expected["adapter_version"]
-            or reference.parent_session_id != expected.get("parent_session_id")
-            or (expected.get("worktree") is not None and reference.worktree != expected.get("worktree"))
-        )
-
-    def _identity_mismatch(
-        self,
-        request: TaskRequest,
-        context: TaskContext,
-        snapshot: TaskActivitySnapshot,
-    ) -> str | None:
-        computed = canonical_digest(request.model_dump(mode="json"))
-        if computed != snapshot.request_digest:
-            return "request identity drifted"
-        if context.workspace_identity.identity_digest != snapshot.workspace_identity.identity_digest:
-            return "workspace identity drifted"
-        live = workspace_identity_digest_for(context)
-        fingerprint = thaw_json(snapshot.dispatch_fingerprint) if snapshot.dispatch_fingerprint else None
-        if isinstance(fingerprint, dict):
-            stored = fingerprint.get("workspace_identity_digest")
-            if stored not in {None, live}:
-                return "workspace identity drifted"
-        try:
-            AgentRunRequest.model_validate(thaw_json(request.input))
-        except ValidationError:
-            return "frozen request is invalid"
-        return None
-
-    @staticmethod
-    def _effective_agent_run(request: TaskRequest, context: TaskContext) -> AgentRunRequest:
-        return rebind_agent_run_workspace(
-            agent_run_from_request(request),
-            project_root=context.project_root,
-            write_root=context.write_root,
-        )
-
-    async def _observe_fingerprint(
-        self,
-        client: OpenCodeHttpClient,
-        config: OpenCodeAdapterConfig,
-        secret: bytes,
-    ) -> dict[str, Any]:
-        identity = await client.get_server_identity()
-        advertised = await client.get_profile()
-        profile = resolve_advertised_profile(advertised, config)
-        fingerprint = {
-            "endpoint_origin": config.origin,
-            "tls_identity_digest": config.tls_identity_digest,
-            "protocol_profile": profile.protocol_profile,
-            "prompt_admission": profile.prompt_admission,
-            "prompt_idempotency": profile.prompt_idempotency,
-            "server_identity_digest": canonical_digest(identity),
-            "project_scope": config.project_scope,
-        }
-        reject_credentials_in_digest_input(identity)
-        reject_credentials_in_digest_input(fingerprint)
-        text = canonical_json_text(fingerprint)
-        secret_text = secret.decode("utf-8")
-        if secret_text and secret_text in text:
-            raise ValueError("credentials must not enter dispatch fingerprint")
-        return fingerprint
 
     @staticmethod
     def _configuration_outcome(message: str) -> TaskOutcome:

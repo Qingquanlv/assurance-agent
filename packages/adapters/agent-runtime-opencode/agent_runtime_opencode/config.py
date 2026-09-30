@@ -7,7 +7,7 @@ from pydantic import AnyHttpUrl, Field, ValidationError, field_validator, model_
 
 from graph_engine.plugin_api import FrozenModel, TaskRequest
 
-from agent_runtime_opencode.redaction import redact_validation_error
+from agent_runtime_opencode.security import redact_validation_error
 
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"

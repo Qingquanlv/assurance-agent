@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_runtime_contracts import AgentRunResult
-from agent_runtime_opencode.protocol import canonical_json_text
+from agent_runtime_opencode.transport.http import canonical_json_text
 from graph_engine.plugin_api import TaskActivityReconcileResult, TaskOutcome
 from harness import (  # pyright: ignore[reportMissingImports]
     _SECRET_TEXT,

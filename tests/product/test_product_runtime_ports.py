@@ -263,7 +263,7 @@ def test_aa_compile_does_not_construct_invocation_runtime(cli_runner, installed_
     )
     monkeypatch.setattr(LocalInvocationRunnerLease, "acquire", _count("lease"))
     try:
-        from agent_runtime_opencode.protocol import OpenCodeHttpClient
+        from agent_runtime_opencode.transport.http import OpenCodeHttpClient
 
         monkeypatch.setattr(OpenCodeHttpClient, "create_session", _count("opencode"))
     except ImportError:

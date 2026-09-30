@@ -12,8 +12,7 @@ from agent_runtime_contracts.schema import (
 )
 from graph_engine.plugin_api import TaskOutcome, TaskRequest
 
-from agent_runtime_opencode.discovery import ADAPTER_VERSION
-from agent_runtime_opencode.observation import (
+from agent_runtime_opencode.observe.state import (
     ProviderTerminal,
     _has_open_tool_work,
     _terminal_error_kind,
@@ -21,12 +20,13 @@ from agent_runtime_opencode.observation import (
     provider_error_is_transient,
     provider_error_message,
 )
-from agent_runtime_opencode.redaction import (
+from agent_runtime_opencode.security import (
     bound_redacted_messages,
     failure_message,
     redact_json,
     reject_service_canaries_in_result,
 )
+from agent_runtime_opencode.session.discovery import ADAPTER_VERSION
 
 
 ADAPTER_ID = "runtime.opencode"

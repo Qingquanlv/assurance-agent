@@ -5,7 +5,7 @@ from graph_engine.plugin_api import ProviderSource
 
 from agent_runtime_contracts.plugin_kit import RuntimeAdapterPlugin, RuntimeAdapterSpec
 from agent_runtime_opencode.handler import OpenCodeHandler
-from agent_runtime_opencode.protocol import OPENCODE_RUNTIME_CAPABILITIES
+from agent_runtime_opencode.transport.profile import OPENCODE_RUNTIME_CAPABILITIES
 
 _SOURCE = ProviderSource(
     distribution="agent-runtime-opencode",

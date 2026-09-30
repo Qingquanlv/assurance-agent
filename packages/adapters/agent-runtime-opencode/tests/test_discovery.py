@@ -3,13 +3,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_runtime_opencode.discovery import (
+from agent_runtime_opencode.session.discovery import (
     OpenCodeActivityReference,
     OpenCodeDiscoveryMetadata,
     OpenCodeSessionCreateRequest,
     exact_metadata_matches,
 )
-from agent_runtime_opencode.protocol import canonical_json_text
+from agent_runtime_opencode.transport.http import canonical_json_text
 from harness import (  # pyright: ignore[reportMissingImports]
     _SECRET_TEXT,
     _open_code_fixture,

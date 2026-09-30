@@ -6,14 +6,14 @@ import json
 import pytest
 from agent_runtime_contracts import InstructionPart
 from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
-from agent_runtime_opencode.observation import (
-    advertised_runtime_capabilities,
+from agent_runtime_opencode.observe.state import (
     classify_provider_state,
     parse_closed_terminal_result,
     provider_error_is_transient,
     provider_error_message,
 )
-from agent_runtime_opencode.redaction import failure_message
+from agent_runtime_opencode.security import failure_message
+from agent_runtime_opencode.transport.profile import advertised_runtime_capabilities
 from harness import _bound_fixture, agent_run_request  # pyright: ignore[reportMissingImports]
 
 

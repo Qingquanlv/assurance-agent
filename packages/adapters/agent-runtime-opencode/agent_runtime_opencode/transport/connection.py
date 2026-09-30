@@ -12,7 +12,7 @@ import httpx
 from graph_engine.plugin_api import SecretHandleUnauthorized, TaskContext
 
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
-from agent_runtime_opencode.protocol import OpenCodeHttpClient
+from agent_runtime_opencode.transport.http import OpenCodeHttpClient
 
 PROVIDER_ERRORS: tuple[type[Exception], ...] = (
     httpx.TransportError,

@@ -7,8 +7,16 @@ from typing import Literal
 from pydantic import Field, JsonValue, model_serializer
 
 from agent_runtime_contracts import AgentRunRequest
-from agent_runtime_contracts.schema import canonical_digest, thaw_json
-from graph_engine.plugin_api import FrozenModel, TaskActivitySnapshot, TaskRequest
+from agent_runtime_contracts.schema import canonical_digest, reject_credentials_in_digest_input, thaw_json
+from graph_engine.plugin_api import (
+    FrozenModel,
+    TaskActivityPort,
+    TaskActivityReconcileResult,
+    TaskActivitySnapshot,
+    TaskRequest,
+)
+
+from agent_runtime_opencode.transport.http import OpenCodeHttpClient
 
 
 ADAPTER_VERSION = "0.2.0"
@@ -163,6 +171,36 @@ def exact_metadata_matches(
 
 def agent_run_from_request(request: TaskRequest) -> AgentRunRequest:
     return AgentRunRequest.model_validate(thaw_json(request.input))
+
+
+async def _list_sessions(client: OpenCodeHttpClient) -> list[object]:
+    raw = await client.list_sessions()
+    if not isinstance(raw, list):
+        raise ValueError("session list shape must be a JSON array")
+    return raw
+
+
+def _bind_match(
+    port: TaskActivityPort,
+    record: object,
+    expected: dict[str, str],
+) -> TaskActivityReconcileResult:
+    if not isinstance(record, dict):
+        return TaskActivityReconcileResult(
+            status="indeterminate",
+            reason="session record is not an object",
+        )
+    session_id = record.get("id")
+    if not isinstance(session_id, str) or not session_id:
+        return TaskActivityReconcileResult(
+            status="indeterminate",
+            reason="generated session id is missing",
+        )
+    reference = OpenCodeActivityReference(session_id=session_id, **expected)
+    dumped = reference.model_dump(mode="json")
+    reject_credentials_in_digest_input(dumped)
+    snapshot = port.bind(dumped)
+    return TaskActivityReconcileResult(status="running", reference=thaw_json(snapshot.reference))
 
 
 __all__ = [

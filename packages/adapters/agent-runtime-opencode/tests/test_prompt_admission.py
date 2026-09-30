@@ -4,14 +4,11 @@ import json
 
 import pytest
 
+import agent_runtime_opencode.prompt
 from agent_runtime_contracts import InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
-from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete, expected_message_id
-from agent_runtime_opencode.observation import (
-    classify_admission,
-    prompt_admission_body as build_prompt_admission_body,
-    user_prompt_already_admitted,
-)
+from agent_runtime_opencode.prompt import classify_admission, user_prompt_already_admitted
+from agent_runtime_opencode.session.discovery import OpenCodeDispatchIncomplete, expected_message_id
 from harness import (  # pyright: ignore[reportMissingImports]
     _bound_fixture,
     _open_code_fixture,
@@ -166,7 +163,7 @@ def test_prompt_body_embeds_the_locked_result_schema_when_available() -> None:
             )
         }
     )
-    body = build_prompt_admission_body(run, "msg_contract")
+    body = agent_runtime_opencode.prompt.prompt_admission_body(run, "msg_contract")
     assert '"required":["output_files"]' in body["parts"][-1]["text"]
 
 
@@ -191,7 +188,7 @@ def test_prompt_renders_authenticated_schema_after_business_text_without_format(
             ),
         }
     )
-    body = build_prompt_admission_body(run, "msg_contract")
+    body = agent_runtime_opencode.prompt.prompt_admission_body(run, "msg_contract")
 
     assert "format" not in body
     assert set(body) <= {"messageID", "parts", "agent", "model", "tools"}
@@ -219,7 +216,7 @@ async def test_admitted_prompt_never_sends_opencode_json_schema_format() -> None
 
 
 def test_prompt_body_does_not_add_agent_policy_without_a_bound_agent() -> None:
-    body = build_prompt_admission_body(agent_run_request(), "msg_contract")
+    body = agent_runtime_opencode.prompt.prompt_admission_body(agent_run_request(), "msg_contract")
 
     assert "tools" not in body
     assert not body["parts"][0]["text"].startswith("<system-reminder>")

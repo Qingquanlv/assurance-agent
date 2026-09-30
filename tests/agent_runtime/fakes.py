@@ -23,7 +23,7 @@ from agent_runtime_contracts import (
 )
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes, thaw_json
 from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
-from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete
+from agent_runtime_opencode.session.discovery import OpenCodeDispatchIncomplete
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 from graph_engine.composition import (
@@ -1095,7 +1095,10 @@ class OpenCodeRuntimeHarness(_AdapterHarness):
         observation_horizon: float = 8.0,
     ) -> tuple[Any, OpenCodeHandler]:
         fake_mod = _load_adapter_test_module("agent-runtime-opencode", "fake_server")
-        profile_mod = __import__("agent_runtime_opencode.protocol", fromlist=["OpenCodeProtocolProfile"])
+        profile_mod = __import__(
+            "agent_runtime_opencode.transport.profile",
+            fromlist=["OpenCodeProtocolProfile"],
+        )
         fake = fake_mod.OpenCodeFakeServer(
             profile=profile_mod.OpenCodeProtocolProfile.model_validate(
                 {

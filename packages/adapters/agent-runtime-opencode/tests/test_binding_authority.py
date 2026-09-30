@@ -19,10 +19,10 @@ from graph_engine.plugin_api import (
 )
 
 from agent_runtime_opencode.config import AdapterConfigurationError, OpenCodeAdapterConfig
-from agent_runtime_opencode.discovery import agent_run_from_request
 from agent_runtime_opencode.handler import OpenCodeHandler
-from agent_runtime_opencode.protocol import OpenCodeHttpClient
-from agent_runtime_opencode.workspace_binding import activity_label_for_session, child_session_title
+from agent_runtime_opencode.session.binding import activity_label_for_session, child_session_title
+from agent_runtime_opencode.session.discovery import agent_run_from_request
+from agent_runtime_opencode.transport.http import OpenCodeHttpClient
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from harness import (  # pyright: ignore[reportMissingImports]
     ALLOWED_OUTPUTS,
@@ -356,7 +356,7 @@ async def test_opencode_cancel_parses_binding_independently(opencode_context: Ta
 
 
 def test_isolated_execution_root_rejects_project_instruction_discovery(tmp_path: Path) -> None:
-    from agent_runtime_opencode.workspace_binding import reject_isolated_root_discovery
+    from agent_runtime_opencode.session.binding import reject_isolated_root_discovery
 
     isolated = tmp_path / "isolated"
     isolated.mkdir()

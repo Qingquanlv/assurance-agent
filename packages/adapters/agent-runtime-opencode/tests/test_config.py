@@ -11,7 +11,8 @@ from pydantic import ValidationError
 from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
 from agent_runtime_opencode.config import OpenCodeAdapterConfig, endpoint_origin
 from agent_runtime_opencode.plugin import OpenCodePlugin
-from agent_runtime_opencode.protocol import OPENCODE_RUNTIME_CAPABILITIES, canonical_json_text
+from agent_runtime_opencode.transport.http import canonical_json_text
+from agent_runtime_opencode.transport.profile import OPENCODE_RUNTIME_CAPABILITIES
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import PluginDescriptor, RegistryPorts, validate_contribution
 
@@ -172,7 +173,7 @@ def test_opencode_config_rejects_non_origin_endpoint_path_query_and_fragment() -
 
 
 def test_http_client_exposes_only_pinned_profile_routes() -> None:
-    from agent_runtime_opencode.protocol import OpenCodeHttpClient
+    from agent_runtime_opencode.transport.http import OpenCodeHttpClient
 
     public = {
         name
