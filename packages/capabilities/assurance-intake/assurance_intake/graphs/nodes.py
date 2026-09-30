@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal, cast
 
-from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from assurance_intake.contracts.agent import (
@@ -33,6 +32,7 @@ from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.stategraph import human_gate
 
 HUMAN_REVIEW_ACTIONS = ("approve", "reject", "request_rework")
 activation_one_shot = BusinessActivation.one_shot()
@@ -484,30 +484,17 @@ def advance_join(state: Mapping[str, object]) -> dict[str, object]:
     return apply_current_trigger(state)
 
 
-def _coerce_human_decision(raw: object) -> HumanReviewDecision:
-    if isinstance(raw, str):
-        return HumanReviewDecision(action=raw)  # type: ignore[arg-type]
-    if isinstance(raw, Mapping):
-        action = raw.get("action", raw.get("decision"))
-        return HumanReviewDecision.model_validate({"action": action})
-    return HumanReviewDecision.model_validate(raw)
+def _human_review_payload(state: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "reason": "needs_human_review",
+        "actions": list(HUMAN_REVIEW_ACTIONS),
+        "rounds_used": state.get("rounds_used", 0),
+        "rounds_budget": state.get("rounds_budget", 2),
+    }
 
 
-def human_review(state: Mapping[str, object]) -> dict[str, object]:
-    raw = interrupt(
-        {
-            "reason": "needs_human_review",
-            "actions": list(HUMAN_REVIEW_ACTIONS),
-            "rounds_used": state.get("rounds_used", 0),
-            "rounds_budget": state.get("rounds_budget", 2),
-        }
-    )
-    decision = _coerce_human_decision(raw)
-    return {"human_action": decision.action}
-
-
-def human_review_retry(state: Mapping[str, object]) -> dict[str, object]:
-    return human_review(state)
+human_review = human_gate(_human_review_payload, decision=HumanReviewDecision)
+human_review_retry = human_review
 
 
 def terminal_done(state: Mapping[str, object]) -> dict[str, object]:

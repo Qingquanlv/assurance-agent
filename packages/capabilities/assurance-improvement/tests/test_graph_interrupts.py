@@ -114,9 +114,7 @@ def test_interrupt_node_has_no_effect_kinds_or_pre_interrupt_side_effect() -> No
     nodes = (_GRAPHS_ROOT / "nodes.py").read_text(encoding="utf-8")
     tree = ast.parse(nodes, filename=str(_GRAPHS_ROOT / "nodes.py"))
     review_fn = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "apply_human_interrupt"
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "apply_human_payload"
     )
     source = ast.get_source_segment(nodes, review_fn) or ""
     for effect_id in EFFECT_IDS:
@@ -130,9 +128,7 @@ def test_pending_kernel_effects_are_not_this_human_decision_node() -> None:
     nodes = (_GRAPHS_ROOT / "nodes.py").read_text(encoding="utf-8")
     tree = ast.parse(nodes, filename=str(_GRAPHS_ROOT / "nodes.py"))
     review_fn = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "apply_human_interrupt"
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "apply_human_payload"
     )
     source = ast.get_source_segment(nodes, review_fn) or ""
     assert "Attempt" not in source

@@ -11,6 +11,7 @@ from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.stategraph import human_gate
 
 from assurance_healing.contracts.agent import (
     CoverageRepairInputV1,
@@ -250,28 +251,18 @@ def admit_passthrough(state: Mapping[str, object]) -> dict[str, object]:
     return {}
 
 
-def _coerce_review_decision(raw: object) -> CoverageReviewDecision:
-    if isinstance(raw, str):
-        return CoverageReviewDecision(action=raw)  # type: ignore[arg-type]
-    if isinstance(raw, Mapping):
-        action = raw.get("action", raw.get("decision"))
-        return CoverageReviewDecision.model_validate({"action": action})
-    return CoverageReviewDecision.model_validate(raw)
+def _coverage_review_payload(state: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "reason": "coverage_repair_needs_review",
+        "actions": list(COVERAGE_REVIEW_ACTIONS),
+        "interrupt_id": "coverage-repair-needs-review",
+        "ordinal": 0,
+        "rounds_used": state.get("rounds_used", 0),
+        "rounds_budget": state.get("rounds_budget", 1),
+    }
 
 
-def coverage_review(state: Mapping[str, object]) -> dict[str, object]:
-    raw = interrupt(
-        {
-            "reason": "coverage_repair_needs_review",
-            "actions": list(COVERAGE_REVIEW_ACTIONS),
-            "interrupt_id": "coverage-repair-needs-review",
-            "ordinal": 0,
-            "rounds_used": state.get("rounds_used", 0),
-            "rounds_budget": state.get("rounds_budget", 1),
-        }
-    )
-    decision = _coerce_review_decision(raw)
-    return {"human_action": decision.action}
+coverage_review = human_gate(_coverage_review_payload, decision=CoverageReviewDecision)
 
 
 def proposal_approval(state: Mapping[str, object]) -> dict[str, object]:

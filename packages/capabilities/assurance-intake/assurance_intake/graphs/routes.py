@@ -79,10 +79,6 @@ def case_design_named_matches(state: Mapping[str, object]) -> dict[str, str | No
     }
 
 
-def route_preparation_attempt(state: Mapping[str, object]) -> str:
-    return "failed" if state.get("attempt_failure") else "committed"
-
-
 def route_case_design_result(state: Mapping[str, object]) -> str:
     return "review" if state.get("status") == "passed" else "failed"
 
@@ -126,5 +122,4 @@ __all__ = [
     "route_case_review_retry",
     "route_human_review",
     "route_human_review_retry",
-    "route_preparation_attempt",
 ]

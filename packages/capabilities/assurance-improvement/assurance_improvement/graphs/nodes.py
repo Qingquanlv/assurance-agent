@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.stategraph import human_gate
 
 from assurance_improvement.contracts.agent import (
     ImprovementSkillInputV1,
@@ -571,27 +571,17 @@ def publish_review(state: Mapping[str, object], output: object, receipt: object)
     }
 
 
-def _coerce_human_decision(raw: object) -> ApplyHumanDecision:
-    if isinstance(raw, str):
-        return ApplyHumanDecision(action=raw)  # type: ignore[arg-type]
-    if isinstance(raw, Mapping):
-        action = raw.get("action", raw.get("decision"))
-        return ApplyHumanDecision.model_validate({"action": action})
-    return ApplyHumanDecision.model_validate(raw)
-
-
-def apply_human_interrupt(state: Mapping[str, object]) -> dict[str, object]:
+def apply_human_payload(state: Mapping[str, object]) -> dict[str, object]:
     del state
-    raw = interrupt(
-        {
-            "reason": "needs_human_review",
-            "actions": list(APPLY_HUMAN_ACTIONS),
-            "interrupt_id": "improvement-apply-human-review",
-            "ordinal": 0,
-        }
-    )
-    decision = _coerce_human_decision(raw)
-    return {"human_action": decision.action}
+    return {
+        "reason": "needs_human_review",
+        "actions": list(APPLY_HUMAN_ACTIONS),
+        "interrupt_id": "improvement-apply-human-review",
+        "ordinal": 0,
+    }
+
+
+apply_human_interrupt = human_gate(apply_human_payload, decision=ApplyHumanDecision)
 
 
 def _public_terminal(state: Mapping[str, object], status: str) -> dict[str, object]:
