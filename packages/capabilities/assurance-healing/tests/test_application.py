@@ -19,13 +19,14 @@ from assurance_healing.contracts.application import (
     VerifiedTestRepairV1,
 )
 from assurance_healing.contracts.agent import FixProposalResultV1
-from assurance_healing.operations.agent import FixProposalFinalizeHandler
-from assurance_healing.operations.application import (
-    ApplyTestRepairFinalizeHandler,
-    ApplyTestRepairPrepareHandler,
-    expected_repair_history,
-    repair_history_path,
+from graph_engine.plugin_api import TaskHandler
+
+from assurance_healing.agent_ops.apply_test_repair import (
+    finalize as apply_test_repair_finalize,
+    prepare as apply_test_repair_prepare,
 )
+from assurance_healing.agent_ops.fix_proposal import finalize as fix_proposal_finalize
+from assurance_healing.operations.application import expected_repair_history, repair_history_path
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.capabilities.agent_harness import FakeAgentAdapter
@@ -268,7 +269,7 @@ def _agent_result(output_files: list[str]) -> dict[str, object]:
 
 async def _finalize(project: Path, stage: Path, payload: dict[str, object], outputs: list[str]):
     return await execute_task(
-        ApplyTestRepairFinalizeHandler(),
+        cast(TaskHandler, apply_test_repair_finalize),
         cast(JSONValue, {**payload, "agent_result": _agent_result(outputs)}),
         project,
         write_root=stage,
@@ -302,7 +303,7 @@ def test_proposal_result_cannot_parse_as_applied_repair() -> None:
 async def test_repair_finalizer_rejects_wrapped_input(tmp_path: Path) -> None:
     payload, _before = _fixture(tmp_path)
     result = await execute_task(
-        ApplyTestRepairFinalizeHandler(),
+        cast(TaskHandler, apply_test_repair_finalize),
         cast(
             JSONValue,
             {
@@ -371,7 +372,7 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
         "execution_evidence_digest": "e" * 64,
     }
     proposed = await execute_task(
-        FixProposalFinalizeHandler(),
+        cast(TaskHandler, fix_proposal_finalize),
         {
             **proposal_input,
             "prepare": proposal_input,
@@ -418,7 +419,7 @@ async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tm
     payload["mapping_ref"] = _write(tmp_path, MAPPING, _json_bytes(execution["mapping"]))
     payload["execution_ref"] = _write(tmp_path, EXECUTION, _json_bytes(execution))
     prepared = await execute_task(
-        ApplyTestRepairPrepareHandler(),
+        cast(TaskHandler, apply_test_repair_prepare),
         cast(JSONValue, payload),
         tmp_path,
         binding_data=BINDING,
@@ -467,7 +468,7 @@ async def test_prepare_rejects_a_proposal_outside_approval_scope(tmp_path: Path)
     approval["paths"] = ["qa/tests/api/test_other.py"]
     payload["approval_ref"] = _write(tmp_path, APPROVAL, _json_bytes(approval))
     result = await execute_task(
-        ApplyTestRepairPrepareHandler(),
+        cast(TaskHandler, apply_test_repair_prepare),
         cast(JSONValue, payload),
         tmp_path,
         binding_data=BINDING,

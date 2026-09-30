@@ -10,7 +10,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import InstructionPart, ResultContract
+from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
 from agent_runtime_contracts.ops import (
     AgentBindingDataV1,
     InputError,
@@ -19,6 +19,7 @@ from agent_runtime_contracts.ops import (
     failed_input,
     failed_output,
     result_contract_from,
+    run_prepare,
 )
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
@@ -251,7 +252,7 @@ def codegen_outputs(scope: CodegenScopeV1) -> tuple[str, ...]:
     return scope.locked_outputs
 
 
-def prepare_codegen_outcome(
+def prepare_codegen_request(
     *,
     skill_path: str,
     scope: CodegenScopeV1,
@@ -263,8 +264,8 @@ def prepare_codegen_outcome(
     scope_id: str,
     allowed_outputs: tuple[str, ...],
     validation_error: str | None = None,
-) -> TaskOutcome:
-    agent_request = agent_run_request(
+) -> AgentRunRequest:
+    return agent_run_request(
         instructions=(
             InstructionPart.text("text/plain", resource_text(skill_path)),
             InstructionPart.from_json(scope.model_dump(mode="json")),
@@ -278,7 +279,6 @@ def prepare_codegen_outcome(
         allowed_outputs=allowed_outputs,
         scope_id=scope_id,
     )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
 
 def _workspace_path(workspace: Path, relative: str) -> Path:
@@ -488,73 +488,87 @@ class CodegenPrepareHandler:
         self._family: Family | None = None if family is None else closed_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
+        def build(
+            business: CodegenInputV1,
+            binding: AgentBindingDataV1,
+            build_context: TaskContext,
+        ) -> AgentRunRequest:
             family = resolve_family(self._family, request)
-            business, scope, cases = validate_codegen_input(
-                request.input,
+            validated, scope, cases = validate_codegen_input(
+                business,
                 family,
-                context.project_root,
+                build_context.project_root,
             )
-            binding = AgentBindingDataV1.model_validate(request.binding_data)
-            if business.family_constraints is None:
+            if validated.family_constraints is None:
                 raise InputError("family_constraints were not materialized")
-            baseline = _baseline_files(business.codegen_output, scope, business.capability_leafs)
-            _seed_baseline(context.project_root, context.write_root, baseline)
+            baseline = _baseline_files(validated.codegen_output, scope, validated.capability_leafs)
+            _seed_baseline(build_context.project_root, build_context.write_root, baseline)
             context_payload: dict[str, object] = {
-                "change_id": business.change_id,
-                "family_constraints": business.family_constraints.model_dump(mode="json"),
+                "change_id": validated.change_id,
+                "family_constraints": validated.family_constraints.model_dump(mode="json"),
                 "generated_files_root": "qa/tests",
                 "codegen_scope": scope.model_dump(mode="json"),
                 "baseline_files": sorted(baseline),
                 "verification_obligations": [
                     item.model_dump(mode="json")
                     for item in _verification_obligations(
-                        context.project_root,
-                        plan_ref=business.plan_ref,
+                        build_context.project_root,
+                        plan_ref=validated.plan_ref,
                         family=family,
-                        required=business.reviewed_case is not None,
+                        required=validated.reviewed_case is not None,
                     )
                 ],
             }
             # Lazy: quality.contracts.surface must not load at generation import time.
-            if business.ui_exploration_ref is not None or business.api_discovery_ref is not None:
+            if validated.ui_exploration_ref is not None or validated.api_discovery_ref is not None:
                 from assurance_quality.contracts.surface import (
                     ApiDiscoveryDocument,
                     UiExplorationDocument,
                 )
 
-                if business.ui_exploration_ref is not None:
-                    ui_path = _authenticate_surface_ref(context.project_root, business.ui_exploration_ref)
+                if validated.ui_exploration_ref is not None:
+                    ui_path = _authenticate_surface_ref(
+                        build_context.project_root, validated.ui_exploration_ref
+                    )
                     try:
                         ui_exploration = UiExplorationDocument.model_validate_json(ui_path.read_bytes())
                     except (OSError, ValidationError, ValueError) as error:
                         raise InputError(f"invalid ui-exploration.json: {error}") from error
-                    if ui_exploration.change_id != business.change_id:
+                    if ui_exploration.change_id != validated.change_id:
                         raise InputError("ui-exploration.json change_id does not match codegen change_id")
                     context_payload["ui_exploration"] = ui_exploration.model_dump(mode="json")
-                if business.api_discovery_ref is not None:
-                    api_path = _authenticate_surface_ref(context.project_root, business.api_discovery_ref)
+                if validated.api_discovery_ref is not None:
+                    api_path = _authenticate_surface_ref(
+                        build_context.project_root,
+                        validated.api_discovery_ref,
+                    )
                     try:
                         api_discovery = ApiDiscoveryDocument.model_validate_json(api_path.read_bytes())
                     except (OSError, ValidationError, ValueError) as error:
                         raise InputError(f"invalid api-discovery.json: {error}") from error
-                    if api_discovery.change_id != business.change_id:
+                    if api_discovery.change_id != validated.change_id:
                         raise InputError("api-discovery.json change_id does not match codegen change_id")
                     context_payload["api_discovery"] = api_discovery.model_dump(mode="json")
-            return prepare_codegen_outcome(
+            return prepare_codegen_request(
                 skill_path=_SKILL_FILES[family],
                 scope=scope,
                 cases=cases,
                 context_payload=context_payload,
                 binding=binding,
                 result_schema_id=CODEGEN_RESULT_ID,
-                context=context,
-                scope_id=business.change_id,
+                context=build_context,
+                scope_id=validated.change_id,
                 allowed_outputs=codegen_outputs(scope),
-                validation_error=business.validation_error,
+                validation_error=validated.validation_error,
             )
-        except (InputError, ValidationError) as error:
-            return failed_input(error)
+
+        return run_prepare(
+            request,
+            context,
+            input_model=CodegenInputV1,
+            build=build,
+            input_errors=(InputError, ValidationError),
+        )
 
 
 class CodegenFinalizeHandler:

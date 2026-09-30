@@ -23,8 +23,8 @@ from tests.capabilities.six_wheel_harness import (
 from tests.acg_plan_fixture import install_plan
 
 from assurance_generation.operations.planning import PlanFinalizeHandler
-from assurance_healing.operations.agent import FixProposalFinalizeHandler
-from assurance_improvement.operations.agent import RetroFinalizeHandler
+from assurance_healing.agent_ops.fix_proposal import finalize as fix_proposal_finalize
+from assurance_improvement.agent_ops.retro import finalize as retro_finalize
 from assurance_intake.agent_ops.case_review import finalize as case_review_finalize
 from assurance_quality.agent_ops.inspect import finalize as inspect_finalize
 
@@ -38,9 +38,9 @@ AGENT_CUTS = (
 WHEEL_FINALIZERS = {
     "intake": case_review_finalize,
     "generation": lambda: PlanFinalizeHandler("api"),
-    "healing": FixProposalFinalizeHandler,
+    "healing": fix_proposal_finalize,
     "quality": inspect_finalize,
-    "improvement": RetroFinalizeHandler,
+    "improvement": retro_finalize,
 }
 
 _HEX = "a" * 64

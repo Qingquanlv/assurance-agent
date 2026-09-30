@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 import yaml
 
-from agent_runtime_contracts import InstructionPart, ResultContract
+from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
 from agent_runtime_contracts.ops import (
     AgentBindingDataV1,
     InputError,
@@ -565,7 +565,7 @@ def review_input_images(workspace: Path, paths: tuple[str, ...]) -> dict[str, by
     }
 
 
-def prepare_plan_outcome(
+def prepare_plan_request(
     *,
     family: Family,
     skill_path: str,
@@ -580,7 +580,7 @@ def prepare_plan_outcome(
     repair_review: Mapping[str, object] | None = None,
     extra_json: Mapping[str, object] | None = None,
     validation_error: str | None = None,
-) -> TaskOutcome:
+) -> AgentRunRequest:
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
     facts = planning_facts_for(
@@ -613,7 +613,7 @@ def prepare_plan_outcome(
         instructions = (*instructions, InstructionPart.from_json(dict(repair_review)))
     if extra_json is not None:
         instructions = (*instructions, InstructionPart.from_json(dict(extra_json)))
-    agent_request = agent_run_request(
+    return agent_run_request(
         instructions=instructions,
         validation_error=validation_error,
         result=result_contract(
@@ -625,7 +625,6 @@ def prepare_plan_outcome(
         allowed_outputs=allowed_outputs,
         scope_id=business.change_id,
     )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
 
 def _structured(payload: AgentFinalizeInputV1) -> object:
@@ -795,7 +794,7 @@ __all__ = [
     "plan_review_input_paths",
     "authenticate_loop_round_history",
     "expected_plan_review_history",
-    "prepare_plan_outcome",
+    "prepare_plan_request",
     "request_family",
     "resolve_family",
     "result_contract",

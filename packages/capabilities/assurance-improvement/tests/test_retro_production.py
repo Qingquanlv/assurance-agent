@@ -19,12 +19,14 @@ from assurance_improvement.graphs.nodes import (
     select_issue_analysis,
     select_workflow_analysis,
 )
-from assurance_improvement.operations.agent import (
-    RetroEvalPrepareHandler,
-    RetroIssuePrepareHandler,
-    RetroWorkflowPrepareHandler,
-    RetroIssueFinalizeHandler,
+from graph_engine.plugin_api import TaskHandler
+
+from assurance_improvement.agent_ops.retro_eval_analysis import prepare as retro_eval_prepare
+from assurance_improvement.agent_ops.retro_issue_analysis import (
+    finalize as retro_issue_finalize,
+    prepare as retro_issue_prepare,
 )
+from assurance_improvement.agent_ops.retro_workflow_analysis import prepare as retro_workflow_prepare
 from tests.product.test_change_local_output_routing import execute_task
 from improvement_fixtures import BINDING, RETRO_ID, issue_signal, candidate_payload  # pyright: ignore[reportMissingImports]
 from test_graph_retro import complete_collect_payload  # pyright: ignore[reportMissingImports]
@@ -33,9 +35,9 @@ from test_graph_retro import complete_collect_payload  # pyright: ignore[reportM
 @pytest.mark.parametrize(
     "domain,select,handler",
     [
-        ("eval", select_eval_analysis, RetroEvalPrepareHandler()),
-        ("issue", select_issue_analysis, RetroIssuePrepareHandler()),
-        ("workflow", select_workflow_analysis, RetroWorkflowPrepareHandler()),
+        ("eval", select_eval_analysis, cast(TaskHandler, retro_eval_prepare)),
+        ("issue", select_issue_analysis, cast(TaskHandler, retro_issue_prepare)),
+        ("workflow", select_workflow_analysis, cast(TaskHandler, retro_workflow_prepare)),
     ],
 )
 async def test_analysis_receives_real_slice_without_review_archive_fields(
@@ -95,7 +97,7 @@ async def test_analysis_finalizer_closes_slice_and_written_result(tmp_path: Path
         path.parent.rename(target)
         path.parent.symlink_to(target, target_is_directory=True)
     outcome = await execute_task(
-        RetroIssueFinalizeHandler(),
+        cast(TaskHandler, retro_issue_finalize),
         {**business, "agent_result": agent_result(document)},
         tmp_path,
         write_root=tmp_path,
@@ -127,7 +129,8 @@ def synthesized_candidate():
 @pytest.mark.parametrize("fault", [None, "unknown_signal", "empty_lock", "cross_signal_source"])
 async def test_synthesis_consumes_locked_context_without_reconciled_ledger(tmp_path: Path, fault) -> None:
     from assurance_improvement.graphs.nodes import select_retro
-    from assurance_improvement.operations.agent import RetroFinalizeHandler
+    from assurance_improvement.agent_ops.retro import finalize as retro_finalize
+    from graph_engine.plugin_api import TaskHandler
 
     state = synthesis_state()
     if fault == "empty_lock":
@@ -145,7 +148,7 @@ async def test_synthesis_consumes_locked_context_without_reconciled_ledger(tmp_p
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(document))
     outcome = await execute_task(
-        RetroFinalizeHandler(),
+        cast(TaskHandler, retro_finalize),
         {**business, "agent_result": agent_result(document)},
         tmp_path,
         write_root=tmp_path,

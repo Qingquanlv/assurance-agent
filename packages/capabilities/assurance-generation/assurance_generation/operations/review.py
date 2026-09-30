@@ -7,12 +7,14 @@ from typing import cast
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.ops import (
     AgentBindingDataV1,
     InputError,
     OutputError,
     failed_input,
     failed_output,
+    run_prepare,
 )
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
@@ -31,7 +33,7 @@ from assurance_generation.operations.planning import (
     leafs_of,
     plan_review_outputs,
     plan_review_input_paths,
-    prepare_plan_outcome,
+    prepare_plan_request,
     plan_repair_review,
     resolve_family,
 )
@@ -53,15 +55,19 @@ class PlanReviewPrepareHandler:
         self._family: Family | None = None if family is None else closed_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            family = resolve_family(self._family, request)
-            from assurance_generation.contracts.agent import PlanInputV1
-            from assurance_generation.operations.codegen import validate_codegen_input
+        from assurance_generation.contracts.agent import CodegenInputV1, PlanInputV1
+        from assurance_generation.operations.codegen import validate_codegen_input
 
+        def build(
+            codegen_input: CodegenInputV1,
+            binding: AgentBindingDataV1,
+            build_context: TaskContext,
+        ) -> AgentRunRequest:
+            family = resolve_family(self._family, request)
             codegen_business, scope, cases = validate_codegen_input(
-                request.input,
+                codegen_input,
                 family,
-                context.project_root,
+                build_context.project_root,
             )
             if codegen_business.codegen_output is None:
                 raise InputError("codegen_output is required for codegen review")
@@ -83,20 +89,19 @@ class PlanReviewPrepareHandler:
                     else codegen_business.reviewed_case.model_dump(mode="json"),
                 }
             )
-            binding = AgentBindingDataV1.model_validate(request.binding_data)
             review_inputs = plan_review_input_paths(
-                context.project_root,
+                build_context.project_root,
                 change_id=business.change_id,
                 family=family,
             )
-            return prepare_plan_outcome(
+            return prepare_plan_request(
                 family=family,
                 skill_path=_REVIEW_SKILL_FILES[family],
                 business=business,
                 cases=cases,
                 binding=binding,
                 result_schema_id=PLAN_REVIEW_RESULT_ID,
-                context=context,
+                context=build_context,
                 allowed_outputs=plan_review_outputs(
                     business.change_id,
                     family,
@@ -112,14 +117,20 @@ class PlanReviewPrepareHandler:
                     "plan_ref": business.plan_ref.model_dump(mode="json"),
                 },
                 repair_review=plan_repair_review(
-                    context.project_root,
+                    build_context.project_root,
                     business=business,
                     family=family,
                 ),
                 validation_error=codegen_business.validation_error,
             )
-        except (InputError, ValidationError) as error:
-            return failed_input(error)
+
+        return run_prepare(
+            request,
+            context,
+            input_model=CodegenInputV1,
+            build=build,
+            input_errors=(InputError, ValidationError),
+        )
 
 
 class PlanReviewFinalizeHandler:

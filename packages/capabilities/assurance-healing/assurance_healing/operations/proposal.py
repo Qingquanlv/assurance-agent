@@ -1,4 +1,4 @@
-"""Allocation, approval, dispatch, apply, and re-exported agent handlers."""
+"""Allocation, approval, dispatch, and apply handlers."""
 
 from __future__ import annotations
 
@@ -21,16 +21,6 @@ from assurance_healing.contracts.effects import (
 from assurance_healing.effects.allocation import ALLOCATION_KIND
 from assurance_healing.effects.apply import HEAL_APPLY_KIND
 from assurance_healing.effects.approval import APPROVAL_KIND
-from assurance_healing.operations.agent import (
-    CoverageRepairFinalizeHandler,
-    CoverageRepairPrepareHandler,
-    FixProposalFinalizeHandler,
-    FixProposalPrepareHandler,
-)
-from assurance_healing.operations.application import (
-    ApplyTestRepairFinalizeHandler,
-    ApplyTestRepairPrepareHandler,
-)
 from assurance_healing.operations.keys import (
     derive_allocation_ids,
     derive_approval_id,
@@ -201,16 +191,10 @@ def healing_handlers() -> dict[str, Any]:
 
     return {
         REPAIR_ROUND_ADVANCE_ID: HealingRepairRoundAdvanceHandler(),
-        "assurance.healing.apply-test-repair.finalize": ApplyTestRepairFinalizeHandler(),
-        "assurance.healing.apply-test-repair.prepare": ApplyTestRepairPrepareHandler(),
         "assurance.healing.allocate-coverage-repair-attempt": AllocateCoverageRepairAttemptHandler(),
         "assurance.healing.allocate-healing-attempt": AllocateHealingAttemptHandler(),
         "assurance.healing.combine-fixer-safety": CombineFixerSafetyHandler(),
         "assurance.healing.compute-coverage-repair-safety": ComputeCoverageRepairSafetyHandler(),
-        "assurance.healing.coverage-repair.finalize": CoverageRepairFinalizeHandler(),
-        "assurance.healing.coverage-repair.prepare": CoverageRepairPrepareHandler(),
-        "assurance.healing.fix-proposal.finalize": FixProposalFinalizeHandler(),
-        "assurance.healing.fix-proposal.prepare": FixProposalPrepareHandler(),
         "assurance.healing.fixer-authority-ready": FixerAuthorityReadyHandler(),
         "assurance.healing.fixer-dispatch": FixerDispatchHandler(),
         "assurance.healing.project-episode": ProjectEpisodeHandler(),

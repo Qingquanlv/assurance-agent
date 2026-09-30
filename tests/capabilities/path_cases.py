@@ -18,7 +18,7 @@ from assurance_execution.operations.paths import resolve_selected_file
 from assurance_execution.validators.mapping import ClosedMappingValidator
 from assurance_generation.contracts.plans import canonical_relative_path
 from assurance_generation.validators.generated_files import GeneratedFilesValidator
-from assurance_healing.operations.agent import _workspace_file as healing_workspace_file
+from assurance_healing.operations.agent import workspace_file as healing_workspace_file
 from assurance_healing.validators.test_tree import TestTreeValidator
 from assurance_improvement.operations.agent import _workspace_file as improvement_workspace_file
 from assurance_improvement.validators.delivery import DeliveryValidator

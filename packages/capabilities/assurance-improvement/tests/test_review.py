@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest
@@ -9,7 +10,12 @@ from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import ImprovementReviewResultV1
 from assurance_improvement.resource_loader import resource_bytes
-from assurance_improvement.operations.agent import ImprovementReviewPrepareHandler
+from graph_engine.plugin_api import TaskHandler
+
+from assurance_improvement.agent_ops.improvement_review import (
+    finalize as improvement_review_finalize,
+    prepare as improvement_review_prepare,
+)
 from assurance_improvement.operations.review import ApplyImprovementReviewHandler, apply_review
 from assurance_improvement.validators.review import ReviewValidator
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -62,7 +68,7 @@ def _projection(*, state: str = "proposed", version: int = 1) -> dict[str, objec
 @pytest.mark.asyncio
 async def test_review_prepare_locks_improvement_reviewer(tmp_path: Path) -> None:
     outcome = await execute_task(
-        ImprovementReviewPrepareHandler(),
+        cast(TaskHandler, improvement_review_prepare),
         skill_input(),
         tmp_path,
         binding_data=BINDING,
@@ -75,11 +81,9 @@ async def test_review_prepare_locks_improvement_reviewer(tmp_path: Path) -> None
 
 @pytest.mark.asyncio
 async def test_review_finalize_rejects_pass_without_complete_evidence(tmp_path: Path) -> None:
-    from assurance_improvement.operations.agent import ImprovementReviewFinalizeHandler
-
     structured = {**REVIEW_RESULT, "evidence_traceability": "incomplete"}
     outcome = await execute_task(
-        ImprovementReviewFinalizeHandler(),
+        cast(TaskHandler, improvement_review_finalize),
         locked_review_input(structured),
         tmp_path,
     )
@@ -89,10 +93,8 @@ async def test_review_finalize_rejects_pass_without_complete_evidence(tmp_path: 
 
 @pytest.mark.asyncio
 async def test_review_finalize_accepts_complete_pass(tmp_path: Path) -> None:
-    from assurance_improvement.operations.agent import ImprovementReviewFinalizeHandler
-
     outcome = await execute_task(
-        ImprovementReviewFinalizeHandler(),
+        cast(TaskHandler, improvement_review_finalize),
         locked_review_input(REVIEW_RESULT),
         tmp_path,
     )
@@ -171,10 +173,8 @@ def test_review_result_contract_bytes_equal_typed_model() -> None:
 
 @pytest.mark.asyncio
 async def test_review_finalize_rejects_subject_mismatch(tmp_path: Path) -> None:
-    from assurance_improvement.operations.agent import ImprovementReviewFinalizeHandler
-
     outcome = await execute_task(
-        ImprovementReviewFinalizeHandler(),
+        cast(TaskHandler, improvement_review_finalize),
         locked_review_input(REVIEW_RESULT, improvement_id="IMP-OTHER"),
         tmp_path,
     )
@@ -448,7 +448,6 @@ def test_apply_review_helper_matches_legacy_transition_graph() -> None:
 
 @pytest.mark.asyncio
 async def test_failed_review_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
-    from assurance_improvement.operations.agent import ImprovementReviewFinalizeHandler
     from tests.product.test_change_local_output_routing import dual_roots
 
     project, write_root = dual_roots(tmp_path)
@@ -457,7 +456,7 @@ async def test_failed_review_validation_leaves_canonical_outputs_unchanged(tmp_p
     original = b'{"schema_version":"1"}\n'
     canonical.write_bytes(original)
     prepared = await execute_task(
-        ImprovementReviewPrepareHandler(),
+        cast(TaskHandler, improvement_review_prepare),
         skill_input(),
         project,
         binding_data=BINDING,
@@ -467,7 +466,7 @@ async def test_failed_review_validation_leaves_canonical_outputs_unchanged(tmp_p
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.allowed_outputs == ("qa/results/review/improvement-review.json",)
     failed = await execute_task(
-        ImprovementReviewFinalizeHandler(),
+        cast(TaskHandler, improvement_review_finalize),
         locked_review_input({**REVIEW_RESULT, "evidence_traceability": "incomplete"}),
         project,
         write_root=write_root,
