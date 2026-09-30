@@ -13,18 +13,18 @@ from graph_engine.plugin_api import (
 )
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
+from assurance_intake.agent_ops.case_design import (
+    finalize as case_design_finalize,
+    prepare as case_design_prepare,
+)
+from assurance_intake.agent_ops.case_review import (
+    finalize as case_review_finalize,
+    prepare as case_review_prepare,
+)
+from assurance_intake.agent_ops.explore import finalize as explore_finalize, prepare as explore_prepare
 from assurance_intake.agent_ops.intake import finalize as intake_finalize, prepare as intake_prepare
 from assurance_intake.contracts.attempts import attempt_contract_refs
-from assurance_intake.operations import (
-    CaseDesignFinalizeHandler,
-    CaseDesignPrepareHandler,
-    CaseReviewFinalizeHandler,
-    CaseReviewPrepareHandler,
-    ExploreFinalizeHandler,
-    ExplorePrepareHandler,
-    ResolvePlanHandler,
-    ReviewRoundAdvanceHandler,
-)
+from assurance_intake.operations import ResolvePlanHandler, ReviewRoundAdvanceHandler
 from assurance_intake.resource_loader import resource_bytes
 from assurance_intake.validators import CaseCandidateValidator, CaseReferenceValidator
 
@@ -74,12 +74,12 @@ _SCHEMA_FILES: dict[str, str] = {
 }
 
 _HANDLERS = {
-    "assurance.intake.case-design.finalize": CaseDesignFinalizeHandler(),
-    "assurance.intake.case-design.prepare": CaseDesignPrepareHandler(),
-    "assurance.intake.case-review.finalize": CaseReviewFinalizeHandler(),
-    "assurance.intake.case-review.prepare": CaseReviewPrepareHandler(),
-    "assurance.intake.explore.finalize": ExploreFinalizeHandler(),
-    "assurance.intake.explore.prepare": ExplorePrepareHandler(),
+    "assurance.intake.case-design.finalize": cast(TaskHandler, case_design_finalize),
+    "assurance.intake.case-design.prepare": cast(TaskHandler, case_design_prepare),
+    "assurance.intake.case-review.finalize": cast(TaskHandler, case_review_finalize),
+    "assurance.intake.case-review.prepare": cast(TaskHandler, case_review_prepare),
+    "assurance.intake.explore.finalize": cast(TaskHandler, explore_finalize),
+    "assurance.intake.explore.prepare": cast(TaskHandler, explore_prepare),
     "assurance.intake.intake.finalize": cast(TaskHandler, intake_finalize),
     "assurance.intake.intake.prepare": cast(TaskHandler, intake_prepare),
     "assurance.intake.review-round.advance": ReviewRoundAdvanceHandler(),

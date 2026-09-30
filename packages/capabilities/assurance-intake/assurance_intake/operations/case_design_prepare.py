@@ -9,45 +9,24 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from agent_runtime_contracts.ops import (
-    AgentBindingDataV1,
-    InputError,
-    OutputError,
-    failed_input,
-)
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from agent_runtime_contracts.ops import InputError, OutputError
 
 from assurance_intake.contracts.agent import (
     CaseDesignInputV1,
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
-from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
-from assurance_intake.operations.case_modules import infer_case_delta_paths
-from assurance_intake.operations.explore_context import load_exploration_document
-from assurance_intake.operations.planning_facts import build_planning_facts
-from assurance_intake.operations.prepare import (
-    CASE_DESIGN_PERSONA,
-    CASE_DESIGN_REPAIR_SKILL,
-    CASE_DESIGN_RESULT_ID,
-    CASE_DESIGN_SKILL,
-    case_design_outputs,
-    prepare_outcome,
-)
-from assurance_intake.operations.prepare_evidence import (
-    _authenticate_evidence_refs,
-    _authenticate_plan,
-    _require_regular_project_input,
-)
+from assurance_intake.operations.prepare import case_design_outputs
+from assurance_intake.operations.prepare_evidence import require_regular_project_input
 
 
-def _review_repair_contract(
+def review_repair_contract(
     project_root: Path,
     *,
     business: CaseDesignInputV1,
@@ -57,7 +36,7 @@ def _review_repair_contract(
     review_path = project_root.joinpath(*review_relative.split("/"))
     if not review_path.exists() and not review_path.is_symlink():
         return None
-    _require_regular_project_input(project_root, review_relative)
+    require_regular_project_input(project_root, review_relative)
     review_bytes = review_path.read_bytes()
     try:
         review = CaseReviewResultV1.model_validate_json(review_bytes)
@@ -69,14 +48,14 @@ def _review_repair_contract(
         return None
     # Imported lazily: finalize imports this module at load time.
     from assurance_intake.operations.finalize import (
-        _bound_obligations,
-        _reject_unbound_covered_repairs,
+        bound_obligations,
+        reject_unbound_covered_repairs,
         _review_requests_matrix_coverage,
     )
 
     if _review_requests_matrix_coverage(review):
         try:
-            _reject_unbound_covered_repairs(review, _bound_obligations(project_root, plan))
+            reject_unbound_covered_repairs(review, bound_obligations(project_root, plan))
         except OutputError as error:
             raise InputError(str(error)) from error
 
@@ -130,7 +109,7 @@ def _review_repair_contract(
     baseline_file_digests: dict[str, str] = {}
     baseline_case_documents: dict[str, object] = {}
     for relative in outputs:
-        _require_regular_project_input(project_root, relative)
+        require_regular_project_input(project_root, relative)
         data = project_root.joinpath(*relative.split("/")).read_bytes()
         baseline_file_digests[relative] = hashlib.sha256(data).hexdigest()
         if relative.endswith("/case.yaml"):
@@ -148,117 +127,3 @@ def _review_repair_contract(
         )
     except ValidationError as error:
         raise InputError(f"invalid deterministic case-review repair contract: {error}") from error
-
-
-class CaseDesignPrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            business = CaseDesignInputV1.model_validate(request.input)
-            binding = AgentBindingDataV1.model_validate(request.binding_data)
-            plan = _authenticate_plan(
-                context.project_root,
-                change_id=business.change_id,
-                plan_digest=business.plan_digest,
-                plan_ref=business.plan_ref,
-            )
-            if business.selected_test_families != plan.selected_test_families:
-                raise InputError("case selected families do not match frozen assurance plan")
-            _authenticate_evidence_refs(context.project_root, business.preparation_refs)
-            _authenticate_evidence_refs(context.project_root, (plan.impact_inventory_ref,))
-            try:
-                inventory = ChangeImpactInventoryV1.model_validate_json(
-                    context.project_root.joinpath(*plan.impact_inventory_ref.path.split("/")).read_bytes()
-                )
-            except (OSError, ValidationError, ValueError) as error:
-                raise InputError(f"invalid impact-inventory.json: {error}") from error
-            if inventory.change_id != business.change_id:
-                raise InputError("impact-inventory.json change_id does not match case-design change_id")
-            if business.case_rework_context is not None:
-                rework = business.case_rework_context
-                _authenticate_evidence_refs(context.project_root, rework.assessment_refs)
-                _authenticate_evidence_refs(
-                    context.project_root,
-                    (*rework.previous_case.preparation_refs, *rework.previous_case.case_refs),
-                )
-            exploration_relative = "qa/results/explore/exploration.json"
-            exploration_path = context.project_root.joinpath(*exploration_relative.split("/"))
-            exploration = None
-            if exploration_path.exists() or exploration_path.is_symlink():
-                if not exploration_path.is_file() or exploration_path.is_symlink():
-                    raise InputError("exploration.json must be a regular file")
-                try:
-                    exploration = load_exploration_document(exploration_path.read_bytes())
-                except (OSError, ValidationError, ValueError) as error:
-                    raise InputError(f"invalid exploration.json: {error}") from error
-                if exploration.change_id != business.change_id:
-                    raise InputError("exploration.json change_id does not match case-design change_id")
-                if exploration.context_ref != "explore/context.json":
-                    raise InputError("exploration.json context_ref must be explore/context.json")
-            business = business.model_copy(update={"exploration": exploration, "impact_inventory": inventory})
-            # Lazy: quality.contracts.surface must not load at intake import time
-            # (generation → intake → quality → execution → generation cycle).
-            from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
-
-            surface_updates: dict[str, object] = {}
-            if business.ui_exploration_ref is not None:
-                _authenticate_evidence_refs(context.project_root, (business.ui_exploration_ref,))
-                try:
-                    ui_exploration = UiExplorationDocument.model_validate_json(
-                        context.project_root.joinpath(
-                            *business.ui_exploration_ref.path.split("/")
-                        ).read_bytes()
-                    )
-                except (OSError, ValidationError, ValueError) as error:
-                    raise InputError(f"invalid ui-exploration.json: {error}") from error
-                if ui_exploration.change_id != business.change_id:
-                    raise InputError("ui-exploration.json change_id does not match case-design change_id")
-                surface_updates["ui_exploration"] = ui_exploration.model_dump(mode="json")
-            if business.api_discovery_ref is not None:
-                _authenticate_evidence_refs(context.project_root, (business.api_discovery_ref,))
-                try:
-                    api_discovery = ApiDiscoveryDocument.model_validate_json(
-                        context.project_root.joinpath(
-                            *business.api_discovery_ref.path.split("/")
-                        ).read_bytes()
-                    )
-                except (OSError, ValidationError, ValueError) as error:
-                    raise InputError(f"invalid api-discovery.json: {error}") from error
-                if api_discovery.change_id != business.change_id:
-                    raise InputError("api-discovery.json change_id does not match case-design change_id")
-                surface_updates["api_discovery"] = api_discovery.model_dump(mode="json")
-            if surface_updates:
-                business = business.model_copy(update=surface_updates)
-            try:
-                inferred = infer_case_delta_paths(inventory)
-            except ValueError:
-                inferred = ()
-            if inferred:
-                business = business.model_copy(update={"case_delta_paths": inferred})
-            elif not business.case_delta_paths:
-                raise InputError("impact inventory does not imply any case module")
-            review_repair = business.review_repair or _review_repair_contract(
-                context.project_root,
-                business=business,
-                plan=plan,
-            )
-            business = business.model_copy(update={"review_repair": review_repair})
-            return prepare_outcome(
-                skill_path=(CASE_DESIGN_REPAIR_SKILL if review_repair is not None else CASE_DESIGN_SKILL),
-                persona_path=CASE_DESIGN_PERSONA,
-                business=business,
-                binding=binding,
-                result_schema_id=CASE_DESIGN_RESULT_ID,
-                context=context,
-                allowed_outputs=case_design_outputs(
-                    business.change_id,
-                    business.case_delta_paths,
-                ),
-                planning_facts=build_planning_facts(
-                    context.project_root,
-                    change_id=business.change_id,
-                    capability_leafs=business.capability_leafs,
-                    families=plan.selected_test_families,
-                ),
-            )
-        except (InputError, ValidationError) as error:
-            return failed_input(error)

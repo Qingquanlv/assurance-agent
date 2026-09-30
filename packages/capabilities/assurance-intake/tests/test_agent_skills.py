@@ -19,15 +19,16 @@ from tests.capabilities.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 from tests.acg_plan_fixture import install_plan
 
-from assurance_intake.agent_ops.intake import finalize, prepare
-from assurance_intake.operations import (
-    CaseDesignFinalizeHandler,
-    CaseDesignPrepareHandler,
-    CaseReviewFinalizeHandler,
-    CaseReviewPrepareHandler,
-    ExploreFinalizeHandler,
-    ExplorePrepareHandler,
+from assurance_intake.agent_ops.case_design import (
+    finalize as case_design_finalize,
+    prepare as case_design_prepare,
 )
+from assurance_intake.agent_ops.case_review import (
+    finalize as case_review_finalize,
+    prepare as case_review_prepare,
+)
+from assurance_intake.agent_ops.explore import finalize as explore_finalize, prepare as explore_prepare
+from assurance_intake.agent_ops.intake import finalize, prepare
 from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_intake.contracts.review import CaseReviewResultV1
@@ -49,16 +50,20 @@ from assurance_intake.resource_loader import resource_text
 
 
 def test_prepare_handlers_are_defined_in_their_own_modules() -> None:
-    from assurance_intake.operations.case_design_prepare import CaseDesignPrepareHandler
-    from assurance_intake.operations.prepare import (
-        CaseReviewPrepareHandler,
-        ExplorePrepareHandler,
+    modules = (
+        prepare,
+        explore_prepare,
+        case_design_prepare,
+        case_review_prepare,
+        finalize,
+        explore_finalize,
+        case_design_finalize,
+        case_review_finalize,
     )
-
-    assert prepare.execute.__module__ == "assurance_intake.agent_ops.intake.prepare"
-    assert ExplorePrepareHandler.__module__ == "assurance_intake.operations.prepare"
-    assert CaseReviewPrepareHandler.__module__ == "assurance_intake.operations.prepare"
-    assert CaseDesignPrepareHandler.__module__ == "assurance_intake.operations.case_design_prepare"
+    for module in modules:
+        assert module.execute.__module__ == module.__name__
+        assert module.execute.__globals__ is module.__dict__
+        assert module.__name__.startswith("assurance_intake.agent_ops.")
 
 
 _SHA = "a" * 64
@@ -116,7 +121,8 @@ async def run_prepare(
     write_root: Path | None = None,
     impact_rows: tuple[Mapping[str, object], ...] = (),
 ) -> Any:
-    if type(handler).__name__.startswith("Case"):
+    handler_module = getattr(handler, "__name__", "")
+    if ".case_design." in handler_module or ".case_review." in handler_module:
         exploration = workspace / "qa/results/explore/exploration.json"
         minimum_required_coverage = None
         mismatched_exploration: bytes | None = None
@@ -144,9 +150,9 @@ async def run_prepare(
             }
         if mismatched_exploration is not None:
             exploration.write_bytes(mismatched_exploration)
-    if type(handler).__name__.startswith("CaseReview") and isinstance(payload, dict):
+    if ".case_review." in handler_module and isinstance(payload, dict):
         payload = _with_case_refs(workspace, payload)
-    if type(handler).__name__.startswith("Explore") and isinstance(payload, dict):
+    if ".explore." in handler_module and isinstance(payload, dict):
         payload = {**payload, "candidate_test_families": ["api"]}
     return await execute_task(handler, payload, workspace, binding_data=binding, write_root=write_root)
 
@@ -180,7 +186,9 @@ async def run_finalize(
         "capability_leafs": list(VALID_LEAFS),
         "artifact_paths": [],
     }
-    if type(handler).__name__.startswith("Case"):
+    if ".case_design." in getattr(handler, "__name__", "") or ".case_review." in getattr(
+        handler, "__name__", ""
+    ):
         install_plan(
             workspace,
             "CH-DEMO-001",
@@ -592,7 +600,7 @@ async def test_case_design_prepare_rejects_covered_repair_for_unbound_mrc(tmp_pa
     review["auto_fix_plan"][0]["edits"] = ["Keep key empty and set status to covered."]
     review_path.write_text(json.dumps(review), encoding="utf-8")
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
@@ -633,7 +641,7 @@ async def test_case_design_prepare_allows_covered_repair_for_bound_api_key(tmp_p
     review["auto_fix_plan"][0]["edits"] = ["Set status to covered and fill covered_by_cases."]
     review_path.write_text(json.dumps(review), encoding="utf-8")
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded", prepared.failure
     request = AgentRunRequest.model_validate(prepared.output)
@@ -670,7 +678,7 @@ async def test_case_design_finalize_retries_unbound_covered_matrix(
     staged.write_text(json.dumps(rows), encoding="utf-8")
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -776,10 +784,10 @@ async def test_explore_prepare_materializes_deterministic_graph_context(tmp_path
         ],
     }
 
-    first = await run_prepare(ExplorePrepareHandler(), payload, BINDING, project, write_root)
+    first = await run_prepare(cast(TaskHandler, explore_prepare), payload, BINDING, project, write_root)
     context_path = write_root / "qa/results/explore/context.json"
     first_bytes = context_path.read_bytes()
-    second = await run_prepare(ExplorePrepareHandler(), payload, BINDING, project, write_root)
+    second = await run_prepare(cast(TaskHandler, explore_prepare), payload, BINDING, project, write_root)
 
     assert first.status == second.status == "succeeded"
     assert context_path.read_bytes() == first_bytes
@@ -791,8 +799,8 @@ async def test_explore_prepare_materializes_deterministic_graph_context(tmp_path
 
 @pytest.mark.asyncio
 async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: Path) -> None:
-    first = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
-    second = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    first = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
+    second = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
     request = AgentRunRequest.model_validate(first.output)
     assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
     assert request.workspace.allowed_outputs == (
@@ -808,7 +816,7 @@ async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: P
 @pytest.mark.asyncio
 async def test_case_design_prepare_includes_deterministic_validation_feedback(tmp_path: Path) -> None:
     prepared = await run_prepare(
-        CaseDesignPrepareHandler(),
+        cast(TaskHandler, case_design_prepare),
         {
             **CASE_INPUT,
             "validation_attempt": 1,
@@ -841,7 +849,7 @@ async def test_case_design_prepare_builds_a_deterministic_review_repair_contract
     outputs = _write_case_design_outputs(tmp_path, authored)
     _write_fixable_case_review(tmp_path, allowed_key="title")
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
@@ -867,7 +875,7 @@ async def test_case_design_prepare_rejects_action_repair_alias(tmp_path: Path) -
     review["auto_fix_plan"][0]["action"] = review["auto_fix_plan"][0].pop("edits")[0]
     review_path.write_text(json.dumps(review), encoding="utf-8")
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
@@ -898,7 +906,7 @@ async def test_case_design_prepare_accepts_exact_document_section_repair_locator
     ]
     review_path.write_text(json.dumps(review), encoding="utf-8")
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
@@ -920,7 +928,7 @@ async def test_case_design_prepare_rejects_bare_proposal_section_locator(tmp_pat
         case_id=None,
     )
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
@@ -938,7 +946,7 @@ async def test_case_design_prepare_rejects_qa_yaml_automatic_repair(tmp_path: Pa
         case_id=None,
     )
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
@@ -956,7 +964,7 @@ async def test_case_design_prepare_rejects_mrc_field_selector_locator(tmp_path: 
         case_id=None,
     )
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
@@ -982,7 +990,7 @@ async def test_case_design_prepare_preserves_mrc_locator_baseline_order(tmp_path
         case_id=None,
     )
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
@@ -1000,7 +1008,7 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
     advisory = _valid_explore_advisory()
     path.write_text(json.dumps(advisory), encoding="utf-8")
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
@@ -1023,7 +1031,7 @@ async def test_case_design_prepare_consumes_sealed_prepared_exploration(tmp_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_sealed_explore_document()), encoding="utf-8")
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded", prepared.failure
     request = AgentRunRequest.model_validate(prepared.output)
@@ -1041,7 +1049,7 @@ async def test_case_design_prepare_consumes_sealed_prepared_exploration(tmp_path
 async def test_case_design_prepare_reads_plan_bound_exploration_for_standalone_case(
     tmp_path: Path,
 ) -> None:
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
@@ -1058,7 +1066,7 @@ async def test_case_design_prepare_rejects_mismatched_exploration_identity(tmp_p
     advisory["change_id"] = "CH-SIBLING"
     path.write_text(json.dumps(advisory), encoding="utf-8")
 
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
@@ -1083,7 +1091,7 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
         encoding="utf-8",
     )
 
-    prepared = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_review_prepare), CASE_REVIEW_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
@@ -1149,7 +1157,7 @@ async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
         (tmp_path / change / tampered_path).write_text("uncommitted drift\n")
 
     prepared = await run_prepare(
-        CaseReviewPrepareHandler(),
+        cast(TaskHandler, case_review_prepare),
         select_case_review(state).model_dump(mode="json"),
         BINDING,
         tmp_path,
@@ -1173,7 +1181,7 @@ async def test_case_review_prepare_rejects_missing_locked_input(tmp_path: Path) 
     case = tmp_path / "qa/cases/menus/case.yaml"
     case.parent.mkdir(parents=True, exist_ok=True)
     case.write_text("schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
-    prepared = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_review_prepare), CASE_REVIEW_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
@@ -1198,7 +1206,7 @@ async def test_case_review_prepare_rejects_intermediate_directory_symlink(tmp_pa
     )
     (change_root / "cases/menus").symlink_to(sibling_cases, target_is_directory=True)
 
-    prepared = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_review_prepare), CASE_REVIEW_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
@@ -1219,7 +1227,7 @@ async def test_case_review_finalize_accepts_mrc_key_that_is_not_a_capability_lea
 
 @pytest.mark.asyncio
 async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Path) -> None:
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
     request = AgentRunRequest.model_validate(prepared.output)
     assert len(request.instructions) == 3
     skill, persona, business = request.instructions
@@ -1262,8 +1270,8 @@ async def test_case_author_and_reviewer_observe_same_source_snapshot(tmp_path: P
     source = tmp_path / "app/router.py"
     source.parent.mkdir()
     source.write_text("def get_items(): pass\n")
-    author = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
-    reviewer = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
+    author = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
+    reviewer = await run_prepare(cast(TaskHandler, case_review_prepare), CASE_REVIEW_INPUT, BINDING, tmp_path)
     assert author.status == reviewer.status == "succeeded"
     author_input = cast(
         Mapping[str, Any], AgentRunRequest.model_validate(author.output).instructions[2].json_content
@@ -1287,7 +1295,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
             "provider_model": "primary,fallback",
         },
     }
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, binding, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, binding, tmp_path)
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
@@ -1296,7 +1304,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_finalize_rejects_malformed_input(tmp_path: Path) -> None:
-    executed = await execute_task(CaseReviewFinalizeHandler(), {"agent_result": {}}, tmp_path)
+    executed = await execute_task(cast(TaskHandler, case_review_finalize), {"agent_result": {}}, tmp_path)
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
@@ -1488,7 +1496,8 @@ async def _finalize_files(
     result = fake_agent_result(structured_result)
     plan = None
     plan_ref = None
-    if type(handler).__name__.startswith("Case"):
+    handler_module = getattr(handler, "__name__", "")
+    if ".case_design." in handler_module or ".case_review." in handler_module:
         selected = tuple(cast(Any, selected_test_families or ["api"]))
         plan, plan_ref = install_plan(
             workspace,
@@ -1510,7 +1519,7 @@ async def _finalize_files(
         "case_delta_paths": (
             case_delta_paths
             if case_delta_paths is not None
-            else (["qa/cases/menus/case.yaml"] if isinstance(handler, CaseDesignFinalizeHandler) else [])
+            else (["qa/cases/menus/case.yaml"] if handler_module.endswith("case_design.finalize") else [])
         ),
         **({"change_id": change_id} if change_id is not None else {}),
         **({"validation_attempt": validation_attempt} if validation_attempt is not None else {}),
@@ -1579,7 +1588,7 @@ async def _finalize_review_with_written_cases(
         case_delta_paths=[case_relative],
     )
     executed = await _finalize_files(
-        CaseReviewFinalizeHandler(),
+        cast(TaskHandler, case_review_finalize),
         document,
         workspace,
         list(case_review_outputs("CH-DEMO-001")),
@@ -1654,7 +1663,7 @@ async def test_case_design_validates_complete_change_marker(
         document["change"]["change_id"] = "CH-OTHER"
         marker.write_text(yaml.safe_dump(document))
     result = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         outputs,
@@ -1682,8 +1691,8 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
     if phase == "case-design":
         authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
         outputs = _write_case_design_outputs(stage, authored)
-        handler = CaseDesignFinalizeHandler()
-        handler_globals = handler.execute.__func__.__globals__
+        handler = cast(TaskHandler, case_design_finalize)
+        handler_globals = case_design_finalize.execute.__globals__
     else:
         (stage / "qa").mkdir(parents=True, exist_ok=True)
         (stage / "qa/.qa.yaml").write_text("change_id: CH-DEMO-001\n")
@@ -1796,7 +1805,7 @@ def _write_fixable_case_review(
 
 
 async def _prepared_review_repair(workspace: Path) -> Mapping[str, object]:
-    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, workspace)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, workspace)
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
     dumped = request.model_dump(mode="json")
@@ -2034,7 +2043,7 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
     files = _stage_explore_outputs(write_root)
     result = fake_agent_result({"output_files": [_EXPLORATION_DRAFT, _INVENTORY]})
     executed = await execute_task(
-        ExploreFinalizeHandler(),
+        cast(TaskHandler, explore_finalize),
         {
             "agent_result": result.model_dump(mode="json"),
             "change_id": "CH-DEMO-001",
@@ -2083,7 +2092,7 @@ async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> 
     )
 
     executed = await _finalize_files(
-        ExploreFinalizeHandler(),
+        cast(TaskHandler, explore_finalize),
         {"output_files": [_EXPLORATION_DRAFT, _INVENTORY]},
         project,
         [_EXPLORATION_DRAFT, _INVENTORY],
@@ -2105,7 +2114,7 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
     relative = _EXPLORATION_DRAFT
 
     executed = await _finalize_files(
-        ExploreFinalizeHandler(),
+        cast(TaskHandler, explore_finalize),
         {"output_files": [_EXPLORATION_DRAFT, _INVENTORY]},
         project,
         [_EXPLORATION_DRAFT, _INVENTORY],
@@ -2122,7 +2131,7 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
 
 async def _finalize_explore(project: Path, write_root: Path) -> Any:
     return await _finalize_files(
-        ExploreFinalizeHandler(),
+        cast(TaskHandler, explore_finalize),
         {"output_files": [_EXPLORATION_DRAFT, _INVENTORY]},
         project,
         [_EXPLORATION_DRAFT, _INVENTORY],
@@ -2136,7 +2145,7 @@ async def test_explore_finalize_requires_both_declared_outputs(tmp_path: Path) -
     project, write_root = dual_roots(tmp_path)
     _stage_explore_outputs(write_root)
     executed = await _finalize_files(
-        ExploreFinalizeHandler(),
+        cast(TaskHandler, explore_finalize),
         {"output_files": [_EXPLORATION_DRAFT]},
         project,
         [_EXPLORATION_DRAFT],
@@ -2372,7 +2381,7 @@ async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> N
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(write_root, authored)
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2405,7 +2414,7 @@ async def test_case_design_finalize_routes_endpoint_literals_to_validation_repai
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(write_root, authored)
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2443,7 +2452,7 @@ async def test_case_design_validation_repair_reads_unchanged_outputs_from_baseli
     _write_case_delta(write_root, valid)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2481,7 +2490,7 @@ async def test_case_design_finalize_accepts_only_the_review_locator_change(tmp_p
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2529,7 +2538,7 @@ async def test_case_design_finalize_accepts_exact_review_authorized_case_additio
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2578,7 +2587,7 @@ async def test_case_design_finalize_accepts_exact_review_authorized_case_removal
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2621,7 +2630,7 @@ async def test_case_design_finalize_rejects_unreviewed_case_addition(tmp_path: P
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2669,7 +2678,7 @@ async def test_case_design_finalize_rejects_unreviewed_case_removal(tmp_path: Pa
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2705,7 +2714,7 @@ async def test_case_design_finalize_reads_unchanged_review_outputs_from_baseline
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2758,7 +2767,7 @@ async def test_case_design_finalize_accepts_only_the_named_proposal_section(tmp_
     )
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2808,7 +2817,7 @@ async def test_case_design_finalize_rejects_proposal_change_outside_named_sectio
     )
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2860,7 +2869,7 @@ async def test_case_design_finalize_treats_h1_as_end_of_named_proposal_section(
     )
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2910,7 +2919,7 @@ async def test_case_design_finalize_ignores_heading_inside_proposal_fence(tmp_pa
     )
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -2954,7 +2963,7 @@ async def test_case_design_finalize_accepts_only_named_mrc_rows(tmp_path: Path) 
     staged.write_text(json.dumps(rows), encoding="utf-8")
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3003,7 +3012,7 @@ async def test_case_design_finalize_rejects_mrc_change_outside_named_rows(tmp_pa
     staged.write_text(json.dumps(rows), encoding="utf-8")
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3044,7 +3053,7 @@ async def test_case_design_finalize_rejects_review_receipt_outside_frozen_output
     extra_path.write_text("unauthorized expansion\n", encoding="utf-8")
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": sorted([*outputs, extra])}),
         project,
         [
@@ -3082,7 +3091,7 @@ async def test_case_design_finalize_rejects_non_regular_staged_review_output(
     (write_root / "qa/proposal.md").mkdir(parents=True)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3118,7 +3127,7 @@ async def test_case_design_finalize_accepts_exact_dotted_trace_leaf_repair(tmp_p
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3154,7 +3163,7 @@ async def test_case_design_finalize_rejects_review_repair_that_rewrites_non_targ
     (write_root / "qa/proposal.md").write_text("# Replanned proposal\n", encoding="utf-8")
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3192,7 +3201,7 @@ async def test_case_design_finalize_rejects_review_repair_outside_allowed_case_f
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3232,7 +3241,7 @@ async def test_case_design_finalize_rejects_invalid_first_review_repair_without_
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3275,7 +3284,7 @@ async def test_case_design_finalize_rejects_review_repair_that_adds_case_top_lev
     _write_case_delta(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3311,7 +3320,7 @@ async def test_case_design_finalize_returns_one_bounded_repair_for_first_invalid
     outputs = _write_case_design_outputs(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3349,7 +3358,7 @@ async def test_case_design_finalize_rejects_unlocked_module_or_sibling_case(tmp_
         ["qa/cases/menus/other/case.yaml"],
     ):
         executed = await _finalize_files(
-            CaseDesignFinalizeHandler(),
+            cast(TaskHandler, case_design_finalize),
             cast(JSONValue, {"output_files": outputs}),
             project,
             [
@@ -3383,7 +3392,7 @@ async def test_case_design_finalize_requires_minimum_coverage_matrix(tmp_path: P
     outputs.remove(matrix)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3415,7 +3424,7 @@ async def test_case_design_finalize_rejects_missing_selected_family(tmp_path: Pa
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(write_root, authored)
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3446,7 +3455,7 @@ async def test_case_design_finalize_rejects_legacy_full_delta_result(
     _write_case_design_outputs(project, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, authored),
         project,
         [
@@ -3484,7 +3493,7 @@ async def test_case_design_finalize_requires_every_locked_case_yaml(
     assert set(catalog) == set(outputs) - {outputs[-1]}
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": catalog}),
         project,
         [
@@ -3517,7 +3526,7 @@ async def test_case_design_finalize_rejects_invalid_written_case_yaml(tmp_path: 
     outputs = _write_case_design_outputs(write_root, authored)
 
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -3597,7 +3606,7 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
     )
 
     executed = await _finalize_files(
-        CaseReviewFinalizeHandler(),
+        cast(TaskHandler, case_review_finalize),
         review_document,
         project,
         [
@@ -3680,7 +3689,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
     )
 
     first = await _finalize_files(
-        CaseReviewFinalizeHandler(),
+        cast(TaskHandler, case_review_finalize),
         review_document,
         project,
         artifact_paths,
@@ -3696,7 +3705,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
     first_history_path = write_root / "qa/cases/reviews/epochs/0/rounds/0.json"
     first_history_bytes = first_history_path.read_bytes()
     resumed = await _finalize_files(
-        CaseReviewFinalizeHandler(),
+        cast(TaskHandler, case_review_finalize),
         review_document,
         project,
         artifact_paths,
@@ -3718,7 +3727,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         coverage_epoch=1,
     )
     second = await _finalize_files(
-        CaseReviewFinalizeHandler(),
+        cast(TaskHandler, case_review_finalize),
         review_document,
         project,
         artifact_paths,
@@ -3787,7 +3796,7 @@ async def test_case_review_finalize_preserves_raw_review_bytes(
         if relative != "qa/results/review/case-review-summary.md"
     }
     executed = await _finalize_files(
-        CaseReviewFinalizeHandler(),
+        cast(TaskHandler, case_review_finalize),
         review_document,
         project,
         list(case_review_outputs("CH-DEMO-001")),
@@ -3850,7 +3859,7 @@ async def test_case_review_finalize_generates_host_seals(
         AGENT_JOB_CONTRACTS["case-review"],
         write_root,
         lambda: _finalize_files(
-            CaseReviewFinalizeHandler(),
+            cast(TaskHandler, case_review_finalize),
             review_document,
             project,
             list(case_review_outputs("CH-DEMO-001")),
@@ -3906,7 +3915,7 @@ async def test_case_review_finalize_rejects_auto_fix_outside_case_design_write_s
     )
 
     executed = await _finalize_files(
-        CaseReviewFinalizeHandler(),
+        cast(TaskHandler, case_review_finalize),
         cast(JSONValue, document),
         tmp_path,
         [],
@@ -3934,7 +3943,7 @@ async def test_case_review_finalize_rejects_auto_fix_without_an_exact_field_loca
     document["findings"][0]["locator"]["key"] = None
 
     executed = await _finalize_files(
-        CaseReviewFinalizeHandler(),
+        cast(TaskHandler, case_review_finalize),
         cast(JSONValue, document),
         tmp_path,
         [],
@@ -3989,7 +3998,7 @@ async def test_explore_finalize_rejects_empty_artifact_paths(tmp_path: Path) -> 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_valid_explore_advisory()), encoding="utf-8")
     executed = await _finalize_files(
-        ExploreFinalizeHandler(),
+        cast(TaskHandler, explore_finalize),
         {"output_files": [relative]},
         project,
         [],
@@ -4008,7 +4017,7 @@ async def test_explore_finalize_rejects_path_escape(tmp_path: Path) -> None:
     workspace.mkdir()
     (tmp_path / "secret.json").write_bytes(b'{"secret":true}')
     executed = await _finalize_files(
-        ExploreFinalizeHandler(),
+        cast(TaskHandler, explore_finalize),
         {"output_files": ["../secret.json"]},
         workspace,
         ["qa/results/explore/exploration.json"],
@@ -4031,7 +4040,7 @@ async def test_failed_case_design_validation_leaves_canonical_outputs_unchanged(
     canonical.write_bytes(original)
     _write_case_design_outputs(write_root, authored)
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, authored),
         project,
         [
@@ -4079,7 +4088,7 @@ def _case_impact_row(
 @pytest.mark.asyncio
 async def test_case_design_prepare_embeds_the_frozen_inventory(tmp_path: Path) -> None:
     prepared = await run_prepare(
-        CaseDesignPrepareHandler(),
+        cast(TaskHandler, case_design_prepare),
         CASE_INPUT,
         BINDING,
         tmp_path,
@@ -4098,7 +4107,7 @@ async def test_case_design_prepare_embeds_the_frozen_inventory(tmp_path: Path) -
 async def test_case_design_prepare_infers_case_paths_from_inventory(tmp_path: Path) -> None:
     payload = {**CASE_INPUT, "case_delta_paths": []}
     prepared = await run_prepare(
-        CaseDesignPrepareHandler(),
+        cast(TaskHandler, case_design_prepare),
         payload,
         BINDING,
         tmp_path,
@@ -4120,7 +4129,7 @@ async def test_case_design_prepare_infers_case_paths_from_inventory(tmp_path: Pa
 async def test_case_design_prepare_locks_every_inferred_module(tmp_path: Path) -> None:
     payload = {**CASE_INPUT, "case_delta_paths": ["qa/cases/menus/case.yaml"]}
     prepared = await run_prepare(
-        CaseDesignPrepareHandler(),
+        cast(TaskHandler, case_design_prepare),
         payload,
         BINDING,
         tmp_path,
@@ -4147,7 +4156,7 @@ async def test_case_design_prepare_derives_module_when_explore_omits_case_module
 ) -> None:
     payload = {**CASE_INPUT, "case_delta_paths": []}
     prepared = await run_prepare(
-        CaseDesignPrepareHandler(),
+        cast(TaskHandler, case_design_prepare),
         payload,
         BINDING,
         tmp_path,
@@ -4163,7 +4172,7 @@ async def test_case_design_prepare_rejects_empty_lock_without_inferred_module(
     tmp_path: Path,
 ) -> None:
     payload = {**CASE_INPUT, "case_delta_paths": []}
-    prepared = await run_prepare(CaseDesignPrepareHandler(), payload, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, case_design_prepare), payload, BINDING, tmp_path)
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
@@ -4184,7 +4193,7 @@ async def test_case_design_finalize_locks_inferred_case_module(tmp_path: Path) -
     source.unlink()
     outputs = [inferred if path.endswith("/case.yaml") else path for path in outputs]
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -4212,7 +4221,7 @@ async def test_case_design_finalize_rejects_uncovered_add_rows(tmp_path: Path) -
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     outputs = _write_case_design_outputs(write_root, authored)
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -4242,7 +4251,7 @@ async def test_case_design_finalize_accepts_a_covering_added_case(tmp_path: Path
     authored["added"][0]["impact_rows"] = ["IR-001"]
     outputs = _write_case_design_outputs(write_root, authored)
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -4272,7 +4281,7 @@ async def test_case_design_finalize_rejects_add_row_cited_from_modified(tmp_path
     authored["modified"][0]["impact_rows"] = ["IR-001"]
     outputs = _write_case_design_outputs(write_root, authored)
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [
@@ -4300,7 +4309,7 @@ async def test_case_design_finalize_does_not_require_coverage_for_open_rows(tmp_
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     outputs = _write_case_design_outputs(write_root, authored)
     executed = await _finalize_files(
-        CaseDesignFinalizeHandler(),
+        cast(TaskHandler, case_design_finalize),
         cast(JSONValue, {"output_files": outputs}),
         project,
         [

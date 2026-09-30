@@ -1,4 +1,4 @@
-"""Common Intake prepare handlers and Agent request construction."""
+"""Intake Agent request construction."""
 
 from __future__ import annotations
 
@@ -10,31 +10,13 @@ from typing import Any
 from agent_runtime_contracts import AgentRunRequest, ResultContract
 from agent_runtime_contracts.ops import (
     AgentBindingDataV1,
-    InputError,
-    failed_input,
-    prepared_outcome,
     result_contract_from,
     skill_request,
-    validate_binding,
-    validate_model,
 )
-from graph_engine.canonical import canonical_json_bytes
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import TaskContext
 
-from assurance_intake.contracts.agent import (
-    CaseReviewInputV1,
-    ExploreInputV1,
-)
 from assurance_intake.contracts.explore import EXPLORE_AGENT_OUTPUT_PATHS
-from assurance_intake.operations.explore_context import build_explore_context
-from assurance_intake.operations.planning_facts import build_planning_facts
 from assurance_intake.resource_loader import resource_bytes, resource_text
-
-from assurance_intake.operations.prepare_evidence import (
-    _authenticate_evidence_refs,
-    _authenticate_plan,
-    _require_regular_project_input,
-)
 
 INTAKE_SKILL = "skills/aa-intake/SKILL.md"
 INTAKE_PERSONA = "personas/intake-host.md"
@@ -142,10 +124,6 @@ def prepare_request(
     )
 
 
-def prepare_outcome(**kwargs: Any) -> TaskOutcome:
-    return prepared_outcome(prepare_request(**kwargs))
-
-
 def materialize_requirement(text: str) -> bytes:
     return (text.removesuffix("\n") + "\n").encode("utf-8")
 
@@ -154,76 +132,3 @@ def write_prepare_file(write_root: Path, relative: str, data: bytes) -> None:
     path = write_root.joinpath(*relative.split("/"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
-
-
-class ExplorePrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            business = validate_model(ExploreInputV1, request.input)
-            binding = validate_binding(request.binding_data)
-            document = build_explore_context(
-                context.project_root,
-                change_id=business.change_id,
-                capability_leafs=business.capability_leafs,
-            )
-            relative = "qa/results/explore/context.json"
-            path = context.write_root.joinpath(*relative.split("/"))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(canonical_json_bytes(document.model_dump(mode="json")) + b"\n")
-            return prepare_outcome(
-                skill_path=EXPLORE_SKILL,
-                persona_path=EXPLORE_PERSONA,
-                business=business,
-                binding=binding,
-                result_schema_id=EXPLORE_RESULT_ID,
-                context=context,
-                allowed_outputs=explore_outputs(business.change_id),
-            )
-        except (InputError, ValueError) as error:
-            return failed_input(error)
-
-
-class CaseReviewPrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            business = validate_model(CaseReviewInputV1, request.input)
-            binding = validate_binding(request.binding_data)
-            plan = _authenticate_plan(
-                context.project_root,
-                change_id=business.change_id,
-                plan_digest=business.plan_digest,
-                plan_ref=business.plan_ref,
-            )
-            _authenticate_evidence_refs(context.project_root, business.preparation_refs)
-            _authenticate_evidence_refs(context.project_root, business.case_refs)
-            if business.case_delta_paths and not set(business.case_delta_paths) <= {
-                item.path for item in business.case_refs
-            }:
-                raise InputError("case_refs must bind every locked case_delta_path")
-            review_inputs = case_review_inputs(business.change_id, business.case_delta_paths)
-            for relative in review_inputs:
-                _require_regular_project_input(context.project_root, relative)
-            business = CaseReviewInputV1.model_validate(
-                {**business.model_dump(mode="json"), "review_input_paths": review_inputs}
-            )
-            return prepare_outcome(
-                skill_path=CASE_REVIEW_SKILL,
-                persona_path=CASE_REVIEW_PERSONA,
-                business=business,
-                binding=binding,
-                result_schema_id=CASE_REVIEW_RESULT_ID,
-                context=context,
-                allowed_outputs=case_review_outputs(
-                    business.change_id,
-                    coverage_epoch=business.coverage_epoch,
-                    review_round=business.review_round,
-                ),
-                planning_facts=build_planning_facts(
-                    context.project_root,
-                    change_id=business.change_id,
-                    capability_leafs=business.capability_leafs,
-                    families=plan.selected_test_families,
-                ),
-            )
-        except InputError as error:
-            return failed_input(error)

@@ -26,10 +26,8 @@ from assurance_intake.operations.case_review_seal import (
     expected_review_history,
     expected_reviewed_case,
 )
-from assurance_intake.operations.finalize import (
-    CaseDesignFinalizeHandler,
-    CaseReviewFinalizeHandler,
-)
+from assurance_intake.agent_ops.case_design import finalize as case_design_finalize
+from assurance_intake.agent_ops.case_review import finalize as case_review_finalize
 from tests.acg_plan_fixture import install_plan
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
@@ -280,7 +278,7 @@ async def _finalize(
         structured: dict[str, Any] = {"output_files": list(outputs)}
         artifacts = outputs
         selected = list(plan.selected_test_families)
-        handler = CaseDesignFinalizeHandler()
+        handler = case_design_finalize
     else:
         structured = {
             "schema_version": "1.0",
@@ -332,7 +330,7 @@ async def _finalize(
                 coverage_epoch=coverage_epoch,
             )
         selected = []
-        handler = CaseReviewFinalizeHandler()
+        handler = case_review_finalize
     result = AgentRunResult(
         result_payload=cast(JSONValue, structured),
         result_digest=canonical_digest(cast(JSONValue, structured)),

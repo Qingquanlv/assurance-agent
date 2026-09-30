@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import ModuleType
 from typing import Any, cast
 
 from agent_runtime_contracts.wire.schema import canonical_digest
@@ -24,7 +25,7 @@ from tests.acg_plan_fixture import install_plan
 from assurance_generation.operations.planning import PlanFinalizeHandler
 from assurance_healing.operations.agent import FixProposalFinalizeHandler
 from assurance_improvement.operations.agent import RetroFinalizeHandler
-from assurance_intake.operations.finalize import CaseReviewFinalizeHandler
+from assurance_intake.agent_ops.case_review import finalize as case_review_finalize
 from assurance_quality.operations.agent_skills import InspectFinalizeHandler
 
 AGENT_CUTS = (
@@ -35,7 +36,7 @@ AGENT_CUTS = (
     "terminal-observed",
 )
 WHEEL_FINALIZERS = {
-    "intake": CaseReviewFinalizeHandler,
+    "intake": case_review_finalize,
     "generation": lambda: PlanFinalizeHandler("api"),
     "healing": FixProposalFinalizeHandler,
     "quality": InspectFinalizeHandler,
@@ -81,7 +82,9 @@ class CuttingTaskHost(SixWheelTaskHost):
 
 def _handler(wheel: str) -> object:
     factory = WHEEL_FINALIZERS[wheel]
-    return factory() if callable(factory) and not isinstance(factory, type) else factory()
+    if isinstance(factory, ModuleType):
+        return factory
+    return factory()
 
 
 def _cut_payload(wheel: str, cut: str) -> JSONValue:

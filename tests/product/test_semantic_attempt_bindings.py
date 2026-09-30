@@ -4,6 +4,7 @@ import asyncio
 import inspect
 from functools import wraps
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 import pytest
@@ -694,7 +695,9 @@ def test_bound_case_design_task_runs_all_hooks_through_installed_host_phases(
         raise AssertionError("direct handler must not run")
 
     for phase in (resolved.executor._prepare, resolved.executor._runtime, resolved.executor._finalize):
-        monkeypatch.setattr(type(phase._handler), "execute", direct_handler_must_not_run)
+        handler = phase._handler
+        target = handler if isinstance(handler, ModuleType) else type(handler)
+        monkeypatch.setattr(target, "execute", direct_handler_must_not_run)
     executor = resolved.executor.with_host(host, graph_revision="c" * 64, product_lock_digest="d" * 64)
     validated_input = CaseDesignInputV1(
         change_id="CH-1",

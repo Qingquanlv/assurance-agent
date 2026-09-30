@@ -1,4 +1,4 @@
-"""Semantic intake finalize handlers."""
+"""Semantic checks for intake Agent finalization."""
 
 from __future__ import annotations
 
@@ -17,13 +17,9 @@ from pydantic import ValidationError
 from agent_runtime_contracts.ops import (
     InputError,
     OutputError,
-    failed_input,
-    failed_output,
-    validate_model,
 )
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts import (
     CaseReviewResultV1,
@@ -32,17 +28,13 @@ from assurance_intake.contracts import (
 )
 from assurance_intake.contracts.agent import (
     AgentFinalizeInputV1,
-    ArtifactDigestV1,
     ArtifactListResultV1,
-    CaseDesignOutputV1,
     CaseFinalizeInputV1,
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
 from assurance_intake.contracts.explore import (
     EXPLORATION_PATH,
-    EXPLORE_AGENT_OUTPUT_PATHS,
-    EXPLORE_OFFICIAL_OUTPUT_PATHS,
     ExploreAdvisoryV1,
     ExploreContextV1,
     PreparedExploreV1,
@@ -59,39 +51,27 @@ from assurance_intake.operations.obligations import (
 from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
 from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObligationV1, SourceRefV1
 from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
-from assurance_intake.contracts.cases import QaYaml, _require_impact_row_coverage
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.operations.impact_validation import validate_inventory_references
-from assurance_intake.operations.case_modules import infer_case_delta_paths
 from assurance_intake.operations.explore_context import load_exploration_document
-from assurance_intake.contracts.case_selection import selection_path
 from assurance_intake.contracts.review import (
-    CaseMinimumCoverageReview,
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
-from assurance_intake.operations.plan_codec import decode_plan
-from assurance_intake.operations.prepare import case_review_outputs
-from assurance_intake.operations.case_review_seal import (
-    collect_selected_cases,
-    expected_case_selection,
-    expected_review_history,
-    expected_reviewed_case,
-)
 
 
-def _leafs(values: Iterable[str]) -> frozenset[str]:
+def leafs(values: Iterable[str]) -> frozenset[str]:
     return frozenset(values)
 
 
-def _structured(payload: AgentFinalizeInputV1) -> object:
+def structured(payload: AgentFinalizeInputV1) -> object:
     return thaw_json(payload.agent_result.result_payload)
 
 
-def _validate_case_review_repair_scope(
+def validate_case_review_repair_scope(
     document: CaseReviewResultV1,
     payload: AgentFinalizeInputV1,
     *,
@@ -187,7 +167,7 @@ def _canonical_relative(path: str) -> bool:
     )
 
 
-def _workspace_file(workspace: Path, relative: str) -> Path:
+def workspace_file(workspace: Path, relative: str) -> Path:
     if not _canonical_relative(relative):
         raise OutputError(f"output file path must be canonical and relative: {relative}")
     path = workspace
@@ -207,7 +187,7 @@ def _workspace_file(workspace: Path, relative: str) -> Path:
 
 
 def read_regular_bytes(workspace: Path, relative: str, *, kind: str) -> bytes:
-    path = _workspace_file(workspace, relative)
+    path = workspace_file(workspace, relative)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_NONBLOCK", 0)
     try:
@@ -280,7 +260,7 @@ def _authenticated_capability_leafs(
         raise InputError(f"invalid capability catalog: {error}") from error
 
 
-def _authenticated_journey_keys(
+def authenticated_journey_keys(
     workspace: Path,
     source_resource_digests: tuple[tuple[str, str], ...],
 ) -> tuple[str, ...]:
@@ -317,14 +297,14 @@ def authenticate_files(
     for relative in declared:
         if not _allowed_by_lock(relative, locked):
             raise OutputError(f"undeclared output file: {relative}")
-        path = _workspace_file(workspace, relative)
+        path = workspace_file(workspace, relative)
         if not path.is_file() or path.is_symlink():
             raise OutputError(f"declared output file is missing: {relative}")
         artifacts.append({"path": relative, "digest": file_digest(path.read_bytes())})
     return artifacts
 
 
-def _authenticate_review_repair_images(
+def authenticate_review_repair_images(
     images: Mapping[str, bytes],
     declared: tuple[str, ...],
     locked: tuple[str, ...],
@@ -342,7 +322,7 @@ def _authenticate_review_repair_images(
     return artifacts
 
 
-def _validation_repair_images(
+def validation_repair_images(
     project_root: Path,
     write_root: Path,
     declared: tuple[str, ...],
@@ -354,7 +334,7 @@ def _validation_repair_images(
     for relative in declared:
         if not _allowed_by_lock(relative, locked):
             raise OutputError(f"undeclared output file: {relative}")
-        candidate = _workspace_file(write_root, relative)
+        candidate = workspace_file(write_root, relative)
         if candidate.exists() or candidate.is_symlink():
             images[relative] = read_regular_bytes(
                 write_root,
@@ -370,9 +350,9 @@ def _validation_repair_images(
     return images
 
 
-def _artifact_list(payload: AgentFinalizeInputV1) -> ArtifactListResultV1:
+def artifact_list(payload: AgentFinalizeInputV1) -> ArtifactListResultV1:
     try:
-        return ArtifactListResultV1.model_validate(_structured(payload))
+        return ArtifactListResultV1.model_validate(structured(payload))
     except ValidationError as error:
         raise OutputError(str(error)) from error
 
@@ -380,7 +360,7 @@ def _artifact_list(payload: AgentFinalizeInputV1) -> ArtifactListResultV1:
 def finalize_artifact_list(payload: AgentFinalizeInputV1, workspace: Path) -> list[dict[str, str]]:
     if not payload.artifact_paths:
         raise InputError("artifact_paths must lock the expected output files")
-    document = _artifact_list(payload)
+    document = artifact_list(payload)
     return authenticate_files(workspace, document.output_files, payload.artifact_paths)
 
 
@@ -388,7 +368,7 @@ _EXPLORE_CONTEXT = "qa/results/explore/context.json"
 
 
 def _load_explore_context(workspace: Path, *, change_id: str) -> ExploreContextV1:
-    path = _workspace_file(workspace, _EXPLORE_CONTEXT)
+    path = workspace_file(workspace, _EXPLORE_CONTEXT)
     try:
         context = ExploreContextV1.model_validate_json(path.read_bytes())
     except (OSError, ValidationError, ValueError) as error:
@@ -418,7 +398,7 @@ def _advisory_evidence_ids(document: ExploreAdvisoryV1) -> frozenset[str]:
     return frozenset(cited)
 
 
-def _validate_explore_outputs(
+def validate_explore_outputs(
     workspace: Path,
     declared: tuple[str, ...],
     *,
@@ -432,7 +412,7 @@ def _validate_explore_outputs(
         if relative.endswith("/explore/exploration-draft.json"):
             if parts != ("qa", "results", "explore", "exploration-draft.json"):
                 raise OutputError(f"invalid exploration-draft.json path: {relative}")
-            path = _workspace_file(workspace, relative)
+            path = workspace_file(workspace, relative)
             try:
                 advisory = ExploreAdvisoryV1.model_validate_json(path.read_bytes())
             except (OSError, ValidationError, ValueError) as error:
@@ -444,7 +424,7 @@ def _validate_explore_outputs(
         elif relative.endswith("/explore/impact-inventory.json"):
             if parts != ("qa", "results", "explore", "impact-inventory.json"):
                 raise OutputError(f"invalid impact-inventory.json path: {relative}")
-            path = _workspace_file(workspace, relative)
+            path = workspace_file(workspace, relative)
             try:
                 inventory = ChangeImpactInventoryV1.model_validate_json(path.read_bytes())
             except (OSError, ValidationError, ValueError) as error:
@@ -476,7 +456,7 @@ def _validate_explore_outputs(
         raise OutputError(f"impact-inventory.json: {error}") from error
 
 
-def _require_selected_test_families(
+def require_selected_test_families(
     document: CaseYamlAuthoring,
     selected: tuple[str, ...],
 ) -> None:
@@ -513,7 +493,7 @@ def case_change_id(value: str | None) -> str:
     return value
 
 
-def _load_authored_case_delta(
+def load_authored_case_delta(
     workspace: Path,
     *,
     change_id: str,
@@ -600,7 +580,7 @@ def _strings(value: object) -> Iterable[str]:
             yield from _strings(item)
 
 
-def _reject_endpoint_literals(authored: CaseYamlAuthoring) -> None:
+def reject_endpoint_literals(authored: CaseYamlAuthoring) -> None:
     """HTTP method + path belongs in the API plan, except schema-owned Fuzz/Performance fields."""
 
     hits: list[str] = []
@@ -620,7 +600,7 @@ def _reject_endpoint_literals(authored: CaseYamlAuthoring) -> None:
         )
 
 
-def _load_minimum_coverage_matrix(
+def load_minimum_coverage_matrix(
     workspace: Path,
     *,
     relative: str,
@@ -629,7 +609,7 @@ def _load_minimum_coverage_matrix(
     journey_keys: tuple[str, ...],
     images: Mapping[str, bytes] | None = None,
 ) -> MinimumCoverageMatrixAuthoring:
-    document = _read_minimum_coverage_matrix(
+    document = read_minimum_coverage_matrix(
         workspace,
         relative=relative,
         images=images,
@@ -693,7 +673,7 @@ _STATUS_COVERED = re.compile(r"(?<![a-z_])covered(?!_by)")
 _MATRIX_MUTABLE_FIELDS = frozenset({"status", "covered_by_cases", "skip_reason"})
 
 
-def _bound_obligations(workspace: Path, plan: ResolvedAssurancePlan) -> tuple[PreparedObligationV1, ...]:
+def bound_obligations(workspace: Path, plan: ResolvedAssurancePlan) -> tuple[PreparedObligationV1, ...]:
     ref = plan.quality_goal.obligations_ref
     try:
         data = read_regular_bytes(workspace, ref.path, kind="frozen exploration")
@@ -712,7 +692,7 @@ def _bound_obligations(workspace: Path, plan: ResolvedAssurancePlan) -> tuple[Pr
                 )
             ),
             journey_keys=frozenset(
-                _authenticated_journey_keys(
+                authenticated_journey_keys(
                     workspace,
                     plan.quality_goal.source_resource_digests,
                 )
@@ -744,7 +724,7 @@ def _review_requests_matrix_coverage(document: CaseReviewResultV1) -> bool:
     return False
 
 
-def _reject_unbound_covered_repairs(
+def reject_unbound_covered_repairs(
     document: CaseReviewResultV1,
     obligations: tuple[PreparedObligationV1, ...],
 ) -> None:
@@ -779,12 +759,12 @@ def _reject_unbound_covered_repairs(
             )
 
 
-def _require_frozen_unresolved_rows(
+def require_frozen_unresolved_rows(
     workspace: Path,
     plan: ResolvedAssurancePlan,
     matrix: MinimumCoverageMatrixAuthoring,
 ) -> None:
-    obligations = _bound_obligations(workspace, plan)
+    obligations = bound_obligations(workspace, plan)
     unresolved = {row.mrc_id for row in obligations if row.key is None}
     mapped = {row.mrc_id for row in matrix.root if row.key is None}
     missing = sorted(unresolved - mapped)
@@ -795,7 +775,7 @@ def _require_frozen_unresolved_rows(
         raise OutputError(f"unresolved MRC rows do not match the frozen plan: {invented}")
 
 
-def _read_minimum_coverage_matrix(
+def read_minimum_coverage_matrix(
     workspace: Path,
     *,
     relative: str,
@@ -813,7 +793,7 @@ def _read_minimum_coverage_matrix(
     return document
 
 
-def _read_case_review_inputs(
+def read_case_review_inputs(
     workspace: Path,
     payload: CaseFinalizeInputV1,
     matrix_relative: str,
@@ -1125,7 +1105,7 @@ def _validate_repair_document(
         raise OutputError(f"review repair artifact type is not supported: {artifact}")
 
 
-def _validate_review_repair(
+def validate_review_repair(
     project_root: Path,
     write_root: Path,
     contract: ReviewRepairContractV1,
@@ -1143,7 +1123,7 @@ def _validate_review_repair(
             raise OutputError(f"review repair baseline changed after prepare: {relative}")
         actions = actions_by_artifact.get(relative)
         if actions is None:
-            candidate_path = _workspace_file(write_root, relative)
+            candidate_path = workspace_file(write_root, relative)
             if candidate_path.exists() or candidate_path.is_symlink():
                 raise OutputError(f"review repair staged a non-target output: {relative}")
             images[relative] = baseline
@@ -1186,7 +1166,7 @@ def _trusted_sources(workspace: Path) -> TrustedIntakeSourcesV1 | None:
     )
 
 
-def _seal_official_exploration(
+def seal_official_exploration(
     workspace: Path,
     advisory: ExploreAdvisoryV1,
     *,
@@ -1275,429 +1255,3 @@ def _seal_official_exploration(
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
     return official, data
-
-
-class ExploreFinalizeHandler:
-    input_model = AgentFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            payload = validate_model(AgentFinalizeInputV1, request.input)
-            if not payload.artifact_paths:
-                raise InputError("artifact_paths must lock the expected output files")
-            document = _artifact_list(payload)
-            change_id = case_change_id(payload.change_id)
-            if set(document.output_files) != set(EXPLORE_AGENT_OUTPUT_PATHS):
-                raise OutputError(
-                    "explore receipt must declare exactly exploration-draft.json and impact-inventory.json"
-                )
-            artifacts = finalize_artifact_list(payload, context.write_root)
-            _validate_explore_outputs(
-                context.write_root,
-                document.output_files,
-                change_id=change_id,
-                capability_leafs=_leafs(payload.capability_leafs),
-            )
-            advisory = ExploreAdvisoryV1.model_validate_json(
-                context.write_root.joinpath(*EXPLORE_AGENT_OUTPUT_PATHS[0].split("/")).read_bytes()
-            )
-            official, official_bytes = _seal_official_exploration(
-                context.write_root,
-                advisory,
-                candidate_families=frozenset(),
-                policy_required=frozenset(),
-            )
-            del official
-            artifacts = [item for item in artifacts if item["path"] != EXPLORE_AGENT_OUTPUT_PATHS[0]]
-            artifacts.append({"path": EXPLORATION_PATH, "digest": file_digest(official_bytes)})
-            official_paths = {item["path"] for item in artifacts}
-            if not set(EXPLORE_OFFICIAL_OUTPUT_PATHS) <= official_paths:
-                raise OutputError("finalize must return official exploration and inventory refs")
-            artifacts.sort(key=lambda item: item["path"])
-            return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))
-
-
-class CaseDesignFinalizeHandler:
-    input_model = CaseFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        parsed: CaseFinalizeInputV1 | None = None
-        try:
-            payload = validate_model(CaseFinalizeInputV1, request.input)
-            parsed = payload
-            change_id = case_change_id(payload.change_id)
-            try:
-                plan_path = _workspace_file(context.project_root, payload.plan_ref.path)
-                plan = decode_plan(plan_path.read_bytes(), payload.plan_ref)
-            except (OSError, ValidationError, ValueError) as error:
-                raise InputError(f"invalid frozen assurance plan: {error}") from error
-            if plan.change_id != change_id or plan.plan_digest != payload.plan_digest:
-                raise InputError("frozen assurance plan does not match case input")
-            if plan.selected_test_families != payload.selected_test_families:
-                raise InputError("case selected families do not match frozen assurance plan")
-            capability_leafs = _leafs(payload.capability_leafs)
-            try:
-                inventory_path = _workspace_file(context.project_root, plan.impact_inventory_ref.path)
-                inventory_bytes = inventory_path.read_bytes()
-                if hashlib.sha256(inventory_bytes).hexdigest() != plan.impact_inventory_ref.digest:
-                    raise InputError("impact inventory digest changed after it was committed")
-                inventory = ChangeImpactInventoryV1.model_validate_json(inventory_bytes)
-            except InputError:
-                raise
-            except (OSError, ValidationError, ValueError) as error:
-                raise InputError(f"invalid impact-inventory.json: {error}") from error
-            if inventory.change_id != change_id:
-                raise InputError("impact inventory does not belong to the case-design change")
-            receipt = _artifact_list(payload)
-            change_root = "qa"
-            for relative in receipt.output_files:
-                if not relative.startswith(f"{change_root}/"):
-                    raise OutputError("case-design receipt may contain only current change outputs")
-            matrix_relative = f"{change_root}/results/trace/minimum-coverage-matrix.json"
-            required = {
-                f"{change_root}/.qa.yaml",
-                f"{change_root}/proposal.md",
-                matrix_relative,
-            }
-            missing = sorted(required.difference(receipt.output_files))
-            if missing:
-                raise OutputError(
-                    "case-design receipt is missing required output files: " + ", ".join(missing)
-                )
-            try:
-                inferred = infer_case_delta_paths(inventory)
-            except ValueError:
-                inferred = ()
-            if inferred:
-                expected_cases = set(inferred)
-            elif payload.case_delta_paths:
-                expected_cases = set(payload.case_delta_paths)
-            else:
-                raise InputError("impact inventory does not imply any case module")
-            declared_cases = {
-                relative
-                for relative in receipt.output_files
-                if relative.startswith(f"{change_root}/cases/") and relative.endswith("/case.yaml")
-            }
-            if declared_cases != expected_cases:
-                missing_cases = sorted(expected_cases - declared_cases)
-                unexpected_cases = sorted(declared_cases - expected_cases)
-                raise OutputError(
-                    "case-design receipt case paths do not match locked case_delta_paths; "
-                    f"missing={missing_cases}, unexpected={unexpected_cases}"
-                )
-            if payload.review_repair is not None:
-                if tuple(receipt.output_files) != tuple(payload.review_repair.baseline_file_digests):
-                    raise OutputError(
-                        "review repair receipt must exactly match the frozen case-design outputs"
-                    )
-                images = _validate_review_repair(
-                    context.project_root,
-                    context.write_root,
-                    payload.review_repair,
-                )
-                artifacts = _authenticate_review_repair_images(
-                    images,
-                    receipt.output_files,
-                    payload.artifact_paths,
-                )
-            elif payload.validation_attempt == 1:
-                images = _validation_repair_images(
-                    context.project_root,
-                    context.write_root,
-                    receipt.output_files,
-                    payload.artifact_paths,
-                )
-                artifacts = _authenticate_review_repair_images(
-                    images,
-                    receipt.output_files,
-                    payload.artifact_paths,
-                )
-            else:
-                images = None
-                artifacts = authenticate_files(
-                    context.write_root,
-                    receipt.output_files,
-                    payload.artifact_paths,
-                )
-            qa_relative = f"{change_root}/.qa.yaml"
-            try:
-                qa_bytes = (
-                    images[qa_relative]
-                    if images is not None
-                    else read_regular_bytes(context.write_root, qa_relative, kind="change document")
-                )
-                qa_digest = next(item["digest"] for item in artifacts if item["path"] == qa_relative)
-                if file_digest(qa_bytes) != qa_digest:
-                    raise OutputError("qa/.qa.yaml changed during finalization")
-                qa = QaYaml.model_validate(yaml.safe_load(qa_bytes))
-            except (yaml.YAMLError, UnicodeError, ValidationError) as error:
-                raise OutputError(f"invalid {qa_relative}: {error}") from error
-            if qa.change.change_id != change_id:
-                raise OutputError("qa/.qa.yaml change_id does not match locked change_id")
-            authored = _load_authored_case_delta(
-                context.write_root,
-                change_id=change_id,
-                locked=payload.artifact_paths,
-                declared=receipt.output_files,
-                capability_leafs=capability_leafs,
-                inventory=inventory,
-                images=images,
-            )
-            try:
-                _require_impact_row_coverage(authored, inventory)
-            except ValueError as error:
-                raise OutputError(str(error)) from error
-            validation_errors: list[str] = []
-            try:
-                _reject_endpoint_literals(authored)
-            except OutputError as error:
-                validation_errors.append(str(error))
-            if payload.selected_test_families:
-                try:
-                    _require_selected_test_families(authored, payload.selected_test_families)
-                except OutputError as error:
-                    validation_errors.append(str(error))
-            if payload.ui_exploration is not None and payload.api_discovery is not None:
-                # Lazy: avoid generation↔quality import cycle at module load.
-                from assurance_intake.operations.surface_guard import (
-                    SurfaceMismatch,
-                    assert_cases_match_surface,
-                )
-                from assurance_quality.contracts.surface import (
-                    ApiDiscoveryDocument,
-                    UiExplorationDocument,
-                )
-
-                try:
-                    api_document = ApiDiscoveryDocument.model_validate(thaw_json(payload.api_discovery))
-                    ui_document = UiExplorationDocument.model_validate(thaw_json(payload.ui_exploration))
-                except ValidationError as error:
-                    raise OutputError(f"invalid surface document on case finalize: {error}") from error
-                try:
-                    assert_cases_match_surface(
-                        authored,
-                        api_document,
-                        ui_document,
-                        set(payload.selected_test_families),
-                    )
-                except SurfaceMismatch as error:
-                    validation_errors.append(str(error))
-            if authored.added or authored.modified:
-                journey_keys = _authenticated_journey_keys(
-                    context.project_root,
-                    plan.quality_goal.source_resource_digests,
-                )
-                try:
-                    matrix = _load_minimum_coverage_matrix(
-                        context.write_root,
-                        relative=matrix_relative,
-                        authored=authored,
-                        selected=plan.selected_test_families,
-                        journey_keys=journey_keys,
-                        images=images,
-                    )
-                    _require_frozen_unresolved_rows(context.project_root, plan, matrix)
-                except OutputError as error:
-                    validation_errors.append(str(error))
-            else:
-                matrix = _read_minimum_coverage_matrix(
-                    context.write_root,
-                    relative=matrix_relative,
-                    images=images,
-                )
-                _require_frozen_unresolved_rows(context.project_root, plan, matrix)
-            if validation_errors:
-                raise OutputError("; ".join(validation_errors))
-            output = CaseDesignOutputV1(
-                validation_status="pass",
-                validation_attempt=payload.validation_attempt,
-                artifacts=tuple(ArtifactDigestV1.model_validate(item) for item in artifacts),
-                review_repair=payload.review_repair,
-            )
-            return TaskOutcome.succeeded(output.model_dump(mode="json"))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            if parsed is not None and parsed.review_repair is not None:
-                # A review repair is bound to the committed baseline. Reject
-                # invalid candidates before promotion so that retry keeps it.
-                return failed_output(str(error))
-            if isinstance(request.input, dict) and request.input.get("validation_attempt") == 0:
-                repair_output = CaseDesignOutputV1(
-                    validation_status="needs_fix",
-                    validation_attempt=1,
-                    validation_error=str(error)[:8192],
-                    review_repair=parsed.review_repair if parsed is not None else None,
-                )
-                return TaskOutcome.succeeded(repair_output.model_dump(mode="json"))
-            return failed_output(str(error))
-
-
-class CaseReviewFinalizeHandler:
-    input_model = CaseFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            payload = validate_model(CaseFinalizeInputV1, request.input)
-            try:
-                plan_path = _workspace_file(context.project_root, payload.plan_ref.path)
-                plan = decode_plan(plan_path.read_bytes(), payload.plan_ref)
-            except (OSError, ValidationError, ValueError) as error:
-                raise InputError(f"invalid frozen assurance plan: {error}") from error
-            if plan.plan_digest != payload.plan_digest:
-                raise InputError("frozen assurance plan does not match case review input")
-            try:
-                document = CaseReviewResultV1.model_validate(_structured(payload))
-            except ValidationError as error:
-                raise OutputError(str(error)) from error
-            runtime_document = document
-            change_id = case_change_id(payload.change_id or document.change_id)
-            if document.change_id != change_id:
-                raise OutputError("case review change_id does not match locked change_id")
-            if plan.change_id != change_id:
-                raise InputError("frozen assurance plan does not match case review change_id")
-            _validate_case_review_repair_scope(document, payload, change_id=change_id)
-            matrix_relative = "qa/results/trace/minimum-coverage-matrix.json"
-            images = _read_case_review_inputs(context.project_root, payload, matrix_relative)
-            authored = _load_authored_case_delta(
-                context.project_root,
-                change_id=change_id,
-                locked=payload.case_delta_paths,
-                declared=payload.case_delta_paths,
-                capability_leafs=_leafs(payload.capability_leafs),
-                images=images,
-            )
-            _require_selected_test_families(authored, plan.selected_test_families)
-            matrix = _load_minimum_coverage_matrix(
-                context.project_root,
-                relative=matrix_relative,
-                authored=authored,
-                selected=plan.selected_test_families,
-                journey_keys=_authenticated_journey_keys(
-                    context.project_root,
-                    plan.quality_goal.source_resource_digests,
-                ),
-                images=images,
-            )
-            _require_frozen_unresolved_rows(context.project_root, plan, matrix)
-            _reject_unbound_covered_repairs(document, _bound_obligations(context.project_root, plan))
-            required = [row for row in matrix.root if row.required]
-            expected_projection = {
-                "total_required": len(required),
-                "covered": sum(row.status == "covered" for row in required),
-                "skipped_by_scope": sum(row.status == "skipped_by_scope" for row in required),
-                "missing": [row.key or row.mrc_id for row in required if row.status == "skipped_by_scope"],
-            }
-            document = document.model_copy(
-                update={"minimum_coverage": CaseMinimumCoverageReview.model_validate(expected_projection)}
-            )
-            output = document.model_dump(mode="json")
-            if payload.preparation_refs and payload.case_refs:
-                artifacts = authenticate_files(
-                    context.write_root,
-                    case_review_outputs(
-                        change_id,
-                        coverage_epoch=payload.coverage_epoch,
-                        review_round=payload.review_round,
-                    ),
-                    payload.artifact_paths,
-                )
-                by_path = {item["path"]: item for item in artifacts}
-                review_relative = "qa/results/review/case-review.json"
-                review_ref = EvidenceArtifactRefV1.model_validate(by_path[review_relative])
-                review_bytes = read_regular_bytes(
-                    context.write_root, review_relative, kind="staged case review"
-                )
-                if file_digest(review_bytes) != review_ref.digest:
-                    raise OutputError("staged case review changed during finalization")
-                try:
-                    staged_review = CaseReviewResultV1.model_validate_json(review_bytes)
-                except ValidationError as error:
-                    raise OutputError(f"invalid staged case review: {error}") from error
-                if staged_review != runtime_document:
-                    raise OutputError("staged case review differs from the typed agent result")
-                selection_relative = selection_path(payload.coverage_epoch)
-                history_relative = (
-                    f"qa/cases/reviews/epochs/{payload.coverage_epoch}/rounds/{payload.review_round}.json"
-                )
-                manifest_relative = "qa/cases/reviewed-case.json"
-                documents: list[tuple[EvidenceArtifactRefV1, Mapping[str, object]]] = []
-                for ref in payload.case_refs:
-                    try:
-                        source = yaml.safe_load(read_regular_bytes(context.write_root, ref.path, kind="case"))
-                    except (OutputError, yaml.YAMLError):
-                        source = yaml.safe_load(
-                            read_regular_bytes(context.project_root, ref.path, kind="case")
-                        )
-                    if not isinstance(source, Mapping):
-                        raise OutputError(f"case source is not a mapping: {ref.path}")
-                    documents.append((ref, source))
-                try:
-                    selected = collect_selected_cases(
-                        payload.case_refs,
-                        payload.case_delta_paths,
-                        documents,
-                    )
-                except ValueError as error:
-                    raise OutputError(str(error)) from error
-                expected_selection = expected_case_selection(
-                    change_id=change_id,
-                    coverage_epoch=payload.coverage_epoch,
-                    plan=plan,
-                    cases=selected,
-                )
-                expected_history = expected_review_history(
-                    change_id=change_id,
-                    coverage_epoch=payload.coverage_epoch,
-                    review_round=payload.review_round,
-                    document=document,
-                    preparation_refs=payload.preparation_refs,
-                    case_refs=payload.case_refs,
-                    review_ref=review_ref,
-                )
-                derived_refs: dict[str, EvidenceArtifactRefV1] = {}
-                for relative, derived in (
-                    (selection_relative, expected_selection),
-                    (history_relative, expected_history),
-                ):
-                    data = canonical_json_bytes(derived.model_dump(mode="json")) + b"\n"
-                    path = _workspace_file(context.write_root, relative)
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(data)
-                    derived_refs[relative] = EvidenceArtifactRefV1(path=relative, digest=file_digest(data))
-                selection_ref = derived_refs[selection_relative]
-                history_ref = derived_refs[history_relative]
-                expected_reviewed = expected_reviewed_case(
-                    change_id=change_id,
-                    coverage_epoch=payload.coverage_epoch,
-                    plan_digest=payload.plan_digest,
-                    plan_ref=payload.plan_ref,
-                    preparation_refs=payload.preparation_refs,
-                    case_refs=payload.case_refs,
-                    review_ref=review_ref,
-                    selection_ref=selection_ref,
-                )
-                manifest_bytes = canonical_json_bytes(expected_reviewed.model_dump(mode="json")) + b"\n"
-                manifest_path = _workspace_file(context.write_root, manifest_relative)
-                manifest_path.parent.mkdir(parents=True, exist_ok=True)
-                manifest_path.write_bytes(manifest_bytes)
-                output["artifacts"] = [
-                    *artifacts,
-                    selection_ref.model_dump(mode="json"),
-                    history_ref.model_dump(mode="json"),
-                    {"path": manifest_relative, "digest": file_digest(manifest_bytes)},
-                ]
-                output["reviewed_case"] = expected_reviewed.model_dump(mode="json")
-                output["history_ref"] = history_ref.model_dump(mode="json")
-            else:
-                output["artifacts"] = []
-            return TaskOutcome.succeeded(output)
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))

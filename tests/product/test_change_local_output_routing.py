@@ -229,7 +229,7 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
 
 
 def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Path) -> None:
-    from assurance_intake.operations import ExploreFinalizeHandler
+    from assurance_intake.agent_ops.explore import finalize as explore_finalize
 
     project, write_root = dual_roots(tmp_path)
     canonical = project / "qa/results/explore/exploration.json"
@@ -239,7 +239,7 @@ def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Pat
 
     executed = asyncio.run(
         execute_task(
-            ExploreFinalizeHandler(),
+            explore_finalize,
             {
                 "agent_result": fake_agent_result(
                     {

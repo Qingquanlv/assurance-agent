@@ -14,7 +14,7 @@ from assurance_intake.operations.plan_codec import decode_plan
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 
-def _require_regular_project_input(project_root: Path, relative: str) -> None:
+def require_regular_project_input(project_root: Path, relative: str) -> None:
     root = project_root.resolve()
     path = root
     for part in PurePosixPath(relative).parts:
@@ -30,25 +30,25 @@ def _require_regular_project_input(project_root: Path, relative: str) -> None:
         raise InputError(f"case-review input must be a regular single-link file: {relative}")
 
 
-def _authenticate_evidence_refs(
+def authenticate_evidence_refs(
     project_root: Path,
     refs: tuple[EvidenceArtifactRefV1, ...],
 ) -> None:
     for ref in refs:
-        _require_regular_project_input(project_root, ref.path)
+        require_regular_project_input(project_root, ref.path)
         path = project_root.joinpath(*ref.path.split("/"))
         if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
             raise InputError(f"evidence digest changed after it was committed: {ref.path}")
 
 
-def _authenticate_plan(
+def authenticate_plan(
     project_root: Path,
     *,
     change_id: str,
     plan_digest: str,
     plan_ref: EvidenceArtifactRefV1,
 ) -> ResolvedAssurancePlan:
-    _authenticate_evidence_refs(project_root, (plan_ref,))
+    authenticate_evidence_refs(project_root, (plan_ref,))
     try:
         plan = decode_plan(
             project_root.joinpath(*plan_ref.path.split("/")).read_bytes(),
