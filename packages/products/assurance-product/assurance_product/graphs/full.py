@@ -35,7 +35,7 @@ _SURFACE_SOURCES = frozenset({"live", "unavailable", "unused"})
 
 
 def adapt_execute_tail(state: ProductState) -> dict[str, object]:
-    return adapt_execute_tail_input(state, standalone=False)
+    return adapt_execute_tail_input(state)
 
 
 def _load_surface_document(

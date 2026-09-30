@@ -65,7 +65,6 @@ _CASE_DELTA = "qa/cases/system/dept/case.yaml"
 _THIN_EXPORTS = {
     "intake": ("assurance.intake", "prepare"),
     "init": ("assurance.generation", "init_runtime"),
-    "case": ("assurance.intake", "case"),
     "archive": ("assurance.improvement", "archive"),
     "retro": ("assurance.improvement", "retro"),
     "issue-review": ("assurance.quality", "issue_review"),
@@ -188,7 +187,6 @@ def _stub_features() -> dict[str, object]:
     return {
         "assurance.intake": IntakeGraphs(
             prepare=_stub_export(IntakeState, "intake.prepare"),
-            load_plan=_stub_export(IntakeState, "intake.load-plan"),
             case=_stub_export(IntakeState, "intake.case"),
         ),
         "assurance.generation": GenerationGraphs(
@@ -238,21 +236,12 @@ def _build_context(checkpointer: Checkpointer = None) -> EngineGraphBuildContext
 
 
 def _public_input(entrypoint: str) -> dict[str, object]:
-    case_delta = (_CASE_DELTA,) if entrypoint in {"intake", "case"} else ()
+    case_delta = (_CASE_DELTA,) if entrypoint == "intake" else ()
     candidate = ("api",) if entrypoint == "intake" else ()
-    resolved_plan_ref = (
-        {
-            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
-            "digest": _SHA,
-        }
-        if entrypoint == "case"
-        else None
-    )
     return ProductInputV1.model_validate(
         valid_product_input(
             case_delta_paths=case_delta,
             candidate_test_families=candidate,
-            resolved_plan_ref=resolved_plan_ref,
         )
     ).model_dump(mode="json")
 
@@ -299,7 +288,7 @@ def test_factory_accepts_exactly_six_owner_ids(
         "improvement",
     }
     assert set(thin_graphs.entrypoints) == set(THIN_ENTRYPOINTS)
-    assert len(thin_graphs.entrypoints) == 13
+    assert len(thin_graphs.entrypoints) == 12
 
 
 def test_factory_rejects_missing_extra_duplicate_and_mistyped_bundles(
@@ -339,7 +328,7 @@ def test_boot_factory_signature_is_generic() -> None:
 def test_thin_roots_are_independently_compiled_not_a_dispatcher(
     thin_graphs: ThinEntrypointGraphs,
 ) -> None:
-    assert set(thin_graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS) - {"full", "execute"}
+    assert set(thin_graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS) - {"full"}
     assert "full" not in thin_graphs.entrypoints
     assert "execute" not in thin_graphs.entrypoints
     graphs_root = (
@@ -359,7 +348,7 @@ def test_thin_roots_are_independently_compiled_not_a_dispatcher(
                 ):
                     raise AssertionError(f"{path.name} inspects an entrypoint value inside state")
     names = {id(graph) for graph in thin_graphs.entrypoints.values()}
-    assert len(names) == 13
+    assert len(names) == 12
 
 
 _REPRESENTATIVE_THIN_ENTRYPOINTS = ("intake", "archive", "issue-review")
@@ -401,7 +390,7 @@ def test_product_state_inherits_checkpoint_bridge_and_public_io_omits_markers() 
     assert CHECKPOINT_MARKERS_STATE_KEY not in ProductInputV1.model_fields
 
 
-def test_thirteen_thin_roots_compile_dry_and_runtime_with_matching_projections(
+def test_twelve_thin_roots_compile_dry_and_runtime_with_matching_projections(
     real_features: dict[str, object],
 ) -> None:
     saver = InMemorySaver()
@@ -464,7 +453,7 @@ def test_thin_root_publishes_real_feature_terminals(
     marker = f"{owner_id.split('.')[-1]}.{export}"
     child = _stub_export(state_schema, marker, status=feature_status)
     if owner_id == "assurance.intake":
-        features[owner_id] = IntakeGraphs(prepare=child, load_plan=child, case=child)
+        features[owner_id] = IntakeGraphs(prepare=child, case=child)
     else:
         features[owner_id] = ImprovementGraphs(
             archive=child,

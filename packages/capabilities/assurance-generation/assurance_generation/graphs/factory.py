@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from assurance_generation.task import GenerationGraphs
 from assurance_generation.graphs.api import compile_family_pair
 from assurance_generation.graphs.init_runtime import build_init_runtime_graph
 from assurance_generation.graphs.nodes import (
@@ -25,17 +25,6 @@ from assurance_generation.graphs.routes import route_attempt_result, route_famil
 from assurance_generation.graphs.state import GenerationState
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import add_attempt_node
-
-
-@dataclass(frozen=True, slots=True)
-class GenerationGraphs:
-    generation: CompiledStateGraph
-    api: CompiledStateGraph
-    e2e: CompiledStateGraph
-    fuzz: CompiledStateGraph
-    performance: CompiledStateGraph
-    init_runtime: CompiledStateGraph
-    resolve_inputs: CompiledStateGraph
 
 
 def _build_resolve_inputs_graph(context: CapabilityBuildContext) -> CompiledStateGraph:

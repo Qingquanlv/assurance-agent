@@ -1,4 +1,4 @@
-"""Provider-neutral execute/run prepare and finalize handlers."""
+"""Deterministic execution input and evidence helpers."""
 
 from __future__ import annotations
 
@@ -12,15 +12,12 @@ from typing import Any, cast
 from pydantic import ValidationError
 import yaml
 
-from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
 from agent_runtime_contracts.qa_paths import qa_join
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext, TaskOutcome
 
 from assurance_execution.contracts.agent import (
-    AgentBindingDataV1,
     AgentFinalizeInputV1,
     ExecutionPrepareInputV1,
     RunTestsInputV1,
@@ -50,15 +47,9 @@ from assurance_generation.contracts import CodegenAuthoringV1
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.case_selection import CaseSelectionV1, selection_path
 from assurance_intake.contracts.cases import CaseEntryAuthoring
-from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.operations.plan_codec import decode_plan
 from assurance_intake.contracts.workflow import ReviewedCaseV1
-from assurance_execution.resource_loader import resource_bytes, resource_text
 
-EXECUTE_SKILL = "skills/aa-execute/SKILL.md"
-RUN_SKILL = "skills/aa-run/SKILL.md"
-EXECUTOR_PERSONA = "personas/executor.md"
-EXECUTION_RESULT_ID = "assurance.execution.result.execution.v1"
-_RESULT_FILE = "result-contracts/execution.v1.schema.json"
 _RUNNER_PROFILE_DIGEST = canonical_digest(
     {
         "profile": "assurance.execution.agent.v1",
@@ -67,15 +58,6 @@ _RUNNER_PROFILE_DIGEST = canonical_digest(
         "receipt": "ordered-family-command-receipts.v1",
     }
 )
-_BOUNDED_PROFILES = {
-    "aa-archiver": "assurance-v1-archiver",
-    "aa-doc-author": "assurance-v1-doc-author",
-    "aa-executor": "assurance-v1-executor",
-    "aa-explorer": "assurance-v1-explorer",
-    "aa-reporter": "assurance-v1-reporter",
-    "aa-reviewer": "assurance-v1-reviewer",
-    "aa-test-author": "assurance-v1-test-author",
-}
 _BASELINE_POLICY_ID = "assurance.execution.closed-baseline.v1"
 _BASELINE_SOURCE_ROOTS = ("app", "migrations", "src", "web/build", "web/src")
 _BASELINE_CONFIG_FILES = (
@@ -158,78 +140,6 @@ class _BaselineManifest:
 
     def members(self) -> list[list[str]]:
         return [[path, self.entries[path][0]] for path in sorted(self.entries)]
-
-
-def result_contract() -> ResultContract:
-    payload = json.loads(resource_bytes(_RESULT_FILE))
-    return ResultContract(
-        schema_id=EXECUTION_RESULT_ID,
-        schema_digest=canonical_digest(payload),
-        delivery_mode="assistant_json_local_v1",
-        schema_document=payload,
-    )
-
-
-def validate_binding(data: object) -> AgentBindingDataV1:
-    try:
-        return AgentBindingDataV1.model_validate(data)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
-
-
-def _agent_workspace(
-    context: TaskContext,
-    *,
-    agent_profile: str,
-    allowed_outputs: tuple[str, ...],
-    read_roots: tuple[str, ...],
-    scope_id: str,
-) -> AgentWorkspaceV1:
-    try:
-        write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
-    except ValueError:
-        write_root = "qa/.staging/write"
-    if write_root in {".", ""}:
-        write_root = ".staging/write"
-    payload = {
-        "schema_version": "1",
-        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
-        "scope_id": scope_id,
-        "write_root": write_root,
-        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
-        "read_roots": tuple(sorted(set(read_roots))),
-    }
-    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
-
-
-def prepare_outcome(
-    *,
-    skill_path: str,
-    business: Any,
-    binding: AgentBindingDataV1,
-    context: TaskContext,
-    allowed_outputs: tuple[str, ...],
-    read_roots: tuple[str, ...],
-) -> TaskOutcome:
-    agent_request = AgentRunRequest(
-        instructions=(
-            InstructionPart.text("text/plain", resource_text(skill_path)),
-            InstructionPart.text("text/plain", resource_text(EXECUTOR_PERSONA)),
-            InstructionPart.from_json(business.model_dump(mode="json")),
-        ),
-        result_contract=result_contract(),
-        execution=binding.execution,
-        workspace=_agent_workspace(
-            context,
-            agent_profile=binding.agent_profile,
-            allowed_outputs=allowed_outputs,
-            read_roots=read_roots,
-            scope_id=business.change_id,
-        ),
-        request_policy_digest=binding.request_policy_digest,
-        request_config_digest=binding.request_config_digest,
-    )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
 
 def _regular_input_file(workspace: Path, relative: str) -> Path:

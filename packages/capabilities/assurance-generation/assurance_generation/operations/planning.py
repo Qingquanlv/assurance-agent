@@ -39,9 +39,9 @@ from assurance_intake.contracts import (
     CaseYamlAuthoring,
     EvidenceArtifactRefV1,
     LoopRoundHistoryV1,
-    build_loop_round_history,
 )
-from assurance_intake.contracts.planning_facts import build_planning_facts
+from assurance_intake.operations.planning_facts import build_planning_facts
+from assurance_intake.operations.loop_history import build_loop_round_history
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.operations.plan_consistency import check_plan_consistency
 
@@ -55,8 +55,6 @@ _RESULT_FILES: Mapping[str, str] = {
     PLAN_RESULT_ID: "result-contracts/plan.v1.schema.json",
     PLAN_REVIEW_RESULT_ID: "result-contracts/plan-review.v1.schema.json",
 }
-PLAN_PERSONA = "personas/test-author.md"
-REVIEW_PERSONA = "personas/reviewer.md"
 _BOUNDED_PROFILES: Mapping[str, str] = {
     "aa-archiver": "assurance-v1-archiver",
     "aa-doc-author": "assurance-v1-doc-author",
@@ -624,7 +622,6 @@ def prepare_plan_outcome(
     *,
     family: Family,
     skill_path: str,
-    persona_path: str,
     business: PlanInputV1,
     cases: CaseYamlAuthoring,
     binding: AgentBindingDataV1,
@@ -647,7 +644,6 @@ def prepare_plan_outcome(
     )
     instructions = (
         InstructionPart.text("text/plain", resource_text(skill_path)),
-        InstructionPart.text("text/plain", resource_text(persona_path)),
         InstructionPart.from_json(cases.model_dump(mode="json")),
         InstructionPart.from_json(
             {
@@ -844,10 +840,8 @@ def planning_handler(family: str, kind: PrepareKind) -> TaskHandler:
 
 __all__ = [
     "FAMILIES",
-    "PLAN_PERSONA",
     "PLAN_RESULT_ID",
     "PLAN_REVIEW_RESULT_ID",
-    "REVIEW_PERSONA",
     "Family",
     "InputError",
     "OutputError",

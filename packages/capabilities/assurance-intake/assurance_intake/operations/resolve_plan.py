@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from assurance_intake.contracts.common import TEST_FAMILY_ORDER, TestFamily
 from assurance_intake.contracts.explore import TestStrategyV1
-from assurance_intake.contracts.impact import ChangeImpactInventoryV1, impact_required_families
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
+from assurance_intake.operations.impact_validation import impact_required_families
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import (
     FallbackDetail,
@@ -14,8 +15,8 @@ from assurance_intake.contracts.plan import (
     ResolvedAssurancePlan,
     TestFamilyPolicyV1,
     resolution_reason_sort_key,
-    seal_plan,
 )
+from assurance_intake.operations.plan_codec import seal_plan
 
 
 class InputError(ValueError):

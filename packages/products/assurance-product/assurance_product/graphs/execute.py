@@ -14,17 +14,13 @@ from assurance_healing.contracts.application import AppliedTestRepairV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_product.graphs.entrypoints import (
     _input_from_state,
-    adapt_load_plan,
     adapt_retro,
-    publish_public_output,
-    validate_public_input,
 )
 from assurance_product.graphs.routes import (
     route_applied_repair,
     route_execute,
     route_quality,
     route_run,
-    route_prepare,
 )
 from assurance_product.graphs.state import ProductState
 from assurance_product.graphs.tail_contracts import (
@@ -41,18 +37,13 @@ from assurance_quality.contracts.assessment import (
 from assurance_quality.contracts.agent import FinalizedIssueAnalysisV1
 from assurance_quality.contracts.decisions import classify_issue_candidates
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.canonical import canonical_digest
 
 
-def adapt_execute_tail_input(
-    state: ProductState,
-    *,
-    standalone: bool,
-) -> dict[str, object]:
+def adapt_execute_tail_input(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
-    reviewed_case: object = None if standalone else state.get("reviewed_case")
-    if reviewed_case is None and not standalone:
+    reviewed_case: object = state.get("reviewed_case")
+    if reviewed_case is None:
         case_result = state.get("case_result")
         if isinstance(case_result, Mapping):
             reviewed_case = case_result.get("reviewed_case")
@@ -63,7 +54,7 @@ def adapt_execute_tail_input(
         "change_id": payload.change_id,
         "requirement": payload.requirement,
         "run_mode": payload.run_mode,
-        "coverage_epoch": 0 if standalone else state.get("coverage_epoch", 0),
+        "coverage_epoch": state.get("coverage_epoch", 0),
         "plan_digest": state.get("plan_digest"),
         "plan_ref": state.get("plan_ref"),
         "reviewed_case": reviewed_case,
@@ -88,10 +79,6 @@ def adapt_execute_tail_input(
     update["artifacts"] = list(update["source_artifacts"])
     update["healing_rounds_used"] = int(state.get("healing_rounds_used", 0))
     return update
-
-
-def adapt_public_execute_tail(state: ProductState) -> dict[str, object]:
-    return adapt_execute_tail_input(state, standalone=True)
 
 
 def adapt_fact_baseline(state: ProductState) -> dict[str, object]:
@@ -676,13 +663,10 @@ def snapshot_retro_runtime_node(
 def build_execute_graph(
     bundles: object,
     *,
-    validate: bool = True,
     runtime_snapshot: Callable[[], Awaitable[EvidenceArtifactRefV1]] | None = None,
 ) -> StateGraph[ProductState]:
     typed = cast(Any, bundles)
     builder: StateGraph[ProductState] = StateGraph(ProductState)
-    if validate:
-        builder.add_node("validate", validate_public_input("execute"))
     builder.add_node("adapt-fact-baseline", cast(Any, adapt_fact_baseline))
     builder.add_node("fact-baseline", typed.quality.fact_baseline)
     builder.add_node("adapt-generation", cast(Any, adapt_generation))
@@ -712,10 +696,7 @@ def build_execute_graph(
     builder.add_node("finish-needs-human", cast(Any, _finish_inspection("needs_human")))
     builder.add_node("blocked", cast(Any, blocked))
 
-    first = "validate" if validate else "adapt-fact-baseline"
-    builder.add_edge(START, first)
-    if validate:
-        builder.add_edge("validate", "adapt-fact-baseline")
+    builder.add_edge(START, "adapt-fact-baseline")
     builder.add_edge("adapt-fact-baseline", "fact-baseline")
     builder.add_conditional_edges(
         "fact-baseline",
@@ -811,43 +792,7 @@ def build_execute_tail(
     *,
     runtime_snapshot: Callable[[], Awaitable[EvidenceArtifactRefV1]] | None = None,
 ) -> CompiledStateGraph:
-    return build_execute_graph(bundles, validate=False, runtime_snapshot=runtime_snapshot).compile(
-        checkpointer=None
-    )
-
-
-def build_execute_root(
-    context: GraphBuildContext,
-    bundles: object,
-    load_plan: CompiledStateGraph,
-    execute_tail: CompiledStateGraph | None = None,
-) -> CompiledStateGraph:
-    tail = execute_tail or build_execute_tail(bundles)
-    builder: StateGraph[ProductState] = StateGraph(ProductState)
-    builder.add_node("validate", validate_public_input("execute"))
-    builder.add_node("adapt-load-plan", cast(Any, adapt_load_plan))
-    builder.add_node("load-plan", load_plan)
-    builder.add_node("adapt-tail", cast(Any, adapt_public_execute_tail))
-    builder.add_node("resolve-inputs", cast(Any, bundles).generation.resolve_inputs)
-    builder.add_node("execute-tail", tail)
-    builder.add_node("publish", publish_public_output)
-    builder.add_edge(START, "validate")
-    builder.add_edge("validate", "adapt-load-plan")
-    builder.add_edge("adapt-load-plan", "load-plan")
-    builder.add_conditional_edges(
-        "load-plan",
-        cast(Any, route_prepare),
-        {"prepared": "adapt-tail", "failed": "publish"},
-    )
-    builder.add_edge("adapt-tail", "resolve-inputs")
-    builder.add_conditional_edges(
-        "resolve-inputs",
-        cast(Any, lambda state: "failed" if state.get("attempt_failure") else "ready"),
-        {"failed": "publish", "ready": "execute-tail"},
-    )
-    builder.add_edge("execute-tail", "publish")
-    builder.add_edge("publish", END)
-    return context.compile_root(builder)
+    return build_execute_graph(bundles, runtime_snapshot=runtime_snapshot).compile(checkpointer=None)
 
 
 __all__ = [
@@ -856,14 +801,12 @@ __all__ = [
     "adapt_execute_tail_input",
     "adapt_fact_baseline",
     "adapt_generation",
-    "adapt_public_execute_tail",
     "adapt_quality_assess",
     "adapt_repair_failure",
     "adapt_report",
     "adapt_rerun",
     "blocked",
     "build_execute_graph",
-    "build_execute_root",
     "build_execute_tail",
     "complete_parallel_generation",
     "resume_product_interrupts",

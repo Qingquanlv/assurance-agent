@@ -199,22 +199,6 @@ def _mutate_skill_bytes(workspace: Path, product_root: Path, fixtures: Path) -> 
     )
 
 
-def _mutate_persona_bytes(workspace: Path, product_root: Path, fixtures: Path) -> None:
-    del product_root, fixtures
-    path = (
-        workspace
-        / "wheels"
-        / "assurance-intake"
-        / "assurance_intake"
-        / "resources"
-        / "personas"
-        / "reviewer.md"
-    )
-    path.write_text(
-        path.read_text(encoding="utf-8") + "\n<!-- capabilities-drift-persona -->\n", encoding="utf-8"
-    )
-
-
 def _mutate_result_contract_bytes(workspace: Path, product_root: Path, fixtures: Path) -> None:
     del product_root, fixtures
     path = (
@@ -249,7 +233,6 @@ _MUTATORS: dict[str, Callable[[Path, Path, Path], None]] = {
     "plugin-version": _mutate_plugin_version,
     "schema-bytes": _mutate_schema_bytes,
     "skill-bytes": _mutate_skill_bytes,
-    "persona-bytes": _mutate_persona_bytes,
     "result-contract-bytes": _mutate_result_contract_bytes,
     "policy-bytes": _mutate_policy_bytes,
     "binding-data": _mutate_binding_data,

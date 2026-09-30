@@ -234,7 +234,7 @@ def _agent_definition(agent_profile: str) -> dict[str, object]:
             "infer that file writing is unavailable merely because `bash` is disabled."
         )
     prompt = (
-        "Execute exactly the supplied frozen skill, persona, and business instructions.\n\n"
+        "Execute exactly the supplied frozen skill and business instructions.\n\n"
         "Do not ask questions, delegate, load a global skill, choose a model or adapter, "
         "or drive the workflow. Produce only the declared files and structured result. "
         "After completing every required side effect, make the final assistant text exactly the "

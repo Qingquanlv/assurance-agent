@@ -40,11 +40,11 @@ from assurance_intake.contracts.explore import (
     ExploreContextV1,
     PreparedExploreV1,
     REQUIREMENT_PATH,
-    load_exploration_document,
 )
 from assurance_intake.operations.obligations import (
     apply_scope_exclusions,
     authenticate_source,
+    journey_keys_from_document,
     normalize_goal_obligations,
     normalize_obligation_drafts,
     resolve_requirement_quote,
@@ -52,11 +52,12 @@ from assurance_intake.operations.obligations import (
 from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
 from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObligationV1, SourceRefV1
 from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
-from assurance_intake.contracts.cases import _require_impact_row_coverage
-from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
+from assurance_intake.contracts.cases import IntakeQaV1, QaYaml, _require_impact_row_coverage
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
+from assurance_intake.operations.impact_validation import validate_inventory_references
 from assurance_intake.operations.case_modules import infer_case_delta_paths
+from assurance_intake.operations.explore_context import load_exploration_document
 from assurance_intake.contracts.case_selection import selection_path
-from assurance_intake.contracts.quality_goals import journey_keys_from_document
 from assurance_intake.contracts.review import (
     CaseMinimumCoverageReview,
     normalized_auto_fix_case_id,
@@ -64,9 +65,10 @@ from assurance_intake.contracts.review import (
 )
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
-from assurance_intake.operations.agent_skills import InputError, failed_input, validate_input
-from assurance_intake.operations.agent_skills import case_review_outputs
+from assurance_intake.contracts.plan import ResolvedAssurancePlan
+from assurance_intake.operations.plan_codec import decode_plan
+from assurance_intake.operations.prepare import InputError, failed_input, validate_input
+from assurance_intake.operations.prepare import case_review_outputs
 from assurance_intake.operations.case_review_seal import (
     collect_selected_cases,
     expected_case_selection,
@@ -1289,6 +1291,19 @@ class IntakeFinalizeHandler:
                 (REQUIREMENT_PATH,),
                 payload.artifact_paths + (REQUIREMENT_PATH,),
             )
+            marker_ref = next((item for item in artifacts if item["path"] == "qa/.qa.yaml"), None)
+            if marker_ref is None:
+                raise OutputError("intake receipt must include qa/.qa.yaml")
+            change_id = _case_change_id(payload.change_id)
+            marker_bytes = _read_regular_bytes(context.write_root, "qa/.qa.yaml", kind="intake marker")
+            if _file_digest(marker_bytes) != marker_ref["digest"]:
+                raise OutputError("qa/.qa.yaml changed during finalization")
+            try:
+                marker = IntakeQaV1.model_validate(yaml.safe_load(marker_bytes))
+            except (yaml.YAMLError, UnicodeError, ValidationError) as error:
+                raise OutputError(f"invalid qa/.qa.yaml: {error}") from error
+            if marker.change_id != change_id:
+                raise OutputError("qa/.qa.yaml change_id does not match locked change_id")
             merged = {item["path"]: item for item in (*artifacts, *requirement)}
             return TaskOutcome.succeeded(
                 cast(JSONValue, {"artifacts": [merged[path] for path in sorted(merged)]})
@@ -1446,6 +1461,21 @@ class CaseDesignFinalizeHandler:
                     receipt.output_files,
                     payload.artifact_paths,
                 )
+            qa_relative = f"{change_root}/.qa.yaml"
+            try:
+                qa_bytes = (
+                    images[qa_relative]
+                    if images is not None
+                    else _read_regular_bytes(context.write_root, qa_relative, kind="change document")
+                )
+                qa_digest = next(item["digest"] for item in artifacts if item["path"] == qa_relative)
+                if _file_digest(qa_bytes) != qa_digest:
+                    raise OutputError("qa/.qa.yaml changed during finalization")
+                qa = QaYaml.model_validate(yaml.safe_load(qa_bytes))
+            except (yaml.YAMLError, UnicodeError, ValidationError) as error:
+                raise OutputError(f"invalid {qa_relative}: {error}") from error
+            if qa.change.change_id != change_id:
+                raise OutputError("qa/.qa.yaml change_id does not match locked change_id")
             authored = _load_authored_case_delta(
                 context.write_root,
                 change_id=change_id,
@@ -1562,6 +1592,7 @@ class CaseReviewFinalizeHandler:
                 document = CaseReviewResultV1.model_validate(_structured(payload))
             except ValidationError as error:
                 raise OutputError(str(error)) from error
+            runtime_document = document
             change_id = _case_change_id(payload.change_id or document.change_id)
             if document.change_id != change_id:
                 raise OutputError("case review change_id does not match locked change_id")
@@ -1616,6 +1647,17 @@ class CaseReviewFinalizeHandler:
                 by_path = {item["path"]: item for item in artifacts}
                 review_relative = "qa/results/review/case-review.json"
                 review_ref = EvidenceArtifactRefV1.model_validate(by_path[review_relative])
+                review_bytes = _read_regular_bytes(
+                    context.write_root, review_relative, kind="staged case review"
+                )
+                if _file_digest(review_bytes) != review_ref.digest:
+                    raise OutputError("staged case review changed during finalization")
+                try:
+                    staged_review = CaseReviewResultV1.model_validate_json(review_bytes)
+                except ValidationError as error:
+                    raise OutputError(f"invalid staged case review: {error}") from error
+                if staged_review != runtime_document:
+                    raise OutputError("staged case review differs from the typed agent result")
                 selection_relative = selection_path(payload.coverage_epoch)
                 history_relative = (
                     f"qa/cases/reviews/epochs/{payload.coverage_epoch}/rounds/{payload.review_round}.json"

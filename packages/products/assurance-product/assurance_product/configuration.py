@@ -22,7 +22,7 @@ from assurance_product.models import (
     ENGINE_API,
     ProjectConfigV1,
 )
-from assurance_intake.contracts.quality_goals import journey_keys_from_document
+from assurance_intake.operations.obligations import journey_keys_from_document
 
 ConfigTree = ConfigTreePluginSource
 

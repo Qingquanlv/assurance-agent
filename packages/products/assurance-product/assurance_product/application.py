@@ -55,19 +55,6 @@ _TEST_CRASH_AT: str | None = None
 ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingProxyType(
     {
         "archive": ("assurance.improvement.agent.archive.v1",),
-        "case": (
-            "assurance.intake.agent.case-design.v1",
-            "assurance.intake.agent.case-review.v1",
-        ),
-        "execute": (
-            "assurance.generation.agent.api.codegen.v1",
-            "assurance.healing.agent.apply-test-repair.v1",
-            "assurance.healing.agent.coverage-repair.v1",
-            "assurance.healing.agent.fix-proposal.v1",
-            "assurance.quality.agent.fact-baseline.v1",
-            "assurance.quality.agent.inspect.v1",
-            "assurance.quality.agent.report.v1",
-        ),
         "full": (
             "assurance.generation.agent.api.codegen.v1",
             "assurance.improvement.agent.archive.v1",
@@ -100,7 +87,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
 
 
 if set(ENTRYPOINT_AGENT_CONTRACT_IDS) != set(PRODUCT_ENTRYPOINTS):
-    raise RuntimeError("entrypoint Agent-contract inventory must cover the 15 public names")
+    raise RuntimeError("entrypoint Agent-contract inventory must cover every public name")
 
 
 _LG_EXIT = {

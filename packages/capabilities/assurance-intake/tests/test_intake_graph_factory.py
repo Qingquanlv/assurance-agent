@@ -45,12 +45,10 @@ _EXPLORE_ID = "assurance.intake.agent.explore.v1"
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
 _RESOLVE_PLAN_ID = "assurance.intake.task.resolve-plan"
-_LOAD_PLAN_ID = "assurance.intake.task.load-plan"
 _GRAPH_CONTRACT_IDS = (
     _INTAKE_ID,
     _EXPLORE_ID,
     _RESOLVE_PLAN_ID,
-    _LOAD_PLAN_ID,
     _CASE_DESIGN_ID,
     _CASE_REVIEW_ID,
 )
@@ -250,13 +248,12 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
 
     monkeypatch.setattr(recording_context, "attempt", record_attempt)
     bundle = build_intake_graphs(recording_context)
-    assert tuple(item.name for item in fields(bundle)) == ("prepare", "load_plan", "case")
+    assert tuple(item.name for item in fields(bundle)) == ("prepare", "case")
     assert isinstance(bundle, IntakeGraphs)
     assert recording_context.bound_contract_ids == (
         _INTAKE_ID,
         _EXPLORE_ID,
         _RESOLVE_PLAN_ID,
-        _LOAD_PLAN_ID,
         _CASE_DESIGN_ID,
         _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
@@ -264,12 +261,12 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
     assert recording_context.bound_contract_ids.count(_CASE_DESIGN_ID) == 2
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
-    assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design")
-    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[4][2:]) == tuple(
+    assert calls[3][:2] == (_CASE_DESIGN_ID, "intake.case-design")
+    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[3][2:]) == tuple(
         (fn.__module__, fn.__qualname__) for fn in (activation_case_design, select_case_design)
     )
-    assert calls[5][:2] == (_CASE_DESIGN_ID, "intake.case-design-repair")
-    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[5][2:]) == tuple(
+    assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design-repair")
+    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[4][2:]) == tuple(
         (fn.__module__, fn.__qualname__) for fn in (activation_case_design_repair, select_case_design_repair)
     )
 

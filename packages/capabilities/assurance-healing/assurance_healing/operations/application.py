@@ -40,7 +40,8 @@ from assurance_healing.operations.common import (
 )
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_healing.resource_loader import resource_text
-from assurance_intake.contracts import LoopRoundHistoryV1, build_loop_round_history
+from assurance_intake.contracts import LoopRoundHistoryV1
+from assurance_intake.operations.loop_history import build_loop_round_history
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 APPLICATION_SKILL = "skills/aa-apply-test-repair/SKILL.md"

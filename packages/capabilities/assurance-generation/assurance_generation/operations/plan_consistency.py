@@ -70,6 +70,9 @@ def check_plan_consistency(
         except UnicodeError:
             errors.append(f"{path}: plan Markdown must be UTF-8")
             continue
+        if not text.strip():
+            errors.append(f"{path}: plan Markdown must be non-empty")
+            continue
         for section, header, rows in _tables(text):
             locator = f"{path}#{section}"
             if tuple(name.casefold() for name in header) == ("case id", "test function", "target file"):

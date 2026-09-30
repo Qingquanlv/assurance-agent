@@ -38,9 +38,6 @@ QUALITY_DEPENDENCIES: tuple[PluginDependency, ...] = (
 )
 
 QUALITY_RESOURCE_FILES: dict[str, str] = {
-    "assurance.quality.persona.explorer.v1": "personas/explorer.md",
-    "assurance.quality.persona.reporter.v1": "personas/reporter.md",
-    "assurance.quality.persona.reviewer.v1": "personas/reviewer.md",
     "assurance.quality.result.fact-baseline.v1": "result-contracts/fact-baseline.v1.schema.json",
     "assurance.quality.result.inspection.v1": "result-contracts/inspection.v1.schema.json",
     "assurance.quality.result.issue-analysis.v1": "result-contracts/issue-analysis.v1.schema.json",

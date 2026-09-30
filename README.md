@@ -16,10 +16,44 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run lint-imports
+uv run python scripts/build_wheels.py --check
+uv run python scripts/build_wheels.py --package assurance-intake --out-dir dist
 bash scripts/graph_engine_smoke_test.sh
 bash scripts/assurance_capability_wheel_smoke_test.sh
 bash scripts/assurance_product_wheel_smoke_test.sh
 ```
+
+### Python plugin registration and generated declarations
+
+Author handlers, schemas, resources, and validators in each wheel's `plugin.py`.
+Task lifecycle definitions stay in each wheel's `task.py` and topology stays in
+`graphs/`. Do not hand-edit `plugin-declaration.json`: it is generated from the
+provider's `descriptor()`, including its attempt-contract digests.
+
+Run the build entry point from the repository root after `uv sync --dev`:
+
+```bash
+# Regenerate declarations, then build the selected wheel(s).
+uv run python scripts/build_wheels.py --package assurance-intake --out-dir dist
+# Omit --package to build all workspace members; repeat it to select several.
+
+# Refresh declarations for editable development without building wheels.
+uv run python scripts/build_wheels.py --declarations-only
+# CI checks for missing/stale generated files without modifying them.
+uv run python scripts/build_wheels.py --check
+```
+
+Commit regenerated declarations with Python changes. They remain checked in so
+isolated builds and source review have the same static metadata. Direct
+`uv build` only packages existing files; use the entry point above to refresh
+them automatically. All three packaging smoke scripts use this entry point.
+
+Generation imports only this trusted workspace's explicitly declared plugin
+entry points, with source coordinates checked against `pyproject.toml`. It does
+not scan the SUT or generate metadata at runtime. Installed-wheel loading still
+validates the static dependency closure before loading providers, checks live
+registrations against the declaration, and authenticates wheel bytes. Product
+declarations and deployment binding generation are unchanged.
 
 `aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`,
 `aa bindings build`, `aa lock show`, and `aa retro show` operate on an installed
@@ -47,26 +81,10 @@ Explore. Their public input supplies candidates rather than a selected family:
 }
 ```
 
-The standalone `case` and `execute` entrypoints import that committed plan.
-They use an empty candidate set and the exact content-addressed reference:
-
-```json
-{
-  "schema_version": "1",
-  "change_id": "CH-123",
-  "requirement": "Protect the account recovery journey",
-  "run_mode": "case",
-  "candidate_test_families": [],
-  "resolved_plan_ref": {"path": "qa/results/plan/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/resolved-assurance-plan.json", "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
-  "case_delta_paths": ["qa/cases/account-recovery/case.yaml"],
-  "capability_leafs": ["account.recovery.complete"],
-  "capability_catalog": {"resource_id": "assurance.product.configuration.capability-catalog", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-  "product_policy": {"resource_id": "assurance.product.configuration.product-policy", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-  "data_knowledge": {"resource_id": "assurance.product.configuration.data-knowledge", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
-  "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
-  "budgets": {"review_rounds": 2, "coverage_rounds": 2, "healing_rounds": 1, "execution_retries": 1}
-}
-```
+Standalone `case` and `execute` entrypoints are not supported. Start with `full`
+(or `intake` for preparation and case review only); use `aa resume` to recover an
+existing invocation. Public input does not accept `resolved_plan_ref`. Internal
+case and execution subgraphs still use the plan produced earlier in the workflow.
 
 Product tests live in `tests/product/`. The live OpenCode benchmark lives in
 `benchmark/assurance-product/`; it is an optional operator/research tool, not a
@@ -80,7 +98,7 @@ the review histories, inspection and report. Test verdicts come from execution;
 inspection `analyzed` only means classification finished. Inspection must bind the
 same execution digest, change and batch. Report-only evidence is incomplete.
 
-Full/execute diagnostic flows snapshot redacted Kernel journal evidence before Retro at
+Full diagnostic flows snapshot redacted Kernel journal evidence before Retro at
 `qa/results/workflow/<invocation-id-digest>/pre-retro/<snapshot-sha256>/workflow-evidence.json` and bind
 its exact digest to Retro. Non-Retro `aa run` and `aa resume` also export a post-run
 projection to
@@ -110,6 +128,13 @@ code review, the repository gate, wheel rebuild, and authenticated deployment.
 The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.
 
+Each capability wheel exports a static `FEATURE` and public graph-bundle type
+from its `task.py`. `assurance_product.features` explicitly lists the six
+exports; Product uses them for graph factories, contracts, output routes and
+Agent Task binding. `plugin.py` still owns installed handlers/resources, while
+`graphs/factory.py` still owns LangGraph topology. No decorator scan or new
+graph DSL is involved.
+
 ### Agent Task authoring
 
 All 26 Agent contracts have named Task classes with `before`/`run`/`after` and
@@ -119,9 +144,9 @@ authenticated phases; Task code does not create a client or own retries.
 
 [`add_attempt_node`](packages/framework/graph-engine/graph_engine/stategraph/registration.py)
 registers a normal Attempt node in a native LangGraph `StateGraph`, including
-the 18 deterministic Task contracts. Pure state nodes and compiled subgraphs
+the 19 deterministic Task contracts. Pure state nodes and compiled subgraphs
 still use native `add_node`. Routing, activation, selection and post-commit
-publication stay in the graph. All 27 Feature graph exports and 15 Product
+publication stay in the graph. All 28 Feature graph exports and 15 Product
 roots are covered.
 
 `after` validates business output before Kernel commit. `finally_` observes

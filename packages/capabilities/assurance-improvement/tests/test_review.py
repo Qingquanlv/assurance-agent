@@ -70,7 +70,7 @@ async def test_review_prepare_locks_improvement_reviewer(tmp_path: Path) -> None
     assert outcome.status == "succeeded"
     request = AgentRunRequest.model_validate(outcome.output)
     assert "Capability-owned improvement-reviewer skill" in (request.instructions[0].text_content or "")
-    assert "Improvement reviewer persona" in (request.instructions[1].text_content or "")
+    assert "Judge only" in (request.instructions[0].text_content or "")
 
 
 @pytest.mark.asyncio

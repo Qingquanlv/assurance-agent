@@ -414,13 +414,11 @@ def _build_context(checkpointer: Any = None) -> EngineGraphBuildContext:
 
 
 def _public_input(entrypoint: str, **overrides: object) -> dict[str, object]:
-    case_delta = (_CASE_DELTA,) if entrypoint in {"intake", "case", "full"} else ()
+    case_delta = (_CASE_DELTA,) if entrypoint in {"intake", "full"} else ()
     families = ("api",) if entrypoint in {"full", "intake"} else ()
-    resolved_plan_ref = _plan_ref().model_dump(mode="json") if entrypoint in {"case", "execute"} else None
     values: dict[str, object] = {
         "case_delta_paths": case_delta,
         "candidate_test_families": families,
-        "resolved_plan_ref": resolved_plan_ref,
     }
     values.update(overrides)
     payload = valid_product_input(
@@ -490,12 +488,6 @@ def _flow_features(
                 "preparation_refs": [_ref("qa/results/preparation/context.json").model_dump(mode="json")],
             }
         ),
-        load_plan=_echo(
-            {
-                **_plan_update(),
-                "status": "prepared",
-            }
-        ),
         case=_graph(case or _case()),
     )
     features["assurance.generation"] = GenerationGraphs(
@@ -562,13 +554,13 @@ def _product_graphs(features: Mapping[str, object] | None = None) -> ProductGrap
     return build_product_graphs(context=_build_context(), features=features or _flow_features())
 
 
-def test_build_product_graphs_merges_thirteen_thin_roots_plus_execute_and_full() -> None:
+def test_build_product_graphs_merges_twelve_thin_roots_plus_full() -> None:
     graphs = build_product_graphs(context=_build_context(), features=_real_features())
     assert isinstance(graphs, ProductGraphs)
     assert set(graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS)
-    assert len(graphs.entrypoints) == 15
+    assert len(graphs.entrypoints) == 13
     assert graphs.contracts is ENTRYPOINT_CONTRACTS
-    assert set(graphs.entrypoints) - {"execute", "full"} == set(
+    assert set(graphs.entrypoints) - {"full"} == set(
         build_thin_entrypoint_graphs(context=_build_context(), features=_real_features()).entrypoints
     )
 
@@ -578,7 +570,7 @@ def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return(
 
     thin = build_thin_entrypoint_graphs(context=_build_context(), features=_flow_features())
     placeholder = next(iter(thin.entrypoints.values()))
-    closed = {**dict(thin.entrypoints), "execute": placeholder, "full": placeholder}
+    closed = {**dict(thin.entrypoints), "full": placeholder}
     with pytest.raises(ValueError, match="missing"):
         _closed_entrypoints({name: graph for name, graph in closed.items() if name != "intake"})
     with pytest.raises(ValueError, match="extra"):
@@ -601,10 +593,10 @@ def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return(
         _closed_entrypoints(_Duplicate(tuple(closed.items()) + (("intake", placeholder),)))
 
 
-def test_execute_composes_generation_execution_inspect_and_report() -> None:
-    result = invoke_product_root(_product_graphs(), "execute", _public_input("execute"))
+def test_full_composes_generation_execution_inspect_and_report() -> None:
+    result = invoke_product_root(_product_graphs(), "full", _public_input("full"))
     assert ProductPublicOutput.model_validate(result["output"]).status == "completed"
-    assert result["terminal"] == {"status": "completed", "reason": "done"}
+    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "reported"
 
 
@@ -613,8 +605,8 @@ def test_repairable_inspection_requires_applied_repair_before_rerun() -> None:
         assess=(_inspection(disposition="repairable_execution_failure"), _inspection()),
         repair_failure=_applied(),
     )
-    result = invoke_product_root(_product_graphs(features), "execute", _public_input("execute"))
-    assert result["terminal"] == {"status": "completed", "reason": "done"}
+    result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
+    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
     assert ExecutionCycleResultV1.model_validate(result["execution_result"]).repair_round == 1
 
 
@@ -626,10 +618,10 @@ def test_proposal_only_does_not_enter_rerun() -> None:
                 repair_failure={"proposal_result": {"change_id": "CH-DEMO-001"}, "status": "passed"},
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
-    assert result["terminal"] == {"status": "failed", "reason": "blocked"}
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert ExecutionCycleResultV1.model_validate(result["execution_result"]).repair_round == 0
 
 
@@ -689,7 +681,6 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
                 },
             ),
         ),
-        load_plan=intake.load_plan,
         case=counted("case", (_case(0), _case(1))),
     )
     generation = cast(GenerationGraphs, features["assurance.generation"])
@@ -731,7 +722,6 @@ def test_full_init_failure_does_not_enter_case() -> None:
     intake = cast(IntakeGraphs, features["assurance.intake"])
     features["assurance.intake"] = IntakeGraphs(
         prepare=intake.prepare,
-        load_plan=intake.load_plan,
         case=counted("case", (_case(),)),
     )
     del intake
@@ -759,7 +749,7 @@ def test_full_retains_case_and_generation_history_across_nested_graphs() -> None
     assert result["history_refs"] == [case_ref, generation_ref]
 
 
-def test_diagnostic_execute_snapshots_runtime_before_retro() -> None:
+def test_diagnostic_full_snapshots_runtime_before_retro() -> None:
     runtime_ref = {
         "path": "qa/results/workflow/" + "a" * 64 + "/pre-retro/workflow-evidence.json",
         "digest": "b" * 64,
@@ -780,7 +770,7 @@ def test_diagnostic_execute_snapshots_runtime_before_retro() -> None:
         ),
         runtime_snapshot=snapshot,
     )
-    result = asyncio.run(graphs.entrypoints["execute"].ainvoke(_public_input("execute")))
+    result = asyncio.run(graphs.entrypoints["full"].ainvoke(_public_input("full")))
     assert snapshots == 1
     assert runtime_ref in result["source_refs"]
 
@@ -821,9 +811,9 @@ def test_failed_report_never_enters_retro_or_achieved() -> None:
     assert result.get("report_outcome") in (None, {})
 
 
-def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None:
+def test_full_preserves_internal_execute_tail_without_standalone_entrypoints() -> None:
     graphs = _product_graphs()
-    assert {"validate", "adapt-tail", "execute-tail", "publish"} <= set(graphs.entrypoints["execute"].nodes)
+    assert {"case", "execute"}.isdisjoint(graphs.entrypoints)
     assert {"adapt-init", "init", "adapt-case", "advance-coverage", "execute-tail"} <= set(
         graphs.entrypoints["full"].nodes
     )
@@ -855,7 +845,7 @@ def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runt
     runtime = build_product_graphs(context=_build_context(InMemorySaver()), features=features)
     assert set(dry.entrypoints) == set(runtime.entrypoints) == set(PRODUCT_ENTRYPOINTS)
     assert set(dry.contracts) == set(runtime.contracts) == set(PRODUCT_ENTRYPOINTS)
-    assert len(dry.entrypoints) == 15
+    assert len(dry.entrypoints) == 13
     for name in PRODUCT_ENTRYPOINTS:
         assert set(dry.entrypoints[name].nodes) == set(runtime.entrypoints[name].nodes)
         assert {(edge.source, edge.target) for edge in dry.entrypoints[name].get_graph().edges} == {

@@ -12,7 +12,7 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from assurance_generation.contracts.workflow import ResolveGenerationInputV1
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.operations.plan_codec import decode_plan
 from assurance_intake.contracts.workflow import require_same_plan
 
 

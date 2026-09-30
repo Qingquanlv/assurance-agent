@@ -15,8 +15,6 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 _SHA = "a" * 64
 _FAMILY_EMPTY_ENTRYPOINTS = (
-    "case",
-    "execute",
     "init",
     "archive",
     "retro",
@@ -190,7 +188,7 @@ def test_full_retro_binds_pre_retro_snapshot_and_all_review_rounds() -> None:
 
 
 def test_history_ref_reducer_accumulates_rounds_and_rejects_digest_conflicts() -> None:
-    from assurance_intake.contracts.workflow import merge_history_refs
+    from assurance_intake.operations.history_refs import merge_history_refs
 
     first = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
     second = {"path": "qa/cases/reviews/epochs/0/rounds/1.json", "digest": "b" * 64}
@@ -385,17 +383,14 @@ def test_case_delta_path_model_matches_public_schema_ascii_shape() -> None:
     assert all(pattern.fullmatch(path) is None for path in invalid)
 
 
-@pytest.mark.parametrize("entrypoint", ("full", "intake", "case"))
+@pytest.mark.parametrize("entrypoint", ("full", "intake"))
 def test_case_writing_entrypoints_allow_empty_case_delta_paths(entrypoint: str) -> None:
     from assurance_product.models import ProductInputV1
 
-    families = ("api",) if entrypoint in {"full", "intake"} else ()
-    plan_ref = _PLAN_REF if entrypoint == "case" else None
     value = ProductInputV1.model_validate(
         valid_product_input(
-            candidate_test_families=families,
+            candidate_test_families=("api",),
             case_delta_paths=(),
-            resolved_plan_ref=plan_ref,
         )
     )
     assert value.validate_for_entrypoint(entrypoint) is value
@@ -429,17 +424,13 @@ def test_empty_family_entrypoints_require_empty_selection(entrypoint: str):
     from assurance_product.models import ProductInputV1
 
     case_delta_paths = ()
-    plan_ref = _PLAN_REF if entrypoint in {"case", "execute"} else None
-    value = ProductInputV1.model_validate(
-        valid_product_input(case_delta_paths=case_delta_paths, resolved_plan_ref=plan_ref)
-    )
+    value = ProductInputV1.model_validate(valid_product_input(case_delta_paths=case_delta_paths))
     value.validate_for_entrypoint(entrypoint)
     with pytest.raises(ValueError):
         ProductInputV1.model_validate(
             valid_product_input(
                 candidate_test_families=("api",),
                 case_delta_paths=case_delta_paths,
-                resolved_plan_ref=plan_ref,
             )
         ).validate_for_entrypoint(entrypoint)
 
@@ -462,28 +453,24 @@ def test_plan_creators_require_non_empty_candidates(entrypoint: str):
 
 
 @pytest.mark.parametrize("entrypoint", ("case", "execute"))
-def test_plan_consumers_require_one_resolved_plan_ref(entrypoint: str) -> None:
+def test_removed_mid_workflow_entrypoints_are_rejected(entrypoint: str) -> None:
     from assurance_product.models import ProductInputV1
 
-    ProductInputV1.model_validate(valid_product_input(resolved_plan_ref=_PLAN_REF)).validate_for_entrypoint(
-        entrypoint
-    )
-    with pytest.raises(ValueError, match="requires resolved_plan_ref"):
+    with pytest.raises(ValueError, match="unknown product entrypoint"):
         ProductInputV1.model_validate(valid_product_input()).validate_for_entrypoint(entrypoint)
 
 
-@pytest.mark.parametrize("entrypoint", ("full", "intake"))
-def test_plan_creators_reject_imported_plan(entrypoint: str) -> None:
+@pytest.mark.parametrize("plan_ref", (None, _PLAN_REF))
+def test_public_input_rejects_removed_plan_import_field(plan_ref: object) -> None:
     from assurance_product.models import ProductInputV1
 
-    with pytest.raises(ValueError, match="cannot accept resolved_plan_ref"):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ProductInputV1.model_validate(
             valid_product_input(
                 candidate_test_families=("api",),
-                resolved_plan_ref=_PLAN_REF,
-                case_delta_paths=("qa/cases/system/dept/case.yaml",),
+                resolved_plan_ref=plan_ref,
             )
-        ).validate_for_entrypoint(entrypoint)
+        )
 
 
 def test_product_input_authenticates_resource_refs_against_composition(opencode_composition):

@@ -463,7 +463,7 @@ class ProductRun:
             selected_test_families=self._selected_test_families,
             coverage_rounds=self._resolved_coverage_rounds(),
         )
-        if self._entrypoint not in {"full", "intake", "case"}:
+        if self._entrypoint not in {"full", "intake"}:
             payload["case_delta_paths"] = ()
         return (
             ProductInputV1.model_validate(payload)
@@ -506,7 +506,6 @@ class ProductRun:
                 coverage_rounds=coverage_rounds,
                 measured_sequence=self._coverage_sequence,
                 threshold=self._threshold,
-                entrypoint="execute" if self._entrypoint != "full" else "full",
             )
         else:
             sequence = self._execution_sequence or ("passed",)
@@ -518,7 +517,6 @@ class ProductRun:
                 else (("test",) if failed else ()),
                 fix_eligible=(sequence[0] == "failed",) if failed else (),
                 coverage_rounds=coverage_rounds,
-                entrypoint="execute" if self._entrypoint != "full" else "full",
             )
             last_measured = 1.0
         repair_count = loop.public_exports.count("healing.repair-coverage")

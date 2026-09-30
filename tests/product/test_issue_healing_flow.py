@@ -22,8 +22,8 @@ def test_applied_test_repair_is_the_only_path_to_rerun() -> None:
                 repair_failure=_applied(),
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     execution = ExecutionCycleResultV1.model_validate(result["execution_result"])
     assert execution.repair_round == 1
@@ -43,8 +43,8 @@ def test_fix_proposal_output_cannot_parse_as_applied_repair() -> None:
                 repair_failure=proposal_only,
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "blocked"
     assert ExecutionCycleResultV1.model_validate(result["execution_result"]).repair_round == 0

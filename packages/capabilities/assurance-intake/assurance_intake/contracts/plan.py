@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 import hashlib
-import json
 from typing import Literal, Self, cast
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_core import to_jsonable_python
 
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
@@ -250,39 +248,6 @@ class ResolvePlanInputV1(FrozenModel):
         return self
 
 
-class LoadPlanInputV1(FrozenModel):
-    change_id: str = Field(min_length=1)
-    requirement_digest: str = Field(pattern=_SHA256)
-    resolved_plan_ref: EvidenceArtifactRefV1
-    budgets: PlanBudgetsV1
-    policy_resource_id: str
-    policy_digest: str = Field(pattern=_SHA256)
-    source_resource_digests: tuple[tuple[str, str], ...]
-    capability_leafs: tuple[str, ...]
-
-    @field_validator("change_id")
-    @classmethod
-    def _change_id(cls, value: str) -> str:
-        return _canonical_segment(value, "change_id")
-
-    @field_validator("policy_resource_id")
-    @classmethod
-    def _policy_resource_id(cls, value: str) -> str:
-        return _qualified_id(value, "policy_resource_id")
-
-    @field_validator("source_resource_digests")
-    @classmethod
-    def _source_resource_digests(cls, value: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
-        return validate_resource_digests(value)
-
-    @field_validator("capability_leafs")
-    @classmethod
-    def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if value != tuple(sorted(set(value))):
-            raise ValueError("capability_leafs must be sorted and unique")
-        return value
-
-
 class ResolvePlanOutputV1(FrozenModel):
     plan: ResolvedAssurancePlan
     plan_ref: EvidenceArtifactRefV1
@@ -292,14 +257,6 @@ class ResolvePlanOutputV1(FrozenModel):
         if self.plan_ref != plan_artifact_ref(self.plan):
             raise ValueError("plan_ref does not match the resolved plan")
         return self
-
-
-def seal_plan(payload: dict[str, object]) -> ResolvedAssurancePlan:
-    if "plan_digest" in payload:
-        raise ValueError("unsealed plan payload cannot supply plan_digest")
-    projection = cast(JSONValue, to_jsonable_python(payload))
-    digest = canonical_digest(projection)
-    return ResolvedAssurancePlan.model_validate({**payload, "plan_digest": digest})
 
 
 def plan_bytes(plan: ResolvedAssurancePlan) -> bytes:
@@ -314,26 +271,8 @@ def plan_artifact_ref(plan: ResolvedAssurancePlan) -> EvidenceArtifactRefV1:
     )
 
 
-def decode_plan(data: bytes, ref: EvidenceArtifactRefV1) -> ResolvedAssurancePlan:
-    try:
-        payload = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("plan is not valid JSON") from error
-    if not isinstance(payload, dict):
-        raise ValueError("plan document must be an object")
-    if canonical_json_bytes(cast(JSONValue, payload)) != data:
-        raise ValueError("plan bytes must be canonical JSON")
-    if hashlib.sha256(data).hexdigest() != ref.digest:
-        raise ValueError("plan_ref digest does not match plan bytes")
-    plan = ResolvedAssurancePlan.model_validate(payload)
-    if plan_artifact_ref(plan) != ref:
-        raise ValueError("plan_ref path does not match plan_digest")
-    return plan
-
-
 __all__ = [
     "FallbackDetail",
-    "LoadPlanInputV1",
     "PlanBudgetsV1",
     "PreparedQualityGoalV1",
     "ResolutionReasonCode",
@@ -343,9 +282,7 @@ __all__ = [
     "ResolvedAssurancePlan",
     "TestFamilyPolicyV1",
     "bind_impact_row_ids",
-    "decode_plan",
     "plan_artifact_ref",
     "plan_bytes",
-    "seal_plan",
     "resolution_reason_sort_key",
 ]

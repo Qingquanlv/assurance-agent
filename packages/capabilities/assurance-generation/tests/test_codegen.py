@@ -422,11 +422,10 @@ async def test_codegen_prepare_uses_reviewed_plan_and_constraints(family: str, t
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.scope_id == CHANGE_ID
-    assert len(request.instructions) == 5
-    skill, persona, plan, cases, context = request.instructions
+    assert len(request.instructions) == 4
+    skill, plan, cases, context = request.instructions
     assert f"{family} codegen" in (skill.text_content or "").lower()
     assert "qa/tests/" in (skill.text_content or "")
-    assert "test-author persona" in (persona.text_content or "").lower()
     assert plan.media_type == "application/json"
     assert cases.media_type == "application/json"
     assert context.media_type == "application/json"
@@ -507,7 +506,7 @@ async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: s
     request = AgentRunRequest.model_validate(prepared.output)
     locked_test = f"qa/tests/{directory}/items/test_items.py"
     assert locked_test in request.workspace.allowed_outputs
-    context_payload = cast(dict[str, object], request.instructions[4].json_content)
+    context_payload = cast(dict[str, object], request.instructions[-1].json_content)
     assert context_payload["allowed_outputs"] == request.workspace.allowed_outputs
     assert extra not in request.workspace.allowed_outputs
     assert mapped not in request.workspace.allowed_outputs

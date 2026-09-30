@@ -12,6 +12,8 @@ from assurance_intake.contracts.impact import (
     HistoricalProblemV1,
     ImpactProjectionV1,
     ImpactSeedV1,
+)
+from assurance_intake.operations.impact_validation import (
     impact_required_families,
     validate_inventory_closed_keys,
     validate_inventory_references,

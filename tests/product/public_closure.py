@@ -9,9 +9,7 @@ PUBLIC_CLOSURE_GOLDEN = Path(__file__).resolve().parent / "goldens" / "public-cl
 
 PUBLIC_ENTRYPOINTS = (
     "intake",
-    "case",
     "full",
-    "execute",
     "archive",
     "retro",
     "issue-review",
@@ -25,7 +23,7 @@ PUBLIC_ENTRYPOINTS = (
 )
 
 STANDALONE_PASS_SCENARIOS: tuple[dict[str, Any], ...] = tuple(
-    {"entrypoint": name} for name in PUBLIC_ENTRYPOINTS if name not in {"full", "execute"}
+    {"entrypoint": name} for name in PUBLIC_ENTRYPOINTS if name != "full"
 )
 
 PUBLIC_CLOSURE_SCENARIOS: tuple[dict[str, Any], ...] = (
@@ -35,7 +33,7 @@ PUBLIC_CLOSURE_SCENARIOS: tuple[dict[str, Any], ...] = (
 
 
 def requires_terminal_output(scenario: dict[str, Any]) -> bool:
-    return str(scenario["entrypoint"]) in {"full", "execute"}
+    return str(scenario["entrypoint"]) == "full"
 
 
 def jsonable_scenario(scenario: dict[str, Any]) -> dict[str, Any]:

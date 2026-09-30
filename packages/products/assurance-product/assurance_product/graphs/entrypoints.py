@@ -36,7 +36,6 @@ _INPUT_KEYS = (
     "requirement",
     "run_mode",
     "candidate_test_families",
-    "resolved_plan_ref",
     "case_delta_paths",
     "capability_leafs",
     "capability_catalog",
@@ -106,24 +105,6 @@ def adapt_prepare(state: ProductState) -> dict[str, object]:
         "data_knowledge": payload.data_knowledge.model_dump(mode="json"),
         "budgets": payload.budgets.model_dump(mode="json"),
         "family_policy": state.get("family_policy"),
-    }
-    return {**feature_input, "feature_input": feature_input}
-
-
-def adapt_load_plan(state: ProductState) -> dict[str, object]:
-    payload = _input_from_state(state)
-    feature_input = {
-        "change_id": payload.change_id,
-        "requirement": payload.requirement,
-        "resolved_plan_ref": payload.resolved_plan_ref.model_dump(mode="json")
-        if payload.resolved_plan_ref is not None
-        else None,
-        "capability_leafs": list(payload.capability_leafs),
-        "capability_catalog": payload.capability_catalog.model_dump(mode="json"),
-        "product_policy": payload.product_policy.model_dump(mode="json"),
-        "data_knowledge": payload.data_knowledge.model_dump(mode="json"),
-        "budgets": payload.budgets.model_dump(mode="json"),
-        "preparation_refs": [item.model_dump(mode="json") for item in payload.artifacts],
     }
     return {**feature_input, "feature_input": feature_input}
 
@@ -422,32 +403,6 @@ def build_intake_root(
     return context.compile_root(builder)
 
 
-def build_case_root(
-    context: GraphBuildContext,
-    load_plan: CompiledStateGraph,
-    child: CompiledStateGraph,
-) -> CompiledStateGraph:
-    builder: StateGraph[ProductState] = StateGraph(ProductState)
-    builder.add_node("validate", validate_public_input("case"))
-    builder.add_node("adapt-load-plan", cast(Any, adapt_load_plan))
-    builder.add_node("load-plan", load_plan)
-    builder.add_node("adapt-case", cast(Any, adapt_case))
-    builder.add_node("case", child)
-    builder.add_node("publish", publish_public_output)
-    builder.add_edge(START, "validate")
-    builder.add_edge("validate", "adapt-load-plan")
-    builder.add_edge("adapt-load-plan", "load-plan")
-    builder.add_conditional_edges(
-        "load-plan",
-        cast(Any, route_prepare),
-        {"prepared": "adapt-case", "failed": "publish"},
-    )
-    builder.add_edge("adapt-case", "case")
-    builder.add_edge("case", "publish")
-    builder.add_edge("publish", END)
-    return context.compile_root(builder)
-
-
 def build_archive_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
     return compile_thin_root(context, child, entrypoint="archive", adapt=adapt_improvement)
 
@@ -502,11 +457,9 @@ __all__ = [
     "adapt_init",
     "adapt_retro",
     "adapt_case",
-    "adapt_load_plan",
     "adapt_prepare",
     "adapt_quality",
     "build_archive_root",
-    "build_case_root",
     "build_init_root",
     "build_improvement_apply_root",
     "build_improvement_evaluate_root",

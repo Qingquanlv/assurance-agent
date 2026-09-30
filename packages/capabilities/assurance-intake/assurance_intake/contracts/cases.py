@@ -351,6 +351,14 @@ CaseEntry = CaseEntryAuthoring
 CaseYaml = CaseYamlAuthoring
 
 
+class IntakeQaV1(BaseModel):
+    """Bootstrap marker, before case-design adds the full change document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    change_id: NonEmptyStr
+
+
 class QaChange(BaseModel):
     change_id: NonEmptyStr
     requirement_id: NonEmptyStr

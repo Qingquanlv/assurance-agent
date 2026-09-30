@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from langgraph.graph.state import CompiledStateGraph
+
 from agent_runtime_contracts import (
     AgentRunRequest,
     FinalizePhase,
@@ -13,11 +15,17 @@ from agent_runtime_contracts import (
     before,
 )
 from graph_engine.attempts import AuthorizedAttemptScope, PermanentTaskFailure
+from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
 from assurance_generation.contracts.agent import CodegenInputV1
-from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_generation.contracts.attempts import (
+    AGENT_JOB_CONTRACTS,
+    OUTPUT_ROUTE_TEMPLATES,
+    TASK_ATTEMPT_CONTRACTS,
+)
 from assurance_generation.contracts.codegen import CodegenAuthoringV1, CodegenResultV1
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
+from assurance_generation.plugin import GenerationPlugin
 
 
 @dataclass
@@ -242,3 +250,48 @@ class PerformanceCodegenReviewTask:
         scope: AuthorizedAttemptScope,
     ) -> PlanReview | PermanentTaskFailure:
         return await self.finalize_phase.execute(bundle, scope)
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationGraphs:
+    generation: CompiledStateGraph
+    api: CompiledStateGraph
+    e2e: CompiledStateGraph
+    fuzz: CompiledStateGraph
+    performance: CompiledStateGraph
+    init_runtime: CompiledStateGraph
+    resolve_inputs: CompiledStateGraph
+
+
+FEATURE = FeatureSpec(
+    plugin=GenerationPlugin,
+    agent_contracts=AGENT_JOB_CONTRACTS,
+    task_contracts=TASK_ATTEMPT_CONTRACTS,
+    output_route_templates=OUTPUT_ROUTE_TEMPLATES,
+    graph_factory=FeatureFactoryRef(
+        "assurance.generation", "assurance_generation.graphs.factory:build_generation_graphs"
+    ),
+    agent_task_types=(
+        ApiCodegenTask,
+        ApiCodegenReviewTask,
+        E2ECodegenTask,
+        E2ECodegenReviewTask,
+        FuzzCodegenTask,
+        FuzzCodegenReviewTask,
+        PerformanceCodegenTask,
+        PerformanceCodegenReviewTask,
+    ),
+)
+
+__all__ = [
+    "FEATURE",
+    "GenerationGraphs",
+    "ApiCodegenTask",
+    "ApiCodegenReviewTask",
+    "E2ECodegenTask",
+    "E2ECodegenReviewTask",
+    "FuzzCodegenTask",
+    "FuzzCodegenReviewTask",
+    "PerformanceCodegenTask",
+    "PerformanceCodegenReviewTask",
+]

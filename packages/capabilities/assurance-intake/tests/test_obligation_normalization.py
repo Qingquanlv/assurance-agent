@@ -4,11 +4,18 @@ from assurance_intake.contracts.explore import ObligationDraftV1
 from assurance_intake.contracts.obligations import PreparedObligationV1, SourceRefV1
 from assurance_intake.operations.obligations import (
     InputError,
+    journey_keys_from_document,
     normalize_obligation_drafts,
     obligation_gaps,
     validate_discovery_closure,
 )
 import pytest
+
+
+def test_journey_keys_require_canonical_unique_document_values() -> None:
+    assert journey_keys_from_document({"journeys": ["create", "delete"]}) == ("create", "delete")
+    with pytest.raises(ValueError, match="sorted and unique"):
+        journey_keys_from_document({"journeys": ["delete", "create"]})
 
 
 def test_unavailable_family_preserves_required() -> None:

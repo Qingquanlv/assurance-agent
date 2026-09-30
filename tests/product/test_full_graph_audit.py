@@ -22,7 +22,7 @@ _IMPROVEMENT_ENTRYPOINTS = frozenset(
 
 def test_full_graph_has_no_orphans_or_forbidden_targets() -> None:
     assert set(ENTRYPOINT_CONTRACTS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(ENTRYPOINT_CONTRACTS) == 15
+    assert len(ENTRYPOINT_CONTRACTS) == 13
     forbidden = [
         name
         for name, contract in ENTRYPOINT_CONTRACTS.items()
@@ -49,7 +49,7 @@ def test_python_roots_are_the_product_application_surface() -> None:
     from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID
 
     assert set(ENTRYPOINT_CONTRACTS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(ENTRYPOINT_CONTRACTS) == 15
+    assert len(ENTRYPOINT_CONTRACTS) == 13
     assert SHADOW_VALIDATOR_CLONE_ID not in ENTRYPOINT_CONTRACTS
     for contract in ENTRYPOINT_CONTRACTS.values():
         assert contract.input_schema_digest

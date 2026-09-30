@@ -27,8 +27,6 @@ _REQUIRED = (
     "skills/aa-e2e-codegen/SKILL.md",
     "skills/aa-fuzz-codegen/SKILL.md",
     "skills/aa-performance-codegen/SKILL.md",
-    "personas/test-author.md",
-    "personas/reviewer.md",
     "result-contracts/plan.v1.schema.json",
     "result-contracts/plan-review.v1.schema.json",
     "result-contracts/codegen.v1.schema.json",
@@ -292,10 +290,10 @@ def test_codegen_skills_freeze_inputs_and_require_every_mapping_target() -> None
 
 
 def test_all_plan_reviews_route_bounded_defects_to_replan() -> None:
-    persona = " ".join(resource_text("personas/reviewer.md").split())
-    assert "including fuzz and performance" in persona
-    assert "Severity and a blocking impact do not by themselves require human review" in persona
-    assert "Fuzz and performance reviews are human-only" not in persona
+    for family in ("api", "e2e", "fuzz", "performance"):
+        skill = " ".join(resource_text(f"skills/aa-{family}-codegen-reviewer/SKILL.md").split())
+        assert "Evidence-proven, bounded defects" in skill
+        assert "Severity alone does not require human review" in skill
 
 
 def test_plan_reviews_do_not_block_codegen_on_a_source_proven_sut_defect() -> None:

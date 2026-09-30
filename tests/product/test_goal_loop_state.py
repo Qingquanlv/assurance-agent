@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from graph_engine.attempts.resolutions import ReceiptRef
 
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_product.graphs.execute import adapt_execute_tail_input, adapt_public_execute_tail
+from assurance_product.graphs.execute import adapt_execute_tail_input
 from assurance_product.graphs.loop_state import advance_coverage, can_reenter_case, clear_current_cycle
 from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from assurance_product.models import BusinessBudgetsV1
@@ -194,29 +194,6 @@ def test_tail_result_status_and_evidence_round_trip() -> None:
         assert ExecuteTailResultV1.model_validate(unresolved.model_dump(mode="json")) == unresolved
 
 
-def test_public_execute_adapter_initializes_standalone_tail_from_artifacts() -> None:
-    artifact = {"path": "qa/cases/reviewed-case.json", "digest": _SHA}
-    payload = valid_product_input(
-        resolved_plan_ref={
-            "path": f"qa/results/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
-            "digest": "c" * 64,
-        },
-        capability_leafs=("auth.session",),
-        artifacts=(artifact,),
-    )
-    state = {
-        **payload,
-        "plan_digest": _PLAN_DIGEST,
-        "plan_ref": payload["resolved_plan_ref"],
-        "selected_test_families": ["api"],
-    }
-    adapted = adapt_public_execute_tail(state)  # type: ignore[arg-type]
-    assert adapted["coverage_epoch"] == 0
-    assert adapted["healing_rounds_used"] == 0
-    assert adapted["reviewed_case"] is None
-    assert adapted["source_artifacts"] == [artifact]
-
-
 def test_full_tail_adapter_preserves_case_scope_and_current_epoch() -> None:
     reviewed = ReviewedCaseV1(
         change_id="CH-DEMO-001",
@@ -250,7 +227,7 @@ def test_full_tail_adapter_preserves_case_scope_and_current_epoch() -> None:
         "selected_test_families": ["api"],
         "reviewed_case": reviewed.model_dump(mode="json"),
     }
-    adapted = adapt_execute_tail_input(state, standalone=False)  # type: ignore[arg-type]
+    adapted = adapt_execute_tail_input(state)  # type: ignore[arg-type]
     assert adapted["coverage_epoch"] == 1
     assert adapted["reviewed_case"] == reviewed.model_dump(mode="json")
     assert "case_delta_paths" not in adapted

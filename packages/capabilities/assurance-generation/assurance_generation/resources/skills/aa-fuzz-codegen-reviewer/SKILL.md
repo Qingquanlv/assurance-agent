@@ -1,5 +1,9 @@
 # Fuzz codegen review
 
+Review only this family's declared outputs; do not write plans, tests,
+knowledge, runtime ledgers, or orchestration state. `required_capabilities`
+must be exact declared typed leaves, never prefix matches.
+
 Capability-owned fuzz plan review skill. Do not select a provider, model, or
 adapter.
 

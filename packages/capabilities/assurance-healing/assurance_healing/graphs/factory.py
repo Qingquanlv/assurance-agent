@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Hashable
-from dataclasses import dataclass
 from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
@@ -10,6 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import add_attempt_node
 
+from assurance_healing.task import HealingGraphs
 from assurance_healing.graphs.nodes import (
     activation_repair,
     admit_passthrough,
@@ -65,12 +65,6 @@ _APPROVAL_PATHS: dict[Hashable, str] = {
     "healing.apply-test-repair": "healing.apply-test-repair",
     "needs-review": "needs-review",
 }
-
-
-@dataclass(frozen=True, slots=True)
-class HealingGraphs:
-    repair_failure: CompiledStateGraph
-    repair_coverage: CompiledStateGraph
 
 
 def build_healing_graphs(context: CapabilityBuildContext) -> HealingGraphs:

@@ -12,14 +12,13 @@ from assurance_intake.contracts.agent import (
     ExploreInputV1,
     IntakeInputV1,
 )
-from assurance_intake.contracts.decisions import advance_review_round
+from assurance_intake.operations.workflow_state import advance_review_round
 from assurance_intake.contracts.workflow import (
     CaseFlowResultV1,
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
 )
 from assurance_intake.contracts.plan import (
-    LoadPlanInputV1,
     ResolvePlanInputV1,
     ResolvePlanOutputV1,
 )
@@ -114,27 +113,6 @@ def select_resolve_plan(state: Mapping[str, object]) -> ResolvePlanInputV1:
                 for item in _preparation_refs(state)
                 if item["path"] == "qa/results/explore/impact-inventory.json"
             ),
-            "source_resource_digests": (
-                (catalog["resource_id"], catalog["sha256"]),
-                (knowledge["resource_id"], knowledge["sha256"]),
-            ),
-            "capability_leafs": state["capability_leafs"],
-        }
-    )
-
-
-def select_load_plan(state: Mapping[str, object]) -> LoadPlanInputV1:
-    policy = _resource(state, "product_policy")
-    catalog = _resource(state, "capability_catalog")
-    knowledge = _resource(state, "data_knowledge")
-    return LoadPlanInputV1.model_validate(
-        {
-            "change_id": state["change_id"],
-            "requirement_digest": _requirement_digest(state),
-            "resolved_plan_ref": state["resolved_plan_ref"],
-            "budgets": state["budgets"],
-            "policy_resource_id": policy["resource_id"],
-            "policy_digest": policy["sha256"],
             "source_resource_digests": (
                 (catalog["resource_id"], catalog["sha256"]),
                 (knowledge["resource_id"], knowledge["sha256"]),
@@ -592,7 +570,6 @@ __all__ = [
     "select_case_design_retry",
     "select_case_review",
     "select_explore",
-    "select_load_plan",
     "select_resolve_plan",
     "publish_plan",
     "select_intake",

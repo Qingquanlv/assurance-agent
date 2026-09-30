@@ -1,5 +1,8 @@
 # Fact baseline
 
+Use only locked source evidence; never invent product facts or write a runtime
+ledger or orchestration state file.
+
 Capability-owned fact-baseline skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 

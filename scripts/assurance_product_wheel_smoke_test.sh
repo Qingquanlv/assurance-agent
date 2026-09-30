@@ -31,26 +31,18 @@ mkdir -p "$source_root" "$dist_root" "$bindings_root"
 
 cd "$source_root"
 test -d "$source_root/packages/products/assurance-product/assurance_product"
-for package in \
-  graph-engine \
-  agent-runtime-contracts \
-  assurance-intake \
-  assurance-generation \
-  assurance-execution \
-  assurance-healing \
-  assurance-quality \
-  assurance-improvement \
-  assurance-product \
-  agent-runtime-opencode
-do
-  uv build \
-    --offline \
-    --wheel \
-    --no-sources \
-    --python 3.11 \
-    --package "$package" \
-    --out-dir "$dist_root"
-done
+uv run --offline --all-packages --no-dev python scripts/build_wheels.py \
+  --offline --out-dir "$dist_root" \
+  --package graph-engine \
+  --package agent-runtime-contracts \
+  --package assurance-intake \
+  --package assurance-generation \
+  --package assurance-execution \
+  --package assurance-healing \
+  --package assurance-quality \
+  --package assurance-improvement \
+  --package assurance-product \
+  --package agent-runtime-opencode
 
 wheel_for() {
   local pattern="$1"
@@ -417,12 +409,12 @@ def check_compile_ok(
 
     contracts = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
-    if len(PRODUCT_ENTRYPOINTS) != 15:
-        raise SystemExit(f"15 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
+    if len(PRODUCT_ENTRYPOINTS) != 13:
+        raise SystemExit(f"13 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
     if len(contracts) != 26:
         raise SystemExit(f"26 Agent contracts expected, found {len(contracts)}")
-    if len(contracts) + len(tasks) != 45:
-        raise SystemExit(f"45 Attempt contracts expected, found {len(contracts) + len(tasks)}")
+    if len(contracts) + len(tasks) != 44:
+        raise SystemExit(f"44 Attempt contracts expected, found {len(contracts) + len(tasks)}")
     if not callable(runtime_bindings_from_composition):
         raise SystemExit("runtime_bindings_from_composition is missing")
     if not callable(raw_agent_runtime_binding_rows):

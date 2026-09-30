@@ -33,5 +33,7 @@ Review exactly one frozen Improvement subject. Schema truth is
 - A `reject` decision is advice and does not reject the Improvement.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
+- Echo the frozen Improvement identity and expected version exactly. Judge only
+  authenticated source refs; do not write Ledgers or orchestration snapshots.
 - Write the typed result to `qa/results/review/improvement-review.json`.
 - Return the typed result and stop.

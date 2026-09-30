@@ -15,7 +15,7 @@ pytestmark = [
 def _run(installed_sources, tmp_path: Path, entrypoint: str, **kwargs):
     return ProductRun(
         entrypoint=entrypoint,
-        selected_test_families=("api",) if entrypoint in {"full", "execute"} else (),
+        selected_test_families=("api",) if entrypoint == "full" else (),
         review_decision=str(kwargs.get("review_decision", "pass")),
         healing_decision=str(kwargs.get("healing_decision", "allowed")),
         execution_sequence=tuple(kwargs.get("execution_sequence", ())),

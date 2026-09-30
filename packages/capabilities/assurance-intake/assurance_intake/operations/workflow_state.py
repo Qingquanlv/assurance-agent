@@ -13,11 +13,23 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceInput,
     ReviewRoundAdvanceOutput,
-    advance_review_round,
 )
-from assurance_intake.operations.agent_skills import InputError, failed_input
+from assurance_intake.operations.prepare import InputError, failed_input
 
 REVIEW_ROUND_ADVANCE_ID = "assurance.intake.review-round.advance"
+
+
+def advance_review_round(data: object) -> ReviewRoundAdvanceOutput:
+    try:
+        payload = ReviewRoundAdvanceInput.model_validate(data)
+    except ValidationError as error:
+        raise error
+    if payload.rounds_used >= payload.rounds_budget:
+        raise ValueError("rounds_used must be below rounds_budget")
+    return ReviewRoundAdvanceOutput(
+        rounds_used=payload.rounds_used + 1,
+        rounds_budget=payload.rounds_budget,
+    )
 
 
 class ReviewRoundAdvanceHandler:

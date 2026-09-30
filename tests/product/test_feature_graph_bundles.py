@@ -35,7 +35,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
 
 PUBLIC_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
-    "assurance.intake": ("prepare", "load_plan", "case"),
+    "assurance.intake": ("prepare", "case"),
     "assurance.generation": ("generation",),
     "assurance.execution": ("execute", "rerun"),
     "assurance.quality": ("assess", "issue_review", "issue_analyze", "issue_reconcile", "report"),
@@ -52,7 +52,7 @@ PUBLIC_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 EXPECTED_BUNDLE_COUNTS = {
-    "assurance.intake": 3,
+    "assurance.intake": 2,
     "assurance.generation": 1,
     "assurance.execution": 2,
     "assurance.quality": 5,
@@ -61,7 +61,7 @@ EXPECTED_BUNDLE_COUNTS = {
 }
 
 IMPLEMENTED_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
-    "assurance.intake": ("prepare", "load_plan", "case"),
+    "assurance.intake": ("prepare", "case"),
     "assurance.generation": (
         "generation",
         "api",
@@ -269,10 +269,10 @@ def test_all_attempt_occurrences_are_exact() -> None:
         for owner in _FACTORY_BUILDERS
         for contract_id in _build_owner(owner)[1].bound_contract_ids
     )
-    assert len(ids) == 45
-    assert expected.total() == 48
+    assert len(ids) == 44
+    assert expected.total() == 47
     assert actual == expected
-    assert sum(len(names) for names in IMPLEMENTED_BUNDLE_FIELDS.values()) == 28
+    assert sum(len(names) for names in IMPLEMENTED_BUNDLE_FIELDS.values()) == 27
 
 
 def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) -> None:
@@ -315,7 +315,7 @@ def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) 
         patch_graph_function(factory)
     contexts = [_build_owner(owner)[1] for owner in _FACTORY_BUILDERS]
     assert len(visited) >= 12
-    assert len(calls) == 48
+    assert len(calls) == 47
     assert Counter(contract_id for _, contract_id in calls) == Counter(
         contract_id for context in contexts for contract_id in context.bound_contract_ids
     )

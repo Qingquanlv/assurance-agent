@@ -35,8 +35,8 @@ def test_assertion_analysis_product_bug_reaches_diagnostic_not_repair() -> None:
                 report=_diagnostic_report(),
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
     assert tail.status == "diagnostic"
@@ -46,7 +46,7 @@ def test_assertion_analysis_product_bug_reaches_diagnostic_not_repair() -> None:
 
 
 def test_reported_inspect_does_not_enter_retro() -> None:
-    result = invoke_product_root(_product_graphs(), "execute", _public_input("execute"))
+    result = invoke_product_root(_product_graphs(), "full", _public_input("full"))
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
     assert tail.status == "reported"
     assert not result.get("retro_id")
@@ -60,8 +60,8 @@ def test_assertion_analysis_test_bug_reaches_repair_rerun_and_inspect() -> None:
                 issue_analyze=_analysis_result("test_bug"),
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "reported"
     assert result["repair_result"]["status"] == "applied"
@@ -87,7 +87,7 @@ def test_analysis_requires_human_only_after_analysis_or_budget_exhaustion(
         cast(dict, analysis["issue_analysis"])["agent_result"].update(
             status="pending", candidate_count=0, candidates=[]
         )
-    payload = _public_input("execute")
+    payload = _public_input("full")
     if kind == "exhausted":
         cast(dict, payload["budgets"])["healing_rounds"] = 0
     result = invoke_product_root(
@@ -97,7 +97,7 @@ def test_analysis_requires_human_only_after_analysis_or_budget_exhaustion(
                 issue_analyze=analysis,
             )
         ),
-        "execute",
+        "full",
         payload,
     )
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
@@ -130,8 +130,8 @@ def test_invalid_issue_analysis_never_authorizes_repair_or_report(invalid: str) 
                 issue_analyze=analysis,
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "blocked"
     assert not result.get("repair_result")
@@ -168,8 +168,8 @@ def test_mixed_analysis_does_not_authorize_whole_batch_test_repair(
                 report=_diagnostic_report(),
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == expected_status
     assert not result.get("repair_result")
@@ -188,14 +188,14 @@ def test_pending_analysis_cannot_publish_a_reference_that_was_not_committed() ->
                 issue_analyze=analysis,
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "blocked"
 
 
 def test_passed_execution_reaches_inspect_and_committed_report() -> None:
-    result = invoke_product_root(_product_graphs(), "execute", _public_input("execute"))
+    result = invoke_product_root(_product_graphs(), "full", _public_input("full"))
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
     assert tail.status == "reported"
     assert tail.inspection is not None
@@ -205,12 +205,15 @@ def test_passed_execution_reaches_inspect_and_committed_report() -> None:
 def test_coverage_insufficient_returns_without_report() -> None:
     result = invoke_product_root(
         _product_graphs(_flow_features(assess=_inspection(disposition="coverage_insufficient"))),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input(
+            "full",
+            budgets={"review_rounds": 1, "coverage_rounds": 0, "healing_rounds": 1, "execution_retries": 1},
+        ),
     )
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
     assert tail.status == "coverage_insufficient"
-    assert result["terminal"] == {"status": "stopped", "reason": "coverage_insufficient"}
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert tail.report is None
     assert tail.report_refs == ()
 
@@ -218,12 +221,12 @@ def test_coverage_insufficient_returns_without_report() -> None:
 def test_needs_human_returns_without_test_repair_or_report() -> None:
     result = invoke_product_root(
         _product_graphs(_flow_features(assess=_inspection(disposition="needs_human"))),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
     assert tail.status == "needs_human"
-    assert result["terminal"] == {"status": "stopped", "reason": "needs_human"}
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert tail.report is None
     assert "repair_result" not in result
 
@@ -231,8 +234,8 @@ def test_needs_human_returns_without_test_repair_or_report() -> None:
 def test_invalid_execution_result_blocks_before_inspect() -> None:
     result = invoke_product_root(
         _product_graphs(_flow_features(execute={"status": "failed", "attempt_failure": {"kind": "runtime"}})),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
     assert tail.status == "blocked"
@@ -251,20 +254,17 @@ def test_failed_inspect_attempt_stops_without_diagnostic_report(inspection) -> N
                 }
             )
         ),
-        "execute",
-        _public_input("execute"),
+        "full",
+        _public_input("full"),
     )
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "blocked"
     assert result["attempt_failure"]["kind"] == "invalid_output"
     assert not result.get("report_refs")
-    assert result["terminal"] == {"status": "failed", "reason": "blocked"}
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
 
 
-@pytest.mark.parametrize("entrypoint", ["execute", "full"])
 @pytest.mark.parametrize("disposition", ["blocked", "analysis_required"])
-def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
-    entrypoint: str, disposition: str
-) -> None:
+def test_blocking_inspection_publishes_diagnostic_report_without_achievement(disposition: str) -> None:
     from types import SimpleNamespace
 
     from assurance_execution.graphs.nodes import publish_execution
@@ -348,8 +348,8 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
     )
     result = invoke_product_root(
         _product_graphs(features),
-        entrypoint,
-        _public_input(entrypoint),
+        "full",
+        _public_input("full"),
     )
 
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])

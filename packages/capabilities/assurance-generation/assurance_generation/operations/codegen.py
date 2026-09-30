@@ -37,7 +37,6 @@ from assurance_generation.contracts.plans import ObligationMethodPlanV1, canonic
 from assurance_generation.operations.codegen_scope import build_codegen_scope
 from assurance_generation.operations.planning import (
     FAMILIES,
-    PLAN_PERSONA,
     Family,
     InputError,
     OutputError,
@@ -53,10 +52,11 @@ from assurance_generation.operations.planning import (
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
-from assurance_intake.contracts.explore import PreparedExploreV1, load_exploration_document
+from assurance_intake.contracts.explore import PreparedExploreV1
+from assurance_intake.operations.explore_context import load_exploration_document
 from assurance_intake.contracts.obligations import PreparedObligationV1
-from assurance_intake.contracts.plan import decode_plan
-from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
+from assurance_intake.operations.plan_codec import decode_plan
+from assurance_intake.operations.obligations import normalize_obligation_drafts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 CODEGEN_RESULT_ID = "assurance.generation.result.codegen.v1"
@@ -258,7 +258,6 @@ def codegen_outputs(scope: CodegenScopeV1) -> tuple[str, ...]:
 def prepare_codegen_outcome(
     *,
     skill_path: str,
-    persona_path: str,
     scope: CodegenScopeV1,
     cases: CaseYamlAuthoring,
     context_payload: Mapping[str, object],
@@ -273,7 +272,6 @@ def prepare_codegen_outcome(
         instructions=with_validation_retry(
             (
                 InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.text("text/plain", resource_text(persona_path)),
                 InstructionPart.from_json(scope.model_dump(mode="json")),
                 InstructionPart.from_json(cases.model_dump(mode="json")),
                 InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
@@ -556,7 +554,6 @@ class CodegenPrepareHandler:
                     context_payload["api_discovery"] = api_discovery.model_dump(mode="json")
             return prepare_codegen_outcome(
                 skill_path=_SKILL_FILES[family],
-                persona_path=PLAN_PERSONA,
                 scope=scope,
                 cases=cases,
                 context_payload=context_payload,

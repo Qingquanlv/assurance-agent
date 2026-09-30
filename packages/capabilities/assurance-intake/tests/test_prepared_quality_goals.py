@@ -9,12 +9,13 @@ import pytest
 import yaml
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1, PreparedExploreV1
-from assurance_intake.contracts.plan import LoadPlanInputV1, ResolvePlanInputV1
-from assurance_intake.contracts.quality_goals import normalize_obligation_drafts, required_goal_families
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.obligations import normalize_goal_obligations
+from assurance_intake.contracts.plan import ResolvePlanInputV1
+from assurance_intake.operations.obligations import (
+    normalize_goal_obligations,
+    normalize_obligation_drafts,
+    required_goal_families,
+)
 from assurance_intake.operations.plan_artifacts import (
-    LoadPlanHandler,
     ResolvePlanHandler,
     prepare_quality_goal,
 )
@@ -405,35 +406,6 @@ def test_prepare_quality_goal_authenticates_every_source(
     assert isinstance(relative, str)
     staged_plan = resolve_stage / relative
     assert staged_plan.is_file()
-    committed_plan = project / relative
-    committed_plan.parent.mkdir(parents=True)
-    committed_plan.write_bytes(staged_plan.read_bytes())
-
-    load_input = LoadPlanInputV1(
-        change_id=request.change_id,
-        requirement_digest=request.requirement_digest,
-        resolved_plan_ref=EvidenceArtifactRefV1.model_validate(plan_ref),
-        budgets=request.budgets,
-        policy_resource_id=request.policy_resource_id,
-        policy_digest=request.policy_digest,
-        source_resource_digests=request.source_resource_digests,
-        capability_leafs=request.capability_leafs,
-    )
-    load_stage = project / "load-stage"
-    load_stage.mkdir()
-    loaded = asyncio.run(
-        execute_task(
-            LoadPlanHandler(),
-            load_input.model_dump(mode="json"),
-            workspace=project,
-            write_root=load_stage,
-            capability_id="assurance.intake.load-plan",
-        )
-    )
-    assert loaded.outcome.status == "succeeded"
-    assert loaded.outcome.output == output
-    assert list(load_stage.rglob("*")) == []
-
     (aa / "policy.yaml").write_bytes(policy_bytes + b"\n")
     with pytest.raises(ValueError, match="digest"):
         prepare_quality_goal(request, project_root=project)

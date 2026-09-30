@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Hashable
-from dataclasses import dataclass
 from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from assurance_intake.task import IntakeGraphs
 from assurance_intake.graphs.case import build_case_graph
 from assurance_intake.graphs.nodes import (
     activation_case_design,
@@ -22,12 +22,11 @@ from assurance_intake.graphs.nodes import (
     select_case_review,
     select_explore,
     select_intake,
-    select_load_plan,
     select_resolve_plan,
     terminal_done,
     terminal_failed,
 )
-from assurance_intake.graphs.prepare import build_load_plan_graph, build_prepare_graph
+from assurance_intake.graphs.prepare import build_prepare_graph
 from assurance_intake.graphs.routes import route_case_design, route_case_design_repair
 from assurance_intake.graphs.state import IntakeState
 from graph_engine.boot.boot import CapabilityBuildContext
@@ -38,19 +37,11 @@ _EXPLORE_ID = "assurance.intake.agent.explore.v1"
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
 _RESOLVE_PLAN_ID = "assurance.intake.task.resolve-plan"
-_LOAD_PLAN_ID = "assurance.intake.task.load-plan"
 _CASE_DESIGN_PATHS: dict[Hashable, str] = {
     "done": "done",
     "case-design-repair": "intake.case-design-repair",
     "failed": "failed",
 }
-
-
-@dataclass(frozen=True, slots=True)
-class IntakeGraphs:
-    prepare: CompiledStateGraph
-    load_plan: CompiledStateGraph
-    case: CompiledStateGraph
 
 
 def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:
@@ -78,14 +69,6 @@ def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:
         select=select_resolve_plan,
         publish=publish_plan,
     )
-    load_plan = _compile_leaf(
-        context,
-        contract_id=_LOAD_PLAN_ID,
-        semantic_node_id="intake.load-plan",
-        activation=activation_one_shot,
-        select=select_load_plan,
-        publish=publish_plan,
-    )
     case_design = _compile_case_design(context)
     case_review = _compile_leaf(
         context,
@@ -102,7 +85,6 @@ def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:
             explore=explore,
             resolve_plan=resolve_plan,
         ),
-        load_plan=build_load_plan_graph(context, load_plan=load_plan),
         case=build_case_graph(context, case_design=case_design, case_review=case_review),
     )
 

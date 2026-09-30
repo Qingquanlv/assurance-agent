@@ -57,6 +57,14 @@ FORBIDDEN_ADAPTERS = frozenset(
 )
 
 CROSS_FEATURE_FORBIDDEN_SUFFIXES = ("graphs",)
+ALLOWED_GRAPH_OPERATION_IMPORTS = {
+    ("assurance_intake.graphs.nodes", "assurance_intake.operations.workflow_state"),
+    ("assurance_intake.graphs.nodes", "assurance_intake.operations.workflow_state.advance_review_round"),
+    ("assurance_intake.graphs.state", "assurance_intake.operations.history_refs"),
+    ("assurance_intake.graphs.state", "assurance_intake.operations.history_refs.merge_history_refs"),
+    ("assurance_generation.graphs.state", "assurance_intake.operations.history_refs"),
+    ("assurance_generation.graphs.state", "assurance_intake.operations.history_refs.merge_history_refs"),
+}
 
 
 def _repo_root() -> Path:
@@ -139,7 +147,9 @@ def _imported_modules(path: Path, *, module_name: str | None = None) -> tuple[tu
     )
 
 
-def _is_forbidden_graph_import(imported: str, owner: str) -> bool:
+def _is_forbidden_graph_import(imported: str, owner: str, *, graph_module: str | None = None) -> bool:
+    if (graph_module, imported) in ALLOWED_GRAPH_OPERATION_IMPORTS:
+        return False
     parts = imported.split(".")
     root_name = parts[0]
     if root_name in FORBIDDEN_ADAPTERS:
@@ -237,9 +247,22 @@ def test_feature_graph_modules_reject_foreign_and_implementation_imports() -> No
     for path in _graph_python_files():
         owner, module_name = _graph_module_identity(path)
         for lineno, imported in _imported_modules(path, module_name=module_name):
-            if _is_forbidden_graph_import(imported, owner):
+            if _is_forbidden_graph_import(imported, owner, graph_module=module_name):
                 violations.append(f"{path}:{lineno}:{imported}")
     assert violations == []
+
+
+def test_graph_operation_exceptions_are_exact_to_caller_and_symbol() -> None:
+    assert _is_forbidden_graph_import(
+        "assurance_intake.operations.workflow_state.ReviewRoundAdvanceHandler",
+        "assurance_intake",
+        graph_module="assurance_intake.graphs.nodes",
+    )
+    assert _is_forbidden_graph_import(
+        "assurance_intake.operations.history_refs.merge_history_refs",
+        "assurance_quality",
+        graph_module="assurance_quality.graphs.state",
+    )
 
 
 def test_graph_attempts_use_registration_helper() -> None:

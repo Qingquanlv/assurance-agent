@@ -37,7 +37,6 @@ def _resource_files() -> Iterator[Path]:
 
 def test_execution_resources_forbid_legacy_and_provider_names() -> None:
     required = (
-        "personas/executor.md",
         "result-contracts/execution.v1.schema.json",
         "runner/aa_observe.py",
     )

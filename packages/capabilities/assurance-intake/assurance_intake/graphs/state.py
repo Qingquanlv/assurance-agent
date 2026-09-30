@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Annotated, Literal, TypedDict
 
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
-from assurance_intake.contracts.workflow import merge_history_refs
+from assurance_intake.operations.history_refs import merge_history_refs
 
 CASE_REVIEW_PREDECESSORS = (
     "review-round-advance",
@@ -133,7 +133,6 @@ class IntakeState(CheckpointBridgeState, total=False):
     change_id: str
     requirement: str
     candidate_test_families: list[str]
-    resolved_plan_ref: dict[str, str]
     capability_catalog: dict[str, str]
     product_policy: dict[str, str]
     data_knowledge: dict[str, str]

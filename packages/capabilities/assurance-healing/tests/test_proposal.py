@@ -128,9 +128,8 @@ async def test_fix_proposal_prepare_is_deterministic_and_provider_neutral(tmp_pa
     left = AgentRunRequest.model_validate(first.output)
     right = AgentRunRequest.model_validate(second.output)
     assert left.canonical_bytes() == right.canonical_bytes()
-    skill, persona, business = left.instructions
+    skill, business = left.instructions
     assert skill.media_type == "text/plain"
-    assert persona.media_type == "text/plain"
     assert business.media_type == "application/json"
     encoded = left.canonical_bytes().decode("utf-8").lower()
     assert "sort_keys=true" in encoded
@@ -495,7 +494,6 @@ def test_healing_resources_forbid_legacy_and_provider_names() -> None:
         "skills/aa-fix-proposal/SKILL.md",
         "skills/aa-coverage-repair/SKILL.md",
         "skills/aa-apply-test-repair/SKILL.md",
-        "personas/fix-proposer.md",
         "result-contracts/fix-proposal.v1.schema.json",
         "result-contracts/coverage-repair.v1.schema.json",
         "result-contracts/applied-test-repair.v1.schema.json",

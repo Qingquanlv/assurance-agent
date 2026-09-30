@@ -33,6 +33,9 @@ fix proposal. Schema truth is `assurance_healing.contracts` for `FixProposalResu
 
 - Consume only the locked mapping, allowed roots, and declared capability leaves.
 - Do not invent files, capabilities, or product-code edits.
+- Prefer the locked handler input over remembered conversation state. Do not
+  write a runtime ledger or orchestration state file; name only the exact
+  change-scoped files authorized by the typed result.
 - Do not write product trees (`app/`, `src/`, `web/src/`).
 - Do not select a host adapter or remember prior conversation state.
 - When a proposal needs review, set `needs_review: true` and leave apply to an

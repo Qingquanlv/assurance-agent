@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from langgraph.graph.state import CompiledStateGraph
+
 from agent_runtime_contracts import (
     AgentRunRequest,
     FinalizePhase,
@@ -13,6 +15,7 @@ from agent_runtime_contracts import (
     before,
 )
 from graph_engine.attempts import AuthorizedAttemptScope, PermanentTaskFailure
+from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
 from assurance_improvement.contracts.agent import (
     ArchiveResultV1,
@@ -22,7 +25,12 @@ from assurance_improvement.contracts.agent import (
     RetroAnalysisResultV3,
     RetroSynthesisInputV1,
 )
-from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_improvement.contracts.attempts import (
+    AGENT_JOB_CONTRACTS,
+    OUTPUT_ROUTE_TEMPLATES,
+    TASK_ATTEMPT_CONTRACTS,
+)
+from assurance_improvement.plugin import ImprovementPlugin
 
 
 @dataclass
@@ -201,3 +209,44 @@ class RetroTask:
         scope: AuthorizedAttemptScope,
     ) -> RetroAnalysisResultV3 | PermanentTaskFailure:
         return await self.finalize_phase.execute(bundle, scope)
+
+
+@dataclass(frozen=True, slots=True)
+class ImprovementGraphs:
+    archive: CompiledStateGraph
+    retro: CompiledStateGraph
+    review: CompiledStateGraph
+    evaluate: CompiledStateGraph
+    export: CompiledStateGraph
+    apply: CompiledStateGraph
+    rollback: CompiledStateGraph
+
+
+FEATURE = FeatureSpec(
+    plugin=ImprovementPlugin,
+    agent_contracts=AGENT_JOB_CONTRACTS,
+    task_contracts=TASK_ATTEMPT_CONTRACTS,
+    output_route_templates=OUTPUT_ROUTE_TEMPLATES,
+    graph_factory=FeatureFactoryRef(
+        "assurance.improvement", "assurance_improvement.graphs.factory:build_improvement_graphs"
+    ),
+    agent_task_types=(
+        ArchiveTask,
+        ImprovementReviewTask,
+        RetroEvalAnalysisTask,
+        RetroIssueAnalysisTask,
+        RetroWorkflowAnalysisTask,
+        RetroTask,
+    ),
+)
+
+__all__ = [
+    "FEATURE",
+    "ImprovementGraphs",
+    "ArchiveTask",
+    "ImprovementReviewTask",
+    "RetroEvalAnalysisTask",
+    "RetroIssueAnalysisTask",
+    "RetroWorkflowAnalysisTask",
+    "RetroTask",
+]

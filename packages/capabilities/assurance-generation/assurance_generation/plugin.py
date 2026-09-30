@@ -33,8 +33,6 @@ GENERATION_SOURCE = ProviderSource(
 GENERATION_DEPENDENCIES: tuple[PluginDependency, ...] = (PluginDependency("assurance.intake", "==0.3.0"),)
 
 GENERATION_RESOURCE_FILES: dict[str, str] = {
-    "assurance.generation.persona.reviewer.v1": "personas/reviewer.md",
-    "assurance.generation.persona.test-author.v1": "personas/test-author.md",
     "assurance.generation.result.codegen.v1": "result-contracts/codegen.v1.schema.json",
     "assurance.generation.result.codegen-review.v1": "result-contracts/plan-review.v1.schema.json",
     "assurance.generation.result.plan.v1": "result-contracts/plan.v1.schema.json",

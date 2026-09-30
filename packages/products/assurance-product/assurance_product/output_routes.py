@@ -3,31 +3,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
-from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_JOBS
-from assurance_generation.contracts.attempts import OUTPUT_ROUTE_TEMPLATES as GENERATION_OUTPUTS
-from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS as HEALING_JOBS
-from assurance_healing.contracts.attempts import OUTPUT_ROUTE_TEMPLATES as HEALING_OUTPUTS
-from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPROVEMENT_JOBS
-from assurance_improvement.contracts.attempts import OUTPUT_ROUTE_TEMPLATES as IMPROVEMENT_OUTPUTS
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_JOBS
-from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES as INTAKE_OUTPUTS
 from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 from assurance_product.change_workspace import safe_change_id
-from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_JOBS
-from assurance_quality.contracts.attempts import OUTPUT_ROUTE_TEMPLATES as QUALITY_OUTPUTS
+from assurance_product.features import FEATURES
 
 
 def _route_templates() -> Mapping[str, tuple[str, ...]]:
     routes: dict[str, tuple[str, ...]] = {}
-    for contracts, templates in (
-        (INTAKE_JOBS, INTAKE_OUTPUTS),
-        (GENERATION_JOBS, GENERATION_OUTPUTS),
-        (QUALITY_JOBS, QUALITY_OUTPUTS),
-        (HEALING_JOBS, HEALING_OUTPUTS),
-        (IMPROVEMENT_JOBS, IMPROVEMENT_OUTPUTS),
-    ):
-        for base, paths in templates.items():
-            routes[contracts[base].contract_id] = paths
+    for feature in FEATURES:
+        for base, paths in feature.output_route_templates.items():
+            contract = feature.agent_contracts.get(base)
+            if contract is not None:
+                routes[contract.contract_id] = paths
     return MappingProxyType(routes)
 
 

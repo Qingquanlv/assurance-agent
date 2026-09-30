@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import importlib
 import importlib.util
 import re
 from importlib.resources import files
@@ -15,7 +16,6 @@ from typing import Any
 import pytest
 import yaml
 
-from assurance_product.opencode_agents import _opencode_config
 from assurance_product.cli import app
 from click.testing import CliRunner
 from tests.acg_plan_fixture import install_plan
@@ -1217,7 +1217,10 @@ def test_project_opencode_asset_preflight_rejects_a_stale_boundary_plugin(
 ) -> None:
     runner = _load_runner()
     sut = _make_sut(tmp_path)
-    (sut / "opencode.json").write_text(_opencode_config(), encoding="utf-8")
+    (sut / "opencode.json").write_text(
+        importlib.import_module("assurance_product.opencode_agents")._opencode_config(),
+        encoding="utf-8",
+    )
     plugin = sut / ".opencode" / "plugins" / "assurance-boundary.mjs"
     plugin.parent.mkdir(parents=True)
     expected_plugin = (

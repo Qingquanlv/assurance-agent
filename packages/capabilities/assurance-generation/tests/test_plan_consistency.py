@@ -8,7 +8,7 @@ import pytest
 from assurance_generation.contracts.codegen import CodegenMapping
 from assurance_generation.operations.plan_consistency import check_plan_consistency
 from assurance_generation.operations.planning import planning_handler
-from assurance_intake.contracts.planning_facts import build_planning_facts
+from assurance_intake.operations.planning_facts import build_planning_facts
 from tests.product.test_change_local_output_routing import execute_task
 from planning_fixtures import family_plan_files, fake_agent_result, valid_plan_result  # pyright: ignore[reportMissingImports]
 
@@ -69,6 +69,27 @@ def test_summary_capability_column_is_checked_regardless_of_heading_case(tmp_pat
     errors = check_plan_consistency({"summary.md": image}, mapping=_mapping(), facts=facts)
     assert len(errors) == 1
     assert "unknown capability leaf" in errors[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", [b"", b" \n\t", b"\xff"])
+async def test_finalize_rejects_empty_or_non_utf8_plan_documents(tmp_path: Path, content: bytes) -> None:
+    files = family_plan_files("api")
+    stage = tmp_path / ".stage"
+    for relative in files:
+        path = stage / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_mapping().model_dump_json().encode() if relative.endswith(".json") else content)
+    outcome = await execute_task(
+        planning_handler("api", "finalize"),
+        {**fake_agent_result(valid_plan_result("api")), "artifact_paths": list(files)},
+        tmp_path,
+        write_root=stage,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert "plan Markdown must be" in outcome.failure.message
 
 
 @pytest.mark.asyncio

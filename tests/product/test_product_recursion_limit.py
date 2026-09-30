@@ -75,7 +75,7 @@ def test_graph_recursion_error_normalizes_to_runtime_failure() -> None:
         checkpointer=None,
         approved_source_roots=(),
     ).compile_root(builder)
-    limit = ENTRYPOINT_RECURSION_LIMITS["execute"]
+    limit = ENTRYPOINT_RECURSION_LIMITS["full"]
     with pytest.raises(GraphRecursionError) as raised:
         graph.invoke({"change_id": "CH-DEMO-001"}, config={"recursion_limit": limit})
     status = normalize_runtime_error(raised.value)
@@ -89,8 +89,8 @@ def test_business_budget_exhaustion_is_a_distinct_terminal() -> None:
             execute={"status": "failed", "attempt_failure": {"kind": "runtime"}},
         )
     )
-    result = invoke_product_root(graphs, "execute", _public_input("execute"))
-    assert result["terminal"] == {"status": "failed", "reason": "blocked"}
+    result = invoke_product_root(graphs, "full", _public_input("full"))
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert result.get("status") != "graph_recursion_limit"
     coverage = invoke_product_root(
         _product_graphs(_flow_features(assess=_inspection(disposition="coverage_insufficient"))),

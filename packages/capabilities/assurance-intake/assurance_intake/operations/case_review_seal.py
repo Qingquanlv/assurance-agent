@@ -9,7 +9,8 @@ from typing import cast
 from graph_engine.canonical import JSONValue, canonical_digest
 
 from assurance_intake.contracts.case_selection import CaseSelectionV1, SelectedCaseV1, selection_path
-from assurance_intake.contracts.loop_history import LoopRoundHistoryV1, build_loop_round_history
+from assurance_intake.contracts.loop_history import LoopRoundHistoryV1
+from assurance_intake.operations.loop_history import build_loop_round_history
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
