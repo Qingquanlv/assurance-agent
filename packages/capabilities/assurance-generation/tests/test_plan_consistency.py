@@ -8,7 +8,7 @@ import pytest
 from assurance_generation.contracts.codegen import CodegenMapping
 from assurance_generation.operations.plan_consistency import check_plan_consistency
 from assurance_generation.operations.planning import planning_handler
-from assurance_intake.operations.planning_facts import build_planning_facts
+from assurance_intake.domain.planning_facts import build_planning_facts
 from tests.product.test_change_local_output_routing import execute_task
 from planning_fixtures import family_plan_files, fake_agent_result, valid_plan_result  # pyright: ignore[reportMissingImports]
 

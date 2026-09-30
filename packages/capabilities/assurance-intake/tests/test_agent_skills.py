@@ -45,7 +45,7 @@ from assurance_intake.contracts.explore import (
     ObligationDraftV1,
     PreparedExploreV1,
 )
-from assurance_intake.operations.obligations import normalize_obligation_drafts
+from assurance_intake.domain.obligations import normalize_obligation_drafts
 from assurance_intake.resource_loader import resource_text
 
 

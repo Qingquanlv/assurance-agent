@@ -14,23 +14,13 @@ root_packages =
     agent_runtime_fixture
     assurance_product
 
-# Permanent boundary: cross-Feature .graphs imports remain forbidden.
-# Only the listed, read-only Intake operation imports are shared across wheels.
-# Stale exceptions fail lint-imports via its default unmatched-import alert.
+# Permanent boundary: cross-Feature implementation imports remain forbidden.
+# Shared intake planning logic is assurance_intake.domain and is not an
+# operations exception. Stale exceptions fail lint-imports via its default
+# unmatched-import alert.
 [importlinter:contract:generation-intake-contracts-only]
 name = generation may import only intake contracts
 type = forbidden
-ignore_imports =
-    assurance_generation.operations.codegen -> assurance_intake.operations.explore_context
-    assurance_generation.operations.codegen -> assurance_intake.operations.obligations
-    assurance_generation.operations.codegen -> assurance_intake.operations.plan_codec
-    assurance_generation.operations.cycle -> assurance_intake.operations.explore_context
-    assurance_generation.operations.cycle -> assurance_intake.operations.obligations
-    assurance_generation.operations.cycle -> assurance_intake.operations.plan_codec
-    assurance_generation.operations.planning -> assurance_intake.operations.planning_facts
-    assurance_generation.operations.planning -> assurance_intake.operations.loop_history
-    assurance_generation.operations.resolve_inputs -> assurance_intake.operations.plan_codec
-    assurance_generation.graphs.state -> assurance_intake.operations.history_refs
 source_modules =
     assurance_generation
 forbidden_modules =
@@ -45,8 +35,6 @@ forbidden_modules =
 [importlinter:contract:execution-assurance-contracts-only]
 name = execution may import only intake and generation contracts
 type = forbidden
-ignore_imports =
-    assurance_execution.operations.agent_skills -> assurance_intake.operations.plan_codec
 source_modules =
     assurance_execution
 forbidden_modules =
@@ -68,8 +56,6 @@ forbidden_modules =
 [importlinter:contract:healing-assurance-contracts-only]
 name = healing may import only intake, generation, and execution contracts
 type = forbidden
-ignore_imports =
-    assurance_healing.operations.application -> assurance_intake.operations.loop_history
 source_modules =
     assurance_healing
 forbidden_modules =
@@ -106,13 +92,6 @@ forbidden_modules =
 [importlinter:contract:quality-assurance-contracts-only]
 name = quality may import only intake, generation, execution, and healing contracts
 type = forbidden
-ignore_imports =
-    assurance_quality.operations.assessment -> assurance_intake.operations.explore_context
-    assurance_quality.operations.assessment -> assurance_intake.operations.obligations
-    assurance_quality.operations.assessment -> assurance_intake.operations.plan_codec
-    assurance_quality.operations.obligations -> assurance_intake.operations.obligations
-    assurance_quality.operations.obligations -> assurance_intake.operations.explore_context
-    assurance_quality.operations.obligations -> assurance_intake.operations.plan_codec
 source_modules =
     assurance_quality
 forbidden_modules =
@@ -148,8 +127,6 @@ forbidden_modules =
 [importlinter:contract:improvement-assurance-contracts-only]
 name = improvement may import only intake, generation, execution, healing, and quality contracts
 type = forbidden
-ignore_imports =
-    assurance_improvement.operations.retro_slices -> assurance_intake.operations.plan_codec
 source_modules =
     assurance_improvement
 forbidden_modules =
@@ -286,3 +263,17 @@ layers =
     agent_runtime_contracts.executor
     agent_runtime_contracts.ops | agent_runtime_contracts.runtime
     agent_runtime_contracts.wire
+
+[importlinter:contract:intake-domain-pure]
+name = Intake domain depends only on intake contracts
+type = forbidden
+source_modules =
+    assurance_intake.domain
+forbidden_modules =
+    assurance_intake.operations
+    assurance_intake.agent_ops
+    assurance_intake.graphs
+    assurance_intake.plugin
+    assurance_intake.feature
+    assurance_intake.validators
+    assurance_intake.effects

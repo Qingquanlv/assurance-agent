@@ -17,7 +17,7 @@ from assurance_intake.contracts.plan import (
     plan_artifact_ref,
     plan_bytes,
 )
-from assurance_intake.operations.plan_codec import decode_plan
+from assurance_intake.domain.plan_codec import decode_plan
 from assurance_intake.contracts.quality_goals import (
     CoverageFloorsV1,
     CoverageGoalPolicyV1,

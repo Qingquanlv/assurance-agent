@@ -7,7 +7,7 @@ from agent_runtime_contracts.ops import AgentBindingDataV1, InputError, run_prep
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.agent import CaseReviewInputV1
-from assurance_intake.operations.planning_facts import build_planning_facts
+from assurance_intake.domain.planning_facts import build_planning_facts
 from assurance_intake.operations.prepare import (
     CASE_REVIEW_PERSONA,
     CASE_REVIEW_RESULT_ID,

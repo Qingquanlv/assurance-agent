@@ -30,7 +30,7 @@ from assurance_intake.contracts.impact import (
     ImpactSeedV1,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.planning_facts import source_path_hints
+from assurance_intake.domain.planning_facts import source_path_hints
 
 _MAX_CASE_FILES = 64
 _MAX_PROBLEMS = 64

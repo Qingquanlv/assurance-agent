@@ -17,8 +17,8 @@ from assurance_intake.contracts.plan import (
     plan_artifact_ref,
     plan_bytes,
 )
-from assurance_intake.operations.plan_codec import seal_plan
-from assurance_intake.operations.obligations import normalize_obligation_drafts
+from assurance_intake.domain.plan_codec import seal_plan
+from assurance_intake.domain.obligations import normalize_obligation_drafts
 from assurance_intake.operations.plan_artifacts import ResolvePlanHandler
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.runtime_bindings import DeterministicTaskExecutor

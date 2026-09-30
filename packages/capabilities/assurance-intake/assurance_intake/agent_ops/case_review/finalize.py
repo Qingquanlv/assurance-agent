@@ -39,7 +39,7 @@ from assurance_intake.operations.finalize import (
     validate_case_review_repair_scope,
     workspace_file,
 )
-from assurance_intake.operations.plan_codec import decode_plan
+from assurance_intake.domain.plan_codec import decode_plan
 from assurance_intake.operations.prepare import case_review_outputs
 
 input_model = CaseFinalizeInputV1

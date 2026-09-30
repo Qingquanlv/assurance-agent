@@ -92,6 +92,7 @@ _WHEEL_ROOT = _TESTS_ROOT.parent
 _LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")
 _ALLOWED_ASSURANCE = (
     "assurance_intake.contracts",
+    "assurance_intake.domain",
     "assurance_generation.contracts",
     "assurance_execution.contracts",
 )

@@ -23,7 +23,7 @@ from assurance_improvement.contracts.delivery import artifact_digest
 from assurance_execution.contracts.selection import ClosedMappingV1
 from assurance_execution.operations.normalize import normalize_evidence
 from assurance_intake.contracts import EvidenceArtifactRefV1
-from assurance_intake.operations.loop_history import build_loop_round_history
+from assurance_intake.domain.loop_history import build_loop_round_history
 from assurance_quality.contracts.obligations import ObligationAssessmentV1
 from tests.acg_plan_fixture import install_plan
 

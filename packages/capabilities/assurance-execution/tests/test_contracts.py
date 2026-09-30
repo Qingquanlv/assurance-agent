@@ -32,6 +32,7 @@ _PLAN_REF = {
 _LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")
 _ALLOWED_ASSURANCE = (
     "assurance_intake.contracts",
+    "assurance_intake.domain",
     "assurance_generation.contracts",
 )
 

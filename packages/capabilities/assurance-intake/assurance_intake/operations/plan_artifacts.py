@@ -22,7 +22,7 @@ from assurance_intake.contracts.explore import (
 )
 from assurance_intake.contracts.obligations import SourceRefV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.obligations import (
+from assurance_intake.domain.obligations import (
     apply_scope_exclusions,
     journey_keys_from_document,
     normalize_goal_obligations,
@@ -45,7 +45,7 @@ from assurance_intake.contracts.quality_goals import (
     SufficiencyPolicyV1,
 )
 from assurance_intake.operations.resolve_plan import derive_family_proposal, resolve_plan
-from assurance_intake.operations.explore_context import load_exploration_document
+from assurance_intake.domain.explore_context import load_exploration_document
 
 _RESOURCE_PATHS = {
     "assurance.product.configuration.capability-catalog": ".aa/capability-catalog.json",

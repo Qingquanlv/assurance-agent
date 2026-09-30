@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from agent_runtime_contracts.ops import InputError
 
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
-from assurance_intake.operations.plan_codec import decode_plan
+from assurance_intake.domain.plan_codec import decode_plan
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 

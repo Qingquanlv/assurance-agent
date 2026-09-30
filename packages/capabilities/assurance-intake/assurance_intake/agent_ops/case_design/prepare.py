@@ -12,8 +12,8 @@ from assurance_intake.contracts.agent import CaseDesignInputV1
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.operations.case_design_prepare import review_repair_contract
 from assurance_intake.operations.case_modules import infer_case_delta_paths
-from assurance_intake.operations.explore_context import load_exploration_document
-from assurance_intake.operations.planning_facts import build_planning_facts
+from assurance_intake.domain.explore_context import load_exploration_document
+from assurance_intake.domain.planning_facts import build_planning_facts
 from assurance_intake.operations.prepare import (
     CASE_DESIGN_PERSONA,
     CASE_DESIGN_REPAIR_SKILL,

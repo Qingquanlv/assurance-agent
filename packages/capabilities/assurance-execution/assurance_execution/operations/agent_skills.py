@@ -41,7 +41,7 @@ from assurance_generation.contracts import CodegenAuthoringV1
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.case_selection import CaseSelectionV1, selection_path
 from assurance_intake.contracts.cases import CaseEntryAuthoring
-from assurance_intake.operations.plan_codec import decode_plan
+from assurance_intake.domain.plan_codec import decode_plan
 from assurance_intake.contracts.workflow import ReviewedCaseV1
 
 _RUNNER_PROFILE_DIGEST = canonical_digest(

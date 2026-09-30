@@ -40,7 +40,7 @@ from assurance_intake.operations.finalize import (
     validation_repair_images,
     workspace_file,
 )
-from assurance_intake.operations.plan_codec import decode_plan
+from assurance_intake.domain.plan_codec import decode_plan
 
 input_model = CaseFinalizeInputV1
 

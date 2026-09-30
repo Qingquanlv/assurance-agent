@@ -60,10 +60,6 @@ CROSS_FEATURE_FORBIDDEN_SUFFIXES = ("graphs",)
 ALLOWED_GRAPH_OPERATION_IMPORTS = {
     ("assurance_intake.graphs.nodes", "assurance_intake.operations.workflow_state"),
     ("assurance_intake.graphs.nodes", "assurance_intake.operations.workflow_state.advance_review_round"),
-    ("assurance_intake.graphs.state", "assurance_intake.operations.history_refs"),
-    ("assurance_intake.graphs.state", "assurance_intake.operations.history_refs.merge_history_refs"),
-    ("assurance_generation.graphs.state", "assurance_intake.operations.history_refs"),
-    ("assurance_generation.graphs.state", "assurance_intake.operations.history_refs.merge_history_refs"),
 }
 
 
@@ -260,8 +256,18 @@ def test_graph_operation_exceptions_are_exact_to_caller_and_symbol() -> None:
     )
     assert _is_forbidden_graph_import(
         "assurance_intake.operations.history_refs.merge_history_refs",
-        "assurance_quality",
-        graph_module="assurance_quality.graphs.state",
+        "assurance_intake",
+        graph_module="assurance_intake.graphs.state",
+    )
+    assert _is_forbidden_graph_import(
+        "assurance_intake.operations.history_refs.merge_history_refs",
+        "assurance_generation",
+        graph_module="assurance_generation.graphs.state",
+    )
+    assert not _is_forbidden_graph_import(
+        "assurance_intake.domain.history_refs.merge_history_refs",
+        "assurance_generation",
+        graph_module="assurance_generation.graphs.state",
     )
 
 

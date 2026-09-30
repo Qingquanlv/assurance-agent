@@ -56,10 +56,10 @@ from assurance_generation.operations.resolve_inputs import authenticate_reviewed
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.explore import PreparedExploreV1
-from assurance_intake.operations.explore_context import load_exploration_document
+from assurance_intake.domain.explore_context import load_exploration_document
 from assurance_intake.contracts.obligations import PreparedObligationV1
-from assurance_intake.operations.plan_codec import decode_plan
-from assurance_intake.operations.obligations import normalize_obligation_drafts
+from assurance_intake.domain.plan_codec import decode_plan
+from assurance_intake.domain.obligations import normalize_obligation_drafts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 CODEGEN_RESULT_ID = "assurance.generation.result.codegen.v1"

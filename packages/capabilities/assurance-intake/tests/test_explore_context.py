@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from assurance_intake.contracts.explore import EXPLORE_OUTPUT_PATHS
-from assurance_intake.operations.explore_context import build_explore_context
+from assurance_intake.domain.explore_context import build_explore_context
 
 _LEAFS = (
     "capabilities.domain_factories.dept.make_dept",

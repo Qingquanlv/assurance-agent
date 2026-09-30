@@ -40,7 +40,7 @@ from assurance_intake.contracts.explore import (
     PreparedExploreV1,
     REQUIREMENT_PATH,
 )
-from assurance_intake.operations.obligations import (
+from assurance_intake.domain.obligations import (
     apply_scope_exclusions,
     authenticate_source,
     journey_keys_from_document,
@@ -53,7 +53,7 @@ from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObli
 from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.operations.impact_validation import validate_inventory_references
-from assurance_intake.operations.explore_context import load_exploration_document
+from assurance_intake.domain.explore_context import load_exploration_document
 from assurance_intake.contracts.review import (
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,

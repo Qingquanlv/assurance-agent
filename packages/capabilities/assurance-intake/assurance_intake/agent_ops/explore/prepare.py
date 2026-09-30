@@ -8,7 +8,7 @@ from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.agent import ExploreInputV1
-from assurance_intake.operations.explore_context import build_explore_context
+from assurance_intake.domain.explore_context import build_explore_context
 from assurance_intake.operations.prepare import (
     EXPLORE_PERSONA,
     EXPLORE_RESULT_ID,

@@ -25,7 +25,7 @@ from assurance_healing.contracts.application import (
 from assurance_healing.contracts.effects import ProposalApprovedIntentV1
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_intake.contracts import LoopRoundHistoryV1
-from assurance_intake.operations.loop_history import build_loop_round_history
+from assurance_intake.domain.loop_history import build_loop_round_history
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 APPLICATION_SKILL = "skills/aa-apply-test-repair/SKILL.md"

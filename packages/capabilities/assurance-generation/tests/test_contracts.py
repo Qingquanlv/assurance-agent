@@ -95,6 +95,8 @@ def forbidden_generation_imports() -> set[str]:
             if module_name.startswith("assurance_intake.") and not (
                 module_name == "assurance_intake.contracts"
                 or module_name.startswith("assurance_intake.contracts.")
+                or module_name == "assurance_intake.domain"
+                or module_name.startswith("assurance_intake.domain.")
             ):
                 found.add(module_name)
             if module_name == "assurance_product" or module_name.startswith("assurance_product."):

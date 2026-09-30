@@ -10,7 +10,7 @@ import yaml
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1, PreparedExploreV1
 from assurance_intake.contracts.plan import ResolvePlanInputV1
-from assurance_intake.operations.obligations import (
+from assurance_intake.domain.obligations import (
     normalize_goal_obligations,
     normalize_obligation_drafts,
     required_goal_families,
