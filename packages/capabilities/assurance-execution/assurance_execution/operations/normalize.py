@@ -7,6 +7,13 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import (
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    validate_model,
+)
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -20,16 +27,7 @@ from assurance_execution.contracts.execution import (
     RawTestResultV1,
 )
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
-from assurance_execution.operations.common import (
-    InputError,
-    OutputError,
-    failed_input,
-    failed_output,
-    json_digest,
-    leafs_of,
-    mapping_digest,
-    validate_input,
-)
+from assurance_execution.operations.common import json_digest, leafs_of, mapping_digest
 from assurance_execution.operations.pytest_parser import parse_pytest_report, receipt_counts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
@@ -145,7 +143,7 @@ class NormalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(NormalizeInputV1, request.input)
+            payload = validate_model(NormalizeInputV1, request.input)
             leafs = leafs_of(payload.capability_leafs)
             case_ids = leafs_of(payload.case_ids)
             try:

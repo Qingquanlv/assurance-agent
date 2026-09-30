@@ -6,9 +6,10 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from agent_runtime_contracts.ops import OutputError
+
 from assurance_execution.contracts.execution import ExecutionStatus, RawTestResultV1
 from assurance_execution.contracts.selection import ClosedMappingV1
-from assurance_execution.operations.common import OutputError
 
 _OUTCOME_MAP: dict[str, ExecutionStatus] = {
     "passed": "passed",

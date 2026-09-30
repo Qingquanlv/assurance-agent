@@ -10,6 +10,7 @@ from langchain_core.runnables.config import RunnableConfig
 from pydantic import BaseModel
 
 from agent_runtime_contracts import RawAgentRuntimeOutcome
+from agent_runtime_contracts.ops import InputError
 from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.execution import ExecutionManifest
@@ -17,7 +18,6 @@ from assurance_execution.contracts.selection import SelectedTargets
 from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_graphs
 from assurance_execution.graphs.nodes import activation_execute, activation_rerun, publish_execution
 from assurance_execution.operations.agent_skills import assemble_execution_input
-from assurance_execution.operations.common import InputError
 from graph_engine.attempts.contracts import (
     ExecutedAttemptResult,
     TaskAttemptContract,

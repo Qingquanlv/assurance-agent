@@ -7,18 +7,13 @@ from typing import cast
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.agent import SelectInputV1
 from assurance_execution.contracts.selection import ClosedMappingEntryV1, ClosedMappingV1
-from assurance_execution.operations.common import (
-    InputError,
-    failed_input,
-    leafs_of,
-    mapping_digest,
-    validate_input,
-)
+from assurance_execution.operations.common import leafs_of, mapping_digest
 from assurance_generation.contracts import CodegenMapping
 from assurance_intake.contracts import CaseYamlAuthoring
 
@@ -78,7 +73,7 @@ class SelectHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(SelectInputV1, request.input)
+            payload = validate_model(SelectInputV1, request.input)
             closed = close_mappings(payload)
             return TaskOutcome.succeeded(
                 cast(

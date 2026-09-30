@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
+from agent_runtime_contracts.ops import InputError
 from agent_runtime_contracts.qa_paths import qa_join
 
 from assurance_execution.contracts.selection import selected_test_file
-from assurance_execution.operations.common import InputError
 
 
 def _safe_component(value: str, *, label: str) -> str:

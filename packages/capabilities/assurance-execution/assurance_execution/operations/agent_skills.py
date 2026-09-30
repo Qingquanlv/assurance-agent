@@ -12,6 +12,7 @@ from typing import Any, cast
 from pydantic import ValidationError
 import yaml
 
+from agent_runtime_contracts.ops import InputError, OutputError, validate_model
 from agent_runtime_contracts.qa_paths import qa_join
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
@@ -32,14 +33,7 @@ from assurance_execution.execution_view import (
     lock_durable_execution,
 )
 from assurance_execution.generated_merge import merge_generated
-from assurance_execution.operations.common import (
-    InputError,
-    OutputError,
-    json_digest,
-    leafs_of,
-    mapping_digest,
-    validate_input,
-)
+from assurance_execution.operations.common import json_digest, leafs_of, mapping_digest
 from assurance_execution.operations.paths import resolve_canonical_evidence
 from assurance_execution.operations.runner import write_canonical_evidence
 from assurance_execution.operations.selection import close_mappings
@@ -416,7 +410,7 @@ def assemble_execution_input(
     model_dump = getattr(data, "model_dump", None)
     if callable(model_dump):
         data = model_dump(mode="json")
-    root = validate_input(ExecutionPrepareInputV1, data)
+    root = validate_model(ExecutionPrepareInputV1, data)
     try:
         plan = decode_plan(
             _regular_input_file(workspace, root.plan_ref.path).read_bytes(),
@@ -524,7 +518,7 @@ def assemble_execution_input(
 def _finalize_payload(
     data: object,
 ) -> AgentFinalizeInputV1:
-    return validate_input(AgentFinalizeInputV1, data)
+    return validate_model(AgentFinalizeInputV1, data)
 
 
 def _commit_execution_evidence(

@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+
+from agent_runtime_contracts.ops import InputError
 from assurance_execution.contracts.agent import RunTestsInputV1
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1
-from assurance_execution.operations.common import InputError
 from assurance_execution.operations.normalize import normalize_evidence
 from assurance_execution.operations.runner import (
     ProcessReceipt,

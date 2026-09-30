@@ -10,14 +10,21 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract, with_validation_retry
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts import InstructionPart, ResultContract
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    OutputError,
+    agent_run_request,
+    failed_input,
+    failed_output,
+    result_contract_from,
+)
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
 from assurance_generation.contracts.agent import (
-    AgentBindingDataV1,
     AgentFinalizeInputV1,
     CodegenFinalizeInputV1,
     CodegenInputV1,
@@ -38,12 +45,7 @@ from assurance_generation.operations.codegen_scope import build_codegen_scope
 from assurance_generation.operations.planning import (
     FAMILIES,
     Family,
-    InputError,
-    OutputError,
-    agent_workspace,
     closed_family,
-    failed_input,
-    failed_output,
     leafs_of,
     constraints_for_cases,
     load_family_case_modules,
@@ -170,13 +172,7 @@ def _validate_method_plans(
 
 
 def codegen_result_contract(schema_id: str) -> ResultContract:
-    payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
-    return ResultContract(
-        schema_id=schema_id,
-        schema_digest=canonical_digest(payload),
-        delivery_mode="assistant_json_local_v1",
-        schema_document=payload,
-    )
+    return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
 
 
 def validate_codegen_input(
@@ -268,26 +264,19 @@ def prepare_codegen_outcome(
     allowed_outputs: tuple[str, ...],
     validation_error: str | None = None,
 ) -> TaskOutcome:
-    agent_request = AgentRunRequest(
-        instructions=with_validation_retry(
-            (
-                InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.from_json(scope.model_dump(mode="json")),
-                InstructionPart.from_json(cases.model_dump(mode="json")),
-                InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
-            ),
-            validation_error,
+    agent_request = agent_run_request(
+        instructions=(
+            InstructionPart.text("text/plain", resource_text(skill_path)),
+            InstructionPart.from_json(scope.model_dump(mode="json")),
+            InstructionPart.from_json(cases.model_dump(mode="json")),
+            InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
         ),
-        result_contract=codegen_result_contract(result_schema_id),
-        execution=binding.execution,
-        workspace=agent_workspace(
-            context,
-            allowed_outputs=allowed_outputs,
-            agent_profile=binding.agent_profile,
-            scope_id=scope_id,
-        ),
-        request_policy_digest=binding.request_policy_digest,
-        request_config_digest=binding.request_config_digest,
+        validation_error=validation_error,
+        result=codegen_result_contract(result_schema_id),
+        binding=binding,
+        roots=context,
+        allowed_outputs=allowed_outputs,
+        scope_id=scope_id,
     )
     return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
