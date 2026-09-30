@@ -8,6 +8,7 @@ from agent_runtime_contracts.ops.errors import (
     failed_output,
     validate_model,
 )
+from agent_runtime_contracts.ops.op import run_finalize, run_prepare
 from agent_runtime_contracts.ops.request import (
     BOUNDED_PROFILES,
     WorkspaceRoots,
@@ -32,6 +33,8 @@ __all__ = [
     "logical_write_root",
     "prepared_outcome",
     "result_contract_from",
+    "run_finalize",
+    "run_prepare",
     "skill_request",
     "validate_binding",
     "validate_model",
