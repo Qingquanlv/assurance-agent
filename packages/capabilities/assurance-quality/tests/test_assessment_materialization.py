@@ -11,6 +11,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import ResourceClaimTemplate
 
@@ -27,7 +28,6 @@ from assurance_quality.contracts.issues import IssueEvidenceManifest, Observatio
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.trace import TraceProjectionV2
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
-from assurance_quality.operations.common import InputError
 from assurance_quality.operations.inspect import build_failure_classification_facts
 from assurance_quality.operations.obligations import assess_obligations
 from tests.acg_plan_fixture import install_plan

@@ -8,6 +8,7 @@ from typing import Any, Literal, cast
 
 from pydantic import Field
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import FrozenModel, TaskContext, TaskOutcome, TaskRequest
 
@@ -27,7 +28,6 @@ from assurance_quality.contracts.report import (
     ReportPlan,
     ReportScope,
 )
-from assurance_quality.operations.common import InputError, failed_input, validate_input
 from assurance_quality.operations.inspect import worst_status
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
@@ -443,7 +443,7 @@ class GenerateReportHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(GenerateReportInputV1, request.input)
+            payload = validate_model(GenerateReportInputV1, request.input)
             report = build_quality_report(payload)
             output = report.model_dump(mode="json")
             output["source_digests"] = {
@@ -464,7 +464,7 @@ class DashboardHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(DashboardInputV1, request.input)
+            payload = validate_model(DashboardInputV1, request.input)
             report = QualityReport.model_validate(payload.report)
             if report.change_id != payload.change_id:
                 raise InputError("dashboard report change_id does not match")

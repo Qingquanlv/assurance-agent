@@ -8,21 +8,23 @@ from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import (
-    AgentRunRequest,
-    AgentWorkspaceV1,
-    InstructionPart,
-    ResultContract,
-    prompt_model_json,
-    with_validation_retry,
+from agent_runtime_contracts import ResultContract
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    prepared_outcome,
+    result_contract_from,
+    skill_request,
+    validate_binding,
 )
-from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.agent import (
-    AgentBindingDataV1,
     AgentFinalizeInputV1,
     ArchiveResultV1,
     ImprovementReviewResultV1,
@@ -34,13 +36,7 @@ from assurance_improvement.contracts.agent import (
     RetroSynthesisFinalizeInputV1,
 )
 from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
-from assurance_improvement.operations.common import (
-    InputError,
-    OutputError,
-    failed_input,
-    failed_output,
-    validate_input,
-)
+from assurance_improvement.operations.common import validate_input
 from assurance_improvement.resource_loader import resource_bytes, resource_text
 from assurance_improvement.validators.paths import canonical_relative
 
@@ -62,15 +58,6 @@ _RESULT_FILES: dict[str, str] = {
 }
 
 DomainName = Literal["issue", "workflow", "eval", "discovery", "coverage_gap"]
-_BOUNDED_PROFILES = {
-    "aa-archiver": "assurance-v1-archiver",
-    "aa-doc-author": "assurance-v1-doc-author",
-    "aa-executor": "assurance-v1-executor",
-    "aa-explorer": "assurance-v1-explorer",
-    "aa-reporter": "assurance-v1-reporter",
-    "aa-reviewer": "assurance-v1-reviewer",
-    "aa-test-author": "assurance-v1-test-author",
-}
 _IMPROVEMENT_OUTPUTS = {
     RETRO_SKILL: lambda change_id: ("qa/results/retro/retro.json",),
     RETRO_EVAL_SKILL: lambda change_id: ("qa/results/retro/retro-eval-analysis.json",),
@@ -81,45 +68,8 @@ _IMPROVEMENT_OUTPUTS = {
 }
 
 
-def agent_workspace(
-    context: TaskContext,
-    *,
-    allowed_outputs: tuple[str, ...],
-    agent_profile: str,
-    scope_id: str,
-) -> AgentWorkspaceV1:
-    try:
-        write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
-    except ValueError:
-        write_root = "qa/.staging/write"
-    if write_root in {".", ""}:
-        write_root = ".staging/write"
-    payload = {
-        "schema_version": "1",
-        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
-        "scope_id": scope_id,
-        "write_root": write_root,
-        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
-        "read_roots": (),
-    }
-    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
-
-
 def result_contract(schema_id: str) -> ResultContract:
-    payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
-    return ResultContract(
-        schema_id=schema_id,
-        schema_digest=canonical_digest(payload),
-        delivery_mode="assistant_json_local_v1",
-        schema_document=payload,
-    )
-
-
-def validate_binding(data: object) -> AgentBindingDataV1:
-    try:
-        return AgentBindingDataV1.model_validate(data)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
+    return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
 
 
 def prepare_outcome(
@@ -130,26 +80,17 @@ def prepare_outcome(
     result_schema_id: str,
     context: TaskContext,
 ) -> TaskOutcome:
-    agent_request = AgentRunRequest(
-        instructions=with_validation_retry(
-            (
-                InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.from_json(prompt_model_json(business)),
-            ),
-            getattr(business, "validation_error", None),
-        ),
-        result_contract=result_contract(result_schema_id),
-        execution=binding.execution,
-        workspace=agent_workspace(
-            context,
+    return prepared_outcome(
+        skill_request(
+            skill_text=resource_text(skill_path),
+            business=business,
+            binding=binding,
+            result=result_contract(result_schema_id),
+            roots=context,
             allowed_outputs=_IMPROVEMENT_OUTPUTS[skill_path](business.change_id),
-            agent_profile=binding.agent_profile,
             scope_id=business.change_id,
-        ),
-        request_policy_digest=binding.request_policy_digest,
-        request_config_digest=binding.request_config_digest,
+        )
     )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
 
 def _structured(

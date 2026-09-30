@@ -8,6 +8,13 @@ from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from agent_runtime_contracts.ops import (
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    validate_model,
+)
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -35,16 +42,7 @@ from assurance_quality.contracts.pr_metrics import (
     MutationSurvivor,
     PerfSlackEvidence,
 )
-from assurance_quality.operations.common import (
-    InputError,
-    OutputError,
-    failed_input,
-    failed_output,
-    json_digest,
-    scope_of,
-    succeeded,
-    validate_input,
-)
+from assurance_quality.operations.common import json_digest, scope_of, succeeded
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -474,7 +472,7 @@ class _ModelHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(self.input_model, request.input)
+            payload = validate_model(self.input_model, request.input)
             result = self.builder(payload)  # type: ignore[operator]
             if hasattr(result, "model_dump"):
                 return TaskOutcome.succeeded(cast(JSONValue, result.model_dump(mode="json")))
@@ -531,7 +529,7 @@ class RunMutationSampleHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(MutationSampleInput, request.input)
+            payload = validate_model(MutationSampleInput, request.input)
             evidence = self._host.sample(payload)
             return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
         except InputError as error:

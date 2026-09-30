@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError, failed_input
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_healing.contracts.decisions import (
@@ -16,7 +17,6 @@ from assurance_healing.contracts.decisions import (
     RepairRoundKind,
     advance_repair_round,
 )
-from assurance_healing.operations.common import InputError, failed_input
 
 REPAIR_ROUND_ADVANCE_ID = "assurance.healing.repair-round.advance"
 

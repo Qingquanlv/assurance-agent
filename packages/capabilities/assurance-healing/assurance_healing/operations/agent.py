@@ -9,21 +9,24 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import (
-    AgentRunRequest,
-    AgentWorkspaceV1,
-    InstructionPart,
-    ResultContract,
-    prompt_model_json,
-    with_validation_retry,
+from agent_runtime_contracts import ResultContract
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    prepared_outcome,
+    result_contract_from,
+    skill_request,
+    validate_binding,
+    validate_model,
 )
-from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_healing.contracts.agent import (
-    AgentBindingDataV1,
     FixProposalFinalizeInputV1,
     CoverageRepairFinalizeInputV1,
     CoverageRepairInputV1,
@@ -31,13 +34,6 @@ from assurance_healing.contracts.agent import (
     FixProposalResultV1,
 )
 from assurance_healing.contracts.coverage_repair import CoverageRepairApplySummary, CoverageRepairBrief
-from assurance_healing.operations.common import (
-    InputError,
-    OutputError,
-    failed_input,
-    failed_output,
-    validate_input,
-)
 from assurance_healing.resource_loader import resource_bytes, resource_text
 
 FIX_PROPOSAL_SKILL = "skills/aa-fix-proposal/SKILL.md"
@@ -46,56 +42,10 @@ FIX_PROPOSAL_RESULT_ID = "assurance.healing.result.fix-proposal.v1"
 COVERAGE_REPAIR_RESULT_ID = "assurance.healing.result.coverage-repair.v1"
 _FIX_RESULT_FILE = "result-contracts/fix-proposal.v1.schema.json"
 _REPAIR_RESULT_FILE = "result-contracts/coverage-repair.v1.schema.json"
-_BOUNDED_PROFILES = {
-    "aa-archiver": "assurance-v1-archiver",
-    "aa-doc-author": "assurance-v1-doc-author",
-    "aa-executor": "assurance-v1-executor",
-    "aa-explorer": "assurance-v1-explorer",
-    "aa-reporter": "assurance-v1-reporter",
-    "aa-reviewer": "assurance-v1-reviewer",
-    "aa-test-author": "assurance-v1-test-author",
-}
-
-
-def agent_workspace(
-    context: TaskContext,
-    *,
-    allowed_outputs: tuple[str, ...],
-    agent_profile: str,
-    scope_id: str,
-) -> AgentWorkspaceV1:
-    try:
-        write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
-    except ValueError:
-        write_root = "qa/.staging/write"
-    if write_root in {".", ""}:
-        write_root = ".staging/write"
-    payload = {
-        "schema_version": "1",
-        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
-        "scope_id": scope_id,
-        "write_root": write_root,
-        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
-        "read_roots": (),
-    }
-    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
 
 def result_contract(schema_id: str, relative: str) -> ResultContract:
-    payload = json.loads(resource_bytes(relative))
-    return ResultContract(
-        schema_id=schema_id,
-        schema_digest=canonical_digest(payload),
-        delivery_mode="assistant_json_local_v1",
-        schema_document=payload,
-    )
-
-
-def validate_binding(data: object) -> AgentBindingDataV1:
-    try:
-        return AgentBindingDataV1.model_validate(data)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
+    return result_contract_from(schema_id, json.loads(resource_bytes(relative)))
 
 
 def prepare_outcome(
@@ -108,26 +58,17 @@ def prepare_outcome(
     context: TaskContext,
     allowed_outputs: tuple[str, ...],
 ) -> TaskOutcome:
-    agent_request = AgentRunRequest(
-        instructions=with_validation_retry(
-            (
-                InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.from_json(prompt_model_json(business)),
-            ),
-            getattr(business, "validation_error", None),
-        ),
-        result_contract=result_contract(result_id, result_file),
-        execution=binding.execution,
-        workspace=agent_workspace(
-            context,
+    return prepared_outcome(
+        skill_request(
+            skill_text=resource_text(skill_path),
+            business=business,
+            binding=binding,
+            result=result_contract(result_id, result_file),
+            roots=context,
             allowed_outputs=allowed_outputs,
-            agent_profile=binding.agent_profile,
             scope_id=business.change_id,
-        ),
-        request_policy_digest=binding.request_policy_digest,
-        request_config_digest=binding.request_config_digest,
+        )
     )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
 
 def _canonical_relative(path: str) -> bool:
@@ -205,7 +146,7 @@ def _brief_locator_ids(brief: CoverageRepairBrief) -> set[str]:
 class FixProposalPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(FixProposalInputV1, request.input)
+            business = validate_model(FixProposalInputV1, request.input)
             if business.issue_analysis_ref is not None:
                 ref = business.issue_analysis_ref
                 data = _workspace_file(context.project_root, ref.path).read_bytes()
@@ -230,7 +171,7 @@ class FixProposalFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(FixProposalFinalizeInputV1, request.input)
+            business = validate_model(FixProposalFinalizeInputV1, request.input)
             _require_prepare_lock(business)
             agent_result = business.agent_result
             unknown = [
@@ -277,7 +218,7 @@ class FixProposalFinalizeHandler:
 class CoverageRepairPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(CoverageRepairInputV1, request.input)
+            business = validate_model(CoverageRepairInputV1, request.input)
             binding = validate_binding(request.binding_data)
             return prepare_outcome(
                 skill_path=COVERAGE_REPAIR_SKILL,
@@ -297,7 +238,7 @@ class CoverageRepairFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(CoverageRepairFinalizeInputV1, request.input)
+            payload = validate_model(CoverageRepairFinalizeInputV1, request.input)
             if (
                 payload.baseline_digest != payload.prepare.baseline_digest
                 or payload.change_id != payload.prepare.change_id

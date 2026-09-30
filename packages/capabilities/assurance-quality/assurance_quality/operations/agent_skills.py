@@ -9,13 +9,18 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import (
-    AgentRunRequest,
-    AgentWorkspaceV1,
-    InstructionPart,
-    ResultContract,
-    prompt_model_json,
-    with_validation_retry,
+from agent_runtime_contracts import ResultContract
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    prepared_outcome,
+    result_contract_from,
+    skill_request,
+    validate_binding,
+    validate_model,
 )
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
@@ -23,7 +28,6 @@ from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_quality.contracts.agent import (
-    AgentBindingDataV1,
     AgentFinalizeInputV1,
     FactBaselineResultV1,
     FinalizedIssueAnalysisV1,
@@ -53,13 +57,6 @@ from assurance_quality.contracts.issues import (
     IssueEvidenceManifest,
     ObservationDocument,
 )
-from assurance_quality.operations.common import (
-    InputError,
-    OutputError,
-    failed_input,
-    failed_output,
-    validate_input,
-)
 from assurance_quality.operations.identity import (
     candidate_document_digest,
     problem_fingerprint,
@@ -88,15 +85,6 @@ _RESULT_FILES: dict[str, str] = {
     REPORT_RESULT_ID: "result-contracts/report.v1.schema.json",
 }
 
-_BOUNDED_PROFILES = {
-    "aa-archiver": "assurance-v1-archiver",
-    "aa-doc-author": "assurance-v1-doc-author",
-    "aa-executor": "assurance-v1-executor",
-    "aa-explorer": "assurance-v1-explorer",
-    "aa-reporter": "assurance-v1-reporter",
-    "aa-reviewer": "assurance-v1-reviewer",
-    "aa-test-author": "assurance-v1-test-author",
-}
 _QUALITY_OUTPUTS = {
     FACT_BASELINE_RESULT_ID: lambda change_id: ("qa/results/facts/fact-baseline.json",),
     INSPECTION_RESULT_ID: lambda change_id: ("qa/results/inspect/inspection.json",),
@@ -104,30 +92,6 @@ _QUALITY_OUTPUTS = {
     ISSUE_TRIAGE_RESULT_ID: lambda change_id: ("qa/results/inspect/issue-triage.json",),
     REPORT_RESULT_ID: lambda change_id: ("qa/results/report/report.md",),
 }
-
-
-def agent_workspace(
-    context: TaskContext,
-    *,
-    allowed_outputs: tuple[str, ...],
-    agent_profile: str,
-    scope_id: str,
-) -> AgentWorkspaceV1:
-    try:
-        write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
-    except ValueError:
-        write_root = "qa/.staging/write"
-    if write_root in {".", ""}:
-        write_root = ".staging/write"
-    payload = {
-        "schema_version": "1",
-        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
-        "scope_id": scope_id,
-        "write_root": write_root,
-        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
-        "read_roots": (),
-    }
-    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
 
 _TRIAGE_ACTIONS = frozenset(
@@ -144,20 +108,7 @@ _TRIAGE_ACTIONS = frozenset(
 
 
 def result_contract(schema_id: str) -> ResultContract:
-    payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
-    return ResultContract(
-        schema_id=schema_id,
-        schema_digest=canonical_digest(payload),
-        delivery_mode="assistant_json_local_v1",
-        schema_document=payload,
-    )
-
-
-def validate_binding(data: object) -> AgentBindingDataV1:
-    try:
-        return AgentBindingDataV1.model_validate(data)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
+    return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
 
 
 def prepare_outcome(
@@ -168,26 +119,17 @@ def prepare_outcome(
     result_schema_id: str,
     context: TaskContext,
 ) -> TaskOutcome:
-    agent_request = AgentRunRequest(
-        instructions=with_validation_retry(
-            (
-                InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.from_json(prompt_model_json(business)),
-            ),
-            getattr(business, "validation_error", None),
-        ),
-        result_contract=result_contract(result_schema_id),
-        execution=binding.execution,
-        workspace=agent_workspace(
-            context,
+    return prepared_outcome(
+        skill_request(
+            skill_text=resource_text(skill_path),
+            business=business,
+            binding=binding,
+            result=result_contract(result_schema_id),
+            roots=context,
             allowed_outputs=_QUALITY_OUTPUTS[result_schema_id](business.change_id),
-            agent_profile=binding.agent_profile,
             scope_id=business.change_id,
-        ),
-        request_policy_digest=binding.request_policy_digest,
-        request_config_digest=binding.request_config_digest,
+        )
     )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
 
 def _structured(payload: AgentFinalizeInputV1) -> object:
@@ -363,7 +305,7 @@ def _prepare(
     *,
     input_model: type[Any] = QualitySkillInputV1,
 ) -> TaskOutcome:
-    business = validate_input(input_model, request.input)
+    business = validate_model(input_model, request.input)
     if isinstance(business, FactBaselineSkillInputV1):
         _authenticate_fact_baseline_input(business, context.project_root)
     elif isinstance(business, AssessmentSkillInputV1):
@@ -409,7 +351,7 @@ class InspectPrepareHandler:
 class IssueAnalysisPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(QualitySkillInputV1, request.input)
+            business = validate_model(QualitySkillInputV1, request.input)
             _authenticate_issue_analysis_input(business, context.project_root)
             binding = validate_binding(request.binding_data)
             return prepare_outcome(
@@ -434,7 +376,7 @@ class IssueTriagePrepareHandler:
 class ReportPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(ReportSkillInputV1, request.input)
+            business = validate_model(ReportSkillInputV1, request.input)
             _authenticate_report_input(business, context.project_root)
             binding = validate_binding(request.binding_data)
             return prepare_outcome(
@@ -453,7 +395,7 @@ class FactBaselineFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(FactBaselineFinalizeInputV1, request.input)
+            business = validate_model(FactBaselineFinalizeInputV1, request.input)
             agent_run = business.agent_result
             try:
                 document = FactBaselineResultV1.model_validate(thaw_json(agent_run.result_payload))
@@ -486,7 +428,7 @@ class InspectFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(AssessmentFinalizeInputV1, request.input)
+            business = validate_model(AssessmentFinalizeInputV1, request.input)
             agent_run = business.agent_result
             try:
                 document = InspectionResultV1.model_validate(thaw_json(agent_run.result_payload))
@@ -571,7 +513,7 @@ class IssueAnalysisFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = validate_model(AgentFinalizeInputV1, request.input)
             try:
                 document = IssueAnalysisResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -633,7 +575,7 @@ class IssueTriageFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = validate_model(AgentFinalizeInputV1, request.input)
             try:
                 document = IssueTriageResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -659,7 +601,7 @@ class ReportFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(ReportFinalizeInputV1, request.input)
+            business = validate_model(ReportFinalizeInputV1, request.input)
             agent_run = business.agent_result
             try:
                 document = ReportResultV1.model_validate(thaw_json(agent_run.result_payload))

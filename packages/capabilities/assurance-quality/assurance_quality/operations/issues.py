@@ -9,6 +9,7 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -30,7 +31,7 @@ from assurance_quality.contracts.issues import (
     ProvisionalAssessment,
     ReconcileIssuesResultV1,
 )
-from assurance_quality.operations.common import InputError, failed_input, succeeded, validate_input
+from assurance_quality.operations.common import succeeded
 from assurance_quality.operations.identity import (
     ObservationIdentityInput,
     candidate_document_digest,
@@ -367,7 +368,7 @@ class _Handler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(self.input_model, request.input)
+            payload = validate_model(self.input_model, request.input)
             result = self.builder(payload)  # type: ignore[operator]
             if hasattr(result, "model_dump"):
                 return succeeded(cast(dict[str, object], result.model_dump(mode="json")))
@@ -424,7 +425,7 @@ class ReconcileIssuesHandler(_Handler):
                     **raw,
                     "observations": [item.model_dump(mode="json") for item in loaded],
                 }
-            payload = validate_input(ReconcileInput, raw)
+            payload = validate_model(ReconcileInput, raw)
             result = reconcile_issues(payload)
             snapshot = _snapshot_from_reconcile(result)
             ref = _write_snapshot(context.write_root, snapshot)

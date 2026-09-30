@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from agent_runtime_contracts.ops import InputError
 from graph_engine.attempts import AttemptExecutionContext, AttemptKey, AuthorizedAttemptScope
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import DirectoryIdentity, TaskWorkspaceBinding, TaskWorkspaceIdentity
@@ -16,7 +17,6 @@ from assurance_improvement.contracts.retro import (
     RetroCollectInput,
     RetroWindow,
 )
-from assurance_improvement.operations.common import InputError
 from assurance_improvement.operations.retro_slices import RetroBuildSlicesExecutor
 from assurance_improvement.operations.retro import AssembleRetroInput, assemble_context
 from assurance_improvement.contracts.delivery import artifact_digest

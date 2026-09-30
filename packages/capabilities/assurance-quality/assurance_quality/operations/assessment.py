@@ -13,6 +13,7 @@ from typing import Any, cast
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from agent_runtime_contracts.ops import InputError
 from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
@@ -81,7 +82,7 @@ from assurance_quality.operations.metrics import (
 )
 from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
-from assurance_quality.operations.common import InputError, json_digest
+from assurance_quality.operations.common import json_digest
 from assurance_quality.operations.obligations import (
     REPAIRABLE_OBLIGATION_GAPS,
     assess_obligations,

@@ -6,11 +6,11 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_quality.contracts.metrics import MetricShortboard, MetricsDocument
-from assurance_quality.operations.common import InputError, failed_input, validate_input
 from assurance_quality.operations.metrics import (
     AdversarialYieldInput,
     AssertionStrengthInput,
@@ -114,7 +114,7 @@ class AggregateNightlyMetricsHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(NightlyAggregateInput, request.input)
+            payload = validate_model(NightlyAggregateInput, request.input)
             rebuilt = payload.model_copy(update={"cadence": "nightly"})
             document = build_metrics_document(rebuilt)
             return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
@@ -128,7 +128,7 @@ class EvaluateRetrospectiveShortboardsHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(ShortboardInput, request.input)
+            payload = validate_model(ShortboardInput, request.input)
             boards = evaluate_shortboards(payload.metrics)
             return TaskOutcome.succeeded(
                 cast(JSONValue, {"shortboards": [board.model_dump(mode="json") for board in boards]})
@@ -146,7 +146,7 @@ class RunNightlyMetricsPipelineHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(NightlyPipelineInput, request.input)
+            payload = validate_model(NightlyPipelineInput, request.input)
             return TaskOutcome.succeeded(
                 cast(JSONValue, run_nightly_pipeline(payload, mutation_host=self._host))
             )

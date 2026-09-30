@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlparse
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -35,7 +36,7 @@ from assurance_quality.contracts.surface import (
     UiExplorationDocument,
     UiFeature,
 )
-from assurance_quality.operations.common import InputError, failed_input, succeeded, validate_input
+from assurance_quality.operations.common import succeeded
 
 _API_FAMILIES = frozenset({"api", "fuzz", "performance"})
 
@@ -500,7 +501,7 @@ def run_surface_probe(
 class SurfaceBaselineHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(SurfaceProbeInputV1, request.input)
+            payload = validate_model(SurfaceProbeInputV1, request.input)
             result = run_surface_probe(payload, context.write_root, urllib_fetch)
             return succeeded(cast(dict[str, object], result.model_dump(mode="json")))
         except (InputError, ValidationError, OSError, ValueError) as error:

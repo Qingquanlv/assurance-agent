@@ -7,12 +7,16 @@ import hashlib
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from agent_runtime_contracts import (
-    AgentRunRequest,
-    AgentRunResult,
-    InstructionPart,
-    prompt_model_json,
-    with_validation_retry,
+from agent_runtime_contracts import AgentRunResult, InstructionPart, prompt_model_json
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    OutputError,
+    agent_run_request,
+    failed_input,
+    failed_output,
+    prepared_outcome,
+    validate_model,
 )
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
@@ -22,22 +26,14 @@ from pydantic import ValidationError
 from assurance_execution.contracts import ExecutionEvidenceV1
 from assurance_generation.contracts.codegen import durable_test_path
 from assurance_generation.contracts.mapping import ClosedMappingV1, selected_test_file
-from assurance_healing.contracts.agent import AgentBindingDataV1
+from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.contracts.application import (
     ApplyTestRepairInputV1,
     TestRepairResultV1,
     VerifiedTestRepairV1,
 )
 from assurance_healing.contracts.effects import ProposalApprovedIntentV1
-from assurance_healing.contracts.agent import FixProposalResultV1
-from assurance_healing.operations.agent import agent_workspace, result_contract
-from assurance_healing.operations.common import (
-    InputError,
-    OutputError,
-    failed_input,
-    failed_output,
-    validate_input,
-)
+from assurance_healing.operations.agent import result_contract
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_healing.resource_loader import resource_text
 from assurance_intake.contracts import LoopRoundHistoryV1
@@ -296,26 +292,20 @@ class ApplyTestRepairPrepareHandler:
             approved_paths = tuple(_approved_sources(business, context.project_root))
             payload = prompt_model_json(business)
             payload["allowed_test_paths"] = list(approved_paths)
-            request_payload = AgentRunRequest(
-                instructions=with_validation_retry(
-                    (
+            return prepared_outcome(
+                agent_run_request(
+                    instructions=(
                         InstructionPart.text("text/plain", resource_text(APPLICATION_SKILL)),
                         InstructionPart.from_json(payload),
                     ),
-                    business.validation_error,
-                ),
-                result_contract=result_contract(APPLICATION_RESULT_ID, APPLICATION_RESULT_FILE),
-                execution=binding.execution,
-                workspace=agent_workspace(
-                    context,
+                    validation_error=business.validation_error,
+                    result=result_contract(APPLICATION_RESULT_ID, APPLICATION_RESULT_FILE),
+                    binding=binding,
+                    roots=context,
                     allowed_outputs=approved_paths,
-                    agent_profile=binding.agent_profile,
                     scope_id=business.change_id,
-                ),
-                request_policy_digest=binding.request_policy_digest,
-                request_config_digest=binding.request_config_digest,
+                )
             )
-            return TaskOutcome.succeeded(request_payload.model_dump(mode="json"))
         except (ValidationError, InputError, OutputError) as error:
             return failed_input(InputError(str(error)))
 
@@ -329,7 +319,7 @@ class ApplyTestRepairFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(ApplyTestRepairFinalizeInputV1, request.input)
+            business = validate_model(ApplyTestRepairFinalizeInputV1, request.input)
             envelope = business.agent_result
             try:
                 result = TestRepairResultV1.model_validate(thaw_json(envelope.result_payload))

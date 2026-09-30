@@ -322,7 +322,7 @@ class ClosedImprovementExecutor:
         validated_input: BaseModel,
         scope: AuthorizedAttemptScope | AttemptExecutionContext,
     ) -> ExecutedAttemptResult[Any]:
-        from assurance_improvement.operations.common import InputError
+        from agent_runtime_contracts.ops import InputError
         from graph_engine.attempts import AuthorizedAttemptScope as Scope
 
         self.dispatch_count += 1

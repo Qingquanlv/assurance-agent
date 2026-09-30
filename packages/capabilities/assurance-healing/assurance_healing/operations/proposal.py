@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import EffectIntent, TaskContext, TaskOutcome, TaskRequest
 
@@ -30,7 +31,6 @@ from assurance_healing.operations.application import (
     ApplyTestRepairFinalizeHandler,
     ApplyTestRepairPrepareHandler,
 )
-from assurance_healing.operations.common import InputError, failed_input, validate_input
 from assurance_healing.operations.keys import (
     derive_allocation_ids,
     derive_approval_id,
@@ -42,7 +42,7 @@ class AllocateHealingAttemptHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(AllocateHealingInputV1, request.input)
+            payload = validate_model(AllocateHealingInputV1, request.input)
             ids = derive_allocation_ids(
                 change_id=payload.change_id,
                 source_batch_id=payload.source_batch_id,
@@ -79,7 +79,7 @@ class RecordFixerApprovalHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(RecordApprovalInputV1, request.input)
+            payload = validate_model(RecordApprovalInputV1, request.input)
             approval_id = derive_approval_id(
                 owner_id=payload.owner_id,
                 candidate_digest=payload.candidate_digest,
@@ -121,7 +121,7 @@ class RecordCodegenFixApplyHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(RecordApplyInputV1, request.input)
+            payload = validate_model(RecordApplyInputV1, request.input)
             record_key = derive_heal_record_key(
                 owner_id=payload.owner_id,
                 write_set_id=payload.write_set_id,

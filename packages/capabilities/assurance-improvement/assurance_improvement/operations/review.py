@@ -6,6 +6,7 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_runtime_contracts.ops import InputError, failed_input
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.improvements import (
@@ -27,7 +28,7 @@ from assurance_improvement.contracts.review import (
 )
 from assurance_improvement.contracts.delivery import artifact_digest
 from assurance_improvement.contracts.decisions import AUTO_REVIEW_DECISIONS
-from assurance_improvement.operations.common import InputError, failed_input, succeeded, validate_input
+from assurance_improvement.operations.common import succeeded, validate_input
 from assurance_improvement.operations.keys import improvement_event_id
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")

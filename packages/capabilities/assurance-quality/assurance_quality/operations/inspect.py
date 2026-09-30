@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel, TaskContext, TaskOutcome, TaskRequest
 
@@ -29,7 +30,6 @@ from assurance_quality.contracts.inspect import (
 )
 from assurance_quality.contracts.sufficiency import SufficiencyReportV2
 from assurance_quality.contracts.metrics import MetricsDocument
-from assurance_quality.operations.common import InputError, failed_input, validate_input
 
 TargetName = Literal["api", "e2e", "fuzz", "performance", "coverage"]
 CaseStatus = Literal["passed", "failed", "skipped"]
@@ -638,7 +638,7 @@ class InspectHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(InspectInputV1, request.input)
+            payload = validate_model(InspectInputV1, request.input)
             _require_document_digests(payload)
             if payload.integrity_issues:
                 failures = _integrity_failures(payload.integrity_issues)
