@@ -1111,7 +1111,7 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
 async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
     tmp_path: Path, tampered_path: str | None
 ) -> None:
-    from assurance_intake.graphs.nodes import publish_case_design, select_case_review
+    from assurance_intake.graphs.calls import publish_case_design, select_case_review
 
     change = "qa"
     content = {

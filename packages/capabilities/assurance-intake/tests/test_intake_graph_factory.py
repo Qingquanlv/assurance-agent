@@ -233,7 +233,7 @@ def recording_context():
 
 
 def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch: pytest.MonkeyPatch) -> None:
-    from assurance_intake.graphs.nodes import (
+    from assurance_intake.graphs.calls import (
         activation_case_design,
         activation_case_design_repair,
         select_case_design,
@@ -625,7 +625,7 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
 
 
 def test_publish_plan_rebinds_exploration_to_the_plan_digest(tmp_path: Path) -> None:
-    from assurance_intake.graphs.nodes import publish_plan
+    from assurance_intake.graphs.calls import publish_plan
 
     plan, plan_ref = install_plan(
         tmp_path,

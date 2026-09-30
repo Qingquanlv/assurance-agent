@@ -8,12 +8,8 @@ from langgraph.graph import END, START, StateGraph
 
 from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_intake.graphs.calls import select_case_design_retry
 from assurance_intake.graphs.factory import build_intake_graphs
-from assurance_intake.graphs.nodes import (
-    advance_join,
-    apply_current_trigger,
-    select_case_design_retry,
-)
 from assurance_intake.graphs.state import (
     CASE_REVIEW_PREDECESSORS,
     CaseReviewArrival,
@@ -24,6 +20,7 @@ from assurance_intake.graphs.state import (
     merge_case_review_inbox,
     offer_case_review_arrival,
 )
+from assurance_intake.graphs.steps import advance_join, apply_current_trigger
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed

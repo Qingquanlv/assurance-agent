@@ -6,16 +6,10 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from assurance_intake.graphs.nodes import (
+from assurance_intake.graphs.calls import (
     activation_case_review,
-    advance_join,
-    human_review,
     publish_case_review,
-    review_round_advance,
     select_case_review,
-    terminal_exhausted,
-    terminal_rejected,
-    terminal_reviewed,
 )
 from assurance_intake.graphs.routes import (
     route_case_design_result,
@@ -23,6 +17,14 @@ from assurance_intake.graphs.routes import (
     route_human_review,
 )
 from assurance_intake.graphs.state import IntakeState
+from assurance_intake.graphs.steps import (
+    advance_join,
+    human_review,
+    review_round_advance,
+    terminal_exhausted,
+    terminal_rejected,
+    terminal_reviewed,
+)
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import add_attempt_node, add_route
 

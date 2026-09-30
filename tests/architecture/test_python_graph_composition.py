@@ -58,8 +58,8 @@ FORBIDDEN_ADAPTERS = frozenset(
 
 CROSS_FEATURE_FORBIDDEN_SUFFIXES = ("graphs",)
 ALLOWED_GRAPH_OPERATION_IMPORTS = {
-    ("assurance_intake.graphs.nodes", "assurance_intake.operations.workflow_state"),
-    ("assurance_intake.graphs.nodes", "assurance_intake.operations.workflow_state.advance_review_round"),
+    ("assurance_intake.graphs.steps", "assurance_intake.operations.workflow_state"),
+    ("assurance_intake.graphs.steps", "assurance_intake.operations.workflow_state.advance_review_round"),
 }
 
 
@@ -203,7 +203,16 @@ def test_fixed_factory_modules_are_the_only_capability_public_graph_surface() ->
                 if any(
                     imported == f"{other}.graphs.{suffix}" or imported.startswith(f"{other}.graphs.{suffix}.")
                     for other, _rel in FEATURE_SOURCE_TREES
-                    for suffix in ("state", "nodes", "routes", "prepare", "case")
+                    for suffix in (
+                        "state",
+                        "nodes",
+                        "calls",
+                        "steps",
+                        "routes",
+                        "prepare",
+                        "preparation",
+                        "case",
+                    )
                     if other != package_name
                 ):
                     public.append(f"{path}:{imported}")
@@ -219,7 +228,7 @@ def test_fixed_factory_modules_are_the_only_capability_public_graph_surface() ->
 
 def test_architecture_scan_rejects_relative_and_from_import_forms() -> None:
     owner = "assurance_intake"
-    module_name = "assurance_intake.graphs.nodes"
+    module_name = "assurance_intake.graphs.steps"
     cases = (
         ("from ..operations import prepare", "assurance_intake.operations"),
         ("from ..validators import check", "assurance_intake.validators"),
@@ -252,7 +261,7 @@ def test_graph_operation_exceptions_are_exact_to_caller_and_symbol() -> None:
     assert _is_forbidden_graph_import(
         "assurance_intake.operations.workflow_state.ReviewRoundAdvanceHandler",
         "assurance_intake",
-        graph_module="assurance_intake.graphs.nodes",
+        graph_module="assurance_intake.graphs.steps",
     )
     assert _is_forbidden_graph_import(
         "assurance_intake.operations.history_refs.merge_history_refs",
