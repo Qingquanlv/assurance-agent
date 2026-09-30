@@ -18,6 +18,7 @@ def add_attempt_node(
     activation: object,
     select: object,
     publish: object,
+    semantic_node_id: str | None = None,
 ) -> None:
     builder.add_node(
         node_id,
@@ -25,7 +26,7 @@ def add_attempt_node(
             Callable[..., Any],
             context.attempt(
                 contract_id,
-                semantic_node_id=node_id,
+                semantic_node_id=semantic_node_id or node_id,
                 activation=activation,
                 select=select,
                 publish=publish,
