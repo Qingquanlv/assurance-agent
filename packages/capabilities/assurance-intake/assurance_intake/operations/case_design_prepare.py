@@ -9,10 +9,15 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    OutputError,
+    failed_input,
+)
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.agent import (
-    AgentBindingDataV1,
     CaseDesignInputV1,
     ReviewRepairActionV1,
     ReviewRepairContractV1,
@@ -33,11 +38,9 @@ from assurance_intake.operations.prepare import (
     CASE_DESIGN_RESULT_ID,
     CASE_DESIGN_SKILL,
     case_design_outputs,
-    failed_input,
     prepare_outcome,
 )
 from assurance_intake.operations.prepare_evidence import (
-    InputError,
     _authenticate_evidence_refs,
     _authenticate_plan,
     _require_regular_project_input,
@@ -66,7 +69,6 @@ def _review_repair_contract(
         return None
     # Imported lazily: finalize imports this module at load time.
     from assurance_intake.operations.finalize import (
-        OutputError,
         _bound_obligations,
         _reject_unbound_covered_repairs,
         _review_requests_matrix_coverage,

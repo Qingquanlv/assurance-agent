@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
+from agent_runtime_contracts import AgentRunResult
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.frozen_json import FrozenJSONValue
 
@@ -59,13 +59,6 @@ def _validate_case_delta_paths(change_id: str, paths: tuple[str, ...]) -> tuple[
         if len(parts) < 4 or parts[:2] != prefix or parts[-1] != "case.yaml":
             raise ValueError("case_delta_paths must be exact current-change cases/<module>/case.yaml paths")
     return paths
-
-
-class AgentBindingDataV1(FrozenModel):
-    agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-    execution: FrozenExecutionSelection
-    request_policy_digest: str = Field(pattern=_SHA256)
-    request_config_digest: str = Field(pattern=_SHA256)
 
 
 class _SkillInputV1(FrozenModel):

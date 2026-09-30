@@ -8,22 +8,22 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
 
-from agent_runtime_contracts import (
-    AgentRunRequest,
-    AgentWorkspaceV1,
-    InstructionPart,
-    ResultContract,
-    prompt_model_json,
-    with_validation_retry,
+from agent_runtime_contracts import ResultContract
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    failed_input,
+    prepared_outcome,
+    result_contract_from,
+    skill_request,
+    validate_binding,
+    validate_model,
 )
-from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.agent import (
-    AgentBindingDataV1,
     CaseReviewInputV1,
     ExploreInputV1,
     IntakeInputV1,
@@ -38,7 +38,6 @@ from assurance_intake.operations.planning_facts import build_planning_facts
 from assurance_intake.resource_loader import resource_bytes, resource_text
 
 from assurance_intake.operations.prepare_evidence import (
-    InputError,
     _authenticate_evidence_refs,
     _authenticate_plan,
     _require_regular_project_input,
@@ -64,15 +63,6 @@ _RESULT_FILES: Mapping[str, str] = {
     EXPLORE_RESULT_ID: "result-contracts/explore.v1.schema.json",
     CASE_DESIGN_RESULT_ID: "result-contracts/case-design.v1.schema.json",
     CASE_REVIEW_RESULT_ID: "result-contracts/case-review.v1.schema.json",
-}
-_BOUNDED_PROFILES: Mapping[str, str] = {
-    "aa-archiver": "assurance-v1-archiver",
-    "aa-doc-author": "assurance-v1-doc-author",
-    "aa-executor": "assurance-v1-executor",
-    "aa-explorer": "assurance-v1-explorer",
-    "aa-reporter": "assurance-v1-reporter",
-    "aa-reviewer": "assurance-v1-reviewer",
-    "aa-test-author": "assurance-v1-test-author",
 }
 
 
@@ -131,57 +121,8 @@ def case_review_inputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tup
     )
 
 
-def _logical_write_root(context: TaskContext) -> str:
-    try:
-        relative = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
-    except ValueError:
-        relative = "qa/.staging/write"
-    if relative in {".", ""}:
-        return ".staging/write"
-    return relative
-
-
-def agent_workspace(
-    context: TaskContext,
-    *,
-    allowed_outputs: tuple[str, ...],
-    agent_profile: str,
-    scope_id: str,
-) -> AgentWorkspaceV1:
-    write_root = _logical_write_root(context)
-    payload = {
-        "schema_version": "1",
-        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
-        "scope_id": scope_id,
-        "write_root": write_root,
-        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
-        "read_roots": (),
-    }
-    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
-
-
 def result_contract(schema_id: str) -> ResultContract:
-    payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
-    return ResultContract(
-        schema_id=schema_id,
-        schema_digest=canonical_digest(payload),
-        delivery_mode="assistant_json_local_v1",
-        schema_document=payload,
-    )
-
-
-def validate_binding(data: object) -> AgentBindingDataV1:
-    try:
-        return AgentBindingDataV1.model_validate(data)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
-
-
-def validate_input(model: type[Any], data: object) -> Any:
-    try:
-        return model.model_validate(data)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
+    return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
 
 
 def prepare_outcome(
@@ -195,34 +136,19 @@ def prepare_outcome(
     allowed_outputs: tuple[str, ...],
     planning_facts: dict[str, Any] | None = None,
 ) -> TaskOutcome:
-    business_input = prompt_model_json(business)
-    if planning_facts is not None:
-        business_input["planning_facts"] = planning_facts
-    agent_request = AgentRunRequest(
-        instructions=with_validation_retry(
-            (
-                InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.text("text/plain", resource_text(persona_path)),
-                InstructionPart.from_json(business_input),
-            ),
-            getattr(business, "validation_error", None),
-        ),
-        result_contract=result_contract(result_schema_id),
-        execution=binding.execution,
-        workspace=agent_workspace(
-            context,
+    return prepared_outcome(
+        skill_request(
+            skill_text=resource_text(skill_path),
+            persona_text=resource_text(persona_path),
+            business=business,
+            business_extra=None if planning_facts is None else {"planning_facts": planning_facts},
+            binding=binding,
+            result=result_contract(result_schema_id),
+            roots=context,
             allowed_outputs=allowed_outputs,
-            agent_profile=binding.agent_profile,
             scope_id=business.change_id,
-        ),
-        request_policy_digest=binding.request_policy_digest,
-        request_config_digest=binding.request_config_digest,
+        )
     )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
-
-
-def failed_input(error: Exception) -> TaskOutcome:
-    return TaskOutcome.failed("invalid_input", str(error), retryable=True)
 
 
 def _materialize_requirement(text: str) -> bytes:
@@ -238,7 +164,7 @@ def _write_prepare_file(write_root: Path, relative: str, data: bytes) -> None:
 class IntakePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(IntakeInputV1, request.input)
+            business = validate_model(IntakeInputV1, request.input)
             binding = validate_binding(request.binding_data)
             _write_prepare_file(
                 context.write_root, REQUIREMENT_PATH, _materialize_requirement(business.requirement)
@@ -264,7 +190,7 @@ class IntakePrepareHandler:
 class ExplorePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(ExploreInputV1, request.input)
+            business = validate_model(ExploreInputV1, request.input)
             binding = validate_binding(request.binding_data)
             document = build_explore_context(
                 context.project_root,
@@ -291,7 +217,7 @@ class ExplorePrepareHandler:
 class CaseReviewPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(CaseReviewInputV1, request.input)
+            business = validate_model(CaseReviewInputV1, request.input)
             binding = validate_binding(request.binding_data)
             plan = _authenticate_plan(
                 context.project_root,

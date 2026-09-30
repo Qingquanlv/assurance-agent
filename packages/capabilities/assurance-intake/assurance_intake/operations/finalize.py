@@ -14,6 +14,13 @@ from typing import cast
 import yaml
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import (
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    validate_model,
+)
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
@@ -67,7 +74,6 @@ from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.operations.plan_codec import decode_plan
-from assurance_intake.operations.prepare import InputError, failed_input, validate_input
 from assurance_intake.operations.prepare import case_review_outputs
 from assurance_intake.operations.case_review_seal import (
     collect_selected_cases,
@@ -75,14 +81,6 @@ from assurance_intake.operations.case_review_seal import (
     expected_review_history,
     expected_reviewed_case,
 )
-
-
-class OutputError(ValueError):
-    """Model-authored semantic invalidity."""
-
-
-def failed_output(message: str) -> TaskOutcome:
-    return TaskOutcome.failed("invalid_output", message, retryable=True)
 
 
 def _leafs(values: Iterable[str]) -> frozenset[str]:
@@ -1284,7 +1282,7 @@ class IntakeFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = validate_model(AgentFinalizeInputV1, request.input)
             artifacts = _finalize_artifact_list(payload, context.write_root)
             requirement = _authenticate_files(
                 context.write_root,
@@ -1319,7 +1317,7 @@ class ExploreFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = validate_model(AgentFinalizeInputV1, request.input)
             if not payload.artifact_paths:
                 raise InputError("artifact_paths must lock the expected output files")
             document = _artifact_list(payload)
@@ -1364,7 +1362,7 @@ class CaseDesignFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         parsed: CaseFinalizeInputV1 | None = None
         try:
-            payload = validate_input(CaseFinalizeInputV1, request.input)
+            payload = validate_model(CaseFinalizeInputV1, request.input)
             parsed = payload
             change_id = _case_change_id(payload.change_id)
             try:
@@ -1580,7 +1578,7 @@ class CaseReviewFinalizeHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(CaseFinalizeInputV1, request.input)
+            payload = validate_model(CaseFinalizeInputV1, request.input)
             try:
                 plan_path = _workspace_file(context.project_root, payload.plan_ref.path)
                 plan = decode_plan(plan_path.read_bytes(), payload.plan_ref)

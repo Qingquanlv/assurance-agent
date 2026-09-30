@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError, failed_input
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceInput,
     ReviewRoundAdvanceOutput,
 )
-from assurance_intake.operations.prepare import InputError, failed_input
 
 REVIEW_ROUND_ADVANCE_ID = "assurance.intake.review-round.advance"
 

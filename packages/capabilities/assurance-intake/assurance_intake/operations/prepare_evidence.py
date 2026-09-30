@@ -7,13 +7,11 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError
+
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.operations.plan_codec import decode_plan
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-
-
-class InputError(ValueError):
-    """Malformed caller input or missing locked configuration."""
 
 
 def _require_regular_project_input(project_root: Path, relative: str) -> None:

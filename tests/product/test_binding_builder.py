@@ -431,7 +431,7 @@ def test_generated_provider_contributes_exactly_32_semantic_bindings(tmp_path, o
 def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_manifest):
     from graph_engine.plugin_api import RegistryPorts
 
-    from assurance_intake.contracts.agent import AgentBindingDataV1
+    from agent_runtime_contracts.ops import AgentBindingDataV1
     from assurance_product.binding_builder import build_deployment_wheel
 
     built = build_deployment_wheel(opencode_manifest, tmp_path / "out")
