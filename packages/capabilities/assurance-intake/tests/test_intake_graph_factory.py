@@ -16,7 +16,7 @@ from agent_runtime_contracts import (
     ResolvedRawAgentExecutor,
     canonical_digest,
 )
-from agent_runtime_contracts.models import AgentRunResult
+from agent_runtime_contracts.wire.models import AgentRunResult
 from assurance_intake.contracts.agent import (
     ArtifactDigestV1,
     ArtifactListResultV1,

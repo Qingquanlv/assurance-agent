@@ -5,7 +5,7 @@ import json
 import pytest
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult, ResultContract
-from agent_runtime_contracts.schema import (
+from agent_runtime_contracts.wire.schema import (
     canonical_digest,
     thaw_json,
     validate_local_agent_result,

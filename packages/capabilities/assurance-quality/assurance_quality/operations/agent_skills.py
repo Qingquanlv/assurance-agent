@@ -22,7 +22,7 @@ from agent_runtime_contracts.ops import (
     validate_binding,
     validate_model,
 )
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest

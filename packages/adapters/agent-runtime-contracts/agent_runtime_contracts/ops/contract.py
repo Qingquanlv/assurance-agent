@@ -9,7 +9,7 @@ from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, Task
 from graph_engine.identifiers import validate_qualified_id
 from graph_engine.plugin_api import ResourceClaimTemplate, ResourceClaims
 
-from agent_runtime_contracts.schema import canonical_digest, result_schema_from_model
+from agent_runtime_contracts.wire.schema import canonical_digest, result_schema_from_model
 
 RAW_AGENT_CONTRACT_SCHEMA_VERSION = "raw-agent-contract-v1"
 

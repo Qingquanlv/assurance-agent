@@ -6,7 +6,11 @@ from pathlib import Path
 from pydantic import Field, model_serializer
 
 from agent_runtime_contracts import AgentRunRequest
-from agent_runtime_contracts.schema import canonical_digest, reject_credentials_in_digest_input, thaw_json
+from agent_runtime_contracts.wire.schema import (
+    canonical_digest,
+    reject_credentials_in_digest_input,
+    thaw_json,
+)
 from graph_engine.plugin_api import (
     FrozenModel,
     TaskActivityPort,

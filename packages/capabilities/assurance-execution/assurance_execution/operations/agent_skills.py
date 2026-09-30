@@ -14,7 +14,7 @@ import yaml
 
 from agent_runtime_contracts.ops import InputError, OutputError, validate_model
 from agent_runtime_contracts.qa_paths import qa_join
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 

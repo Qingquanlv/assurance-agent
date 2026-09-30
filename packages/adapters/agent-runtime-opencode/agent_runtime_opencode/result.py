@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult, ResultContract
-from agent_runtime_contracts.schema import (
+from agent_runtime_contracts.wire.schema import (
     canonical_digest,
     reject_credentials_in_digest_input,
     resolve_result_schema,

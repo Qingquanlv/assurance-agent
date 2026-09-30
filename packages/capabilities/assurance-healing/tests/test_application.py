@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from pydantic import ValidationError

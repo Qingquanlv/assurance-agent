@@ -6,7 +6,7 @@ import pytest
 
 import agent_runtime_opencode.prompt
 from agent_runtime_contracts import InstructionPart, ResultContract
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from agent_runtime_opencode.prompt import classify_admission, user_prompt_already_admitted
 from agent_runtime_opencode.session.discovery import OpenCodeDispatchIncomplete, expected_message_id
 from harness import (  # pyright: ignore[reportMissingImports]

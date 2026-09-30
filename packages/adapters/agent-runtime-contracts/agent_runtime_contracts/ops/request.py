@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from graph_engine.plugin_api import FrozenModel, TaskOutcome
 
-from agent_runtime_contracts.models import (
+from agent_runtime_contracts.wire.models import (
     AgentRunRequest,
     AgentWorkspaceV1,
     InstructionPart,
@@ -19,7 +19,7 @@ from agent_runtime_contracts.models import (
     with_validation_retry,
 )
 from agent_runtime_contracts.ops.binding import AgentBindingDataV1
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 
 BOUNDED_PROFILES: Mapping[str, str] = MappingProxyType(
     {

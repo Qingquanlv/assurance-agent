@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_runtime_contracts import AgentRunRequest, rebind_agent_run_workspace
-from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from agent_runtime_contracts.wire.schema import canonical_digest, thaw_json
 from graph_engine.plugin_api import TaskActivitySnapshot, TaskContext, TaskRequest
 
 from agent_runtime_opencode.config import OpenCodeAdapterConfig

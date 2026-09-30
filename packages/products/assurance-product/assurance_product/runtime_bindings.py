@@ -20,7 +20,7 @@ from agent_runtime_contracts import (
     ReadOnlyRawWorkspace,
     ResolvedRawAgentExecutor,
 )
-from agent_runtime_contracts.attempt_executor import phase_task_id
+from agent_runtime_contracts.executor.phases import phase_task_id
 from graph_engine.attempts import (
     AuthorizedAttemptScope,
     ExecutedAttemptResult,

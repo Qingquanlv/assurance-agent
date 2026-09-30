@@ -43,16 +43,14 @@ from agent_runtime_contracts import (
     canonical_digest,
     finally_,
 )
-from agent_runtime_contracts.attempt_executor import (
-    FinalizePhase,
-    PreparePhase,
+from agent_runtime_contracts.executor.executor import ResolvedRawAgentExecutor
+from agent_runtime_contracts.executor.phases import FinalizePhase, PreparePhase, RawFinalizeBundle
+from agent_runtime_contracts.runtime.protocol import (
     RawAgentRuntimeOutcome,
-    RawFinalizeBundle,
     ReadOnlyRawWorkspace,
-    ResolvedRawAgentExecutor,
     RuntimePhase,
 )
-from agent_runtime_contracts.schema import thaw_json
+from agent_runtime_contracts.wire.schema import thaw_json
 
 
 class CaseDesignInput(BaseModel):
@@ -1103,7 +1101,7 @@ def test_raw_executor_uses_three_disjoint_staging_phases(raw_executor_fixture) -
 
 
 def test_phase_write_claims_cover_descendant_files() -> None:
-    from agent_runtime_contracts.attempt_executor import _covered_by_claims
+    from agent_runtime_contracts.executor.snapshot import _covered_by_claims
 
     claims = {"qa/tests"}
     assert _covered_by_claims("qa/tests/test_a.py", claims)

@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue, field_serializer, field_validator, model_
 
 from graph_engine.plugin_api import FrozenModel
 
-from agent_runtime_contracts.schema import (
+from agent_runtime_contracts.wire.schema import (
     bound_redacted_diagnostics,
     canonical_digest,
     canonical_json_bytes,

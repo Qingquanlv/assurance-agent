@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
-from typing import Generic, Literal, Protocol, TypeVar, cast
+from typing import Generic, Literal, TypeVar, cast
 
 from pydantic import BaseModel
 
 from graph_engine.attempts import (
-    AttemptKey,
     AuthorizedAttemptScope,
     ExecutedAttemptResult,
     ExecutorResolution,
@@ -28,193 +24,32 @@ from graph_engine.attempts import (
 )
 from graph_engine.plugin_api import EffectIntent, ResourceClaimTemplate, TaskOutcome
 
-from agent_runtime_contracts.schema import canonical_digest, thaw_json, validate_local_agent_result
-
-from agent_runtime_contracts.execution_contract import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.executor.phases import (
+    AgentResultT,
+    AgentTask,
+    FinalizePhase,
+    InputT,
+    OutputT,
+    PreparePhase,
+    PreparedT,
+    RawFinalizeBundle,
+    phase_task_id,
+)
+from agent_runtime_contracts.executor.snapshot import (
+    _covered_by_claims,
+    _resolve_claim_paths,
+    _snapshot_files,
+    _unprovable_raw_admission,
+)
 from agent_runtime_contracts.lifecycle import FinallyContext, validate_task_type
-from agent_runtime_contracts.models import AgentRunResult
+from agent_runtime_contracts.ops.contract import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.runtime.protocol import RawAgentRuntimeOutcome, RuntimePhase
+from agent_runtime_contracts.wire.schema import thaw_json, validate_local_agent_result
 
-
-InputT = TypeVar("InputT", bound=BaseModel)
-PreparedT = TypeVar("PreparedT")
-AgentResultT = TypeVar("AgentResultT", bound=BaseModel)
-OutputT = TypeVar("OutputT", bound=BaseModel)
-_InputT_contra = TypeVar("_InputT_contra", bound=BaseModel, contravariant=True)
-_PreparedT_contra = TypeVar("_PreparedT_contra", contravariant=True)
-_PreparedT_co = TypeVar("_PreparedT_co", covariant=True)
-_OutputT_co = TypeVar("_OutputT_co", bound=BaseModel, covariant=True)
 PhaseName = str
 logger = logging.getLogger(__name__)
 
-
-def _unprovable_raw_admission(snapshot: object) -> bool:
-    reference = getattr(snapshot, "activity_reference", None)
-    if not isinstance(reference, dict) or not reference.get("session_id"):
-        return False
-    return reference.get("terminal_status") == "running"
-
-
-def _canonical_relative(path: str) -> bool:
-    posix = PurePosixPath(path)
-    return not (
-        posix.is_absolute()
-        or "\\" in path
-        or (len(path) >= 2 and path[1] == ":")
-        or posix.as_posix() != path
-        or any(part in {"", ".", ".."} for part in posix.parts)
-    )
-
-
-def phase_task_id(attempt_key: AttemptKey, phase: str, handler_id: str) -> str:
-    return canonical_digest(
-        {
-            "attempt_key": attempt_key.digest,
-            "handler_id": handler_id,
-            "phase": phase,
-        }
-    )
-
-
-def _snapshot_files(root: Path) -> dict[str, tuple[str, int, int, int, int, int, int]]:
-    if not root.exists():
-        return {}
-    files: dict[str, tuple[str, int, int, int, int, int, int]] = {}
-    for path in root.rglob("*"):
-        if path.is_file() and not path.is_symlink():
-            metadata = path.stat()
-            with path.open("rb") as stream:
-                digest = hashlib.file_digest(stream, "sha256").hexdigest()
-            files[path.relative_to(root).as_posix()] = (
-                digest,
-                metadata.st_mode,
-                metadata.st_uid,
-                metadata.st_gid,
-                metadata.st_nlink,
-                metadata.st_dev,
-                metadata.st_ino,
-            )
-    return files
-
-
-def _resolve_claim_paths(
-    templates: tuple[str, ...],
-    resolved_writes: tuple[str, ...],
-) -> set[str]:
-    resolved: set[str] = set()
-    for template in templates:
-        if "{" not in template:
-            resolved.add(template)
-            continue
-        prefix, _, suffix = template.partition("{change_id}")
-        for path in resolved_writes:
-            if path.startswith(prefix) and path.endswith(suffix):
-                middle = path[len(prefix) : len(path) - len(suffix) if suffix else len(path)]
-                if middle and "/" not in middle:
-                    resolved.add(path)
-    return resolved
-
-
-def _covered_by_claims(path: str, claims: set[str]) -> bool:
-    return any(path == claim or path.startswith(f"{claim}/") for claim in claims)
-
-
-@dataclass(frozen=True, slots=True)
-class ReadOnlyRawWorkspace:
-    _root: Path
-    identity_digest: str = ""
-
-    def _resolved(self, relative: str) -> Path:
-        if not _canonical_relative(relative):
-            raise ValueError(f"raw workspace path must be canonical and relative: {relative}")
-        path = self._root
-        for part in PurePosixPath(relative).parts:
-            path = path / part
-            if path.is_symlink():
-                raise ValueError(f"raw workspace path is a symlink: {relative}")
-        try:
-            path.resolve().relative_to(self._root.resolve())
-        except ValueError as error:
-            raise ValueError(
-                f"raw workspace path must stay inside the authorized root: {relative}"
-            ) from error
-        return path
-
-    def read_bytes(self, relative: str) -> bytes:
-        path = self._resolved(relative)
-        if not path.is_file() or path.is_symlink():
-            raise FileNotFoundError(relative)
-        return path.read_bytes()
-
-    def read_text(self, relative: str, encoding: str = "utf-8") -> str:
-        return self.read_bytes(relative).decode(encoding)
-
-
-@dataclass(frozen=True, slots=True)
-class RawAgentRuntimeOutcome:
-    run_result: AgentRunResult
-    raw_workspace: ReadOnlyRawWorkspace
-
-
-@dataclass(frozen=True, slots=True)
-class RawFinalizeBundle(Generic[InputT, PreparedT, AgentResultT]):
-    validated_input: InputT
-    prepared: PreparedT
-    agent_result: AgentResultT
-    run_evidence: AgentRunResult
-    raw_workspace: ReadOnlyRawWorkspace
-
-
 _T = TypeVar("_T")
-
-
-class PreparePhase(Protocol[_InputT_contra, _PreparedT_co]):
-    async def execute(
-        self,
-        validated_input: _InputT_contra,
-        scope: AuthorizedAttemptScope,
-    ) -> _PreparedT_co | PermanentTaskFailure: ...
-
-
-class RuntimePhase(Protocol[_PreparedT_contra]):
-    async def execute(
-        self,
-        prepared: _PreparedT_contra,
-        scope: AuthorizedAttemptScope,
-    ) -> RawAgentRuntimeOutcome | PermanentTaskFailure: ...
-
-
-class FinalizePhase(Protocol[InputT, PreparedT, AgentResultT, _OutputT_co]):
-    async def execute(
-        self,
-        bundle: RawFinalizeBundle[InputT, PreparedT, AgentResultT],
-        scope: AuthorizedAttemptScope,
-    ) -> _OutputT_co | PermanentTaskFailure: ...
-
-
-class AgentTask(Protocol[InputT, PreparedT, AgentResultT, OutputT]):
-    contract: AgentExecutionContract[InputT, AgentResultT, OutputT]
-
-    def __init__(
-        self,
-        prepare_phase: PreparePhase[InputT, PreparedT],
-        opencode: RuntimePhase[PreparedT],
-        finalize_phase: FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
-    ) -> None: ...
-
-    async def prepare(
-        self, validated_input: InputT, scope: AuthorizedAttemptScope
-    ) -> PreparedT | ExecutorResolution: ...
-
-    async def run(
-        self, prepared: PreparedT, scope: AuthorizedAttemptScope
-    ) -> RawAgentRuntimeOutcome | ExecutorResolution: ...
-
-    async def finalize(
-        self,
-        bundle: RawFinalizeBundle[InputT, PreparedT, AgentResultT],
-        scope: AuthorizedAttemptScope,
-    ) -> OutputT | ExecutorResolution: ...
-
 
 _PHASE_RESOLUTIONS = (
     PermanentTaskFailure,
@@ -680,12 +515,5 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
 
 
 __all__ = [
-    "FinalizePhase",
-    "PreparePhase",
-    "RawAgentRuntimeOutcome",
-    "RawFinalizeBundle",
-    "ReadOnlyRawWorkspace",
     "ResolvedRawAgentExecutor",
-    "RuntimePhase",
-    "phase_task_id",
 ]

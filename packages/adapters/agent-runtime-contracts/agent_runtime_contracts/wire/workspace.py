@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from agent_runtime_contracts.models import AgentRunRequest, AgentWorkspaceV1
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.models import AgentRunRequest, AgentWorkspaceV1
+from agent_runtime_contracts.wire.schema import canonical_digest
 
 
 def rebind_agent_run_workspace(

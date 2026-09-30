@@ -885,7 +885,7 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
         ResultContract,
         canonical_digest,
     )
-    from agent_runtime_contracts.models import ExecutionLimits
+    from agent_runtime_contracts.wire.models import ExecutionLimits
     from assurance_product.runtime_bindings import InstalledFinalizePhase
 
     result_payload = {"status": "ok"}

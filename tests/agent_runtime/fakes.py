@@ -21,7 +21,7 @@ from agent_runtime_contracts import (
     InstructionPart,
     ResultContract,
 )
-from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes, thaw_json
+from agent_runtime_contracts.wire.schema import canonical_digest, canonical_json_bytes, thaw_json
 from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
 from agent_runtime_opencode.session.discovery import OpenCodeDispatchIncomplete
 from graph_engine import ENGINE_API_VERSION

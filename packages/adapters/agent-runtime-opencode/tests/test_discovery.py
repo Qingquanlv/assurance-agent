@@ -103,7 +103,7 @@ async def test_multiple_exact_metadata_matches_fail_closed() -> None:
 
 
 def test_metadata_match_digest_is_canonical() -> None:
-    from agent_runtime_contracts.schema import canonical_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest
 
     first = OpenCodeDiscoveryMetadata.model_validate(metadata_payload())
     reordered = OpenCodeDiscoveryMetadata.model_validate(

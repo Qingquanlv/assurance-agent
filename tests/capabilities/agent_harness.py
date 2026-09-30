@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskHandler, TaskOutcome
 from tests.capabilities.conformance import execute_task

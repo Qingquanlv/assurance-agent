@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from tests.capabilities.conformance import ExecutedTask, execute_task
 from tests.capabilities.six_wheel_harness import (

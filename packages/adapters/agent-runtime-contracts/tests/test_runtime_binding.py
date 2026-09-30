@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_runtime_contracts.runtime_binding import (
+from agent_runtime_contracts.runtime.binding import (
     AgentRuntimeBinding,
     AgentRuntimeCapabilities,
     AgentRuntimePolicy,

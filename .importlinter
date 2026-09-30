@@ -278,3 +278,11 @@ source_modules =
     assurance_improvement
 forbidden_modules =
     assurance_product
+
+[importlinter:contract:agent-runtime-contracts-layers]
+name = Agent runtime contracts internal layers
+type = layers
+layers =
+    agent_runtime_contracts.executor
+    agent_runtime_contracts.ops | agent_runtime_contracts.runtime
+    agent_runtime_contracts.wire

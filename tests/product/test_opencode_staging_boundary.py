@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from agent_runtime_contracts import AgentWorkspaceV1
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskWorkspaceIdentity
 
 from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_document

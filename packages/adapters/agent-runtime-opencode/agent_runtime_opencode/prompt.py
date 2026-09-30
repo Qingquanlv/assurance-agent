@@ -7,7 +7,7 @@ import httpx
 from pydantic import Field
 
 from agent_runtime_contracts import AgentRunRequest
-from agent_runtime_contracts.schema import resolve_result_schema, thaw_json
+from agent_runtime_contracts.wire.schema import resolve_result_schema, thaw_json
 from graph_engine.plugin_api import FrozenModel, TaskActivityReconcileResult
 
 from agent_runtime_opencode.session.discovery import OpenCodeActivityReference

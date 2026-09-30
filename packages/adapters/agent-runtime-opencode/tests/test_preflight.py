@@ -16,7 +16,7 @@ from graph_engine.plugin_api import (
 )
 from pydantic import ValidationError
 
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
 from agent_runtime_opencode.handler import OpenCodeHandler
 from agent_runtime_opencode.observe.poll import _observe_fingerprint

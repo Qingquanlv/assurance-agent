@@ -14,7 +14,7 @@ from agent_runtime_contracts import (
     ResultContract,
     rebind_agent_run_workspace,
 )
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.plugin_api import TaskOutcome
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
 from agent_runtime_opencode.handler import OpenCodeHandler

@@ -6,7 +6,7 @@ from pydantic import Field
 
 from graph_engine.plugin_api import FrozenModel
 
-from agent_runtime_contracts.models import FrozenExecutionSelection
+from agent_runtime_contracts.wire.models import FrozenExecutionSelection
 from agent_runtime_contracts.ops.errors import validate_model
 
 _SHA256 = r"^[0-9a-f]{64}$"

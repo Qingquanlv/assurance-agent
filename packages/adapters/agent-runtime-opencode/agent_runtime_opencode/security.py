@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts.schema import (
+from agent_runtime_contracts.wire.schema import (
     PASSWORD_ASSIGNMENT_PATTERN,
     bound_redacted_diagnostics,
     is_credential_key,

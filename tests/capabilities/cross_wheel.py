@@ -805,7 +805,7 @@ def _healing_finalize_payload(
     evidence_digest: str | None = None,
 ) -> dict[str, Any]:
     from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.schema import canonical_digest as runtime_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest as runtime_digest
     from tests.capabilities.agent_harness import FakeAgentAdapter
 
     structured = {

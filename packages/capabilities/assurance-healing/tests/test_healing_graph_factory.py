@@ -478,7 +478,7 @@ def test_production_agent_validators_stay_empty() -> None:
 
 
 def test_coverage_repair_handler_summary_does_not_match_raw_contract() -> None:
-    from agent_runtime_contracts.schema import validate_local_agent_result
+    from agent_runtime_contracts.wire.schema import validate_local_agent_result
 
     from assurance_healing.contracts.coverage_repair import (
         CoverageRepairApplySummary,

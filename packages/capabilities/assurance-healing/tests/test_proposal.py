@@ -99,7 +99,7 @@ def valid_proposal() -> dict[str, Any]:
 
 def fake_agent_result(structured: dict[str, Any], **extra: Any) -> dict[str, Any]:
     from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.schema import canonical_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest
     from tests.capabilities.agent_harness import FakeAgentAdapter
 
     payload = cast(JSONValue, structured)
@@ -370,7 +370,7 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
     target.parent.mkdir(parents=True)
     target.write_text("def test_ok():\n    assert True\n")
     from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.schema import canonical_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest
     from tests.capabilities.agent_harness import FakeAgentAdapter
 
     payload = cast(JSONValue, summary)
@@ -433,7 +433,7 @@ async def test_coverage_repair_finalize_rejects_unknown_locator(tmp_path: Path) 
     (tmp_path / "tests/api").mkdir(parents=True)
     (tmp_path / "tests/api/test_users.py").write_text("def test_ok():\n    assert True\n")
     from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.schema import canonical_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest
     from tests.capabilities.agent_harness import FakeAgentAdapter
 
     payload = cast(JSONValue, summary)

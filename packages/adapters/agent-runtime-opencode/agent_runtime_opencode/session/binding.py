@@ -8,7 +8,7 @@ import httpx
 from pydantic import ValidationError
 
 from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1
-from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from agent_runtime_contracts.wire.schema import canonical_digest, thaw_json
 from graph_engine.plugin_api import (
     TaskActivityPort,
     TaskActivityReconcileResult,

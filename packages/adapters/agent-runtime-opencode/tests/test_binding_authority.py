@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 from agent_runtime_contracts import InstructionPart, rebind_agent_run_workspace
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.plugin_api import (
     InvocationMetadata,
     SecretHandleUnauthorized,

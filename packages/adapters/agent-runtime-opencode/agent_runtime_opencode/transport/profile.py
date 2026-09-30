@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
+from agent_runtime_contracts.runtime.binding import AgentRuntimeCapabilities
 from graph_engine.plugin_api import FrozenModel
 
 from agent_runtime_opencode.config import OpenCodeAdapterConfig

@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest
-from agent_runtime_contracts.schema import validate_structured_result
+from agent_runtime_contracts.wire.schema import validate_structured_result
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
 from tests.product.test_change_local_output_routing import execute_task

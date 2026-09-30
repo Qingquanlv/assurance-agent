@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import pytest
 from pydantic import ValidationError
 
-from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
+from agent_runtime_contracts.runtime.binding import AgentRuntimeCapabilities
 from agent_runtime_opencode.config import OpenCodeAdapterConfig, endpoint_origin
 from agent_runtime_opencode.plugin import OpenCodePlugin
 from agent_runtime_opencode.transport.http import canonical_json_text

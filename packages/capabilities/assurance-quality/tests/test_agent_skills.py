@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
 from tests.capabilities.agent_harness import FakeAgentAdapter

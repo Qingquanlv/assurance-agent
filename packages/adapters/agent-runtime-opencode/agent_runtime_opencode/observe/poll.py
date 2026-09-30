@@ -6,7 +6,11 @@ from typing import Any
 import httpx
 
 from agent_runtime_contracts import AgentRunRequest
-from agent_runtime_contracts.schema import canonical_digest, reject_credentials_in_digest_input, thaw_json
+from agent_runtime_contracts.wire.schema import (
+    canonical_digest,
+    reject_credentials_in_digest_input,
+    thaw_json,
+)
 from graph_engine.plugin_api import TaskActivityReconcileResult, TaskContext, TaskRequest
 
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
