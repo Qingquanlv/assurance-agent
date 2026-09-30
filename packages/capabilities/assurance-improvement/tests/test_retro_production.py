@@ -221,11 +221,6 @@ async def test_public_retro_runs_real_contracts_and_handlers_with_only_agent_tra
     from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
     from assurance_improvement.graphs.retro import build_retro_graph
     from assurance_improvement.operations import improvement_handlers
-    from assurance_improvement.task import (
-        RetroEvalAnalysisTask,
-        RetroIssueAnalysisTask,
-        RetroWorkflowAnalysisTask,
-    )
     from tests.product.test_product_stategraph_flow import _flow_features, _product_graphs, _public_input
 
     contracts = {
@@ -290,19 +285,9 @@ async def test_public_retro_runs_real_contracts_and_handlers_with_only_agent_tra
                     assert finalized.status == "succeeded", finalized.failure
                     return contract.output_model.model_validate(finalized.output)
 
-                task_type = {
-                    "eval": RetroEvalAnalysisTask,
-                    "issue": RetroIssueAnalysisTask,
-                    "workflow": RetroWorkflowAnalysisTask,
-                }[domain]
-                task = task_type(
-                    prepare_phase=SimpleNamespace(execute=prepare_phase),
-                    opencode=SimpleNamespace(execute=runtime_phase),
-                    finalize_phase=SimpleNamespace(execute=finalize_phase),
-                )
-                request = await task.prepare(business, None)
-                raw = await task.run(request, None)
-                result = await task.finalize(SimpleNamespace(agent_result=raw), None)
+                request = await prepare_phase(business, None)
+                raw = await runtime_phase(request, None)
+                result = await finalize_phase(SimpleNamespace(agent_result=raw), None)
             else:
                 result = await execute_task(
                     handlers[contract.handler_id], business.model_dump(mode="json"), tmp_path

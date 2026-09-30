@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from graph_engine.boot.boot import CapabilityBuildContext
 
-from assurance_improvement.task import ImprovementGraphs
+from assurance_improvement.feature import ImprovementGraphs
 from assurance_improvement.graphs.delivery import (
     build_apply_graph,
     build_archive_graph,

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
-from functools import wraps
 from pathlib import Path
 from typing import Literal
 
@@ -37,18 +35,13 @@ from agent_runtime_contracts import (
     AgentExecutionContract,
     AgentPhaseWriteClaims,
     AgentRunResult,
-    FinallyContext,
-    after,
-    before,
     canonical_digest,
-    finally_,
 )
 from agent_runtime_contracts.executor.executor import ResolvedRawAgentExecutor
-from agent_runtime_contracts.executor.phases import FinalizePhase, PreparePhase, RawFinalizeBundle
+from agent_runtime_contracts.executor.phases import RawFinalizeBundle
 from agent_runtime_contracts.runtime.protocol import (
     RawAgentRuntimeOutcome,
     ReadOnlyRawWorkspace,
-    RuntimePhase,
 )
 from agent_runtime_contracts.wire.schema import thaw_json
 
@@ -232,35 +225,6 @@ def _contract() -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult
     )
 
 
-@dataclass
-class RecordingTask:
-    contract = _contract()
-    prepare_phase: PreparePhase[CaseDesignInput, CaseDesignPrepared]
-    opencode: RuntimePhase[CaseDesignPrepared]
-    finalize_phase: FinalizePhase[
-        CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult, CaseDesignOutput
-    ]
-
-    @before
-    async def prepare(
-        self, validated_input: CaseDesignInput, scope: AuthorizedAttemptScope
-    ) -> CaseDesignPrepared | PermanentTaskFailure:
-        return await self.prepare_phase.execute(validated_input, scope)
-
-    async def run(
-        self, prepared: CaseDesignPrepared, scope: AuthorizedAttemptScope
-    ) -> RawAgentRuntimeOutcome | PermanentTaskFailure:
-        return await self.opencode.execute(prepared, scope)
-
-    @after
-    async def finalize(
-        self,
-        bundle: RawFinalizeBundle[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult],
-        scope: AuthorizedAttemptScope,
-    ) -> CaseDesignOutput | PermanentTaskFailure:
-        return await self.finalize_phase.execute(bundle, scope)
-
-
 def _contract_with_prepare_write_claim(
     claim: str,
 ) -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult, CaseDesignOutput]:
@@ -299,21 +263,16 @@ def _executor(
     prepare: RecordingPrepare,
     runtime: RecordingRuntime,
     finalize: RecordingFinalize,
-    task_type: type[RecordingTask] | None = None,
 ) -> ResolvedRawAgentExecutor[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult, CaseDesignOutput]:
     return ResolvedRawAgentExecutor(
         _contract(),
         prepare=prepare,
         runtime=runtime,
         finalize=finalize,
-        task_type=task_type,
     )
 
 
-@pytest.mark.parametrize("task_type", (None, RecordingTask))
-def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(
-    tmp_path: Path, task_type: type[RecordingTask] | None
-) -> None:
+def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1", path="primary")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases")
     expected_agent_result = CaseDesignAgentResult(output_files=("qa/proposal.md",))
@@ -328,7 +287,7 @@ def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(
     finalize = RecordingFinalize(expected_output, order)
 
     output = asyncio.run(
-        _executor(prepare=prepare, runtime=runtime, finalize=finalize, task_type=task_type).execute(
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
             validated_input, _scope(tmp_path)
         )
     )
@@ -347,306 +306,6 @@ def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(
     assert output.output == expected_output
 
 
-def test_agent_task_hooks_run_on_a_fresh_instance_each_execution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[tuple[str, RecordingTask]] = []
-    for name in ("prepare", "run", "finalize"):
-        original = getattr(RecordingTask, name)
-
-        @wraps(original)
-        async def recorded(self: RecordingTask, *args: object, _name=name, _original=original):
-            calls.append((_name, self))
-            return await _original(self, *args)
-
-        monkeypatch.setattr(RecordingTask, name, recorded)
-
-    order: list[str] = []
-    executor = _executor(
-        prepare=RecordingPrepare(
-            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), order
-        ),
-        runtime=RecordingRuntime(
-            CaseDesignAgentResult(output_files=("qa/proposal.md",)).model_dump(),
-            _workspace(tmp_path),
-            order,
-        ),
-        finalize=RecordingFinalize(_success_output(), order),
-        task_type=RecordingTask,
-    )
-    scope = _scope(tmp_path)
-    for _ in range(2):
-        result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), scope))
-        assert isinstance(result, ExecutedAttemptResult)
-
-    assert [name for name, _ in calls] == ["prepare", "run", "finalize"] * 2
-    assert calls[0][1] is calls[1][1] is calls[2][1]
-    assert calls[3][1] is calls[4][1] is calls[5][1]
-    assert calls[0][1] is not calls[3][1]
-
-
-def test_agent_task_contract_must_match_executor(tmp_path: Path) -> None:
-    class MismatchedTask(RecordingTask):
-        contract = _contract_with_prepare_write_claim("qa/wrong")
-
-    with pytest.raises(ValueError, match="contract does not match"):
-        _executor(
-            prepare=RecordingPrepare(
-                CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), []
-            ),
-            runtime=RecordingRuntime(
-                CaseDesignAgentResult(output_files=()).model_dump(), _workspace(tmp_path), []
-            ),
-            finalize=RecordingFinalize(_success_output(), []),
-            task_type=MismatchedTask,
-        )
-
-
-def test_finally_runs_when_runtime_raises(tmp_path: Path) -> None:
-    exits: list[FinallyContext] = []
-
-    class Task(RecordingTask):
-        @finally_
-        async def on_exit(self, context: FinallyContext) -> None:
-            exits.append(context)
-
-    class FailingRuntime(RecordingRuntime):
-        async def execute(
-            self, prepared: CaseDesignPrepared, scope: AuthorizedAttemptScope
-        ) -> RawAgentRuntimeOutcome:
-            del prepared, scope
-            raise RuntimeError("runtime stopped")
-
-    order: list[str] = []
-    executor = _executor(
-        prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), order),
-        runtime=FailingRuntime({}, _workspace(tmp_path), order),
-        finalize=RecordingFinalize(_success_output(), order),
-        task_type=Task,
-    )
-
-    with pytest.raises(RuntimeError, match="runtime stopped"):
-        asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
-
-    assert len(exits) == 1
-    assert exits[0].mode == "execute"
-    assert exits[0].last_phase == "runtime"
-    assert exits[0].outcome == "exception"
-    assert exits[0].error_type == "RuntimeError"
-    assert "finalize" not in order
-
-
-def _task_with_exit(exits: list[FinallyContext]) -> type[RecordingTask]:
-    class Task(RecordingTask):
-        @finally_
-        async def on_exit(self, context: FinallyContext) -> None:
-            exits.append(context)
-
-    return Task
-
-
-@pytest.mark.parametrize("failed_phase", ("prepare", "runtime", "finalize"))
-def test_task_typed_phase_failure_still_runs_finally_once(tmp_path: Path, failed_phase: str) -> None:
-    exits: list[FinallyContext] = []
-    order: list[str] = []
-    executor = ResolvedRawAgentExecutor(
-        _contract(),
-        prepare=(
-            _FailingPrepare()
-            if failed_phase == "prepare"
-            else RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), order)
-        ),
-        runtime=(
-            _FailingRuntime()
-            if failed_phase == "runtime"
-            else RecordingRuntime(
-                CaseDesignAgentResult(output_files=()).model_dump(), _workspace(tmp_path), order
-            )
-        ),
-        finalize=(
-            _FailingFinalize() if failed_phase == "finalize" else RecordingFinalize(_success_output(), order)
-        ),
-        task_type=_task_with_exit(exits),
-    )
-
-    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
-
-    assert isinstance(result, PermanentTaskFailure)
-    assert len(exits) == 1
-    assert exits[0].outcome == "resolution"
-    assert exits[0].last_phase == failed_phase
-    assert (
-        executor.phase_log
-        == ["prepare", "runtime", "finalize"][: ("prepare", "runtime", "finalize").index(failed_phase) + 1]
-    )
-
-
-@pytest.mark.parametrize("phase", ("prepare", "runtime", "finalize"))
-@pytest.mark.parametrize("raised", (RuntimeError, asyncio.CancelledError))
-def test_task_phase_exception_and_cancel_preserve_original(
-    tmp_path: Path, phase: str, raised: type[BaseException]
-) -> None:
-    exits: list[FinallyContext] = []
-
-    class RaisingPrepare(RecordingPrepare):
-        async def execute(
-            self, validated_input: CaseDesignInput, scope: AuthorizedAttemptScope
-        ) -> CaseDesignPrepared:
-            del validated_input, scope
-            raise raised("stopped")
-
-    class RaisingRuntime(RecordingRuntime):
-        async def execute(
-            self, prepared: CaseDesignPrepared, scope: AuthorizedAttemptScope
-        ) -> RawAgentRuntimeOutcome:
-            del prepared, scope
-            raise raised("stopped")
-
-    class RaisingFinalize(RecordingFinalize):
-        async def execute(
-            self,
-            bundle: RawFinalizeBundle[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult],
-            scope: AuthorizedAttemptScope,
-        ) -> CaseDesignOutput:
-            del bundle, scope
-            raise raised("stopped")
-
-    executor = ResolvedRawAgentExecutor(
-        _contract(),
-        prepare=(RaisingPrepare if phase == "prepare" else RecordingPrepare)(
-            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), []
-        ),
-        runtime=(RaisingRuntime if phase == "runtime" else RecordingRuntime)(
-            {"output_files": []}, _workspace(tmp_path), []
-        ),
-        finalize=(RaisingFinalize if phase == "finalize" else RecordingFinalize)(_success_output(), []),
-        task_type=_task_with_exit(exits),
-    )
-
-    with pytest.raises(raised, match="stopped"):
-        asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
-
-    assert len(exits) == 1
-    assert exits[0].outcome == "exception"
-    assert exits[0].error_type == raised.__name__
-    assert (
-        executor.phase_log
-        == ["prepare", "runtime", "finalize"][: ("prepare", "runtime", "finalize").index(phase) + 1]
-    )
-
-
-@pytest.mark.parametrize("phase_error_type", (asyncio.CancelledError, RuntimeError))
-def test_finally_cancel_preserves_original_cancel_or_propagates_new_cancel(
-    tmp_path: Path, phase_error_type: type[BaseException]
-) -> None:
-    phase_error = phase_error_type("phase stopped")
-    exit_cancel = asyncio.CancelledError("exit stopped")
-
-    class CancellingRuntime(RecordingRuntime):
-        async def execute(
-            self, prepared: CaseDesignPrepared, scope: AuthorizedAttemptScope
-        ) -> RawAgentRuntimeOutcome:
-            del prepared, scope
-            raise phase_error
-
-    class Task(RecordingTask):
-        @finally_
-        async def on_exit(self, context: FinallyContext) -> None:
-            assert context.error_type == phase_error_type.__name__
-            raise exit_cancel
-
-    executor = _executor(
-        prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), []),
-        runtime=CancellingRuntime({}, _workspace(tmp_path), []),
-        finalize=RecordingFinalize(_success_output(), []),
-        task_type=Task,
-    )
-
-    with pytest.raises(asyncio.CancelledError) as caught:
-        asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
-
-    assert caught.value is (phase_error if isinstance(phase_error, asyncio.CancelledError) else exit_cancel)
-
-
-@pytest.mark.parametrize("invalid", ("raw", "output"))
-def test_result_validation_exception_or_resolution_runs_finally(tmp_path: Path, invalid: str) -> None:
-    exits: list[FinallyContext] = []
-    executor = ResolvedRawAgentExecutor(
-        _contract(),
-        prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), []),
-        runtime=RecordingRuntime(
-            {"wrong": "raw"} if invalid == "raw" else {"output_files": []},
-            _workspace(tmp_path),
-            [],
-        ),
-        finalize=RecordingFinalize({"status": "missing"}, []),
-        task_type=_task_with_exit(exits),
-    )
-
-    if invalid == "raw":
-        result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
-        assert isinstance(result, PermanentTaskFailure)
-        assert exits[0].outcome == "resolution"
-    else:
-        with pytest.raises(ValidationError):
-            asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
-        assert exits[0].outcome == "exception"
-    assert len(exits) == 1
-
-
-@pytest.mark.parametrize("mutate", (False, True))
-def test_finally_exception_does_not_mask_result_but_staging_change_is_rejected(
-    tmp_path: Path, mutate: bool
-) -> None:
-    class Task(RecordingTask):
-        @finally_
-        async def on_exit(self, context: FinallyContext) -> None:
-            if mutate:
-                target = write_root / "qa/already-staged.txt"
-                target.write_text("changed", encoding="utf-8")
-            raise RuntimeError("observer failed")
-
-    scope = _scope(tmp_path)
-    write_root = scope.workspace.write_root
-    target = write_root / "qa/already-staged.txt"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("original", encoding="utf-8")
-    executor = _executor(
-        prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), []),
-        runtime=RecordingRuntime({"output_files": []}, _workspace(tmp_path), []),
-        finalize=RecordingFinalize(_success_output(), []),
-        task_type=Task,
-    )
-
-    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), scope))
-
-    if mutate:
-        assert isinstance(result, PermanentTaskFailure)
-        assert result.kind == "invalid_output"
-    else:
-        assert isinstance(result, ExecutedAttemptResult)
-
-
-def test_finally_exception_does_not_mask_typed_failure(tmp_path: Path) -> None:
-    class Task(RecordingTask):
-        @finally_
-        async def on_exit(self, context: FinallyContext) -> None:
-            raise RuntimeError("observer failed")
-
-    executor = ResolvedRawAgentExecutor(
-        _contract(),
-        prepare=_FailingPrepare(),
-        runtime=RecordingRuntime({}, _workspace(tmp_path), []),
-        finalize=RecordingFinalize(_success_output(), []),
-        task_type=Task,
-    )
-
-    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
-
-    assert isinstance(result, PermanentTaskFailure)
-    assert result.message == "prepare rejected"
-
-
 def test_raising_phase_still_audits_staging_without_success_receipt(tmp_path: Path) -> None:
     class WritingRaisingRuntime(RecordingRuntime):
         async def execute(
@@ -663,7 +322,6 @@ def test_raising_phase_still_audits_staging_without_success_receipt(tmp_path: Pa
         prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), []),
         runtime=WritingRaisingRuntime({}, _workspace(tmp_path), []),
         finalize=RecordingFinalize(_success_output(), []),
-        task_type=RecordingTask,
     ).with_host(host, graph_revision="c" * 64, product_lock_digest="d" * 64)
 
     with pytest.raises(RuntimeError, match="runtime stopped"):
@@ -674,14 +332,7 @@ def test_raising_phase_still_audits_staging_without_success_receipt(tmp_path: Pa
 
 
 def test_reconcile_uses_runtime_reconcile_without_resubmitting(tmp_path: Path) -> None:
-    exits: list[FinallyContext] = []
     calls: list[str] = []
-
-    class Task(_task_with_exit(exits)):
-        async def run(
-            self, prepared: CaseDesignPrepared, scope: AuthorizedAttemptScope
-        ) -> RawAgentRuntimeOutcome:
-            raise AssertionError("must not resubmit")
 
     class RecoveringRuntime(RecordingRuntime):
         async def execute(
@@ -703,7 +354,6 @@ def test_reconcile_uses_runtime_reconcile_without_resubmitting(tmp_path: Path) -
         prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), calls),
         runtime=RecoveringRuntime({}, _workspace(tmp_path), calls),
         finalize=RecordingFinalize(_success_output(), calls),
-        task_type=Task,
     )
     host = _RecordingHost()
     bound = executor.with_host(host, graph_revision="c" * 64, product_lock_digest="d" * 64)
@@ -714,9 +364,6 @@ def test_reconcile_uses_runtime_reconcile_without_resubmitting(tmp_path: Path) -
     assert calls == ["prepare", "reconcile", "finalize"]
     assert host.calls == []
     assert bound.phase_log == ["prepare", "runtime", "finalize"]
-    assert len(exits) == 1
-    assert exits[0].mode == "reconcile"
-    assert exits[0].last_phase == "finalize"
 
 
 @pytest.mark.parametrize(
@@ -729,8 +376,6 @@ def test_reconcile_uses_runtime_reconcile_without_resubmitting(tmp_path: Path) -
     ),
 )
 def test_reconcile_propagates_all_typed_resolutions(tmp_path: Path, resolution: object) -> None:
-    exits: list[FinallyContext] = []
-
     class ReconcilingRuntime(RecordingRuntime):
         async def reconcile(
             self, prepared: CaseDesignPrepared, context: AttemptExecutionContext, snapshot: object
@@ -742,25 +387,19 @@ def test_reconcile_propagates_all_typed_resolutions(tmp_path: Path, resolution: 
         prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), []),
         runtime=ReconcilingRuntime({}, _workspace(tmp_path), []),
         finalize=RecordingFinalize(_success_output(), []),
-        task_type=_task_with_exit(exits),
     )
 
     result = asyncio.run(executor.reconcile(CaseDesignInput(change_id="CH-1"), _scope(tmp_path), object()))
 
     assert result == resolution
     assert executor.phase_log == ["prepare", "runtime"]
-    assert len(exits) == 1
-    assert exits[0].mode == "reconcile"
-    assert exits[0].outcome == "resolution"
 
 
 def test_reconcile_without_runtime_support_fails_closed(tmp_path: Path) -> None:
-    exits: list[FinallyContext] = []
     executor = _executor(
         prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), []),
         runtime=RecordingRuntime({}, _workspace(tmp_path), []),
         finalize=RecordingFinalize(_success_output(), []),
-        task_type=_task_with_exit(exits),
     )
 
     result = asyncio.run(executor.reconcile(CaseDesignInput(change_id="CH-1"), _scope(tmp_path), object()))
@@ -768,15 +407,9 @@ def test_reconcile_without_runtime_support_fails_closed(tmp_path: Path) -> None:
     assert isinstance(result, PermanentTaskFailure)
     assert result.kind == "internal"
     assert executor.phase_log == ["prepare"]
-    assert len(exits) == 1
-    assert exits[0].mode == "reconcile"
-    assert exits[0].last_phase == "prepare"
 
 
-@pytest.mark.parametrize("task_type", (None, RecordingTask))
-def test_invalid_raw_result_fails_before_finalize(
-    tmp_path: Path, task_type: type[RecordingTask] | None
-) -> None:
+def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1")
     order: list[str] = []
     prepare = RecordingPrepare(
@@ -789,7 +422,7 @@ def test_invalid_raw_result_fails_before_finalize(
     )
 
     result = asyncio.run(
-        _executor(prepare=prepare, runtime=runtime, finalize=finalize, task_type=task_type).execute(
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
             validated_input, _scope(tmp_path)
         )
     )
@@ -801,8 +434,7 @@ def test_invalid_raw_result_fails_before_finalize(
     assert finalize.seen is None
 
 
-@pytest.mark.parametrize("task_type", (None, RecordingTask))
-def test_invalid_output_fails_after_finalize(tmp_path: Path, task_type: type[RecordingTask] | None) -> None:
+def test_invalid_output_fails_after_finalize(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases")
     expected_agent_result = CaseDesignAgentResult(output_files=("qa/proposal.md",))
@@ -813,7 +445,7 @@ def test_invalid_output_fails_after_finalize(tmp_path: Path, task_type: type[Rec
 
     with pytest.raises(ValidationError):
         asyncio.run(
-            _executor(prepare=prepare, runtime=runtime, finalize=finalize, task_type=task_type).execute(
+            _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
                 validated_input, _scope(tmp_path)
             )
         )
@@ -1018,7 +650,7 @@ class _RawExecutorFixture:
 
 
 @pytest.fixture
-def raw_executor_fixture(tmp_path: Path, request: pytest.FixtureRequest) -> _RawExecutorFixture:
+def raw_executor_fixture(tmp_path: Path) -> _RawExecutorFixture:
     from agent_runtime_contracts import AgentPhaseWriteClaims
 
     claims = AgentPhaseWriteClaims(
@@ -1066,17 +698,11 @@ def raw_executor_fixture(tmp_path: Path, request: pytest.FixtureRequest) -> _Raw
         "qa/finalize.txt",
         b"finalize\n",
     )
-    claimed_contract = contract
-
-    class ClaimedTask(RecordingTask):
-        contract = claimed_contract
-
     executor = ResolvedRawAgentExecutor(
         contract,
         prepare=prepare,
         runtime=runtime,
         finalize=finalize,
-        task_type=ClaimedTask if getattr(request, "param", False) else None,
     )
     return _RawExecutorFixture(
         executor,
@@ -1140,7 +766,6 @@ def test_unreadable_phase_file_returns_typed_failure(tmp_path: Path, when: str) 
         target.chmod(0o600)
 
 
-@pytest.mark.parametrize("raw_executor_fixture", (False, True), indirect=True)
 def test_raw_executor_persists_phase_deltas_into_host_receipt(
     raw_executor_fixture: _RawExecutorFixture,
 ) -> None:
@@ -1307,37 +932,6 @@ def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path, existing: 
     assert order == ["prepare"]
 
 
-def test_task_hook_undeclared_write_is_rejected(tmp_path: Path) -> None:
-    class WritingTask(RecordingTask):
-        @before
-        async def prepare(
-            self, validated_input: CaseDesignInput, scope: AuthorizedAttemptScope
-        ) -> CaseDesignPrepared | PermanentTaskFailure:
-            target = scope.workspace.write_root / "qa/undeclared.txt"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"unclaimed")
-            return await super().prepare(validated_input, scope)
-
-    order: list[str] = []
-    executor = _executor(
-        prepare=RecordingPrepare(
-            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), order
-        ),
-        runtime=RecordingRuntime(
-            CaseDesignAgentResult(output_files=()).model_dump(), _workspace(tmp_path), order
-        ),
-        finalize=RecordingFinalize(_success_output(), order),
-        task_type=WritingTask,
-    )
-
-    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
-
-    assert isinstance(result, PermanentTaskFailure)
-    assert result.kind == "invalid_output"
-    assert "undeclared" in result.message
-    assert order == ["prepare"]
-
-
 def test_directory_phase_write_claim_allows_nested_file(tmp_path: Path) -> None:
     order: list[str] = []
     claim = "qa/results/files"
@@ -1389,99 +983,3 @@ def test_directory_phase_write_claim_rejects_sibling_prefix(tmp_path: Path) -> N
     assert result.kind == "invalid_output"
     assert sibling_path in result.message
     assert order == ["prepare"]
-
-
-def test_lifecycle_decorator_preserves_callable_and_marks_role() -> None:
-    from agent_runtime_contracts import before
-
-    async def prepare(self: object, value: object, scope: object) -> object:
-        return value
-
-    decorated = before(prepare)
-    assert decorated is prepare
-    assert getattr(decorated, "__agent_lifecycle_phase__") == "before"
-    assert asyncio.iscoroutinefunction(decorated)
-
-
-def test_lifecycle_decorator_rejects_sync_function() -> None:
-    from agent_runtime_contracts import before
-
-    def prepare(self: object, value: object, scope: object) -> object:
-        return value
-
-    with pytest.raises(TypeError, match="async"):
-        before(prepare)
-
-
-def test_lifecycle_validation_accepts_fixed_async_methods_without_exit() -> None:
-    from agent_runtime_contracts import after, before
-    from agent_runtime_contracts.lifecycle import validate_task_type
-
-    class Task:
-        @before
-        async def prepare(self, value: object, scope: object) -> object:
-            return value
-
-        async def run(self, value: object, scope: object) -> object:
-            return value
-
-        @after
-        async def finalize(self, value: object, scope: object) -> object:
-            return value
-
-    validate_task_type(Task)
-
-
-@pytest.mark.parametrize("invalid", ["missing-run", "wrong-mark", "missing-scope", "extra-mark"])
-def test_lifecycle_validation_rejects_invalid_task(invalid: str) -> None:
-    from agent_runtime_contracts import after, before
-    from agent_runtime_contracts.lifecycle import validate_task_type
-
-    class Task:
-        @before
-        async def prepare(self, value: object, scope: object) -> object:
-            return value
-
-        async def run(self, value: object, scope: object) -> object:
-            return value
-
-        @after
-        async def finalize(self, value: object, scope: object) -> object:
-            return value
-
-    if invalid == "missing-run":
-        del Task.run
-    elif invalid == "wrong-mark":
-        Task.finalize.__agent_lifecycle_phase__ = "before"  # type: ignore[attr-defined]
-    elif invalid == "missing-scope":
-
-        async def run_without_scope(self: object, value: object) -> object:
-            return value
-
-        Task.run = run_without_scope  # type: ignore[assignment]
-    else:
-
-        @before
-        async def extra(self: object, value: object, scope: object) -> object:
-            return value
-
-        Task.extra = extra  # type: ignore[attr-defined]
-
-    with pytest.raises(TypeError):
-        validate_task_type(Task)
-
-
-def test_finally_context_is_read_only() -> None:
-    from dataclasses import FrozenInstanceError
-
-    from agent_runtime_contracts import FinallyContext
-
-    context = FinallyContext(
-        contract_id="assurance.intake.agent.case-design.v1",
-        attempt_key="a" * 64,
-        mode="execute",
-        last_phase="runtime",
-        outcome="resolution",
-    )
-    with pytest.raises(FrozenInstanceError):
-        context.outcome = "executed"  # type: ignore[misc]

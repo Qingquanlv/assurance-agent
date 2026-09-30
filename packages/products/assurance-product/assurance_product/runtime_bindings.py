@@ -50,7 +50,6 @@ from assurance_product.agent_contracts import (
     all_feature_agent_contracts,
     all_feature_task_contracts,
 )
-from assurance_product.features import FEATURES
 from assurance_product.models import (
     ADAPTER_BINDING_RESOURCE_ID,
     CONFIGURATION_PLUGIN_ID,
@@ -63,8 +62,6 @@ _PROVIDER = "opencode"
 _ACTIVITY_RECOVERY = "adopt-observe-reconcile-v1"
 _CAPABILITY_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
 _FinalOutputT = TypeVar("_FinalOutputT", bound=BaseModel)
-_AGENT_TASK_CLASSES = tuple(task for feature in FEATURES for task in feature.agent_task_types)
-_AGENT_TASK_TYPES = {task.contract.contract_id: task for task in _AGENT_TASK_CLASSES}
 
 
 def _contract_digest(contract: AgentExecutionContract[Any, Any, Any]) -> str:
@@ -715,7 +712,6 @@ def _resolve_agent_contract(
             callable_path=finalize_callable,
             timeout_seconds=timeout_seconds,
         ),
-        task_type=_AGENT_TASK_TYPES[contract.contract_id],
         result_context=validation_context,
     )
     return resolve_contract(
@@ -751,21 +747,6 @@ def boot_semantic_attempt_contracts(
     adapter_binding = _adapter_binding_from_composition(composition)
     validation_context = _attempt_validation_context(composition)
     agents = all_feature_agent_contracts()
-    task_ids = [task_type.contract.contract_id for task_type in _AGENT_TASK_CLASSES]
-    if len(task_ids) != len(set(task_ids)):
-        raise ValueError("duplicate agent Task contract ID")
-    missing = set(agents) - set(task_ids)
-    if missing:
-        raise ValueError(f"missing agent Task contracts: {sorted(missing)}")
-    extra = set(task_ids) - set(agents)
-    if extra:
-        raise ValueError(f"extra agent Task contracts: {sorted(extra)}")
-    for task_type in _AGENT_TASK_CLASSES:
-        contract_id = task_type.contract.contract_id
-        if task_type.contract.canonical_projection() != agents[contract_id].canonical_projection():
-            raise ValueError(f"agent Task contract drift: {contract_id}")
-        if _AGENT_TASK_TYPES.get(contract_id) is not task_type:
-            raise ValueError(f"agent Task table drift: {contract_id}")
     authenticate_raw_agent_runtime_bindings(
         tuple(
             project_raw_agent_runtime_binding(binding, agents[binding.contract_id])

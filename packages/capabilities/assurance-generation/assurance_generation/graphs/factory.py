@@ -6,7 +6,7 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from assurance_generation.task import GenerationGraphs
+from assurance_generation.feature import GenerationGraphs
 from assurance_generation.graphs.api import compile_family_pair
 from assurance_generation.graphs.init_runtime import build_init_runtime_graph
 from assurance_generation.graphs.nodes import (

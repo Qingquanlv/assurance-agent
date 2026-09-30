@@ -1,33 +1,34 @@
-"""Deterministic Execution wheel tasks and Product-facing feature bundle."""
+"""Intake graphs and their Product-facing feature bundle."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 
 from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
-from assurance_execution.contracts.attempts import (
+from assurance_intake.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
     OUTPUT_ROUTE_TEMPLATES,
     TASK_ATTEMPT_CONTRACTS,
 )
-from assurance_execution.plugin import ExecutionPlugin
+from assurance_intake.plugin import IntakePlugin
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutionGraphs:
-    execute: CompiledStateGraph
-    rerun: CompiledStateGraph
+class IntakeGraphs:
+    prepare: CompiledStateGraph
+    case: CompiledStateGraph
 
 
 FEATURE = FeatureSpec(
-    plugin=ExecutionPlugin,
+    plugin=IntakePlugin,
     agent_contracts=AGENT_JOB_CONTRACTS,
     task_contracts=TASK_ATTEMPT_CONTRACTS,
     output_route_templates=OUTPUT_ROUTE_TEMPLATES,
     graph_factory=FeatureFactoryRef(
-        "assurance.execution", "assurance_execution.graphs.factory:build_execution_graphs"
+        "assurance.intake", "assurance_intake.graphs.factory:build_intake_graphs"
     ),
-    agent_task_types=(),
 )
 
-__all__ = ["ExecutionGraphs", "FEATURE"]
+__all__ = ["FEATURE", "IntakeGraphs"]

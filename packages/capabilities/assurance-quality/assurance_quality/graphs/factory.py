@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from graph_engine.boot.boot import CapabilityBuildContext
 
-from assurance_quality.task import QualityGraphs
+from assurance_quality.feature import QualityGraphs
 from assurance_quality.graphs.assessment import build_assess_graph
 from assurance_quality.graphs.fact_baseline import build_fact_baseline_graph
 from assurance_quality.graphs.issues import build_issue_graph

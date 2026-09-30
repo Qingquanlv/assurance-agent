@@ -7,12 +7,12 @@ from collections.abc import Sequence
 from agent_runtime_contracts import AgentExecutionContract
 from graph_engine.boot import FeatureSpec
 
-from assurance_execution.task import FEATURE as EXECUTION
-from assurance_generation.task import FEATURE as GENERATION
-from assurance_healing.task import FEATURE as HEALING
-from assurance_improvement.task import FEATURE as IMPROVEMENT
-from assurance_intake.task import FEATURE as INTAKE
-from assurance_quality.task import FEATURE as QUALITY
+from assurance_execution.feature import FEATURE as EXECUTION
+from assurance_generation.feature import FEATURE as GENERATION
+from assurance_healing.feature import FEATURE as HEALING
+from assurance_improvement.feature import FEATURE as IMPROVEMENT
+from assurance_intake.feature import FEATURE as INTAKE
+from assurance_quality.feature import FEATURE as QUALITY
 
 from assurance_product.source_catalog import product_source_catalog
 
