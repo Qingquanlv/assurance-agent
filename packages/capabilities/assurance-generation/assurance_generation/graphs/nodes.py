@@ -358,11 +358,6 @@ def review_round_advance(state: Mapping[str, object]) -> dict[str, object]:
     return {**advanced, **offer_advance({**dict(state), **advanced}, "codegen-review-round-advance")}
 
 
-def review_round_advance_retry(state: Mapping[str, object]) -> dict[str, object]:
-    advanced = advance_review_round_node({**dict(state), "review_stage": "codegen"})
-    return {**advanced, **offer_advance({**dict(state), **advanced}, "codegen-review-round-advance-retry")}
-
-
 def plan_round_join(state: Mapping[str, object]) -> dict[str, object]:
     return apply_current_trigger(state)
 
@@ -497,8 +492,11 @@ def _interrupt_payload(state: Mapping[str, object], *, retry: bool) -> dict[str,
     }
 
 
-human_review = human_gate(lambda s: _interrupt_payload(s, retry=False), decision=HumanReviewDecision)
-human_review_retry = human_gate(lambda s: _interrupt_payload(s, retry=True), decision=HumanReviewDecision)
+def _human_review_payload(state: Mapping[str, object]) -> dict[str, object]:
+    return _interrupt_payload(state, retry=_trigger(state) is not None)
+
+
+human_review = human_gate(_human_review_payload, decision=HumanReviewDecision)
 
 
 __all__ = [
@@ -517,7 +515,6 @@ __all__ = [
     "complete_generation_node",
     "generation_done",
     "human_review",
-    "human_review_retry",
     "join_selected",
     "plan_round_join",
     "publish_codegen",
@@ -528,7 +525,6 @@ __all__ = [
     "publish_plan",
     "publish_plan_review",
     "review_round_advance",
-    "review_round_advance_retry",
     "route_generation_completion",
     "select_codegen",
     "select_codegen_review",

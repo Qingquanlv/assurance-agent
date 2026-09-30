@@ -7,12 +7,9 @@ from assurance_generation.contracts.families import GENERATION_FAMILIES
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from assurance_intake.operations.history_refs import merge_history_refs
 
-PLAN_ROUND_PREDECESSORS = (
-    "codegen-review-round-advance",
-    "codegen-review-round-advance-retry",
-)
+PLAN_ROUND_PREDECESSORS = ("codegen-review-round-advance",)
 
-PlanRoundPredecessor = Literal["codegen-review-round-advance", "codegen-review-round-advance-retry"]
+PlanRoundPredecessor = Literal["codegen-review-round-advance"]
 
 
 class PlanRoundArrival(TypedDict):

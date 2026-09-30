@@ -242,6 +242,11 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
 
     duplicated_contract_ids = {
         "assurance.intake.agent.case-design.v1",
+        *(
+            f"assurance.generation.agent.{family}.{stage}.v1"
+            for family in ("api", "e2e", "fuzz", "performance")
+            for stage in ("codegen", "codegen-review")
+        ),
     }
     expected = Counter(
         {
@@ -251,7 +256,7 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
     )
 
     assert Counter(occurrences) == expected
-    assert expected.total() == 27
+    assert expected.total() == 35
 
 
 def test_all_attempt_occurrences_are_exact() -> None:
@@ -264,13 +269,16 @@ def test_all_attempt_occurrences_are_exact() -> None:
     expected["assurance.intake.agent.case-design.v1"] = 2
     expected["assurance.generation.resolve-inputs"] = 2
     expected["assurance.improvement.task.evaluate-memory-improvement"] = 2
+    for family in ("api", "e2e", "fuzz", "performance"):
+        for stage in ("codegen", "codegen-review"):
+            expected[f"assurance.generation.agent.{family}.{stage}.v1"] = 2
     actual = Counter(
         contract_id
         for owner in _FACTORY_BUILDERS
         for contract_id in _build_owner(owner)[1].bound_contract_ids
     )
     assert len(ids) == 44
-    assert expected.total() == 47
+    assert expected.total() == 55
     assert actual == expected
     assert sum(len(names) for names in IMPLEMENTED_BUNDLE_FIELDS.values()) == 27
 
@@ -326,7 +334,7 @@ def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) 
         patch_graph_function(factory)
     contexts = [_build_owner(owner)[1] for owner in _FACTORY_BUILDERS]
     assert len(visited) >= 12
-    assert len(calls) == 47
+    assert len(calls) == 55
     assert Counter(contract_id for _, contract_id in calls) == Counter(
         contract_id for context in contexts for contract_id in context.bound_contract_ids
     )

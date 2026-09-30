@@ -43,6 +43,19 @@ _PURE_IDS = (
     "assurance.generation.complete",
     "assurance.generation.review-round.advance",
 )
+_FAMILY_NODES = frozenset(
+    {
+        "codegen",
+        "codegen-review",
+        "codegen-review-round-advance",
+        "codegen-round-join",
+        "codegen-human-review",
+        "skip",
+        "done",
+        "rejected",
+        "exhausted",
+    }
+)
 _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_generation" / "graphs"
 
 
@@ -229,7 +242,7 @@ def test_generation_factory_exports_root_and_four_families(
     )
     assert isinstance(bundle, GenerationGraphs)
     unique = tuple(dict.fromkeys(recording_context.bound_contract_ids))
-    assert len(recording_context.bound_contract_ids) == 12
+    assert len(recording_context.bound_contract_ids) == 20
     assert recording_context.bound_contract_ids.count("assurance.generation.resolve-inputs") == 2
     assert len(unique) == 11
     assert set(recording_context.bound_contract_ids) == set(unique)
@@ -297,7 +310,13 @@ def test_root_factory_does_not_ainvoke_family_graphs(recording_context) -> None:
     assert "fuzz" in _node_names(bundle.generation)
     assert "performance" in _node_names(bundle.generation)
     assert "codegen-human-review" in _node_names(bundle.generation)
-    assert "codegen-human-review-retry" in _node_names(bundle.generation)
+    assert "codegen-human-review-retry" not in _node_names(bundle.generation)
+
+
+def test_family_graph_node_set_is_the_flattened_attempt_loop(recording_context) -> None:
+    bundle = build_generation_graphs(recording_context)
+    for family in _FAMILIES:
+        assert _node_names(getattr(bundle, family)) == _FAMILY_NODES
 
 
 def test_terminal_done_without_family_does_not_write_api_lane() -> None:
