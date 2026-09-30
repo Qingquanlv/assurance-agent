@@ -57,6 +57,7 @@ from agent_runtime_opencode.reducer import (
     result_candidate_satisfies_contract,
     select_unique_contract_valid_result,
 )
+from agent_runtime_opencode.transport.connection import PROVIDER_ERRORS, open_client
 from agent_runtime_opencode.workspace_binding import (
     activity_label_for_session,
     child_session_title,
@@ -101,16 +102,8 @@ class OpenCodeHandler:
         config = OpenCodeAdapterConfig.from_request(request)
         if context.secrets is None:
             raise SecretHandleUnauthorized("secret port is required")
-        secret = context.secrets.resolve(config.secret_handle)
-        client = OpenCodeHttpClient(
-            config,
-            secret=secret,
-            directory=str(context.project_root.resolve()),
-        )
-        try:
-            return await self._observe_fingerprint(client, config, secret)
-        finally:
-            await client.aclose()
+        async with open_client(config, context) as connection:
+            return await self._observe_fingerprint(connection.client, config, connection.secret)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
@@ -186,49 +179,22 @@ class OpenCodeHandler:
         if mismatch is not None:
             return TaskActivityCancelResult(status="indeterminate", reason=mismatch)
         agent_run = self._effective_agent_run(request, context)
-        secret = context.secrets.resolve(config.secret_handle)
-        client = OpenCodeHttpClient(
-            config,
-            secret=secret,
-            directory=str(context.project_root.resolve()),
-        )
-        try:
-            context.heartbeat()
-            fingerprint = await self._observe_fingerprint(client, config, secret)
-            expected = self._expected_reference_fields(request, port.snapshot, fingerprint, agent_run)
-            bound = await self._load_bound_session(client, port.snapshot, expected)
-            if isinstance(bound, TaskActivityReconcileResult):
-                return TaskActivityCancelResult(
-                    status="indeterminate",
-                    reason=bound.reason or "bound reference is not authentic",
-                )
-            reference, record = bound
-            canaries = _secret_canaries(secret)
-            observed = await self._observe_bound(
-                client,
-                request,
-                context,
-                reference,
-                record,
-                agent_run=agent_run,
-                canaries=canaries,
-            )
-            if observed.status == "terminal":
-                if observed.outcome is None:
+        async with open_client(config, context) as connection:
+            client = connection.client
+            secret = connection.secret
+            try:
+                context.heartbeat()
+                fingerprint = await self._observe_fingerprint(client, config, secret)
+                expected = self._expected_reference_fields(request, port.snapshot, fingerprint, agent_run)
+                bound = await self._load_bound_session(client, port.snapshot, expected)
+                if isinstance(bound, TaskActivityReconcileResult):
                     return TaskActivityCancelResult(
                         status="indeterminate",
-                        reason="terminal observation is missing an outcome",
+                        reason=bound.reason or "bound reference is not authentic",
                     )
-                return TaskActivityCancelResult(status="terminal", outcome=observed.outcome)
-            if observed.status == "indeterminate":
-                return TaskActivityCancelResult(
-                    status="indeterminate",
-                    reason=observed.reason or "provider observation is indeterminate",
-                )
-            await client.abort(reference.session_id or "")
-            deadline = time.monotonic() + config.cancel_timeout_seconds
-            while True:
-                raced = await self._observe_bound(
+                reference, record = bound
+                canaries = _secret_canaries(secret)
+                observed = await self._observe_bound(
                     client,
                     request,
                     context,
@@ -237,28 +203,50 @@ class OpenCodeHandler:
                     agent_run=agent_run,
                     canaries=canaries,
                 )
-                if raced.status == "terminal":
-                    if raced.outcome is None:
+                if observed.status == "terminal":
+                    if observed.outcome is None:
                         return TaskActivityCancelResult(
                             status="indeterminate",
                             reason="terminal observation is missing an outcome",
                         )
-                    return TaskActivityCancelResult(status="terminal", outcome=raced.outcome)
-                if raced.status == "indeterminate":
+                    return TaskActivityCancelResult(status="terminal", outcome=observed.outcome)
+                if observed.status == "indeterminate":
                     return TaskActivityCancelResult(
                         status="indeterminate",
-                        reason=raced.reason or "provider observation is indeterminate",
+                        reason=observed.reason or "provider observation is indeterminate",
                     )
-                if time.monotonic() >= deadline:
-                    return TaskActivityCancelResult(status="acknowledged")
-                await asyncio.sleep(config.poll_interval_seconds)
-        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
-            return TaskActivityCancelResult(
-                status="indeterminate",
-                reason=str(error) or "provider cancel is indeterminate",
-            )
-        finally:
-            await client.aclose()
+                await client.abort(reference.session_id or "")
+                deadline = time.monotonic() + config.cancel_timeout_seconds
+                while True:
+                    raced = await self._observe_bound(
+                        client,
+                        request,
+                        context,
+                        reference,
+                        record,
+                        agent_run=agent_run,
+                        canaries=canaries,
+                    )
+                    if raced.status == "terminal":
+                        if raced.outcome is None:
+                            return TaskActivityCancelResult(
+                                status="indeterminate",
+                                reason="terminal observation is missing an outcome",
+                            )
+                        return TaskActivityCancelResult(status="terminal", outcome=raced.outcome)
+                    if raced.status == "indeterminate":
+                        return TaskActivityCancelResult(
+                            status="indeterminate",
+                            reason=raced.reason or "provider observation is indeterminate",
+                        )
+                    if time.monotonic() >= deadline:
+                        return TaskActivityCancelResult(status="acknowledged")
+                    await asyncio.sleep(config.poll_interval_seconds)
+            except PROVIDER_ERRORS as error:
+                return TaskActivityCancelResult(
+                    status="indeterminate",
+                    reason=str(error) or "provider cancel is indeterminate",
+                )
 
     async def _reconcile_session(
         self,
@@ -280,54 +268,49 @@ class OpenCodeHandler:
                 raise ValueError(mismatch)
             return TaskActivityReconcileResult(status="indeterminate", reason=mismatch)
         agent_run = self._effective_agent_run(request, context)
-        secret = context.secrets.resolve(config.secret_handle)
-        canaries = _secret_canaries(secret)
-        client = OpenCodeHttpClient(
-            config,
-            secret=secret,
-            directory=str(context.project_root.resolve()),
-        )
-        try:
-            context.heartbeat()
-            fingerprint = await self._observe_fingerprint(client, config, secret)
-            dispatch_fingerprint = _dispatch_fingerprint(fingerprint, context)
-            expected = self._expected_reference_fields(request, snapshot, fingerprint, agent_run)
-            if snapshot.reference is not None:
-                return await self._reconcile_bound(
+        async with open_client(config, context) as connection:
+            client = connection.client
+            secret = connection.secret
+            canaries = _secret_canaries(secret)
+            try:
+                context.heartbeat()
+                fingerprint = await self._observe_fingerprint(client, config, secret)
+                dispatch_fingerprint = _dispatch_fingerprint(fingerprint, context)
+                expected = self._expected_reference_fields(request, snapshot, fingerprint, agent_run)
+                if snapshot.reference is not None:
+                    return await self._reconcile_bound(
+                        client,
+                        request,
+                        context,
+                        snapshot,
+                        expected,
+                        agent_run=agent_run,
+                        canaries=canaries,
+                    )
+                if snapshot.state == "prepared" and not allow_create:
+                    return await self._reconcile_prepared(
+                        client, port, request, snapshot, dispatch_fingerprint, expected
+                    )
+                was_prepared = snapshot.state == "prepared"
+                snapshot = port.mark_dispatch_started(dispatch_fingerprint)
+                expected = self._expected_reference_fields(request, snapshot, fingerprint, agent_run)
+                return await self._discover_or_create(
                     client,
+                    port,
                     request,
                     context,
                     snapshot,
                     expected,
                     agent_run=agent_run,
-                    canaries=canaries,
+                    allow_create=allow_create and was_prepared,
                 )
-            if snapshot.state == "prepared" and not allow_create:
-                return await self._reconcile_prepared(
-                    client, port, request, snapshot, dispatch_fingerprint, expected
+            except PROVIDER_ERRORS as error:
+                if allow_create:
+                    raise
+                return TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason=str(error) or "provider observation is indeterminate",
                 )
-            was_prepared = snapshot.state == "prepared"
-            snapshot = port.mark_dispatch_started(dispatch_fingerprint)
-            expected = self._expected_reference_fields(request, snapshot, fingerprint, agent_run)
-            return await self._discover_or_create(
-                client,
-                port,
-                request,
-                context,
-                snapshot,
-                expected,
-                agent_run=agent_run,
-                allow_create=allow_create and was_prepared,
-            )
-        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
-            if allow_create:
-                raise
-            return TaskActivityReconcileResult(
-                status="indeterminate",
-                reason=str(error) or "provider observation is indeterminate",
-            )
-        finally:
-            await client.aclose()
 
     async def _reconcile_prepared(
         self,
@@ -616,7 +599,7 @@ class OpenCodeHandler:
                 or (check_title and record.get("title") != title)
             ):
                 raise ValueError(_BINDING_INVALID)
-        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
+        except PROVIDER_ERRORS:
             return TaskActivityReconcileResult(
                 status="indeterminate",
                 reason=_BINDING_INVALID,
@@ -719,7 +702,7 @@ class OpenCodeHandler:
             if not isinstance(session, dict):
                 session = record
             messages = await client.list_messages(session_id)
-        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
+        except PROVIDER_ERRORS as error:
             return TaskActivityReconcileResult(
                 status="indeterminate",
                 reason=str(error) or "provider observation is indeterminate",
@@ -760,19 +743,14 @@ class OpenCodeHandler:
                     return TaskActivityReconcileResult(status="running", reference=dumped)
                 try:
                     await client.abort(session_id)
-                except (
-                    httpx.TransportError,
-                    httpx.HTTPStatusError,
-                    json.JSONDecodeError,
-                    ValueError,
-                ) as error:
+                except PROVIDER_ERRORS as error:
                     return TaskActivityReconcileResult(
                         status="indeterminate",
                         reason=str(error) or "busy session abort is indeterminate",
                     )
         try:
             diff = await client.get_session_diff(session_id)
-        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
+        except PROVIDER_ERRORS as error:
             return TaskActivityReconcileResult(
                 status="indeterminate",
                 reason=str(error) or "provider observation is indeterminate",
