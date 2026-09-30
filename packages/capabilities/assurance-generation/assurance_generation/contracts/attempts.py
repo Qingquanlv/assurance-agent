@@ -249,9 +249,6 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
         "init-test-runtime": _INIT_TEST_RUNTIME,
     }
 )
-GENERATION_GRAPH_CONTRACT_IDS: tuple[str, ...] = tuple(
-    contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()
-) + (_RESOLVE_INPUTS.contract_id, _PUBLISH_CYCLE.contract_id, _INIT_TEST_RUNTIME.contract_id)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
@@ -271,7 +268,6 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
-    "GENERATION_GRAPH_CONTRACT_IDS",
     "OUTPUT_ROUTE_TEMPLATES",
     "TASK_ATTEMPT_CONTRACTS",
     "attempt_contract_refs",

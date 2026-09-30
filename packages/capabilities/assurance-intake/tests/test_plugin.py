@@ -54,6 +54,13 @@ def test_intake_rejects_unsupported_engine_api() -> None:
         IntakePlugin.contribute(RegistryPorts(engine_api="1.0"))
 
 
+def test_intake_does_not_publish_legacy_prompt_resources() -> None:
+    contribution = IntakePlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    assert not any(
+        resource.resource_id.startswith("assurance.intake.prompt.") for resource in contribution.resources
+    )
+
+
 def test_resource_bytes_rejects_non_canonical_path() -> None:
     with pytest.raises(ValueError, match="canonical and relative"):
         resource_bytes("../secret")

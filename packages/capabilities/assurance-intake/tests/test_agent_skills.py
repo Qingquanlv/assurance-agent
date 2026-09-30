@@ -308,7 +308,6 @@ def test_explore_resources_require_complete_output_even_when_evidence_is_degrade
     resources = {
         "skill": resource_text("skills/aa-explore/SKILL.md"),
         "persona": resource_text("personas/explorer.md"),
-        "prompt": resource_text("prompts/explore.md"),
     }
 
     for content in resources.values():
@@ -448,13 +447,16 @@ def test_case_reviewer_uses_locked_requirement_and_reports_findings_exhaustively
     resources = {
         "skill": resource_text("skills/aa-case-reviewer/SKILL.md"),
         "persona": resource_text("personas/reviewer.md"),
-        "prompt": resource_text("prompts/case-review.md"),
     }
 
     for content in resources.values():
         assert "requirement.md" in content
         assert "explicit numerical thresholds and load values" in content
         assert "complete all review criteria before writing the verdict" in content
+
+    persona = " ".join(resources["persona"].split())
+    assert "report all currently observable closed-key defects together" in persona.lower()
+    assert "an absent stable target is not a finding" in persona.lower()
 
     designer = resource_text("skills/aa-case-design/SKILL.md")
     assert "Apply every listed auto-fix finding in one pass" in designer
@@ -502,19 +504,6 @@ def test_case_skills_keep_advisory_mrc_complete_without_inventing_human_blockers
     assert "not as an implicit business oracle" in reviewer
     assert "Do not create a blocking `needs_review` item" in reviewer
     assert "Never require a proposed MRC key in case `trace`" in reviewer
-
-
-def test_case_prompts_prevent_incremental_closed_key_review_churn() -> None:
-    designer = " ".join(resource_text("prompts/case-design.md").split())
-    reviewer = " ".join(resource_text("prompts/case-review.md").split())
-    persona = " ".join(resource_text("personas/reviewer.md").split())
-
-    assert "product source is verification evidence, not a frozen business oracle" in designer.lower()
-    assert "classify every MRC row in one complete pass" in designer
-    assert "audit every MRC row in one complete pass" in reviewer
-    assert "product source is verification evidence, not a frozen business oracle" in reviewer.lower()
-    assert "report all currently observable closed-key defects together" in persona.lower()
-    assert "an absent stable target is not a finding" in persona.lower()
 
 
 def _sealed_rows(*drafts: dict[str, object]) -> list[dict[str, object]]:

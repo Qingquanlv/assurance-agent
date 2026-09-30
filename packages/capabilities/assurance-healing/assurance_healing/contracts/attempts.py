@@ -126,15 +126,6 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
-HEALING_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
-    "assurance.healing.agent.apply-test-repair.v1",
-    "assurance.healing.agent.coverage-repair.v1",
-    "assurance.healing.agent.fix-proposal.v1",
-)
-HEALING_GRAPH_EXPORTS: tuple[str, ...] = (
-    "repair_failure",
-    "repair_coverage",
-)
 HEALING_EFFECT_IDS: tuple[str, ...] = (
     "assurance.healing.effect.allocation.v2",
     "assurance.healing.effect.heal-apply.v2",
@@ -160,8 +151,6 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
 __all__ = [
     "AGENT_JOB_CONTRACTS",
     "HEALING_EFFECT_IDS",
-    "HEALING_GRAPH_CONTRACT_IDS",
-    "HEALING_GRAPH_EXPORTS",
     "OUTPUT_ROUTE_TEMPLATES",
     "TASK_ATTEMPT_CONTRACTS",
     "attempt_contract_refs",

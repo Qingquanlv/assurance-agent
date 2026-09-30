@@ -207,25 +207,6 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
         "surface-baseline": _SURFACE_BASELINE,
     }
 )
-QUALITY_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
-    _MATERIALIZE_ASSESSMENT.contract_id,
-    _RECONCILE_ISSUES.contract_id,
-    _SURFACE_BASELINE.contract_id,
-    "assurance.quality.agent.fact-baseline.v1",
-    "assurance.quality.agent.inspect.v1",
-    "assurance.quality.agent.issue-triage.v1",
-    "assurance.quality.agent.issue-analysis.v1",
-    "assurance.quality.agent.report.v1",
-)
-QUALITY_GRAPH_EXPORTS: tuple[str, ...] = (
-    "assess",
-    "issue_review",
-    "issue_analyze",
-    "issue_reconcile",
-    "report",
-    "fact_baseline",
-    "surface_baseline",
-)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
@@ -246,8 +227,6 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
 __all__ = [
     "AGENT_JOB_CONTRACTS",
     "OUTPUT_ROUTE_TEMPLATES",
-    "QUALITY_GRAPH_CONTRACT_IDS",
-    "QUALITY_GRAPH_EXPORTS",
     "TASK_ATTEMPT_CONTRACTS",
     "attempt_contract_refs",
 ]

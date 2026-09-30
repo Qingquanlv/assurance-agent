@@ -45,7 +45,6 @@ def _job(
     result_model: type[Any],
     output_model: type[Any],
     outputs: tuple[str, ...],
-    extra_claims: tuple[str, ...] = (),
 ) -> AgentExecutionContract[Any, Any, Any]:
     prepare_suffixes = {
         "explore": ("explore/context.json",),
@@ -61,12 +60,7 @@ def _job(
         finalize_paths = tuple(sorted((*finalize_paths, "qa/results/cases/epochs")))
     literal_claims = (_CASES_ROOT,) if base == "case-design" else ()
     writes = tuple(
-        sorted(
-            set(_paths(*outputs, *extra_claims))
-            | set(literal_claims)
-            | set(prepare_paths)
-            | set(finalize_paths)
-        )
+        sorted(set(_paths(*outputs)) | set(literal_claims) | set(prepare_paths) | set(finalize_paths))
     )
     return AgentExecutionContract(
         contract_id=f"assurance.intake.agent.{base}.v1",
@@ -96,7 +90,7 @@ def _job(
 
 
 _JOBS: tuple[
-    tuple[str, str, str, type[Any], type[Any], type[Any], tuple[str, ...], tuple[str, ...]],
+    tuple[str, str, str, type[Any], type[Any], type[Any], tuple[str, ...]],
     ...,
 ] = (
     (
@@ -107,7 +101,6 @@ _JOBS: tuple[
         ArtifactListResultV1,
         CaseDesignOutputV1,
         (".qa.yaml", "proposal.md", "trace/minimum-coverage-matrix.json"),
-        (),
     ),
     (
         "case-review",
@@ -117,7 +110,6 @@ _JOBS: tuple[
         CaseReviewResultV1,
         CaseReviewResultV1,
         ("review/case-review.json", "review/case-review-summary.md"),
-        (),
     ),
     (
         "explore",
@@ -127,7 +119,6 @@ _JOBS: tuple[
         ArtifactListResultV1,
         FinalizedArtifactsV1,
         ("explore/exploration-draft.json", "explore/impact-inventory.json"),
-        (),
     ),
     (
         "intake",
@@ -137,14 +128,13 @@ _JOBS: tuple[
         ArtifactListResultV1,
         FinalizedArtifactsV1,
         (".qa.yaml",),
-        (),
     ),
 )
 
 AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(
     {
-        base: _job(base, skill_id, profile, input_model, result_model, output_model, outputs, extra)
-        for base, skill_id, profile, input_model, result_model, output_model, outputs, extra in _JOBS
+        base: _job(base, skill_id, profile, input_model, result_model, output_model, outputs)
+        for base, skill_id, profile, input_model, result_model, output_model, outputs in _JOBS
     }
 )
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
@@ -165,7 +155,7 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                 )
             )
         )
-        for base, _skill, _profile, _input, _result, _output, outputs, _extra in _JOBS
+        for base, _skill, _profile, _input, _result, _output, outputs in _JOBS
     }
 )
 _RESOLVE_PLAN = TaskAttemptContract(
@@ -184,19 +174,6 @@ _RESOLVE_PLAN = TaskAttemptContract(
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
     {"resolve-plan": _RESOLVE_PLAN}
-)
-INTAKE_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
-    "assurance.intake.agent.intake.v1",
-    "assurance.intake.agent.explore.v1",
-    "assurance.intake.agent.case-design.v1",
-    "assurance.intake.agent.case-review.v1",
-)
-INTAKE_GRAPH_SEMANTIC_OCCURRENCES: tuple[tuple[str, str], ...] = (
-    ("intake.intake", "assurance.intake.agent.intake.v1"),
-    ("intake.explore", "assurance.intake.agent.explore.v1"),
-    ("intake.case-design", "assurance.intake.agent.case-design.v1"),
-    ("intake.case-design-repair", "assurance.intake.agent.case-design.v1"),
-    ("intake.case-review", "assurance.intake.agent.case-review.v1"),
 )
 
 
@@ -217,8 +194,6 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
-    "INTAKE_GRAPH_CONTRACT_IDS",
-    "INTAKE_GRAPH_SEMANTIC_OCCURRENCES",
     "OUTPUT_ROUTE_TEMPLATES",
     "TASK_ATTEMPT_CONTRACTS",
     "attempt_contract_refs",
