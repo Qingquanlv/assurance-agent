@@ -6,17 +6,9 @@ from typing import Annotated, Literal, TypedDict
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from assurance_intake.operations.history_refs import merge_history_refs
 
-CASE_REVIEW_PREDECESSORS = (
-    "review-round-advance",
-    "review-round-advance-retry",
-    "review-round-advance-rework-retry",
-)
+CASE_REVIEW_PREDECESSORS = ("review-round-advance",)
 
-CaseReviewPredecessor = Literal[
-    "review-round-advance",
-    "review-round-advance-retry",
-    "review-round-advance-rework-retry",
-]
+CaseReviewPredecessor = Literal["review-round-advance"]
 
 
 class CaseReviewArrival(TypedDict):

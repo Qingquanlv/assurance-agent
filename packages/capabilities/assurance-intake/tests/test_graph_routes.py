@@ -10,14 +10,11 @@ from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusiv
 from assurance_intake.graphs.routes import (
     case_design_named_matches,
     case_review_named_matches,
-    case_review_retry_named_matches,
     human_review_named_matches,
-    human_review_retry_named_matches,
     route_case_design,
+    route_case_design_result,
     route_case_review,
-    route_case_review_retry,
     route_human_review,
-    route_human_review_retry,
 )
 
 _ROUTES_PATH = Path(__file__).resolve().parents[1] / "assurance_intake" / "graphs" / "routes.py"
@@ -61,9 +58,7 @@ def test_routes_use_select_exclusive_route_without_priority_if_elif() -> None:
     ("builder", "otherwise"),
     [
         (case_review_named_matches, "exhausted"),
-        (case_review_retry_named_matches, "exhausted"),
         (human_review_named_matches, "exhausted"),
-        (human_review_retry_named_matches, "exhausted"),
         (case_design_named_matches, "case-design-repair"),
     ],
 )
@@ -100,20 +95,6 @@ def test_case_review_pass_and_automatic_fix_and_reject_and_human() -> None:
     )
 
 
-def test_case_review_retry_uses_retry_advance_and_retry_interrupt() -> None:
-    assert (
-        route_case_review_retry(
-            _review_state(decision="needs_fix", auto_fix_allowed=True, rounds_used=1, rounds_budget=2)
-        )
-        == "review-round-advance-retry"
-    )
-    assert (
-        route_case_review_retry(_review_state(decision="needs_human_review", human_review_required=True))
-        == "human-review-retry"
-    )
-    assert route_case_review_retry(_review_state(decision="pass")) == "done"
-
-
 def test_human_review_routes_and_budget_exhaustion() -> None:
     assert route_human_review(_review_state(action="approve")) == "done"
     assert route_human_review(_review_state(action="reject")) == "rejected"
@@ -125,11 +106,11 @@ def test_human_review_routes_and_budget_exhaustion() -> None:
         route_human_review(_review_state(action="request_rework", rounds_used=2, rounds_budget=2))
         == "exhausted"
     )
-    assert (
-        route_human_review_retry(_review_state(action="request_rework", rounds_used=1, rounds_budget=2))
-        == "review-round-advance-rework-retry"
-    )
-    assert route_human_review_retry(_review_state(action="approve")) == "done"
+
+
+def test_case_design_result_names_case_review_or_exhausted() -> None:
+    assert route_case_design_result({"status": "passed"}) == "case-review"
+    assert route_case_design_result({"status": "failed"}) == "exhausted"
 
 
 def test_case_design_routes_pass_to_done_and_otherwise_to_repair() -> None:

@@ -22,7 +22,6 @@ from assurance_intake.graphs.nodes import (
     HUMAN_REVIEW_ACTIONS,
     advance_review_round_node,
     human_review,
-    human_review_retry,
     publish_case_review,
 )
 from assurance_intake.graphs.state import IntakeState
@@ -195,15 +194,14 @@ def _patch_interrupt(node: Callable[..., Any], **kwargs: Any):
     return patch.dict(node.__globals__, {"interrupt": MagicMock(**kwargs)})
 
 
-def test_both_interrupt_sites_accept_only_approve_reject_request_rework() -> None:
+def test_interrupt_accepts_only_approve_reject_request_rework() -> None:
     assert HUMAN_REVIEW_ACTIONS == ("approve", "reject", "request_rework")
-    for node in (human_review, human_review_retry):
-        with _patch_interrupt(node, return_value={"action": "supersede"}):
-            with pytest.raises(ValidationError):
-                node({"rounds_used": 0, "rounds_budget": 2})
-        with _patch_interrupt(node, return_value={"action": "hold"}):
-            with pytest.raises(ValidationError):
-                node({"rounds_used": 0, "rounds_budget": 2})
+    with _patch_interrupt(human_review, return_value={"action": "supersede"}):
+        with pytest.raises(ValidationError):
+            human_review({"rounds_used": 0, "rounds_budget": 2})
+    with _patch_interrupt(human_review, return_value={"action": "hold"}):
+        with pytest.raises(ValidationError):
+            human_review({"rounds_used": 0, "rounds_budget": 2})
 
 
 def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_interrupt() -> None:

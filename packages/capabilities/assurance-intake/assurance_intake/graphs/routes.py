@@ -43,31 +43,12 @@ def case_review_named_matches(state: Mapping[str, object]) -> dict[str, str | No
     }
 
 
-def case_review_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    matches = case_review_named_matches(state)
-    return {
-        "pass": matches["pass"],
-        "auto_fix": "review-round-advance-retry" if matches["auto_fix"] else None,
-        "reject": matches["reject"],
-        "human": "human-review-retry" if matches["human"] else None,
-    }
-
-
 def human_review_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     action = state.get("human_action")
     return {
         "approve": "done" if action == "approve" else None,
         "reject": "rejected" if action == "reject" else None,
         "rework": "review-round-advance" if action == "request_rework" and _has_budget(state) else None,
-    }
-
-
-def human_review_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    matches = human_review_named_matches(state)
-    return {
-        "approve": matches["approve"],
-        "reject": matches["reject"],
-        "rework": "review-round-advance-rework-retry" if matches["rework"] else None,
     }
 
 
@@ -80,7 +61,7 @@ def case_design_named_matches(state: Mapping[str, object]) -> dict[str, str | No
 
 
 def route_case_design_result(state: Mapping[str, object]) -> str:
-    return "review" if state.get("status") == "passed" else "failed"
+    return "case-review" if state.get("status") == "passed" else "exhausted"
 
 
 def route_case_design_repair(state: Mapping[str, object]) -> str:
@@ -93,16 +74,8 @@ def route_case_review(state: Mapping[str, object]) -> str:
     return select_exclusive_route(case_review_named_matches(state), otherwise="exhausted")
 
 
-def route_case_review_retry(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(case_review_retry_named_matches(state), otherwise="exhausted")
-
-
 def route_human_review(state: Mapping[str, object]) -> str:
     return select_exclusive_route(human_review_named_matches(state), otherwise="exhausted")
-
-
-def route_human_review_retry(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(human_review_retry_named_matches(state), otherwise="exhausted")
 
 
 def route_case_design(state: Mapping[str, object]) -> str:
@@ -112,14 +85,10 @@ def route_case_design(state: Mapping[str, object]) -> str:
 __all__ = [
     "case_design_named_matches",
     "case_review_named_matches",
-    "case_review_retry_named_matches",
     "human_review_named_matches",
-    "human_review_retry_named_matches",
     "route_case_design",
     "route_case_design_repair",
     "route_case_design_result",
     "route_case_review",
-    "route_case_review_retry",
     "route_human_review",
-    "route_human_review_retry",
 ]

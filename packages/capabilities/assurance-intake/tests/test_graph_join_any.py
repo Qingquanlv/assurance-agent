@@ -28,11 +28,7 @@ from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed
 
-_PREDECESSORS = (
-    "review-round-advance",
-    "review-round-advance-retry",
-    "review-round-advance-rework-retry",
-)
+_PREDECESSORS = ("review-round-advance",)
 _CURRENT_TRIGGER_ROWS = (("assurance.intake.workflow.graph.entry", "advance-join"),)
 
 
@@ -86,7 +82,7 @@ def test_current_trigger(row: tuple[str, str]) -> None:
             ],
             "rounds_used": 0,
             "rounds_budget": 2,
-            "current_trigger": _arrival("review-round-advance-retry", used=9, budget=9),
+            "current_trigger": _arrival("review-round-advance", used=9, budget=9, sequence=9),
             "predecessor_tokens": {"advance-join": {"tokens": [{"rounds_used": 9, "rounds_budget": 9}]}},
             "case_review_inbox": inbox,
         }
@@ -113,7 +109,7 @@ def test_first_arrival_becomes_exact_current_trigger() -> None:
 
 def test_late_second_arrival_in_same_epoch_is_retained_and_dispatched_once() -> None:
     first = _arrival("review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("review-round-advance-retry", epoch=0, sequence=2, used=1)
+    late = _arrival("review-round-advance", epoch=0, sequence=2, used=1)
     inbox = offer_case_review_arrival(empty_case_review_inbox(), first)
     inbox = offer_case_review_arrival(inbox, late)
     assert inbox["current_trigger"] == first
@@ -131,7 +127,7 @@ def test_late_second_arrival_in_same_epoch_is_retained_and_dispatched_once() -> 
 
 
 def test_replay_of_the_same_arrival_id_is_deduplicated() -> None:
-    arrival = _arrival("review-round-advance-rework-retry", sequence=4)
+    arrival = _arrival("review-round-advance", sequence=4)
     inbox = offer_case_review_arrival(empty_case_review_inbox(), arrival)
     replayed = offer_case_review_arrival(inbox, arrival)
     assert replayed["arrivals"] == [arrival]
@@ -140,7 +136,7 @@ def test_replay_of_the_same_arrival_id_is_deduplicated() -> None:
 
 def test_two_reducer_merge_orders_produce_identical_inbox_state() -> None:
     first = _arrival("review-round-advance", sequence=1, used=1)
-    second = _arrival("review-round-advance-retry", sequence=2, used=1)
+    second = _arrival("review-round-advance", sequence=2, used=1)
     empty = empty_case_review_inbox()
     left = merge_case_review_inbox(
         offer_case_review_arrival(empty, first),
@@ -158,7 +154,7 @@ def test_two_reducer_merge_orders_produce_identical_inbox_state() -> None:
 
 def test_repeated_business_epochs_preserve_exact_rounds_used_and_budget() -> None:
     epoch_one = _arrival("review-round-advance", epoch=0, sequence=1, used=1, budget=2)
-    epoch_two = _arrival("review-round-advance-retry", epoch=1, sequence=1, used=2, budget=2)
+    epoch_two = _arrival("review-round-advance", epoch=1, sequence=1, used=2, budget=2)
     inbox = consume_case_review_trigger(offer_case_review_arrival(empty_case_review_inbox(), epoch_one))
     inbox = offer_case_review_arrival(inbox, epoch_two)
     current = inbox["current_trigger"]
@@ -183,7 +179,7 @@ def test_dispatch_cursor_never_reclaims_a_consumed_arrival() -> None:
 
 def test_downstream_case_design_retry_reads_current_trigger_value_only() -> None:
     stale_rounds = {"rounds_used": 0, "rounds_budget": 2}
-    arrival = _arrival("review-round-advance-retry", used=1, budget=2)
+    arrival = _arrival("review-round-advance", used=1, budget=2)
     inbox = offer_case_review_arrival(empty_case_review_inbox(), arrival)
     state: dict[str, Any] = {
         "change_id": "CH-DEMO-001",
@@ -334,10 +330,10 @@ def _offer_node(arrival: CaseReviewArrival, *, poison_lww: bool) -> Callable[...
 
 def _compile_two_predecessor_join(*, late_writes_lww: bool, first_added_first: bool) -> Any:
     first = _arrival("review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("review-round-advance-retry", epoch=0, sequence=1, used=1)
+    late = _arrival("review-round-advance", epoch=0, sequence=2, used=1)
     nodes = [
         ("review-round-advance", _offer_node(first, poison_lww=not late_writes_lww)),
-        ("review-round-advance-retry", _offer_node(late, poison_lww=late_writes_lww)),
+        ("late-advance", _offer_node(late, poison_lww=late_writes_lww)),
     ]
     ordered = nodes if first_added_first else list(reversed(nodes))
     builder: StateGraph[IntakeState] = StateGraph(IntakeState)
@@ -345,9 +341,9 @@ def _compile_two_predecessor_join(*, late_writes_lww: bool, first_added_first: b
         builder.add_node(name, cast(Callable[..., Any], node))
     builder.add_node("advance-join", cast(Callable[..., Any], advance_join))
     builder.add_edge(START, "review-round-advance")
-    builder.add_edge(START, "review-round-advance-retry")
+    builder.add_edge(START, "late-advance")
     builder.add_edge("review-round-advance", "advance-join")
-    builder.add_edge("review-round-advance-retry", "advance-join")
+    builder.add_edge("late-advance", "advance-join")
     builder.add_edge("advance-join", END)
     return builder.compile(checkpointer=None)
 
@@ -375,7 +371,7 @@ def _join_seed() -> dict[str, object]:
 
 async def test_compiled_join_reads_inbox_cursor_not_lww_shadow() -> None:
     first = _arrival("review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("review-round-advance-retry", epoch=0, sequence=2, used=9, budget=9)
+    late = _arrival("review-round-advance", epoch=0, sequence=2, used=9, budget=9)
     inbox = offer_case_review_arrival(empty_case_review_inbox(), first)
     inbox = offer_case_review_arrival(inbox, late)
     assert inbox["current_trigger"] == first
@@ -399,7 +395,7 @@ async def test_compiled_join_reads_inbox_cursor_not_lww_shadow() -> None:
 
 async def test_compiled_graph_same_epoch_arrivals_retained_first_current_then_late_dispatched() -> None:
     first = _arrival("review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("review-round-advance-retry", epoch=0, sequence=1, used=1)
+    late = _arrival("review-round-advance", epoch=0, sequence=2, used=1)
     result = await _compile_two_predecessor_join(late_writes_lww=True, first_added_first=True).ainvoke(
         _join_seed()
     )
@@ -443,7 +439,7 @@ async def test_compiled_graph_two_reducer_merge_orders_are_identical() -> None:
 
 
 async def test_compiled_graph_replay_of_same_arrival_id_is_deduplicated() -> None:
-    arrival = _arrival("review-round-advance-rework-retry", sequence=4)
+    arrival = _arrival("review-round-advance", sequence=4)
 
     def _offer(state: dict[str, Any]) -> dict[str, object]:
         inbox = offer_case_review_arrival(
@@ -542,6 +538,15 @@ async def test_compiled_case_repeated_epochs_preserve_exact_rounds() -> None:
     assert current["value"] != {"rounds_used": 3, "rounds_budget": 2}
     assert current["business_epoch"] == 1
     assert terminal["rounds_used"] == 2
+    edges = {(edge.source, edge.target) for edge in bundle.case.get_graph().edges}
+    assert ("advance-join", "case-design") in edges
+    arrivals = terminal["case_review_inbox"]["arrivals"]
+    assert [item["predecessor"] for item in arrivals] == [
+        "review-round-advance",
+        "review-round-advance",
+    ]
+    assert arrivals[0]["arrival_id"] != arrivals[1]["arrival_id"]
+    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 3
 
 
 async def test_compiled_case_keeps_review_budget_authoritative_when_agent_replays_round_zero() -> None:

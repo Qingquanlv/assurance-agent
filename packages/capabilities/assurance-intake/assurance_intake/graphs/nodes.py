@@ -470,16 +470,6 @@ def review_round_advance(state: Mapping[str, object]) -> dict[str, object]:
     return {**advanced, **offer_advance({**dict(state), **advanced}, "review-round-advance")}
 
 
-def review_round_advance_retry(state: Mapping[str, object]) -> dict[str, object]:
-    advanced = advance_review_round_node(state)
-    return {**advanced, **offer_advance({**dict(state), **advanced}, "review-round-advance-retry")}
-
-
-def review_round_advance_rework_retry(state: Mapping[str, object]) -> dict[str, object]:
-    advanced = advance_review_round_node(state)
-    return {**advanced, **offer_advance({**dict(state), **advanced}, "review-round-advance-rework-retry")}
-
-
 def advance_join(state: Mapping[str, object]) -> dict[str, object]:
     return apply_current_trigger(state)
 
@@ -494,7 +484,6 @@ def _human_review_payload(state: Mapping[str, object]) -> dict[str, object]:
 
 
 human_review = human_gate(_human_review_payload, decision=HumanReviewDecision)
-human_review_retry = human_review
 
 
 def terminal_done(state: Mapping[str, object]) -> dict[str, object]:
@@ -545,13 +534,10 @@ __all__ = [
     "advance_review_round_node",
     "apply_current_trigger",
     "human_review",
-    "human_review_retry",
     "publish_artifacts",
     "publish_case_design",
     "publish_case_review",
     "review_round_advance",
-    "review_round_advance_retry",
-    "review_round_advance_rework_retry",
     "select_case_design",
     "select_case_design_repair",
     "select_case_design_retry",

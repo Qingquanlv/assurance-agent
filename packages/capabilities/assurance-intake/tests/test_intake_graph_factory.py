@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pytest
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from agent_runtime_contracts import (
@@ -204,6 +205,19 @@ def _node_names(graph: object) -> set[str]:
     return names
 
 
+def _top_level_names(graph: object) -> set[str]:
+    nodes = getattr(graph, "nodes", {})
+    if not isinstance(nodes, dict):
+        return set()
+    return {str(name) for name in nodes if name not in {"__start__", "__end__"}}
+
+
+def _is_compiled_subgraph(graph: object, name: str) -> bool:
+    nodes = getattr(graph, "nodes", {})
+    node = nodes[name]
+    return isinstance(getattr(node, "bound", None), CompiledStateGraph)
+
+
 def _walk_graph_python() -> Iterator[Path]:
     for path in sorted(_GRAPHS_ROOT.rglob("*.py")):
         if "__pycache__" not in path.parts:
@@ -276,20 +290,24 @@ def test_prepare_contains_only_preparation_nodes(recording_context) -> None:
     names = _node_names(bundle.prepare)
     assert {"intake", "explore", "resolve-plan", "prepared"} <= names
     assert not {"case-design", "case-review", "human-review"} & names
+    for leaf in ("intake", "explore", "resolve-plan"):
+        assert not _is_compiled_subgraph(bundle.prepare, leaf), leaf
 
 
 def test_shared_case_contains_complete_review_flow(recording_context) -> None:
     bundle = build_intake_graphs(recording_context)
-    names = _node_names(bundle.case)
-    assert {
+    assert _top_level_names(bundle.case) == {
         "case-design",
         "case-review",
-        "case-design-retry",
-        "case-review-retry",
+        "review-round-advance",
+        "advance-join",
         "human-review",
-        "exhausted",
+        "done",
         "rejected",
-    } <= names
+        "exhausted",
+    }
+    assert _is_compiled_subgraph(bundle.case, "case-design")
+    assert not _is_compiled_subgraph(bundle.case, "case-review")
 
 
 def test_target_graphs_contain_no_phase_nodes_or_send(recording_context) -> None:

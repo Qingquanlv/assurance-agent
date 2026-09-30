@@ -282,7 +282,17 @@ def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) 
 
     calls: list[tuple[str, str]] = []
 
-    def record(builder, context, node_id, *, contract_id, activation, select, publish) -> None:
+    def record(
+        builder,
+        context,
+        node_id,
+        *,
+        contract_id,
+        activation,
+        select,
+        publish,
+        semantic_node_id=None,
+    ) -> None:
         assert node_id
         assert activation is not None
         assert callable(select)
@@ -296,6 +306,7 @@ def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) 
             activation=activation,
             select=select,
             publish=publish,
+            semantic_node_id=semantic_node_id,
         )
 
     visited: set[int] = set()

@@ -11,18 +11,9 @@ from assurance_intake.graphs.case import build_case_graph
 from assurance_intake.graphs.nodes import (
     activation_case_design,
     activation_case_design_repair,
-    activation_case_review,
-    activation_one_shot,
-    publish_artifacts,
     publish_case_design,
-    publish_case_review,
-    publish_plan,
     select_case_design,
     select_case_design_repair,
-    select_case_review,
-    select_explore,
-    select_intake,
-    select_resolve_plan,
     terminal_done,
     terminal_failed,
 )
@@ -32,11 +23,7 @@ from assurance_intake.graphs.state import IntakeState
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import add_attempt_node
 
-_INTAKE_ID = "assurance.intake.agent.intake.v1"
-_EXPLORE_ID = "assurance.intake.agent.explore.v1"
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
-_CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
-_RESOLVE_PLAN_ID = "assurance.intake.task.resolve-plan"
 _CASE_DESIGN_PATHS: dict[Hashable, str] = {
     "done": "done",
     "case-design-repair": "intake.case-design-repair",
@@ -45,72 +32,10 @@ _CASE_DESIGN_PATHS: dict[Hashable, str] = {
 
 
 def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:
-    intake = _compile_leaf(
-        context,
-        contract_id=_INTAKE_ID,
-        semantic_node_id="intake.intake",
-        activation=activation_one_shot,
-        select=select_intake,
-        publish=publish_artifacts,
-    )
-    explore = _compile_leaf(
-        context,
-        contract_id=_EXPLORE_ID,
-        semantic_node_id="intake.explore",
-        activation=activation_one_shot,
-        select=select_explore,
-        publish=publish_artifacts,
-    )
-    resolve_plan = _compile_leaf(
-        context,
-        contract_id=_RESOLVE_PLAN_ID,
-        semantic_node_id="intake.resolve-plan",
-        activation=activation_one_shot,
-        select=select_resolve_plan,
-        publish=publish_plan,
-    )
-    case_design = _compile_case_design(context)
-    case_review = _compile_leaf(
-        context,
-        contract_id=_CASE_REVIEW_ID,
-        semantic_node_id="intake.case-review",
-        activation=activation_case_review,
-        select=select_case_review,
-        publish=publish_case_review,
-    )
     return IntakeGraphs(
-        prepare=build_prepare_graph(
-            context,
-            intake=intake,
-            explore=explore,
-            resolve_plan=resolve_plan,
-        ),
-        case=build_case_graph(context, case_design=case_design, case_review=case_review),
+        prepare=build_prepare_graph(context),
+        case=build_case_graph(context, case_design=_compile_case_design(context)),
     )
-
-
-def _compile_leaf(
-    context: CapabilityBuildContext,
-    *,
-    contract_id: str,
-    semantic_node_id: str,
-    activation: object,
-    select: object,
-    publish: object,
-) -> CompiledStateGraph:
-    builder: StateGraph[IntakeState] = StateGraph(IntakeState)
-    add_attempt_node(
-        builder,
-        context,
-        semantic_node_id,
-        contract_id=contract_id,
-        activation=activation,
-        select=select,
-        publish=publish,
-    )
-    builder.add_edge(START, semantic_node_id)
-    builder.add_edge(semantic_node_id, END)
-    return context.compile_subgraph(builder)
 
 
 def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
@@ -119,6 +44,7 @@ def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
         builder,
         context,
         "intake.case-design",
+        semantic_node_id="intake.case-design",
         contract_id=_CASE_DESIGN_ID,
         activation=activation_case_design,
         select=select_case_design,
@@ -128,6 +54,7 @@ def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
         builder,
         context,
         "intake.case-design-repair",
+        semantic_node_id="intake.case-design-repair",
         contract_id=_CASE_DESIGN_ID,
         activation=activation_case_design_repair,
         select=select_case_design_repair,
