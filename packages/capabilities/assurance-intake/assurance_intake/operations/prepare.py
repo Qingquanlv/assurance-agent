@@ -7,9 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from agent_runtime_contracts import ResultContract
+from agent_runtime_contracts import AgentRunRequest, ResultContract
 from agent_runtime_contracts.ops import (
     AgentBindingDataV1,
     InputError,
@@ -26,13 +24,8 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from assurance_intake.contracts.agent import (
     CaseReviewInputV1,
     ExploreInputV1,
-    IntakeInputV1,
 )
-from assurance_intake.contracts.explore import (
-    EXPLORE_AGENT_OUTPUT_PATHS,
-    REQUIREMENT_PATH,
-    RUN_SPEC_SNAPSHOT_PATH,
-)
+from assurance_intake.contracts.explore import EXPLORE_AGENT_OUTPUT_PATHS
 from assurance_intake.operations.explore_context import build_explore_context
 from assurance_intake.operations.planning_facts import build_planning_facts
 from assurance_intake.resource_loader import resource_bytes, resource_text
@@ -125,7 +118,7 @@ def result_contract(schema_id: str) -> ResultContract:
     return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
 
 
-def prepare_outcome(
+def prepare_request(
     *,
     skill_path: str,
     persona_path: str,
@@ -135,56 +128,32 @@ def prepare_outcome(
     context: TaskContext,
     allowed_outputs: tuple[str, ...],
     planning_facts: dict[str, Any] | None = None,
-) -> TaskOutcome:
-    return prepared_outcome(
-        skill_request(
-            skill_text=resource_text(skill_path),
-            persona_text=resource_text(persona_path),
-            business=business,
-            business_extra=None if planning_facts is None else {"planning_facts": planning_facts},
-            binding=binding,
-            result=result_contract(result_schema_id),
-            roots=context,
-            allowed_outputs=allowed_outputs,
-            scope_id=business.change_id,
-        )
+) -> AgentRunRequest:
+    return skill_request(
+        skill_text=resource_text(skill_path),
+        persona_text=resource_text(persona_path),
+        business=business,
+        business_extra=None if planning_facts is None else {"planning_facts": planning_facts},
+        binding=binding,
+        result=result_contract(result_schema_id),
+        roots=context,
+        allowed_outputs=allowed_outputs,
+        scope_id=business.change_id,
     )
 
 
-def _materialize_requirement(text: str) -> bytes:
+def prepare_outcome(**kwargs: Any) -> TaskOutcome:
+    return prepared_outcome(prepare_request(**kwargs))
+
+
+def materialize_requirement(text: str) -> bytes:
     return (text.removesuffix("\n") + "\n").encode("utf-8")
 
 
-def _write_prepare_file(write_root: Path, relative: str, data: bytes) -> None:
+def write_prepare_file(write_root: Path, relative: str, data: bytes) -> None:
     path = write_root.joinpath(*relative.split("/"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
-
-
-class IntakePrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            business = validate_model(IntakeInputV1, request.input)
-            binding = validate_binding(request.binding_data)
-            _write_prepare_file(
-                context.write_root, REQUIREMENT_PATH, _materialize_requirement(business.requirement)
-            )
-            snapshot = yaml.safe_dump(
-                {"candidate_test_families": list(business.candidate_test_families)},
-                sort_keys=True,
-            ).encode("utf-8")
-            _write_prepare_file(context.write_root, RUN_SPEC_SNAPSHOT_PATH, snapshot)
-            return prepare_outcome(
-                skill_path=INTAKE_SKILL,
-                persona_path=INTAKE_PERSONA,
-                business=business,
-                binding=binding,
-                result_schema_id=INTAKE_RESULT_ID,
-                context=context,
-                allowed_outputs=intake_outputs(business.change_id),
-            )
-        except InputError as error:
-            return failed_input(error)
 
 
 class ExplorePrepareHandler:

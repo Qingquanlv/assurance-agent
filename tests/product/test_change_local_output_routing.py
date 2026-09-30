@@ -196,12 +196,12 @@ def test_output_routes_are_owned_by_the_installed_product_and_are_not_project_co
 
 
 def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_path: Path) -> None:
-    from assurance_intake.operations import IntakePrepareHandler
+    from assurance_intake.agent_ops.intake import prepare
 
     project, write_root = dual_roots(tmp_path, "RET-dept-management")
     prepared = asyncio.run(
         execute_task(
-            IntakePrepareHandler(),
+            cast(TaskHandler, prepare),
             {
                 "change_id": "RET-dept-management",
                 "requirement": "Cover department CRUD.",

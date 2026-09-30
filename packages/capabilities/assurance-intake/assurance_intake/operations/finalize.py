@@ -59,7 +59,7 @@ from assurance_intake.operations.obligations import (
 from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
 from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObligationV1, SourceRefV1
 from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
-from assurance_intake.contracts.cases import IntakeQaV1, QaYaml, _require_impact_row_coverage
+from assurance_intake.contracts.cases import QaYaml, _require_impact_row_coverage
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.operations.impact_validation import validate_inventory_references
 from assurance_intake.operations.case_modules import infer_case_delta_paths
@@ -172,7 +172,7 @@ def _require_known_leafs(keys: Iterable[str], leafs: frozenset[str], *, kind: st
             raise OutputError(f"{kind} references unknown capability leaf: {key}")
 
 
-def _file_digest(data: bytes) -> str:
+def file_digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
@@ -206,7 +206,7 @@ def _workspace_file(workspace: Path, relative: str) -> Path:
     return path
 
 
-def _read_regular_bytes(workspace: Path, relative: str, *, kind: str) -> bytes:
+def read_regular_bytes(workspace: Path, relative: str, *, kind: str) -> bytes:
     path = _workspace_file(workspace, relative)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_NONBLOCK", 0)
@@ -262,10 +262,10 @@ def _authenticated_capability_leafs(
     if expected_digest is None:
         raise InputError("frozen assurance plan does not bind the capability catalog")
     try:
-        data = _read_regular_bytes(workspace, _CAPABILITY_CATALOG_PATH, kind="capability catalog")
+        data = read_regular_bytes(workspace, _CAPABILITY_CATALOG_PATH, kind="capability catalog")
     except OutputError as error:
         raise InputError(str(error)) from error
-    if _file_digest(data) != expected_digest:
+    if file_digest(data) != expected_digest:
         raise InputError("capability catalog does not match the frozen assurance plan")
     try:
         document = json.loads(data)
@@ -288,10 +288,10 @@ def _authenticated_journey_keys(
     if expected_digest is None:
         raise InputError("frozen assurance plan does not bind data knowledge")
     try:
-        data = _read_regular_bytes(workspace, _DATA_KNOWLEDGE_PATH, kind="data knowledge")
+        data = read_regular_bytes(workspace, _DATA_KNOWLEDGE_PATH, kind="data knowledge")
     except OutputError as error:
         raise InputError(str(error)) from error
-    if _file_digest(data) != expected_digest:
+    if file_digest(data) != expected_digest:
         raise InputError("data knowledge does not match the frozen assurance plan")
     try:
         document = yaml.safe_load(data)
@@ -306,7 +306,7 @@ def _allowed_by_lock(relative: str, locked: tuple[str, ...]) -> bool:
     return any(relative == prefix or relative.startswith(f"{prefix}/") for prefix in locked)
 
 
-def _authenticate_files(
+def authenticate_files(
     workspace: Path,
     declared: tuple[str, ...],
     locked: tuple[str, ...],
@@ -320,7 +320,7 @@ def _authenticate_files(
         path = _workspace_file(workspace, relative)
         if not path.is_file() or path.is_symlink():
             raise OutputError(f"declared output file is missing: {relative}")
-        artifacts.append({"path": relative, "digest": _file_digest(path.read_bytes())})
+        artifacts.append({"path": relative, "digest": file_digest(path.read_bytes())})
     return artifacts
 
 
@@ -338,7 +338,7 @@ def _authenticate_review_repair_images(
         data = images.get(relative)
         if data is None:
             raise OutputError(f"declared output file is missing: {relative}")
-        artifacts.append({"path": relative, "digest": _file_digest(data)})
+        artifacts.append({"path": relative, "digest": file_digest(data)})
     return artifacts
 
 
@@ -356,13 +356,13 @@ def _validation_repair_images(
             raise OutputError(f"undeclared output file: {relative}")
         candidate = _workspace_file(write_root, relative)
         if candidate.exists() or candidate.is_symlink():
-            images[relative] = _read_regular_bytes(
+            images[relative] = read_regular_bytes(
                 write_root,
                 relative,
                 kind="validation repair output",
             )
         else:
-            images[relative] = _read_regular_bytes(
+            images[relative] = read_regular_bytes(
                 project_root,
                 relative,
                 kind="validation repair baseline",
@@ -377,11 +377,11 @@ def _artifact_list(payload: AgentFinalizeInputV1) -> ArtifactListResultV1:
         raise OutputError(str(error)) from error
 
 
-def _finalize_artifact_list(payload: AgentFinalizeInputV1, workspace: Path) -> list[dict[str, str]]:
+def finalize_artifact_list(payload: AgentFinalizeInputV1, workspace: Path) -> list[dict[str, str]]:
     if not payload.artifact_paths:
         raise InputError("artifact_paths must lock the expected output files")
     document = _artifact_list(payload)
-    return _authenticate_files(workspace, document.output_files, payload.artifact_paths)
+    return authenticate_files(workspace, document.output_files, payload.artifact_paths)
 
 
 _EXPLORE_CONTEXT = "qa/results/explore/context.json"
@@ -504,7 +504,7 @@ def _require_selected_test_families(
         )
 
 
-def _case_change_id(value: str | None) -> str:
+def case_change_id(value: str | None) -> str:
     if value is None:
         raise InputError("change_id is required for case-design finalize")
     posix = PurePosixPath(value)
@@ -549,7 +549,7 @@ def _load_authored_case_delta(
             data = (
                 images[relative]
                 if images is not None
-                else _read_regular_bytes(workspace, relative, kind="declared output file")
+                else read_regular_bytes(workspace, relative, kind="declared output file")
             )
             raw = yaml.safe_load(data)
             document = CaseYamlAuthoring.model_validate(
@@ -696,10 +696,10 @@ _MATRIX_MUTABLE_FIELDS = frozenset({"status", "covered_by_cases", "skip_reason"}
 def _bound_obligations(workspace: Path, plan: ResolvedAssurancePlan) -> tuple[PreparedObligationV1, ...]:
     ref = plan.quality_goal.obligations_ref
     try:
-        data = _read_regular_bytes(workspace, ref.path, kind="frozen exploration")
+        data = read_regular_bytes(workspace, ref.path, kind="frozen exploration")
     except OutputError as error:
         raise InputError(str(error)) from error
-    if _file_digest(data) != ref.digest:
+    if file_digest(data) != ref.digest:
         raise InputError("frozen exploration does not match the assurance plan")
     try:
         exploration = load_exploration_document(data)
@@ -805,7 +805,7 @@ def _read_minimum_coverage_matrix(
         data = (
             images[relative]
             if images is not None
-            else _read_regular_bytes(workspace, relative, kind="minimum coverage matrix")
+            else read_regular_bytes(workspace, relative, kind="minimum coverage matrix")
         )
         document = MinimumCoverageMatrixAuthoring.model_validate(json.loads(data))
     except (OSError, json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
@@ -829,8 +829,8 @@ def _read_case_review_inputs(
         raise InputError("preparation_refs must authenticate the minimum coverage matrix for case review")
     images: dict[str, bytes] = {}
     for ref in (*payload.case_refs, *matrix_refs):
-        data = _read_regular_bytes(workspace, ref.path, kind="case-review input")
-        if _file_digest(data) != ref.digest:
+        data = read_regular_bytes(workspace, ref.path, kind="case-review input")
+        if file_digest(data) != ref.digest:
             raise OutputError(f"case-review input digest mismatch: {ref.path}")
         images[ref.path] = data
     return images
@@ -1130,16 +1130,16 @@ def _validate_review_repair(
     write_root: Path,
     contract: ReviewRepairContractV1,
 ) -> dict[str, bytes]:
-    review = _read_regular_bytes(project_root, contract.review_path, kind="case-review authority")
-    if _file_digest(review) != contract.review_sha256:
+    review = read_regular_bytes(project_root, contract.review_path, kind="case-review authority")
+    if file_digest(review) != contract.review_sha256:
         raise OutputError("case-review repair authority changed after prepare")
     actions_by_artifact: dict[str, list[ReviewRepairActionV1]] = {}
     for action in contract.actions:
         actions_by_artifact.setdefault(action.artifact, []).append(action)
     images: dict[str, bytes] = {}
     for relative, baseline_digest in contract.baseline_file_digests.items():
-        baseline = _read_regular_bytes(project_root, relative, kind="review repair baseline")
-        if _file_digest(baseline) != baseline_digest:
+        baseline = read_regular_bytes(project_root, relative, kind="review repair baseline")
+        if file_digest(baseline) != baseline_digest:
             raise OutputError(f"review repair baseline changed after prepare: {relative}")
         actions = actions_by_artifact.get(relative)
         if actions is None:
@@ -1148,8 +1148,8 @@ def _validate_review_repair(
                 raise OutputError(f"review repair staged a non-target output: {relative}")
             images[relative] = baseline
             continue
-        candidate = _read_regular_bytes(write_root, relative, kind="review repair output")
-        if _file_digest(candidate) == baseline_digest:
+        candidate = read_regular_bytes(write_root, relative, kind="review repair output")
+        if file_digest(candidate) == baseline_digest:
             raise OutputError(f"review repair target did not change: {relative}")
         _validate_repair_document(
             artifact=relative,
@@ -1179,9 +1179,9 @@ def _trusted_sources(workspace: Path) -> TrustedIntakeSourcesV1 | None:
     except yaml.YAMLError:
         return None
     return TrustedIntakeSourcesV1(
-        requirement_ref=EvidenceArtifactRefV1(path=REQUIREMENT_PATH, digest=_file_digest(requirement_bytes)),
-        run_spec_ref=EvidenceArtifactRefV1(path=RUN_SPEC_SNAPSHOT_PATH, digest=_file_digest(snapshot_bytes)),
-        accepted_input_digest=_file_digest(requirement_bytes),
+        requirement_ref=EvidenceArtifactRefV1(path=REQUIREMENT_PATH, digest=file_digest(requirement_bytes)),
+        run_spec_ref=EvidenceArtifactRefV1(path=RUN_SPEC_SNAPSHOT_PATH, digest=file_digest(snapshot_bytes)),
+        accepted_input_digest=file_digest(requirement_bytes),
         candidate_test_families=families,
     )
 
@@ -1199,7 +1199,7 @@ def _seal_official_exploration(
         if requirement.is_file() and not requirement.is_symlink()
         else ""
     )
-    digest = _file_digest(requirement.read_bytes()) if requirement.is_file() else ""
+    digest = file_digest(requirement.read_bytes()) if requirement.is_file() else ""
     resolved: dict[tuple[str, str], SourceRefV1] = {}
     quotes = [
         quote
@@ -1277,41 +1277,6 @@ def _seal_official_exploration(
     return official, data
 
 
-class IntakeFinalizeHandler:
-    input_model = AgentFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            payload = validate_model(AgentFinalizeInputV1, request.input)
-            artifacts = _finalize_artifact_list(payload, context.write_root)
-            requirement = _authenticate_files(
-                context.write_root,
-                (REQUIREMENT_PATH,),
-                payload.artifact_paths + (REQUIREMENT_PATH,),
-            )
-            marker_ref = next((item for item in artifacts if item["path"] == "qa/.qa.yaml"), None)
-            if marker_ref is None:
-                raise OutputError("intake receipt must include qa/.qa.yaml")
-            change_id = _case_change_id(payload.change_id)
-            marker_bytes = _read_regular_bytes(context.write_root, "qa/.qa.yaml", kind="intake marker")
-            if _file_digest(marker_bytes) != marker_ref["digest"]:
-                raise OutputError("qa/.qa.yaml changed during finalization")
-            try:
-                marker = IntakeQaV1.model_validate(yaml.safe_load(marker_bytes))
-            except (yaml.YAMLError, UnicodeError, ValidationError) as error:
-                raise OutputError(f"invalid qa/.qa.yaml: {error}") from error
-            if marker.change_id != change_id:
-                raise OutputError("qa/.qa.yaml change_id does not match locked change_id")
-            merged = {item["path"]: item for item in (*artifacts, *requirement)}
-            return TaskOutcome.succeeded(
-                cast(JSONValue, {"artifacts": [merged[path] for path in sorted(merged)]})
-            )
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))
-
-
 class ExploreFinalizeHandler:
     input_model = AgentFinalizeInputV1
 
@@ -1321,12 +1286,12 @@ class ExploreFinalizeHandler:
             if not payload.artifact_paths:
                 raise InputError("artifact_paths must lock the expected output files")
             document = _artifact_list(payload)
-            change_id = _case_change_id(payload.change_id)
+            change_id = case_change_id(payload.change_id)
             if set(document.output_files) != set(EXPLORE_AGENT_OUTPUT_PATHS):
                 raise OutputError(
                     "explore receipt must declare exactly exploration-draft.json and impact-inventory.json"
                 )
-            artifacts = _finalize_artifact_list(payload, context.write_root)
+            artifacts = finalize_artifact_list(payload, context.write_root)
             _validate_explore_outputs(
                 context.write_root,
                 document.output_files,
@@ -1344,7 +1309,7 @@ class ExploreFinalizeHandler:
             )
             del official
             artifacts = [item for item in artifacts if item["path"] != EXPLORE_AGENT_OUTPUT_PATHS[0]]
-            artifacts.append({"path": EXPLORATION_PATH, "digest": _file_digest(official_bytes)})
+            artifacts.append({"path": EXPLORATION_PATH, "digest": file_digest(official_bytes)})
             official_paths = {item["path"] for item in artifacts}
             if not set(EXPLORE_OFFICIAL_OUTPUT_PATHS) <= official_paths:
                 raise OutputError("finalize must return official exploration and inventory refs")
@@ -1364,7 +1329,7 @@ class CaseDesignFinalizeHandler:
         try:
             payload = validate_model(CaseFinalizeInputV1, request.input)
             parsed = payload
-            change_id = _case_change_id(payload.change_id)
+            change_id = case_change_id(payload.change_id)
             try:
                 plan_path = _workspace_file(context.project_root, payload.plan_ref.path)
                 plan = decode_plan(plan_path.read_bytes(), payload.plan_ref)
@@ -1454,7 +1419,7 @@ class CaseDesignFinalizeHandler:
                 )
             else:
                 images = None
-                artifacts = _authenticate_files(
+                artifacts = authenticate_files(
                     context.write_root,
                     receipt.output_files,
                     payload.artifact_paths,
@@ -1464,10 +1429,10 @@ class CaseDesignFinalizeHandler:
                 qa_bytes = (
                     images[qa_relative]
                     if images is not None
-                    else _read_regular_bytes(context.write_root, qa_relative, kind="change document")
+                    else read_regular_bytes(context.write_root, qa_relative, kind="change document")
                 )
                 qa_digest = next(item["digest"] for item in artifacts if item["path"] == qa_relative)
-                if _file_digest(qa_bytes) != qa_digest:
+                if file_digest(qa_bytes) != qa_digest:
                     raise OutputError("qa/.qa.yaml changed during finalization")
                 qa = QaYaml.model_validate(yaml.safe_load(qa_bytes))
             except (yaml.YAMLError, UnicodeError, ValidationError) as error:
@@ -1591,7 +1556,7 @@ class CaseReviewFinalizeHandler:
             except ValidationError as error:
                 raise OutputError(str(error)) from error
             runtime_document = document
-            change_id = _case_change_id(payload.change_id or document.change_id)
+            change_id = case_change_id(payload.change_id or document.change_id)
             if document.change_id != change_id:
                 raise OutputError("case review change_id does not match locked change_id")
             if plan.change_id != change_id:
@@ -1633,7 +1598,7 @@ class CaseReviewFinalizeHandler:
             )
             output = document.model_dump(mode="json")
             if payload.preparation_refs and payload.case_refs:
-                artifacts = _authenticate_files(
+                artifacts = authenticate_files(
                     context.write_root,
                     case_review_outputs(
                         change_id,
@@ -1645,10 +1610,10 @@ class CaseReviewFinalizeHandler:
                 by_path = {item["path"]: item for item in artifacts}
                 review_relative = "qa/results/review/case-review.json"
                 review_ref = EvidenceArtifactRefV1.model_validate(by_path[review_relative])
-                review_bytes = _read_regular_bytes(
+                review_bytes = read_regular_bytes(
                     context.write_root, review_relative, kind="staged case review"
                 )
-                if _file_digest(review_bytes) != review_ref.digest:
+                if file_digest(review_bytes) != review_ref.digest:
                     raise OutputError("staged case review changed during finalization")
                 try:
                     staged_review = CaseReviewResultV1.model_validate_json(review_bytes)
@@ -1664,12 +1629,10 @@ class CaseReviewFinalizeHandler:
                 documents: list[tuple[EvidenceArtifactRefV1, Mapping[str, object]]] = []
                 for ref in payload.case_refs:
                     try:
-                        source = yaml.safe_load(
-                            _read_regular_bytes(context.write_root, ref.path, kind="case")
-                        )
+                        source = yaml.safe_load(read_regular_bytes(context.write_root, ref.path, kind="case"))
                     except (OutputError, yaml.YAMLError):
                         source = yaml.safe_load(
-                            _read_regular_bytes(context.project_root, ref.path, kind="case")
+                            read_regular_bytes(context.project_root, ref.path, kind="case")
                         )
                     if not isinstance(source, Mapping):
                         raise OutputError(f"case source is not a mapping: {ref.path}")
@@ -1706,7 +1669,7 @@ class CaseReviewFinalizeHandler:
                     path = _workspace_file(context.write_root, relative)
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(data)
-                    derived_refs[relative] = EvidenceArtifactRefV1(path=relative, digest=_file_digest(data))
+                    derived_refs[relative] = EvidenceArtifactRefV1(path=relative, digest=file_digest(data))
                 selection_ref = derived_refs[selection_relative]
                 history_ref = derived_refs[history_relative]
                 expected_reviewed = expected_reviewed_case(
@@ -1727,7 +1690,7 @@ class CaseReviewFinalizeHandler:
                     *artifacts,
                     selection_ref.model_dump(mode="json"),
                     history_ref.model_dump(mode="json"),
-                    {"path": manifest_relative, "digest": _file_digest(manifest_bytes)},
+                    {"path": manifest_relative, "digest": file_digest(manifest_bytes)},
                 ]
                 output["reviewed_case"] = expected_reviewed.model_dump(mode="json")
                 output["history_ref"] = history_ref.model_dump(mode="json")

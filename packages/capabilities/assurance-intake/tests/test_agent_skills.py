@@ -19,6 +19,7 @@ from tests.capabilities.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 from tests.acg_plan_fixture import install_plan
 
+from assurance_intake.agent_ops.intake import finalize, prepare
 from assurance_intake.operations import (
     CaseDesignFinalizeHandler,
     CaseDesignPrepareHandler,
@@ -26,8 +27,6 @@ from assurance_intake.operations import (
     CaseReviewPrepareHandler,
     ExploreFinalizeHandler,
     ExplorePrepareHandler,
-    IntakeFinalizeHandler,
-    IntakePrepareHandler,
 )
 from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
@@ -54,10 +53,9 @@ def test_prepare_handlers_are_defined_in_their_own_modules() -> None:
     from assurance_intake.operations.prepare import (
         CaseReviewPrepareHandler,
         ExplorePrepareHandler,
-        IntakePrepareHandler,
     )
 
-    assert IntakePrepareHandler.__module__ == "assurance_intake.operations.prepare"
+    assert prepare.execute.__module__ == "assurance_intake.agent_ops.intake.prepare"
     assert ExplorePrepareHandler.__module__ == "assurance_intake.operations.prepare"
     assert CaseReviewPrepareHandler.__module__ == "assurance_intake.operations.prepare"
     assert CaseDesignPrepareHandler.__module__ == "assurance_intake.operations.case_design_prepare"
@@ -735,7 +733,7 @@ def test_case_reviewer_closed_key_repairs_stay_inside_case_design_write_set() ->
 @pytest.mark.asyncio
 async def test_intake_prepare_rejects_missing_requirement(tmp_path: Path) -> None:
     payload = {key: value for key, value in INTAKE_INPUT.items() if key != "requirement"}
-    prepared = await run_prepare(IntakePrepareHandler(), payload, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, prepare), payload, BINDING, tmp_path)
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
@@ -744,7 +742,7 @@ async def test_intake_prepare_rejects_missing_requirement(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_intake_prepare_embeds_locked_requirement_and_write_rules(tmp_path: Path) -> None:
-    prepared = await run_prepare(IntakePrepareHandler(), INTAKE_INPUT, BINDING, tmp_path)
+    prepared = await run_prepare(cast(TaskHandler, prepare), INTAKE_INPUT, BINDING, tmp_path)
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
     assert request.workspace.allowed_outputs == ("qa/.qa.yaml",)
@@ -1625,7 +1623,7 @@ async def test_intake_rejects_invalid_or_missing_change_marker(tmp_path: Path, m
     if marker is not None:
         (stage / "qa/.qa.yaml").write_text(marker)
     result = await _finalize_files(
-        IntakeFinalizeHandler(),
+        cast(TaskHandler, finalize),
         {"output_files": ["qa/requirement.md"] if marker is None else ["qa/.qa.yaml"]},
         project,
         ["qa/.qa.yaml", "qa/requirement.md"],
@@ -1685,14 +1683,15 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
         authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
         outputs = _write_case_design_outputs(stage, authored)
         handler = CaseDesignFinalizeHandler()
+        handler_globals = handler.execute.__func__.__globals__
     else:
         (stage / "qa").mkdir(parents=True, exist_ok=True)
         (stage / "qa/.qa.yaml").write_text("change_id: CH-DEMO-001\n")
         (stage / "qa/requirement.md").write_text("# Requirement\n")
         outputs = ["qa/.qa.yaml"]
-        handler = IntakeFinalizeHandler()
-    handler_globals = handler.execute.__func__.__globals__
-    read = handler_globals["_read_regular_bytes"]
+        handler = cast(TaskHandler, finalize)
+        handler_globals = finalize.execute.__globals__
+    read = handler_globals["read_regular_bytes"]
 
     def replace_before_validation(workspace: Path, relative: str, *, kind: str) -> bytes:
         if workspace == stage and relative == "qa/.qa.yaml":
@@ -1700,7 +1699,7 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
             path.write_bytes(path.read_bytes() + b"# concurrent change\n")
         return read(workspace, relative, kind=kind)
 
-    monkeypatch.setitem(handler_globals, "_read_regular_bytes", replace_before_validation)
+    monkeypatch.setitem(handler_globals, "read_regular_bytes", replace_before_validation)
     result = await _finalize_files(
         handler,
         cast(JSONValue, {"output_files": outputs}),
@@ -2258,7 +2257,7 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
     (write_root / "qa/.qa.yaml").write_bytes(marker)
 
     executed = await _finalize_files(
-        IntakeFinalizeHandler(),
+        cast(TaskHandler, finalize),
         {"output_files": ["qa/.qa.yaml", relative]},
         project,
         [
@@ -2291,7 +2290,7 @@ async def test_intake_finalize_rejects_file_outside_locked_prefix(tmp_path: Path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"nope\n")
     executed = await _finalize_files(
-        IntakeFinalizeHandler(),
+        cast(TaskHandler, finalize),
         {"output_files": [relative]},
         project,
         [
@@ -2323,7 +2322,7 @@ async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     (write_root / "qa/requirement.md").parent.mkdir(parents=True, exist_ok=True)
     (write_root / "qa/requirement.md").write_bytes(requirement)
     executed = await _finalize_files(
-        IntakeFinalizeHandler(),
+        cast(TaskHandler, finalize),
         {"output_files": [relative]},
         project,
         [relative, "qa/requirement.md"],
@@ -2351,7 +2350,7 @@ async def test_intake_finalize_rejects_stale_canonical_file_when_candidate_is_mi
     stale.write_text("stale canonical content\n", encoding="utf-8")
 
     executed = await _finalize_files(
-        IntakeFinalizeHandler(),
+        cast(TaskHandler, finalize),
         {"output_files": [relative]},
         project,
         [relative],

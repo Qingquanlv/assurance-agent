@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import cast
 
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.plugin_api import PluginContribution, PluginDescriptor, ProviderSource, RegistryPorts
+from graph_engine.plugin_api import (
+    PluginContribution,
+    PluginDescriptor,
+    ProviderSource,
+    RegistryPorts,
+    TaskHandler,
+)
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
+from assurance_intake.agent_ops.intake import finalize as intake_finalize, prepare as intake_prepare
 from assurance_intake.contracts.attempts import attempt_contract_refs
 from assurance_intake.operations import (
     CaseDesignFinalizeHandler,
@@ -14,8 +22,6 @@ from assurance_intake.operations import (
     CaseReviewPrepareHandler,
     ExploreFinalizeHandler,
     ExplorePrepareHandler,
-    IntakeFinalizeHandler,
-    IntakePrepareHandler,
     ResolvePlanHandler,
     ReviewRoundAdvanceHandler,
 )
@@ -74,8 +80,8 @@ _HANDLERS = {
     "assurance.intake.case-review.prepare": CaseReviewPrepareHandler(),
     "assurance.intake.explore.finalize": ExploreFinalizeHandler(),
     "assurance.intake.explore.prepare": ExplorePrepareHandler(),
-    "assurance.intake.intake.finalize": IntakeFinalizeHandler(),
-    "assurance.intake.intake.prepare": IntakePrepareHandler(),
+    "assurance.intake.intake.finalize": cast(TaskHandler, intake_finalize),
+    "assurance.intake.intake.prepare": cast(TaskHandler, intake_prepare),
     "assurance.intake.review-round.advance": ReviewRoundAdvanceHandler(),
     "assurance.intake.resolve-plan": ResolvePlanHandler(),
 }
