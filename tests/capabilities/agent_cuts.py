@@ -26,7 +26,7 @@ from assurance_generation.operations.planning import PlanFinalizeHandler
 from assurance_healing.operations.agent import FixProposalFinalizeHandler
 from assurance_improvement.operations.agent import RetroFinalizeHandler
 from assurance_intake.agent_ops.case_review import finalize as case_review_finalize
-from assurance_quality.operations.agent_skills import InspectFinalizeHandler
+from assurance_quality.agent_ops.inspect import finalize as inspect_finalize
 
 AGENT_CUTS = (
     "prepare-complete",
@@ -39,7 +39,7 @@ WHEEL_FINALIZERS = {
     "intake": case_review_finalize,
     "generation": lambda: PlanFinalizeHandler("api"),
     "healing": FixProposalFinalizeHandler,
-    "quality": InspectFinalizeHandler,
+    "quality": inspect_finalize,
     "improvement": RetroFinalizeHandler,
 }
 

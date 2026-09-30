@@ -1,20 +1,23 @@
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import cast
 
 from graph_engine.plugin_api import TaskHandler
 
-from assurance_quality.operations.agent_skills import (
-    FactBaselineFinalizeHandler,
-    FactBaselinePrepareHandler,
-    InspectFinalizeHandler,
-    InspectPrepareHandler,
-    IssueAnalysisFinalizeHandler,
-    IssueAnalysisPrepareHandler,
-    IssueTriageFinalizeHandler,
-    IssueTriagePrepareHandler,
-    ReportFinalizeHandler,
-    ReportPrepareHandler,
+from assurance_quality.agent_ops.fact_baseline import (
+    finalize as fact_baseline_finalize,
+    prepare as fact_baseline_prepare,
 )
+from assurance_quality.agent_ops.inspect import finalize as inspect_finalize, prepare as inspect_prepare
+from assurance_quality.agent_ops.issue_analysis import (
+    finalize as issue_analysis_finalize,
+    prepare as issue_analysis_prepare,
+)
+from assurance_quality.agent_ops.issue_triage import (
+    finalize as issue_triage_finalize,
+    prepare as issue_triage_prepare,
+)
+from assurance_quality.agent_ops.report import finalize as report_finalize, prepare as report_prepare
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
 from assurance_quality.operations.coverage import (
     BuildCoverageGapsHandler,
@@ -78,16 +81,16 @@ def quality_handlers() -> Mapping[str, TaskHandler]:
             "assurance.quality.dashboard": DashboardHandler(),
             "assurance.quality.derive-plan-layer-applicability": DerivePlanLayerApplicabilityHandler(),
             "assurance.quality.evaluate-retrospective-shortboards": EvaluateRetrospectiveShortboardsHandler(),
-            "assurance.quality.fact-baseline.finalize": FactBaselineFinalizeHandler(),
-            "assurance.quality.fact-baseline.prepare": FactBaselinePrepareHandler(),
+            "assurance.quality.fact-baseline.finalize": cast(TaskHandler, fact_baseline_finalize),
+            "assurance.quality.fact-baseline.prepare": cast(TaskHandler, fact_baseline_prepare),
             "assurance.quality.generate-report": GenerateReportHandler(),
             "assurance.quality.inspect": InspectHandler(),
-            "assurance.quality.inspect.finalize": InspectFinalizeHandler(),
-            "assurance.quality.inspect.prepare": InspectPrepareHandler(),
-            "assurance.quality.issue-analysis.finalize": IssueAnalysisFinalizeHandler(),
-            "assurance.quality.issue-analysis.prepare": IssueAnalysisPrepareHandler(),
-            "assurance.quality.issue-triage.finalize": IssueTriageFinalizeHandler(),
-            "assurance.quality.issue-triage.prepare": IssueTriagePrepareHandler(),
+            "assurance.quality.inspect.finalize": cast(TaskHandler, inspect_finalize),
+            "assurance.quality.inspect.prepare": cast(TaskHandler, inspect_prepare),
+            "assurance.quality.issue-analysis.finalize": cast(TaskHandler, issue_analysis_finalize),
+            "assurance.quality.issue-analysis.prepare": cast(TaskHandler, issue_analysis_prepare),
+            "assurance.quality.issue-triage.finalize": cast(TaskHandler, issue_triage_finalize),
+            "assurance.quality.issue-triage.prepare": cast(TaskHandler, issue_triage_prepare),
             "assurance.quality.load-latest-pr-metrics": LoadLatestPrMetricsHandler(),
             "assurance.quality.load-problem-review-context": LoadProblemReviewContextHandler(),
             "assurance.quality.materialize-assessment-inputs.execute": MaterializeAssessmentHandler(),
@@ -102,8 +105,8 @@ def quality_handlers() -> Mapping[str, TaskHandler]:
             "assurance.quality.record-empty-issue-analysis": RecordEmptyIssueAnalysisHandler(),
             "assurance.quality.record-issue-analysis-failure": RecordIssueAnalysisFailureHandler(),
             "assurance.quality.record-project-sync-pending": RecordProjectSyncPendingHandler(),
-            "assurance.quality.report.finalize": ReportFinalizeHandler(),
-            "assurance.quality.report.prepare": ReportPrepareHandler(),
+            "assurance.quality.report.finalize": cast(TaskHandler, report_finalize),
+            "assurance.quality.report.prepare": cast(TaskHandler, report_prepare),
             "assurance.quality.run-mutation-sample": RunMutationSampleHandler(),
             "assurance.quality.run-nightly-metrics-pipeline": RunNightlyMetricsPipelineHandler(),
             "assurance.quality.surface-baseline.execute": SurfaceBaselineHandler(),
@@ -127,16 +130,8 @@ __all__ = [
     "ComputeThresholdSlackHandler",
     "DashboardHandler",
     "DerivePlanLayerApplicabilityHandler",
-    "FactBaselineFinalizeHandler",
-    "FactBaselinePrepareHandler",
     "GenerateReportHandler",
-    "InspectFinalizeHandler",
     "InspectHandler",
-    "InspectPrepareHandler",
-    "IssueAnalysisFinalizeHandler",
-    "IssueAnalysisPrepareHandler",
-    "IssueTriageFinalizeHandler",
-    "IssueTriagePrepareHandler",
     "EvaluateRetrospectiveShortboardsHandler",
     "LoadLatestPrMetricsHandler",
     "LoadProblemReviewContextHandler",
@@ -152,8 +147,6 @@ __all__ = [
     "RecordEmptyIssueAnalysisHandler",
     "RecordIssueAnalysisFailureHandler",
     "RecordProjectSyncPendingHandler",
-    "ReportFinalizeHandler",
-    "ReportPrepareHandler",
     "RunMutationSampleHandler",
     "RunNightlyMetricsPipelineHandler",
     "SurfaceBaselineHandler",

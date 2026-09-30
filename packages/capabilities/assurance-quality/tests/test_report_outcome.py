@@ -9,6 +9,7 @@ from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.canonical import JSONValue
+from graph_engine.plugin_api import TaskHandler
 from graph_engine.testing import GraphHarness, committed
 from pydantic import ValidationError
 
@@ -23,7 +24,7 @@ from assurance_quality.contracts.assessment import (
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_quality.graphs.factory import build_quality_graphs
 from assurance_quality.graphs.nodes import publish_report, select_report
-from assurance_quality.operations.agent_skills import ReportFinalizeHandler, ReportPrepareHandler
+from assurance_quality.agent_ops.report import finalize as report_finalize, prepare as report_prepare
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
 _CHANGE = "CH-REPORT-1"
@@ -290,7 +291,7 @@ async def test_report_prepare_authenticates_the_current_inspection_chain(tmp_pat
     selected = cast(ReportSkillInputV1, select_report(_state()))
     _write_authenticated_inputs(project, selected)
     prepared = await execute_task(
-        ReportPrepareHandler(),
+        cast(TaskHandler, report_prepare),
         cast(JSONValue, selected.model_dump(mode="json")),
         project,
         write_root=write_root,
@@ -303,7 +304,7 @@ async def test_report_prepare_authenticates_the_current_inspection_chain(tmp_pat
 async def test_report_finalizer_rejects_wrapped_input(tmp_path: Path) -> None:
     selected = cast(ReportSkillInputV1, select_report(_state()))
     result = await execute_task(
-        ReportFinalizeHandler(),
+        cast(TaskHandler, report_finalize),
         cast(
             JSONValue,
             {
@@ -324,7 +325,7 @@ async def test_report_finalize_requires_declared_new_report_bytes(tmp_path: Path
     selected = cast(ReportSkillInputV1, select_report(_state()))
     _write_authenticated_inputs(project, selected)
     missing_refs = await execute_task(
-        ReportFinalizeHandler(),
+        cast(TaskHandler, report_finalize),
         cast(
             JSONValue,
             {
@@ -339,7 +340,7 @@ async def test_report_finalize_requires_declared_new_report_bytes(tmp_path: Path
     assert missing_refs.outcome.failure.kind == "invalid_output"
 
     declared_without_bytes = await execute_task(
-        ReportFinalizeHandler(),
+        cast(TaskHandler, report_finalize),
         cast(
             JSONValue,
             {
@@ -365,7 +366,7 @@ async def test_report_bytes_are_finalized_then_bound_to_commit_receipt(tmp_path:
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(b"# Current report\n")
     finalized_run = await execute_task(
-        ReportFinalizeHandler(),
+        cast(TaskHandler, report_finalize),
         cast(
             JSONValue,
             {

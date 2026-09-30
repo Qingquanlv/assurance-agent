@@ -22,16 +22,20 @@ from assurance_quality.contracts.agent import (
     IssueTriageResultV1,
     ReportResultV1,
 )
-from assurance_quality.operations.agent_skills import (
-    FactBaselineFinalizeHandler,
-    FactBaselinePrepareHandler,
-    InspectFinalizeHandler,
-    IssueAnalysisFinalizeHandler,
-    IssueAnalysisPrepareHandler,
-    IssueTriageFinalizeHandler,
-    IssueTriagePrepareHandler,
-    ReportFinalizeHandler,
+from assurance_quality.agent_ops.fact_baseline import (
+    finalize as fact_baseline_finalize,
+    prepare as fact_baseline_prepare,
 )
+from assurance_quality.agent_ops.inspect import finalize as inspect_finalize
+from assurance_quality.agent_ops.issue_analysis import (
+    finalize as issue_analysis_finalize,
+    prepare as issue_analysis_prepare,
+)
+from assurance_quality.agent_ops.issue_triage import (
+    finalize as issue_triage_finalize,
+    prepare as issue_triage_prepare,
+)
+from assurance_quality.agent_ops.report import finalize as report_finalize
 from assurance_quality.resource_loader import resource_bytes
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     BATCH_ID,
@@ -225,7 +229,7 @@ def _resource_files() -> Iterator[Path]:
 @pytest.mark.asyncio
 async def test_issue_finalize_rejects_candidate_without_owned_evidence(tmp_path: Path) -> None:
     outcome = await execute_task(
-        IssueAnalysisFinalizeHandler(),
+        cast(TaskHandler, issue_analysis_finalize),
         fake_agent_result(issue_candidate(evidence_ids=["missing"])),
         tmp_path,
     )
@@ -254,7 +258,7 @@ async def test_issue_finalize_rechecks_owned_evidence_before_stamping_candidate_
     if tampered:
         (tmp_path / "qa/results/execution/api-result.json").write_bytes(b"changed after prepare")
     outcome = await execute_task(
-        IssueAnalysisFinalizeHandler(),
+        cast(TaskHandler, issue_analysis_finalize),
         fake_agent_result(structured, **locked),
         tmp_path,
     )
@@ -276,7 +280,7 @@ async def test_issue_finalize_rechecks_owned_evidence_before_stamping_candidate_
 @pytest.mark.asyncio
 async def test_completed_analysis_must_account_for_every_owned_observation(tmp_path: Path) -> None:
     outcome = await execute_task(
-        IssueAnalysisFinalizeHandler(),
+        cast(TaskHandler, issue_analysis_finalize),
         fake_agent_result(issue_candidate(evidence_ids=[_OWNED]), owned_evidence_ids=[_OWNED, "OBS-second"]),
         tmp_path,
     )
@@ -290,7 +294,7 @@ async def test_issue_finalize_rejects_wrapped_input(tmp_path: Path) -> None:
     payload = as_object(fake_agent_result(issue_candidate(evidence_ids=[_OWNED])))
     agent_result = payload.pop("agent_result")
     outcome = await execute_task(
-        IssueAnalysisFinalizeHandler(),
+        cast(TaskHandler, issue_analysis_finalize),
         {"validated_input": payload, "agent_result": agent_result},
         tmp_path,
     )
@@ -303,13 +307,13 @@ async def test_issue_finalize_rejects_wrapped_input(tmp_path: Path) -> None:
 async def test_prepare_instruction_order_is_skill_business(tmp_path: Path) -> None:
     payload = authenticated_issue_input(tmp_path)
     first = await execute_task(
-        IssueAnalysisPrepareHandler(),
+        cast(TaskHandler, issue_analysis_prepare),
         payload,
         tmp_path,
         binding_data=BINDING,
     )
     second = await execute_task(
-        IssueAnalysisPrepareHandler(),
+        cast(TaskHandler, issue_analysis_prepare),
         payload,
         tmp_path,
         binding_data=BINDING,
@@ -333,7 +337,7 @@ async def test_issue_analysis_prepare_rejects_tampered_manifest_evidence(tmp_pat
     (tmp_path / "qa/results/execution/api-result.json").write_bytes(b"tampered\n")
 
     outcome = await execute_task(
-        IssueAnalysisPrepareHandler(),
+        cast(TaskHandler, issue_analysis_prepare),
         payload,
         tmp_path,
         binding_data=BINDING,
@@ -357,7 +361,9 @@ async def test_issue_analysis_prepare_rejects_unbound_observations(tmp_path: Pat
     manifest["digest"] = f"sha256:{canonical_digest(manifest['entries'])}"
     (tmp_path / manifest_path).write_bytes(canonical_json_bytes(manifest))
     payload["evidence_bundle_digest"] = manifest["digest"]
-    outcome = await execute_task(IssueAnalysisPrepareHandler(), payload, tmp_path, binding_data=BINDING)
+    outcome = await execute_task(
+        cast(TaskHandler, issue_analysis_prepare), payload, tmp_path, binding_data=BINDING
+    )
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert "observations" in outcome.failure.message
@@ -384,7 +390,9 @@ async def test_issue_analysis_prepare_rejects_foreign_observation_in_bound_docum
     (tmp_path / manifest_path).write_bytes(canonical_json_bytes(manifest))
     payload["evidence_bundle_digest"] = manifest["digest"]
 
-    outcome = await execute_task(IssueAnalysisPrepareHandler(), payload, tmp_path, binding_data=BINDING)
+    outcome = await execute_task(
+        cast(TaskHandler, issue_analysis_prepare), payload, tmp_path, binding_data=BINDING
+    )
 
     assert outcome.status == "failed"
     assert outcome.failure is not None
@@ -401,7 +409,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
         },
     }
     outcome = await execute_task(
-        FactBaselinePrepareHandler(),
+        cast(TaskHandler, fact_baseline_prepare),
         skill_input(),
         tmp_path,
         binding_data=cast(JSONValue, binding),
@@ -415,7 +423,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("handler", "marker"),
-    ((IssueTriagePrepareHandler(), "Capability-owned issue-triage skill"),),
+    ((cast(TaskHandler, issue_triage_prepare), "Capability-owned issue-triage skill"),),
 )
 async def test_each_prepare_locks_skill_and_execution(
     handler: TaskHandler, marker: str, tmp_path: Path
@@ -438,7 +446,7 @@ async def test_fact_baseline_finalize_requires_authenticated_reviewed_case(tmp_p
         "source_evidence_ids": ["EVID-missing"],
     }
     outcome = await execute_task(
-        FactBaselineFinalizeHandler(),
+        cast(TaskHandler, fact_baseline_finalize),
         fake_agent_result(cast(JSONValue, structured)),
         tmp_path,
     )
@@ -462,7 +470,7 @@ async def test_inspect_finalize_requires_authenticated_assessment_input(tmp_path
         "metrics_digest": HEX_A,
     }
     outcome = await execute_task(
-        InspectFinalizeHandler(),
+        cast(TaskHandler, inspect_finalize),
         fake_agent_result(cast(JSONValue, structured)),
         tmp_path,
     )
@@ -485,7 +493,7 @@ async def test_issue_triage_finalize_rejects_unauthenticated_evidence_digest(tmp
         "reasoning": "z",
     }
     outcome = await execute_task(
-        IssueTriageFinalizeHandler(),
+        cast(TaskHandler, issue_triage_finalize),
         fake_agent_result(
             cast(JSONValue, structured),
             locked_evidence_digests={"inspect/observations.json": EVIDENCE_REF},
@@ -520,7 +528,7 @@ async def test_issue_triage_finalize_rejects_empty_or_subset_evidence_digests(tm
     }
     for structured in (empty, subset):
         outcome = await execute_task(
-            IssueTriageFinalizeHandler(),
+            cast(TaskHandler, issue_triage_finalize),
             fake_agent_result(cast(JSONValue, structured), locked_evidence_digests=locked),
             tmp_path,
         )
@@ -531,7 +539,7 @@ async def test_issue_triage_finalize_rejects_empty_or_subset_evidence_digests(tm
 @pytest.mark.asyncio
 async def test_issue_analysis_finalize_rejects_forged_problem_id(tmp_path: Path) -> None:
     outcome = await execute_task(
-        IssueAnalysisFinalizeHandler(),
+        cast(TaskHandler, issue_analysis_finalize),
         fake_agent_result(issue_candidate(evidence_ids=[_OWNED], possible_problem_ids=["PROB-FORGED"])),
         tmp_path,
     )
@@ -550,7 +558,9 @@ async def test_issue_analysis_finalize_rejects_invalid_fingerprint_without_crash
         candidate["affected_surface"] = {"kind": "endpoint", "value": "/api/v1/dept/update"}
     else:
         candidate["fingerprint_inputs"] = {"surface": "dept", "symptom": "- / ."}
-    outcome = await execute_task(IssueAnalysisFinalizeHandler(), fake_agent_result(structured), tmp_path)
+    outcome = await execute_task(
+        cast(TaskHandler, issue_analysis_finalize), fake_agent_result(structured), tmp_path
+    )
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_output"
@@ -559,7 +569,7 @@ async def test_issue_analysis_finalize_rejects_invalid_fingerprint_without_crash
 @pytest.mark.asyncio
 async def test_issue_analysis_finalize_requires_evidence_bundle_lock(tmp_path: Path) -> None:
     outcome = await execute_task(
-        IssueAnalysisFinalizeHandler(),
+        cast(TaskHandler, issue_analysis_finalize),
         fake_agent_result(issue_candidate(evidence_ids=[_OWNED]), evidence_bundle_digest=None),
         tmp_path,
     )
@@ -586,7 +596,7 @@ async def test_report_finalize_rejects_unreferenced_projection(tmp_path: Path) -
         "recommendation": "Do not release: failing tests or hard blockers must be resolved first.",
     }
     outcome = await execute_task(
-        ReportFinalizeHandler(),
+        cast(TaskHandler, report_finalize),
         fake_agent_result(cast(JSONValue, structured)),
         tmp_path,
     )
@@ -687,7 +697,7 @@ async def test_failed_report_validation_leaves_canonical_outputs_unchanged(tmp_p
     original = b"# Canonical report\n"
     canonical.write_bytes(original)
     outcome = await execute_task(
-        ReportFinalizeHandler(),
+        cast(TaskHandler, report_finalize),
         fake_agent_result({"schema_version": "1.0"}),
         project,
         write_root=write_root,
