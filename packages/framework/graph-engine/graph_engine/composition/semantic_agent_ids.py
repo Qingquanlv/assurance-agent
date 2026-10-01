@@ -20,6 +20,7 @@ SEMANTIC_AGENT_CONTRACT_IDS: frozenset[str] = frozenset(
         "assurance.improvement.agent.retro-workflow-analysis.v1",
         "assurance.improvement.agent.retro.v1",
         "assurance.intake.agent.case-design.v1",
+        "assurance.intake.agent.case-repair.v1",
         "assurance.intake.agent.case-review.v1",
         "assurance.intake.agent.explore.v1",
         "assurance.intake.agent.intake.v1",

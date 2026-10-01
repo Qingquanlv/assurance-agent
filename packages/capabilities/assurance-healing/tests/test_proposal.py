@@ -12,19 +12,26 @@ from graph_engine.canonical import JSONValue, canonical_json_bytes
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
 from assurance_healing.contracts.agent import FixProposalResultV1
+from graph_engine.plugin_api import TaskHandler
+
+from assurance_healing.ops.coverage_repair import (
+    finalize as coverage_repair_finalize,
+    prepare as coverage_repair_prepare,
+)
+from assurance_healing.ops.fix_proposal import (
+    finalize as fix_proposal_finalize,
+    prepare as fix_proposal_prepare,
+)
 from assurance_healing.operations.proposal import (
     AllocateHealingAttemptHandler,
-    CoverageRepairFinalizeHandler,
-    CoverageRepairPrepareHandler,
-    FixProposalFinalizeHandler,
-    FixProposalPrepareHandler,
     RecordCodegenFixApplyHandler,
     RecordFixerApprovalHandler,
 )
 from assurance_healing.resource_loader import resource_bytes
 from healing_fixtures import as_object  # pyright: ignore[reportMissingImports]
 
-_RESOURCES = Path(__file__).resolve().parent.parent / "assurance_healing" / "resources"
+_PACKAGE = Path(__file__).resolve().parent.parent / "assurance_healing"
+_RESOURCES = _PACKAGE / "resources"
 _FORBIDDEN = (
     "assurance_agent",
     "opencode",
@@ -53,9 +60,10 @@ BINDING: dict[str, Any] = {
 
 
 def _resource_files() -> Iterator[Path]:
-    for path in sorted(_RESOURCES.rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts:
-            yield path
+    for root in (_RESOURCES, _PACKAGE / "ops"):
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".py":
+                yield path
 
 
 def proposal_input() -> dict[str, Any]:
@@ -99,7 +107,7 @@ def valid_proposal() -> dict[str, Any]:
 
 def fake_agent_result(structured: dict[str, Any], **extra: Any) -> dict[str, Any]:
     from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.schema import canonical_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest
     from tests.capabilities.agent_harness import FakeAgentAdapter
 
     payload = cast(JSONValue, structured)
@@ -122,8 +130,12 @@ def fake_agent_result(structured: dict[str, Any], **extra: Any) -> dict[str, Any
 
 @pytest.mark.asyncio
 async def test_fix_proposal_prepare_is_deterministic_and_provider_neutral(tmp_path: Path) -> None:
-    first = await execute_task(FixProposalPrepareHandler(), proposal_input(), tmp_path, binding_data=BINDING)
-    second = await execute_task(FixProposalPrepareHandler(), proposal_input(), tmp_path, binding_data=BINDING)
+    first = await execute_task(
+        cast(TaskHandler, fix_proposal_prepare), proposal_input(), tmp_path, binding_data=BINDING
+    )
+    second = await execute_task(
+        cast(TaskHandler, fix_proposal_prepare), proposal_input(), tmp_path, binding_data=BINDING
+    )
     assert first.status == "succeeded"
     left = AgentRunRequest.model_validate(first.output)
     right = AgentRunRequest.model_validate(second.output)
@@ -150,14 +162,18 @@ async def test_fix_proposal_authenticates_and_receives_issue_analysis(tmp_path: 
     path.write_bytes(data)
     ref = {"path": relative, "digest": hashlib.sha256(data).hexdigest()}
     request = {**proposal_input(), "issue_analysis_ref": ref}
-    prepared = await execute_task(FixProposalPrepareHandler(), request, tmp_path, binding_data=BINDING)
+    prepared = await execute_task(
+        cast(TaskHandler, fix_proposal_prepare), request, tmp_path, binding_data=BINDING
+    )
     assert prepared.status == "succeeded", prepared.failure
     instructions = AgentRunRequest.model_validate(prepared.output).instructions
     content = instructions[-1].json_content
     assert isinstance(content, Mapping)
     assert content["issue_analysis_ref"] == ref
     path.write_bytes(b"{}")
-    changed = await execute_task(FixProposalPrepareHandler(), request, tmp_path, binding_data=BINDING)
+    changed = await execute_task(
+        cast(TaskHandler, fix_proposal_prepare), request, tmp_path, binding_data=BINDING
+    )
     assert changed.status == "failed"
 
 
@@ -165,7 +181,7 @@ async def test_fix_proposal_authenticates_and_receives_issue_analysis(tmp_path: 
 async def test_fix_proposal_finalize_rejects_nonexistent_file(tmp_path: Path) -> None:
     raw = valid_proposal()
     raw["proposals"][0]["files_to_modify"] = ["tests/api/missing.py"]  # type: ignore[index]
-    outcome = await execute_task(FixProposalFinalizeHandler(), fake_agent_result(raw), tmp_path)
+    outcome = await execute_task(cast(TaskHandler, fix_proposal_finalize), fake_agent_result(raw), tmp_path)
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_output"
@@ -175,7 +191,7 @@ async def test_fix_proposal_finalize_rejects_nonexistent_file(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_fix_proposal_finalize_rejects_unknown_capability(tmp_path: Path) -> None:
     extra = {**fake_agent_result(valid_proposal()), "claimed_capabilities": ["ghost.capability"]}
-    outcome = await execute_task(FixProposalFinalizeHandler(), extra, tmp_path)
+    outcome = await execute_task(cast(TaskHandler, fix_proposal_finalize), extra, tmp_path)
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_output"
@@ -191,7 +207,7 @@ async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> N
     staged.parent.mkdir(parents=True)
     staged.write_bytes(canonical_json_bytes(cast(JSONValue, valid_proposal())) + b"\n")
     outcome = await execute_task(
-        FixProposalFinalizeHandler(),
+        cast(TaskHandler, fix_proposal_finalize),
         fake_agent_result(valid_proposal()),
         project,
         write_root=write_root,
@@ -216,7 +232,7 @@ async def test_fix_proposal_finalize_rejects_wrapped_runtime_input(
     current = fake_agent_result(proposal)
 
     outcome = await execute_task(
-        FixProposalFinalizeHandler(),
+        cast(TaskHandler, fix_proposal_finalize),
         {
             "agent_result": current["agent_result"],
             "prepared": {},
@@ -237,7 +253,7 @@ async def test_fix_proposal_finalize_rejects_rewritten_baseline_digest(tmp_path:
     (tmp_path / "tests/api/test_users.py").write_text("def test_ok():\n    assert True\n")
     extra = fake_agent_result(valid_proposal())
     extra["baseline_digest"] = "f" * 64
-    outcome = await execute_task(FixProposalFinalizeHandler(), extra, tmp_path)
+    outcome = await execute_task(cast(TaskHandler, fix_proposal_finalize), extra, tmp_path)
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
@@ -345,7 +361,7 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
         ],
     }
     prepared = await execute_task(
-        CoverageRepairPrepareHandler(),
+        cast(TaskHandler, coverage_repair_prepare),
         {
             "change_id": "CH-DEMO-001",
             "brief": brief,
@@ -370,7 +386,7 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
     target.parent.mkdir(parents=True)
     target.write_text("def test_ok():\n    assert True\n")
     from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.schema import canonical_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest
     from tests.capabilities.agent_harness import FakeAgentAdapter
 
     payload = cast(JSONValue, summary)
@@ -388,7 +404,7 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
         "allowed_roots": ["tests/"],
     }
     finalized = await execute_task(
-        CoverageRepairFinalizeHandler(),
+        cast(TaskHandler, coverage_repair_finalize),
         {
             "agent_result": result.model_dump(mode="json"),
             "change_id": "CH-DEMO-001",
@@ -433,7 +449,7 @@ async def test_coverage_repair_finalize_rejects_unknown_locator(tmp_path: Path) 
     (tmp_path / "tests/api").mkdir(parents=True)
     (tmp_path / "tests/api/test_users.py").write_text("def test_ok():\n    assert True\n")
     from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.schema import canonical_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest
     from tests.capabilities.agent_harness import FakeAgentAdapter
 
     payload = cast(JSONValue, summary)
@@ -445,7 +461,7 @@ async def test_coverage_repair_finalize_rejects_unknown_locator(tmp_path: Path) 
         adapter_version="1.0.0",
     )
     finalized = await execute_task(
-        CoverageRepairFinalizeHandler(),
+        cast(TaskHandler, coverage_repair_finalize),
         {
             "agent_result": result.model_dump(mode="json"),
             "change_id": "CH-DEMO-001",
@@ -478,7 +494,7 @@ async def test_failed_proposal_validation_leaves_canonical_outputs_unchanged(tmp
     raw = valid_proposal()
     raw["proposals"][0]["files_to_modify"] = ["tests/api/missing.py"]  # type: ignore[index]
     outcome = await execute_task(
-        FixProposalFinalizeHandler(),
+        cast(TaskHandler, fix_proposal_finalize),
         fake_agent_result(raw),
         project,
         write_root=write_root,
@@ -491,17 +507,17 @@ async def test_failed_proposal_validation_leaves_canonical_outputs_unchanged(tmp
 
 def test_healing_resources_forbid_legacy_and_provider_names() -> None:
     required = (
-        "skills/aa-fix-proposal/SKILL.md",
-        "skills/aa-coverage-repair/SKILL.md",
-        "skills/aa-apply-test-repair/SKILL.md",
-        "result-contracts/fix-proposal.v1.schema.json",
-        "result-contracts/coverage-repair.v1.schema.json",
-        "result-contracts/applied-test-repair.v1.schema.json",
+        _PACKAGE / "ops/fix_proposal/SKILL.md",
+        _PACKAGE / "ops/coverage_repair/SKILL.md",
+        _PACKAGE / "ops/apply_test_repair/SKILL.md",
+        _PACKAGE / "ops/fix_proposal/result.schema.json",
+        _PACKAGE / "ops/coverage_repair/result.schema.json",
+        _PACKAGE / "ops/apply_test_repair/result.schema.json",
     )
-    missing = [item for item in required if not (_RESOURCES / item).is_file()]
+    missing = [item for item in required if not item.is_file()]
     assert missing == []
     hits = [
-        path.relative_to(_RESOURCES).as_posix()
+        path.relative_to(_PACKAGE).as_posix()
         for path in _resource_files()
         if path.suffix in {".md", ".json", ".txt"} and _TOKEN.search(path.read_text(encoding="utf-8"))
     ]
@@ -519,12 +535,12 @@ def test_result_contracts_match_typed_models() -> None:
     from assurance_healing.contracts import CoverageRepairApplySummary
     from assurance_healing.contracts.application import TestRepairResultV1
 
-    assert resource_bytes("result-contracts/fix-proposal.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/fix_proposal/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, FixProposalResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/coverage-repair.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/coverage_repair/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, CoverageRepairApplySummary.model_json_schema())
     )
-    assert resource_bytes("result-contracts/applied-test-repair.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/apply_test_repair/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, TestRepairResultV1.model_json_schema())
     )

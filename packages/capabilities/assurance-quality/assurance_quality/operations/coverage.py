@@ -11,6 +11,13 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from agent_runtime_contracts.ops import (
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    validate_model,
+)
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -49,16 +56,7 @@ from assurance_quality.contracts.pr_metrics import (
 from assurance_quality.contracts.quarantine import QuarantineEntry, QuarantineProjection
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.trace import TraceProjectionV2, TraceRow
-from assurance_quality.operations.common import (
-    InputError,
-    OutputError,
-    failed_input,
-    failed_output,
-    json_digest,
-    scope_of,
-    succeeded,
-    validate_input,
-)
+from assurance_quality.operations.common import json_digest, scope_of, succeeded
 from assurance_quality.operations.trace import TraceOperationInput, project_trace
 from assurance_quality.operations.goal_scope import has_layer_evidence
 
@@ -598,7 +596,7 @@ class _Handler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(self.input_model, request.input)
+            payload = validate_model(self.input_model, request.input)
             result = self.builder(payload)
             if hasattr(result, "model_dump"):
                 return TaskOutcome.succeeded(cast(JSONValue, result.model_dump(mode="json")))
@@ -615,7 +613,7 @@ class BuildCoverageGapsHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(CoverageGapsInput, request.input)
+            payload = validate_model(CoverageGapsInput, request.input)
             projection = _load_projection(payload.projection, payload.capability_leafs)
             gaps = build_coverage_gaps(
                 projection,
@@ -635,7 +633,7 @@ class MaterializeTraceAndCoverageGapsHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(CombinedTraceGapsInput, request.input)
+            payload = validate_model(CombinedTraceGapsInput, request.input)
             projection = project_trace(payload)
             gaps = build_coverage_gaps(
                 projection,
@@ -749,7 +747,7 @@ class DerivePlanLayerApplicabilityHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(LayerApplicabilityInput, request.input)
+            payload = validate_model(LayerApplicabilityInput, request.input)
             result = derive_layer_applicability(payload.cases, payload.layer)
             return TaskOutcome.succeeded(cast(JSONValue, result.model_dump(mode="json")))
         except InputError as error:

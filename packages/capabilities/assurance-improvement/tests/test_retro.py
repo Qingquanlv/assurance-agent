@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest
-from agent_runtime_contracts.schema import validate_structured_result
+from agent_runtime_contracts.wire.schema import validate_structured_result
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
 from tests.product.test_change_local_output_routing import execute_task
@@ -21,14 +21,13 @@ from assurance_improvement.contracts.retro import (
     IssueEvidenceSlice,
     WorkflowEvidenceSlice,
 )
-from assurance_improvement.operations.agent import (
-    RetroEvalPrepareHandler,
-    RetroFinalizeHandler,
-    RetroIssueFinalizeHandler,
-    RetroIssuePrepareHandler,
-    RetroPrepareHandler,
-    RetroWorkflowPrepareHandler,
+from assurance_improvement.ops.retro import finalize as retro_finalize, prepare as retro_prepare
+from assurance_improvement.ops.retro_eval_analysis import prepare as retro_eval_prepare
+from assurance_improvement.ops.retro_issue_analysis import (
+    finalize as retro_issue_finalize,
+    prepare as retro_issue_prepare,
 )
+from assurance_improvement.ops.retro_workflow_analysis import prepare as retro_workflow_prepare
 from assurance_improvement.operations.retro import (
     AssembleRetroContextHandler,
     ReconcileInput,
@@ -51,7 +50,8 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     issue_signal,
 )
 
-_RESOURCES = Path(__file__).resolve().parent.parent / "assurance_improvement" / "resources"
+_PACKAGE = Path(__file__).resolve().parent.parent / "assurance_improvement"
+_RESOURCES = _PACKAGE / "resources"
 _FORBIDDEN = (
     "assurance_agent",
     "opencode",
@@ -68,9 +68,10 @@ _TOKEN = re.compile(
 
 
 def _resource_files() -> Iterator[Path]:
-    for path in sorted(_RESOURCES.rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts:
-            yield path
+    for root in (_RESOURCES, _PACKAGE / "ops"):
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".py":
+                yield path
 
 
 def _retro_input(domain=None):
@@ -103,7 +104,7 @@ def _finalize_payload(tmp_path, *, source_id="PROB-1", domain=None, result_domai
 @pytest.mark.asyncio
 async def test_retro_finalize_rejects_signal_outside_manifest(tmp_path: Path) -> None:
     outcome = await execute_task(
-        RetroFinalizeHandler(),
+        cast(TaskHandler, retro_finalize),
         _finalize_payload(tmp_path, source_id="unknown"),
         tmp_path,
     )
@@ -115,7 +116,7 @@ async def test_retro_finalize_rejects_signal_outside_manifest(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_retro_finalize_accepts_authenticated_source(tmp_path: Path) -> None:
     outcome = await execute_task(
-        RetroFinalizeHandler(),
+        cast(TaskHandler, retro_finalize),
         _finalize_payload(tmp_path),
         tmp_path,
     )
@@ -127,8 +128,12 @@ async def test_retro_finalize_accepts_authenticated_source(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_prepare_instruction_order_is_skill_business(tmp_path: Path) -> None:
-    first = await execute_task(RetroPrepareHandler(), _retro_input(), tmp_path, binding_data=BINDING)
-    second = await execute_task(RetroPrepareHandler(), _retro_input(), tmp_path, binding_data=BINDING)
+    first = await execute_task(
+        cast(TaskHandler, retro_prepare), _retro_input(), tmp_path, binding_data=BINDING
+    )
+    second = await execute_task(
+        cast(TaskHandler, retro_prepare), _retro_input(), tmp_path, binding_data=BINDING
+    )
     assert first.status == "succeeded"
     request = AgentRunRequest.model_validate(first.output)
     assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
@@ -144,7 +149,9 @@ async def test_prepare_instruction_order_is_skill_business(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_retro_result_contract_rejects_memory_patch_without_memory_path(tmp_path: Path) -> None:
-    outcome = await execute_task(RetroPrepareHandler(), _retro_input(), tmp_path, binding_data=BINDING)
+    outcome = await execute_task(
+        cast(TaskHandler, retro_prepare), _retro_input(), tmp_path, binding_data=BINDING
+    )
     assert outcome.status == "succeeded"
     contract = AgentRunRequest.model_validate(outcome.output).result_contract
     payload = cast(dict[str, object], retro_result())
@@ -193,7 +200,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
         },
     }
     outcome = await execute_task(
-        RetroPrepareHandler(),
+        cast(TaskHandler, retro_prepare),
         _retro_input(),
         tmp_path,
         binding_data=cast(JSONValue, binding),
@@ -208,20 +215,21 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("handler", "marker"),
     (
-        (RetroPrepareHandler(), "Capability-owned retro skill"),
-        (RetroEvalPrepareHandler(), "Capability-owned retro-eval-analysis skill"),
-        (RetroIssuePrepareHandler(), "Capability-owned retro-issue-analysis skill"),
-        (RetroWorkflowPrepareHandler(), "Capability-owned retro-workflow-analysis skill"),
+        (cast(TaskHandler, retro_prepare), "Capability-owned retro skill"),
+        (cast(TaskHandler, retro_eval_prepare), "Capability-owned retro-eval-analysis skill"),
+        (cast(TaskHandler, retro_issue_prepare), "Capability-owned retro-issue-analysis skill"),
+        (cast(TaskHandler, retro_workflow_prepare), "Capability-owned retro-workflow-analysis skill"),
     ),
 )
 async def test_each_prepare_locks_skill_and_execution(
     handler: TaskHandler, marker: str, tmp_path: Path
 ) -> None:
-    domain = {
-        RetroEvalPrepareHandler: "eval",
-        RetroIssuePrepareHandler: "issue",
-        RetroWorkflowPrepareHandler: "workflow",
-    }.get(type(handler))
+    domains: dict[object, str] = {
+        retro_eval_prepare: "eval",
+        retro_issue_prepare: "issue",
+        retro_workflow_prepare: "workflow",
+    }
+    domain = domains.get(handler)
     outcome = await execute_task(handler, _retro_input(domain), tmp_path, binding_data=BINDING)
     assert outcome.status == "succeeded"
     request = AgentRunRequest.model_validate(outcome.output)
@@ -240,7 +248,7 @@ def test_resources_have_no_forbidden_provider_tokens() -> None:
 
 
 def test_result_contract_bytes_equal_typed_models() -> None:
-    assert resource_bytes("result-contracts/retro-analysis.v3.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/retro/result.schema.json") == canonical_json_bytes(
         RetroAnalysisResultV3.model_json_schema()
     )
 
@@ -248,7 +256,7 @@ def test_result_contract_bytes_equal_typed_models() -> None:
 @pytest.mark.asyncio
 async def test_domain_finalize_rejects_mismatched_domain(tmp_path: Path) -> None:
     outcome = await execute_task(
-        RetroIssueFinalizeHandler(),
+        cast(TaskHandler, retro_issue_finalize),
         _finalize_payload(tmp_path, domain="issue", result_domain="eval"),
         tmp_path,
     )
@@ -260,7 +268,7 @@ async def test_domain_finalize_rejects_mismatched_domain(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_domain_finalize_accepts_matching_domain(tmp_path: Path) -> None:
     outcome = await execute_task(
-        RetroIssueFinalizeHandler(),
+        cast(TaskHandler, retro_issue_finalize),
         _finalize_payload(tmp_path, domain="issue"),
         tmp_path,
     )
@@ -486,7 +494,7 @@ async def test_failed_retro_validation_leaves_canonical_outputs_unchanged(tmp_pa
     original = b'{"schema_version":"3"}\n'
     canonical.write_bytes(original)
     outcome = await execute_task(
-        RetroFinalizeHandler(),
+        cast(TaskHandler, retro_finalize),
         {"agent_result": {}},
         project,
         write_root=write_root,

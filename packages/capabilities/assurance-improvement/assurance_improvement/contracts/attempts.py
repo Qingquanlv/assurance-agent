@@ -5,7 +5,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
-from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts import AgentExecutionContract
 from agent_runtime_contracts.qa_paths import qa_route
 from graph_engine.attempts import (
     AttemptExecutionContext,
@@ -26,14 +26,6 @@ from graph_engine.plugin_api import (
 )
 from pydantic import BaseModel
 
-from assurance_improvement.contracts.agent import (
-    ArchiveResultV1,
-    ImprovementReviewResultV1,
-    ImprovementSkillInputV1,
-    RetroAnalysisResultV3,
-    RetroAnalysisInputV1,
-    RetroSynthesisInputV1,
-)
 from assurance_improvement.contracts.delivery import (
     ChangeExportReceipt,
     MemoryApplyReceipt,
@@ -68,10 +60,6 @@ from assurance_improvement.contracts.retro import (
     WorkflowEvidenceSlice,
 )
 
-_ARCHIVER = "assurance-v1-archiver"
-_DOC_AUTHOR = "assurance-v1-doc-author"
-_REVIEWER = "assurance-v1-reviewer"
-_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
 _TASK_RETRY = AttemptRetryPolicy(max_attempts=1)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
@@ -80,42 +68,10 @@ def _paths(*suffixes: str) -> tuple[str, ...]:
     return qa_route(*suffixes)
 
 
-_ARCHIVE_RECEIPT = "qa/results/archive/archive-receipt.json"
+def _agent_catalog() -> tuple[Mapping[str, Any], Mapping[str, tuple[str, ...]]]:
+    from assurance_improvement.ops import router
 
-
-def _job(
-    base: str,
-    skill_id: str,
-    agent_profile: str,
-    result_model: type[Any],
-    outputs: tuple[str, ...],
-) -> AgentExecutionContract[Any, Any, Any]:
-    writes = (_ARCHIVE_RECEIPT,) if base == "archive" else _paths(*outputs)
-    return AgentExecutionContract(
-        contract_id=f"assurance.improvement.agent.{base}.v1",
-        owner_id="assurance.improvement",
-        prepare_handler_id=f"assurance.improvement.{base}.prepare",
-        finalize_handler_id=f"assurance.improvement.{base}.finalize",
-        skill_id=skill_id,
-        agent_profile=agent_profile,
-        input_model=(
-            RetroSynthesisInputV1
-            if base == "retro"
-            else RetroAnalysisInputV1
-            if base.startswith("retro-")
-            else ImprovementSkillInputV1
-        ),
-        agent_result_model=result_model,
-        output_model=result_model,
-        resources=ResourceClaims(
-            reads=("qa",),
-            writes=writes,
-        ),
-        retry=_AGENT_RETRY,
-        timeout=_TIMEOUT,
-        validators=(),
-        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=writes, finalize=()),
-    )
+    return router.agent_contracts(), router.output_routes()
 
 
 def _task(
@@ -137,51 +93,7 @@ def _task(
     )
 
 
-_JOBS: tuple[tuple[str, str, str, type[Any], tuple[str, ...]], ...] = (
-    ("archive", "aa-archive", _ARCHIVER, ArchiveResultV1, ("archive/archive-receipt.json",)),
-    (
-        "improvement-review",
-        "aa-improvement-reviewer",
-        _REVIEWER,
-        ImprovementReviewResultV1,
-        ("review/improvement-review.json",),
-    ),
-    (
-        "retro-eval-analysis",
-        "aa-retro-eval-analysis",
-        _DOC_AUTHOR,
-        RetroAnalysisResultV3,
-        ("retro/retro-eval-analysis.json",),
-    ),
-    (
-        "retro-issue-analysis",
-        "aa-retro-issue-analysis",
-        _DOC_AUTHOR,
-        RetroAnalysisResultV3,
-        ("retro/retro-issue-analysis.json",),
-    ),
-    (
-        "retro-workflow-analysis",
-        "aa-retro-workflow-analysis",
-        _DOC_AUTHOR,
-        RetroAnalysisResultV3,
-        ("retro/retro-workflow-analysis.json",),
-    ),
-    ("retro", "aa-retro", _DOC_AUTHOR, RetroAnalysisResultV3, ("retro/retro.json",)),
-)
-
-AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(
-    {
-        base: _job(base, skill_id, profile, result_model, outputs)
-        for base, skill_id, profile, result_model, outputs in _JOBS
-    }
-)
-OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {
-        base: (_ARCHIVE_RECEIPT,) if base == "archive" else _paths(*outputs)
-        for base, _skill, _profile, _result, outputs in _JOBS
-    }
-)
+AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES = _agent_catalog()
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
     {
         "assurance.improvement.retro-build-slices": TaskAttemptContract(
@@ -322,7 +234,7 @@ class ClosedImprovementExecutor:
         validated_input: BaseModel,
         scope: AuthorizedAttemptScope | AttemptExecutionContext,
     ) -> ExecutedAttemptResult[Any]:
-        from assurance_improvement.operations.common import InputError
+        from agent_runtime_contracts.ops import InputError
         from graph_engine.attempts import AuthorizedAttemptScope as Scope
 
         self.dispatch_count += 1

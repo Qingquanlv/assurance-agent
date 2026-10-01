@@ -29,8 +29,8 @@ from graph_engine.plugin_api import (
     TaskHandler,
 )
 
-from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
-from agent_runtime_contracts.schema import canonical_json_bytes
+from agent_runtime_contracts.runtime.binding import AgentRuntimeCapabilities
+from agent_runtime_contracts.wire.schema import canonical_json_bytes
 
 _SCHEMA_MEDIA_TYPE = "application/schema+json"
 

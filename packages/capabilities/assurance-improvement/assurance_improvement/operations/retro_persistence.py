@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from agent_runtime_contracts.ops import InputError
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext
 from assurance_intake.contracts import EvidenceArtifactRefV1
@@ -14,7 +15,6 @@ from assurance_improvement.contracts.retro import (
     RetroReconcileResultV1,
     RetroRunStatus,
 )
-from assurance_improvement.operations.common import InputError
 from assurance_improvement.operations.retro import (
     ReconcileInput,
     reconcile_improvements,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from assurance_intake.contracts.explore import ObligationDraftV1
 from assurance_intake.contracts.obligations import PreparedObligationV1, SourceRefV1
-from assurance_intake.operations.obligations import (
+from assurance_intake.domain.obligations import (
     InputError,
     journey_keys_from_document,
     normalize_obligation_drafts,

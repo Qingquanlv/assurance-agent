@@ -401,13 +401,13 @@ def test_generated_provider_contributes_exactly_32_semantic_bindings(tmp_path, o
     assert descriptor.effects == ()
     assert descriptor.schemas == ()
     assert set(descriptor.bindings) == set(ALL_BINDING_IDS)
-    assert len(descriptor.bindings) == 26
+    assert len(descriptor.bindings) == 27
     assert contribution.task_handlers == {}
     assert contribution.commit_validators == {}
     assert contribution.effects == ()
     assert contribution.schemas == ()
     assert {binding.capability_id for binding in contribution.bindings} == set(ALL_BINDING_IDS)
-    assert len(contribution.bindings) == 26
+    assert len(contribution.bindings) == 27
     resources = {resource.resource_id: resource for resource in contribution.resources}
     adapter = resources["assurance.product.agent.adapter-binding"]
     assert adapter.media_type == "application/json"
@@ -431,7 +431,7 @@ def test_generated_provider_contributes_exactly_32_semantic_bindings(tmp_path, o
 def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_manifest):
     from graph_engine.plugin_api import RegistryPorts
 
-    from assurance_intake.contracts.agent import AgentBindingDataV1
+    from agent_runtime_contracts.ops import AgentBindingDataV1
     from assurance_product.binding_builder import build_deployment_wheel
 
     built = build_deployment_wheel(opencode_manifest, tmp_path / "out")

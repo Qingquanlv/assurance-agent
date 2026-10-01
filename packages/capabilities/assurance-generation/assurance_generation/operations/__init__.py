@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import cast
 
 from graph_engine.plugin_api import TaskHandler
 
@@ -48,10 +49,11 @@ def codegen_handlers() -> Mapping[str, TaskHandler]:
 
 
 def generation_handlers() -> Mapping[str, TaskHandler]:
+    from assurance_generation import ops
+
     return MappingProxyType(
         {
-            **planning_handlers(),
-            **codegen_handlers(),
+            **dict(ops.router.handlers(cast(TaskHandler, ops))),
             GENERATION_COMPLETE_ID: GenerationCompleteHandler(),
             REVIEW_ROUND_ADVANCE_ID: GenerationReviewRoundAdvanceHandler(),
             "assurance.generation.resolve-inputs.execute": ResolveGenerationInputsHandler(),

@@ -17,6 +17,7 @@ from typing import Protocol, cast, runtime_checkable
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError, OutputError, validate_model
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
@@ -48,14 +49,7 @@ from assurance_execution.operations.observation_run import (
     build_family_argv,
     normalize_collector_report,
 )
-from assurance_execution.operations.common import (
-    InputError,
-    OutputError,
-    json_digest,
-    leafs_of,
-    mapping_digest,
-    validate_input,
-)
+from assurance_execution.operations.common import json_digest, leafs_of, mapping_digest
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_execution.operations.normalize import normalize_evidence
 from assurance_execution.operations.paths import (
@@ -490,10 +484,10 @@ class RunTestsHandler:
     def _payload(self, request: TaskRequest, context: TaskContext) -> RunTestsInputV1:
         raw = request.input
         if isinstance(raw, Mapping) and "mapping" in raw:
-            return validate_input(RunTestsInputV1, raw)
+            return validate_model(RunTestsInputV1, raw)
         from assurance_execution.operations.agent_skills import assemble_execution_input
 
-        prepared = validate_input(ExecutionPrepareInputV1, raw)
+        prepared = validate_model(ExecutionPrepareInputV1, raw)
         return assemble_execution_input(
             prepared,
             workspace=context.project_root,

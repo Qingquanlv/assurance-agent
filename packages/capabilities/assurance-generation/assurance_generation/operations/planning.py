@@ -11,20 +11,22 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 import yaml
 
-from agent_runtime_contracts import (
-    AgentRunRequest,
-    AgentWorkspaceV1,
-    InstructionPart,
-    ResultContract,
-    with_validation_retry,
+from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    OutputError,
+    agent_run_request,
+    failed_input,
+    failed_output,
+    result_contract_from,
 )
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.ops.request import WorkspaceRoots
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
 from assurance_generation.contracts.agent import (
-    AgentBindingDataV1,
     AgentFinalizeInputV1,
     FamilyConstraintsV1,
     PlanInputV1,
@@ -40,8 +42,8 @@ from assurance_intake.contracts import (
     EvidenceArtifactRefV1,
     LoopRoundHistoryV1,
 )
-from assurance_intake.operations.planning_facts import build_planning_facts
-from assurance_intake.operations.loop_history import build_loop_round_history
+from assurance_intake.domain.planning_facts import build_planning_facts
+from assurance_intake.domain.loop_history import build_loop_round_history
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.operations.plan_consistency import check_plan_consistency
 
@@ -53,16 +55,7 @@ PLAN_RESULT_ID = "assurance.generation.result.plan.v1"
 PLAN_REVIEW_RESULT_ID = "assurance.generation.result.codegen-review.v1"
 _RESULT_FILES: Mapping[str, str] = {
     PLAN_RESULT_ID: "result-contracts/plan.v1.schema.json",
-    PLAN_REVIEW_RESULT_ID: "result-contracts/plan-review.v1.schema.json",
-}
-_BOUNDED_PROFILES: Mapping[str, str] = {
-    "aa-archiver": "assurance-v1-archiver",
-    "aa-doc-author": "assurance-v1-doc-author",
-    "aa-executor": "assurance-v1-executor",
-    "aa-explorer": "assurance-v1-explorer",
-    "aa-reporter": "assurance-v1-reporter",
-    "aa-reviewer": "assurance-v1-reviewer",
-    "aa-test-author": "assurance-v1-test-author",
+    PLAN_REVIEW_RESULT_ID: "ops/api_codegen_review/result.schema.json",
 }
 _PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
     "api": (
@@ -117,44 +110,12 @@ def plan_review_outputs(
     )
 
 
-def agent_workspace(
-    context: TaskContext,
-    *,
-    allowed_outputs: tuple[str, ...],
-    agent_profile: str,
-    scope_id: str,
-) -> AgentWorkspaceV1:
-    try:
-        write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
-    except ValueError:
-        write_root = "qa/.staging/write"
-    if write_root in {".", ""}:
-        write_root = ".staging/write"
-    payload = {
-        "schema_version": "1",
-        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
-        "scope_id": scope_id,
-        "write_root": write_root,
-        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
-        "read_roots": (),
-    }
-    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
-
-
 _CASE_TYPES: Mapping[Family, str] = {
     "api": "API",
     "e2e": "E2E",
     "fuzz": "Fuzz",
     "performance": "Performance",
 }
-
-
-class InputError(ValueError):
-    """Malformed caller input or missing locked configuration."""
-
-
-class OutputError(ValueError):
-    """Model-authored semantic invalidity."""
 
 
 def closed_family(family: str) -> Family:
@@ -218,20 +179,7 @@ def result_contract(
             if not isinstance(capability, dict):
                 raise InputError("plan result schema performance capability is missing")
             capability["enum"] = list(capability_leafs)
-    return ResultContract(
-        schema_id=schema_id,
-        schema_digest=canonical_digest(payload),
-        delivery_mode="assistant_json_local_v1",
-        schema_document=payload,
-    )
-
-
-def failed_input(error: Exception) -> TaskOutcome:
-    return TaskOutcome.failed("invalid_input", str(error), retryable=True)
-
-
-def failed_output(message: str) -> TaskOutcome:
-    return TaskOutcome.failed("invalid_output", message, retryable=True)
+    return result_contract_from(schema_id, payload)
 
 
 def evidence_ref(workspace: Path, relative: str) -> EvidenceArtifactRefV1:
@@ -618,7 +566,7 @@ def review_input_images(workspace: Path, paths: tuple[str, ...]) -> dict[str, by
     }
 
 
-def prepare_plan_outcome(
+def prepare_plan_request(
     *,
     family: Family,
     skill_path: str,
@@ -626,14 +574,15 @@ def prepare_plan_outcome(
     cases: CaseYamlAuthoring,
     binding: AgentBindingDataV1,
     result_schema_id: str,
-    context: TaskContext,
+    context: WorkspaceRoots,
     allowed_outputs: tuple[str, ...],
     close_result_capabilities: bool = False,
     review_input_paths: tuple[str, ...] = (),
     repair_review: Mapping[str, object] | None = None,
     extra_json: Mapping[str, object] | None = None,
     validation_error: str | None = None,
-) -> TaskOutcome:
+    skill_text: str | None = None,
+) -> AgentRunRequest:
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
     facts = planning_facts_for(
@@ -643,7 +592,7 @@ def prepare_plan_outcome(
         family=family,
     )
     instructions = (
-        InstructionPart.text("text/plain", resource_text(skill_path)),
+        InstructionPart.text("text/plain", resource_text(skill_path) if skill_text is None else skill_text),
         InstructionPart.from_json(cases.model_dump(mode="json")),
         InstructionPart.from_json(
             {
@@ -666,23 +615,18 @@ def prepare_plan_outcome(
         instructions = (*instructions, InstructionPart.from_json(dict(repair_review)))
     if extra_json is not None:
         instructions = (*instructions, InstructionPart.from_json(dict(extra_json)))
-    agent_request = AgentRunRequest(
-        instructions=with_validation_retry(instructions, validation_error),
-        result_contract=result_contract(
+    return agent_run_request(
+        instructions=instructions,
+        validation_error=validation_error,
+        result=result_contract(
             result_schema_id,
             capability_leafs=business.capability_leafs if close_result_capabilities else None,
         ),
-        execution=binding.execution,
-        workspace=agent_workspace(
-            context,
-            allowed_outputs=allowed_outputs,
-            agent_profile=binding.agent_profile,
-            scope_id=business.change_id,
-        ),
-        request_policy_digest=binding.request_policy_digest,
-        request_config_digest=binding.request_config_digest,
+        binding=binding,
+        roots=context,
+        allowed_outputs=allowed_outputs,
+        scope_id=business.change_id,
     )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
 
 def _structured(payload: AgentFinalizeInputV1) -> object:
@@ -843,12 +787,8 @@ __all__ = [
     "PLAN_RESULT_ID",
     "PLAN_REVIEW_RESULT_ID",
     "Family",
-    "InputError",
-    "OutputError",
     "PlanFinalizeHandler",
     "closed_family",
-    "failed_input",
-    "failed_output",
     "evidence_ref",
     "leafs_of",
     "load_family_case_modules",
@@ -856,7 +796,7 @@ __all__ = [
     "plan_review_input_paths",
     "authenticate_loop_round_history",
     "expected_plan_review_history",
-    "prepare_plan_outcome",
+    "prepare_plan_request",
     "request_family",
     "resolve_family",
     "result_contract",

@@ -15,6 +15,7 @@ from graph_engine.plugin_api import (
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
 from assurance_healing.contracts.attempts import attempt_contract_refs
+from assurance_healing.ops import router
 
 from assurance_healing.effects.allocation import (
     ALLOCATION_INTENT_SCHEMA,
@@ -61,15 +62,8 @@ APPROVAL_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=30.0, backoff_sec
 HEAL_APPLY_POLICY = EffectPolicy(max_attempts=5, timeout_seconds=120.0, backoff_seconds=2.0)
 
 HEALING_RESOURCE_FILES: dict[str, str] = {
+    **router.resource_files(),
     "assurance.healing.policy.test-change-policy.v1": "policy/test-change-policy.v1.json",
-    "assurance.healing.result.coverage-repair.v1": "result-contracts/coverage-repair.v1.schema.json",
-    "assurance.healing.result.fix-proposal.v1": "result-contracts/fix-proposal.v1.schema.json",
-    "assurance.healing.result.applied-test-repair.v1": (
-        "result-contracts/applied-test-repair.v1.schema.json"
-    ),
-    "assurance.healing.skill.aa-apply-test-repair.v1": "skills/aa-apply-test-repair/SKILL.md",
-    "assurance.healing.skill.aa-coverage-repair.v1": "skills/aa-coverage-repair/SKILL.md",
-    "assurance.healing.skill.aa-fix-proposal.v1": "skills/aa-fix-proposal/SKILL.md",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
-from agent_runtime_opencode.protocol import OpenCodeProtocolProfile
+from agent_runtime_opencode.transport.profile import OpenCodeProtocolProfile
 
 
 CutName = Literal[

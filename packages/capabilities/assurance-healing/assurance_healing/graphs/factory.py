@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import add_attempt_node
 
-from assurance_healing.task import HealingGraphs
+from assurance_healing.feature import HealingGraphs
 from assurance_healing.graphs.nodes import (
     activation_repair,
     admit_passthrough,

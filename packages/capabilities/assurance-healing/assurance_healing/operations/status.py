@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_healing.contracts.agent import CoverageRepairAllocateInputV1
 from assurance_healing.contracts.coverage_repair import CoverageRepairBaseline, CoverageRepairStatus
 from assurance_healing.contracts.status import HealingStatusV1
-from assurance_healing.operations.common import InputError, failed_input, validate_input
 from assurance_healing.operations.keys import mint_coverage_attempt_token
 
 _HEAL_STATUSES = {
@@ -66,7 +66,7 @@ class AllocateCoverageRepairAttemptHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(CoverageRepairAllocateInputV1, request.input)
+            payload = validate_model(CoverageRepairAllocateInputV1, request.input)
             if not payload.brief.eligible:
                 raise InputError("cannot allocate coverage-repair attempt for an ineligible brief")
             attempts_used = payload.prior_attempts_used + 1

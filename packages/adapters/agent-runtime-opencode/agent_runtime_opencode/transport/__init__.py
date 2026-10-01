@@ -1,0 +1,1 @@
+"""OpenCode HTTP transport."""

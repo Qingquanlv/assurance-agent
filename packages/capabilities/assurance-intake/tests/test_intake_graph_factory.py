@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pytest
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from agent_runtime_contracts import (
@@ -16,19 +17,15 @@ from agent_runtime_contracts import (
     ResolvedRawAgentExecutor,
     canonical_digest,
 )
-from agent_runtime_contracts.models import AgentRunResult
-from assurance_intake.contracts.agent import (
-    ArtifactDigestV1,
-    ArtifactListResultV1,
-    CaseDesignInputV1,
-    CaseDesignOutputV1,
-)
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from agent_runtime_contracts.wire.models import AgentRunResult
+from assurance_intake.domain.artifacts import ArtifactDigestV1, ArtifactListResultV1
+from assurance_intake.ops.case_design import CaseDesignInputV1, CaseDesignOutputV1
+from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult, TaskAttemptContract
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
 from graph_engine.plugin_api import (
     DirectoryIdentity,
     ResourceClaims,
@@ -43,6 +40,7 @@ _RECEIPT_ID = "receipt-1"
 _INTAKE_ID = "assurance.intake.agent.intake.v1"
 _EXPLORE_ID = "assurance.intake.agent.explore.v1"
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
+_CASE_REPAIR_ID = "assurance.intake.agent.case-repair.v1"
 _CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
 _RESOLVE_PLAN_ID = "assurance.intake.task.resolve-plan"
 _GRAPH_CONTRACT_IDS = (
@@ -50,6 +48,7 @@ _GRAPH_CONTRACT_IDS = (
     _EXPLORE_ID,
     _RESOLVE_PLAN_ID,
     _CASE_DESIGN_ID,
+    _CASE_REPAIR_ID,
     _CASE_REVIEW_ID,
 )
 _PHASE_NODES = frozenset(
@@ -186,6 +185,10 @@ def _design_output(*, validation_status: str = "pass") -> dict[str, object]:
     }
 
 
+def _repair_output() -> dict[str, object]:
+    return {"artifacts": [{"path": "qa/cases/menus/case.yaml", "digest": _SHA}]}
+
+
 def _node_names(graph: object) -> set[str]:
     names: set[str] = set()
     nodes = getattr(graph, "nodes", {})
@@ -204,6 +207,19 @@ def _node_names(graph: object) -> set[str]:
     return names
 
 
+def _top_level_names(graph: object) -> set[str]:
+    nodes = getattr(graph, "nodes", {})
+    if not isinstance(nodes, dict):
+        return set()
+    return {str(name) for name in nodes if name not in {"__start__", "__end__"}}
+
+
+def _is_compiled_subgraph(graph: object, name: str) -> bool:
+    nodes = getattr(graph, "nodes", {})
+    node = nodes[name]
+    return isinstance(getattr(node, "bound", None), CompiledStateGraph)
+
+
 def _walk_graph_python() -> Iterator[Path]:
     for path in sorted(_GRAPHS_ROOT.rglob("*.py")):
         if "__pycache__" not in path.parts:
@@ -219,11 +235,13 @@ def recording_context():
 
 
 def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch: pytest.MonkeyPatch) -> None:
-    from assurance_intake.graphs.nodes import (
+    from assurance_intake.graphs.calls import (
         activation_case_design,
-        activation_case_design_repair,
+        activation_case_design_validation_retry,
+        activation_case_repair,
         select_case_design,
-        select_case_design_repair,
+        select_case_design_validation_retry,
+        select_case_repair,
     )
 
     calls: list[tuple[str, str, object, object]] = []
@@ -257,6 +275,7 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
         _CASE_DESIGN_ID,
         _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
+        _CASE_REPAIR_ID,
     )
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
     assert recording_context.bound_contract_ids.count(_CASE_DESIGN_ID) == 2
@@ -265,9 +284,14 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
     assert tuple((fn.__module__, fn.__qualname__) for fn in calls[3][2:]) == tuple(
         (fn.__module__, fn.__qualname__) for fn in (activation_case_design, select_case_design)
     )
-    assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design-repair")
+    assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design-validation-retry")
     assert tuple((fn.__module__, fn.__qualname__) for fn in calls[4][2:]) == tuple(
-        (fn.__module__, fn.__qualname__) for fn in (activation_case_design_repair, select_case_design_repair)
+        (fn.__module__, fn.__qualname__)
+        for fn in (activation_case_design_validation_retry, select_case_design_validation_retry)
+    )
+    assert calls[6][:2] == (_CASE_REPAIR_ID, "intake.case-repair")
+    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[6][2:]) == tuple(
+        (fn.__module__, fn.__qualname__) for fn in (activation_case_repair, select_case_repair)
     )
 
 
@@ -276,20 +300,26 @@ def test_prepare_contains_only_preparation_nodes(recording_context) -> None:
     names = _node_names(bundle.prepare)
     assert {"intake", "explore", "resolve-plan", "prepared"} <= names
     assert not {"case-design", "case-review", "human-review"} & names
+    for leaf in ("intake", "explore", "resolve-plan"):
+        assert not _is_compiled_subgraph(bundle.prepare, leaf), leaf
 
 
 def test_shared_case_contains_complete_review_flow(recording_context) -> None:
     bundle = build_intake_graphs(recording_context)
-    names = _node_names(bundle.case)
-    assert {
+    assert _top_level_names(bundle.case) == {
         "case-design",
+        "case-repair",
         "case-review",
-        "case-design-retry",
-        "case-review-retry",
+        "review-round-advance",
+        "advance-join",
         "human-review",
-        "exhausted",
+        "done",
         "rejected",
-    } <= names
+        "exhausted",
+    }
+    assert _is_compiled_subgraph(bundle.case, "case-design")
+    assert not _is_compiled_subgraph(bundle.case, "case-review")
+    assert not _is_compiled_subgraph(bundle.case, "case-repair")
 
 
 def test_target_graphs_contain_no_phase_nodes_or_send(recording_context) -> None:
@@ -321,13 +351,15 @@ async def test_case_graph_runs_primary_and_repair_through_one_composite_attempt_
         input=intake_graph_input(),
         script={
             "intake.case-design": [committed(_design_output(validation_status="needs_fix"), receipt)],
-            "intake.case-design-repair": [committed(_design_output(validation_status="pass"), receipt)],
+            "intake.case-design-validation-retry": [
+                committed(_design_output(validation_status="pass"), receipt)
+            ],
             "intake.case-review": [committed(_review_output(), receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
         "intake.case-design",
-        "intake.case-design-repair",
+        "intake.case-design-validation-retry",
         "intake.case-review",
     ]
     assert [call.contract_id for call in result.semantic_calls] == [
@@ -378,7 +410,7 @@ async def test_case_rejection_is_an_explicit_unsuccessful_terminal() -> None:
     assert terminal["decision"] == "reject"
 
 
-async def test_case_needs_fix_runs_design_and_review_again() -> None:
+async def test_case_auto_fix_runs_repair_and_review_again() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
     bundle = build_intake_graphs(context)
@@ -387,10 +419,8 @@ async def test_case_needs_fix_runs_design_and_review_again() -> None:
         bundle.case,
         input=intake_graph_input(),
         script={
-            "intake.case-design": [
-                committed(_design_output(), receipt),
-                committed(_design_output(), receipt),
-            ],
+            "intake.case-design": [committed(_design_output(), receipt)],
+            "intake.case-repair": [committed(_repair_output(), receipt)],
             "intake.case-review": [
                 committed(
                     _review_output(decision="needs_fix", auto_fix_allowed=True),
@@ -403,13 +433,49 @@ async def test_case_needs_fix_runs_design_and_review_again() -> None:
     assert [call.semantic_node_id for call in result.semantic_calls] == [
         "intake.case-design",
         "intake.case-review",
-        "intake.case-design",
+        "intake.case-repair",
         "intake.case-review",
     ]
+    assert [call.contract_id for call in result.semantic_calls] == [
+        _CASE_DESIGN_ID,
+        _CASE_REVIEW_ID,
+        _CASE_REPAIR_ID,
+        _CASE_REVIEW_ID,
+    ]
+    repair = result.select_values[2]
+    assert isinstance(repair, dict)
+    assert repair["review_repair"] is None
+    assert "validation_attempt" not in repair
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "reviewed"
     assert terminal["rounds_used"] == 1
+
+
+async def test_case_repair_failure_exhausts_the_case_flow() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
+    bundle = build_intake_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.case,
+        input=intake_graph_input(),
+        script={
+            "intake.case-design": [committed(_design_output(), receipt)],
+            "intake.case-repair": [RejectedTaskResult(reason="repair changed fields outside allowed_paths")],
+            "intake.case-review": [
+                committed(_review_output(decision="needs_fix", auto_fix_allowed=True), receipt),
+            ],
+        },
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == [
+        "intake.case-design",
+        "intake.case-review",
+        "intake.case-repair",
+    ]
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "exhausted"
 
 
 async def test_case_budget_exhaustion_is_explicit() -> None:
@@ -562,7 +628,7 @@ def _case_design_input(*, validation_attempt: int = 0) -> CaseDesignInputV1:
     ("path", "semantic_node_id", "validation_attempt"),
     [
         ("primary", "intake.case-design", 0),
-        ("repair", "intake.case-design-repair", 1),
+        ("validation-retry", "intake.case-design-validation-retry", 1),
     ],
 )
 async def test_prepared_value_and_agent_result_reach_finalize_through_one_composite_attempt(
@@ -607,7 +673,7 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
 
 
 def test_publish_plan_rebinds_exploration_to_the_plan_digest(tmp_path: Path) -> None:
-    from assurance_intake.graphs.nodes import publish_plan
+    from assurance_intake.graphs.calls import publish_plan
 
     plan, plan_ref = install_plan(
         tmp_path,

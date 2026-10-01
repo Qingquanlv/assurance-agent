@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent_runtime_contracts import AgentRunResult, ResultContract
-from agent_runtime_contracts.schema import (
+from agent_runtime_contracts.wire.schema import (
     bound_redacted_diagnostics,
     canonical_digest,
     canonical_json_bytes,
@@ -368,7 +368,7 @@ def test_agent_run_result_requires_schema_valid_structured_output() -> None:
 def test_result_schema_from_model_is_derived_from_installed_result_model() -> None:
     from pydantic import BaseModel
 
-    from agent_runtime_contracts.schema import result_schema_from_model
+    from agent_runtime_contracts.wire.schema import result_schema_from_model
 
     class ArtifactListResult(BaseModel):
         output_files: tuple[str, ...]
@@ -381,7 +381,7 @@ def test_result_schema_from_model_is_derived_from_installed_result_model() -> No
 def test_validate_local_agent_result_digests_exact_payload_before_pydantic() -> None:
     from pydantic import BaseModel
 
-    from agent_runtime_contracts.schema import validate_local_agent_result
+    from agent_runtime_contracts.wire.schema import validate_local_agent_result
 
     class ResultWithDefault(BaseModel):
         status: str
@@ -402,7 +402,7 @@ def test_validate_local_agent_result_forwards_feature_owned_context() -> None:
 
     from pydantic import BaseModel, ValidationError, ValidationInfo, model_validator
 
-    from agent_runtime_contracts.schema import validate_local_agent_result
+    from agent_runtime_contracts.wire.schema import validate_local_agent_result
 
     class LeafAwareResult(BaseModel):
         leaf: str

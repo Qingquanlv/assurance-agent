@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator
-from pathlib import Path
 from typing import cast
 
 import pytest
@@ -13,10 +12,11 @@ from agent_runtime_contracts import validate_structured_result
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_intake.contracts import CaseReviewResultV1
-from assurance_intake.contracts.agent import ArtifactListResultV1
-from assurance_intake.resource_loader import resource_bytes
+from assurance_intake.domain.artifacts import ArtifactListResultV1
+from assurance_intake.ops import router
+from assurance_intake.plugin import IntakePlugin
 
-_RESOURCES = Path(__file__).resolve().parent.parent / "assurance_intake" / "resources"
+resource_bytes = router.resource_bytes
 _FORBIDDEN = (
     "assurance_agent",
     "opencode",
@@ -31,35 +31,35 @@ _TOKEN = re.compile(
 )
 
 
-def _resource_files() -> Iterator[Path]:
-    for path in sorted(_RESOURCES.rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts:
-            yield path
+def _resource_files() -> Iterator[str]:
+    spec = IntakePlugin.spec
+    yield from sorted({*spec.resource_files.values(), *spec.schema_files.values()})
 
 
 def test_intake_resources_forbid_legacy_and_provider_names() -> None:
-    hits: list[str] = []
-    for path in _resource_files():
-        text = path.read_text(encoding="utf-8")
-        if _TOKEN.search(text):
-            hits.append(path.relative_to(_RESOURCES).as_posix())
+    texts = {relative: resource_bytes(relative).decode("utf-8") for relative in _resource_files()}
+    assert len(texts) == 22
+    hits = [relative for relative, text in texts.items() if _TOKEN.search(text)]
     assert hits == [], f"forbidden provider/legacy tokens in resources: {hits}"
-    lowered = "\n".join(path.read_text(encoding="utf-8").lower() for path in _resource_files())
+    lowered = "\n".join(text.lower() for text in texts.values())
     for token in _FORBIDDEN:
         assert token not in lowered
 
 
 def test_result_contracts_match_capability_schemas() -> None:
-    assert resource_bytes("result-contracts/case-review.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/case_review/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, CaseReviewResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/case-design.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/case_design/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, ArtifactListResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/intake.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/case_repair/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, ArtifactListResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/explore.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/intake/result.schema.json") == canonical_json_bytes(
+        cast(JSONValue, ArtifactListResultV1.model_json_schema())
+    )
+    assert resource_bytes("ops/explore/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, ArtifactListResultV1.model_json_schema())
     )
 
@@ -74,10 +74,10 @@ def test_artifact_list_model_and_result_contracts_reject_an_empty_receipt() -> N
         "qa/requirement.md",
     )
 
-    for name in ("intake", "explore", "case-design"):
+    for name in ("intake", "explore", "case_design", "case_repair"):
         schema = cast(
             dict[str, JSONValue],
-            json.loads(resource_bytes(f"result-contracts/{name}.v1.schema.json")),
+            json.loads(resource_bytes(f"ops/{name}/result.schema.json")),
         )
         output_files = cast(dict[str, JSONValue], schema["properties"])["output_files"]
         assert isinstance(output_files, dict)

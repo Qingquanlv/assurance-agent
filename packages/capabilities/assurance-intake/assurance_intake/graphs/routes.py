@@ -15,13 +15,16 @@ def _is_pass(state: Mapping[str, object]) -> bool:
     return state.get("decision") == "pass" and state.get("human_review_required") is not True
 
 
-def _is_auto_fix(state: Mapping[str, object]) -> bool:
+def _is_review_repair(state: Mapping[str, object]) -> bool:
     return (
         state.get("decision") == "needs_fix"
         and state.get("auto_fix_allowed") is True
         and state.get("human_review_required") is not True
-        and _has_budget(state)
     )
+
+
+def _is_auto_fix(state: Mapping[str, object]) -> bool:
+    return _is_review_repair(state) and _has_budget(state)
 
 
 def _is_reject(state: Mapping[str, object]) -> bool:
@@ -43,31 +46,12 @@ def case_review_named_matches(state: Mapping[str, object]) -> dict[str, str | No
     }
 
 
-def case_review_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    matches = case_review_named_matches(state)
-    return {
-        "pass": matches["pass"],
-        "auto_fix": "review-round-advance-retry" if matches["auto_fix"] else None,
-        "reject": matches["reject"],
-        "human": "human-review-retry" if matches["human"] else None,
-    }
-
-
 def human_review_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     action = state.get("human_action")
     return {
         "approve": "done" if action == "approve" else None,
         "reject": "rejected" if action == "reject" else None,
         "rework": "review-round-advance" if action == "request_rework" and _has_budget(state) else None,
-    }
-
-
-def human_review_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    matches = human_review_named_matches(state)
-    return {
-        "approve": matches["approve"],
-        "reject": matches["reject"],
-        "rework": "review-round-advance-rework-retry" if matches["rework"] else None,
     }
 
 
@@ -79,15 +63,11 @@ def case_design_named_matches(state: Mapping[str, object]) -> dict[str, str | No
     }
 
 
-def route_preparation_attempt(state: Mapping[str, object]) -> str:
-    return "failed" if state.get("attempt_failure") else "committed"
-
-
 def route_case_design_result(state: Mapping[str, object]) -> str:
-    return "review" if state.get("status") == "passed" else "failed"
+    return "case-review" if state.get("status") == "passed" else "exhausted"
 
 
-def route_case_design_repair(state: Mapping[str, object]) -> str:
+def route_case_design_validation_retry(state: Mapping[str, object]) -> str:
     if state.get("attempt_failure"):
         return "failed"
     return "done" if state.get("validation_status") == "pass" else "failed"
@@ -97,34 +77,27 @@ def route_case_review(state: Mapping[str, object]) -> str:
     return select_exclusive_route(case_review_named_matches(state), otherwise="exhausted")
 
 
-def route_case_review_retry(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(case_review_retry_named_matches(state), otherwise="exhausted")
-
-
 def route_human_review(state: Mapping[str, object]) -> str:
     return select_exclusive_route(human_review_named_matches(state), otherwise="exhausted")
 
 
-def route_human_review_retry(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(human_review_retry_named_matches(state), otherwise="exhausted")
-
-
 def route_case_design(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(case_design_named_matches(state), otherwise="case-design-repair")
+    return select_exclusive_route(case_design_named_matches(state), otherwise="case-design-validation-retry")
+
+
+def route_review_round(state: Mapping[str, object]) -> str:
+    # The advance has already spent this round's budget; only the latest review outcome decides.
+    return "case-repair" if _is_review_repair(state) else "case-design"
 
 
 __all__ = [
     "case_design_named_matches",
     "case_review_named_matches",
-    "case_review_retry_named_matches",
     "human_review_named_matches",
-    "human_review_retry_named_matches",
     "route_case_design",
-    "route_case_design_repair",
+    "route_case_design_validation_retry",
     "route_case_design_result",
     "route_case_review",
-    "route_case_review_retry",
     "route_human_review",
-    "route_human_review_retry",
-    "route_preparation_attempt",
+    "route_review_round",
 ]

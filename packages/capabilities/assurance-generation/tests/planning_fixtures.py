@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentRunResult
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from tests.capabilities.agent_harness import FakeAgentAdapter
 

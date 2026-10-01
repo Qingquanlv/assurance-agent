@@ -12,11 +12,8 @@ from assurance_generation.graphs.routes import (
     InsufficientRouteMatches,
     family_select_named_matches,
     plan_advance_named_matches,
-    plan_advance_retry_named_matches,
     plan_human_review_named_matches,
-    plan_human_review_retry_named_matches,
     plan_review_named_matches,
-    plan_review_retry_named_matches,
     route_families,
 )
 
@@ -30,51 +27,19 @@ _EXCLUSIVE_ROUTE_ROWS = (
     ("assurance.generation.workflow.graph.generation", "select-fuzz", "fuzz-skip"),
     ("assurance.generation.workflow.graph.generation", "select-performance", "performance-skip"),
     ("assurance.generation.workflow.graph.generation-api", "codegen-human-review", "exhausted"),
-    ("assurance.generation.workflow.graph.generation-api", "codegen-human-review-retry", "exhausted"),
     ("assurance.generation.workflow.graph.generation-api", "codegen-review", "exhausted"),
-    ("assurance.generation.workflow.graph.generation-api", "codegen-review-retry", "exhausted"),
     ("assurance.generation.workflow.graph.generation-api", "codegen-review-round-advance", "exhausted"),
-    (
-        "assurance.generation.workflow.graph.generation-api",
-        "codegen-review-round-advance-retry",
-        "exhausted",
-    ),
     ("assurance.generation.workflow.graph.generation-e2e", "codegen-human-review", "exhausted"),
-    ("assurance.generation.workflow.graph.generation-e2e", "codegen-human-review-retry", "exhausted"),
     ("assurance.generation.workflow.graph.generation-e2e", "codegen-review", "exhausted"),
-    ("assurance.generation.workflow.graph.generation-e2e", "codegen-review-retry", "exhausted"),
     ("assurance.generation.workflow.graph.generation-e2e", "codegen-review-round-advance", "exhausted"),
-    (
-        "assurance.generation.workflow.graph.generation-e2e",
-        "codegen-review-round-advance-retry",
-        "exhausted",
-    ),
     ("assurance.generation.workflow.graph.generation-fuzz", "codegen-human-review", "exhausted"),
-    ("assurance.generation.workflow.graph.generation-fuzz", "codegen-human-review-retry", "exhausted"),
     ("assurance.generation.workflow.graph.generation-fuzz", "codegen-review", "exhausted"),
-    ("assurance.generation.workflow.graph.generation-fuzz", "codegen-review-retry", "exhausted"),
     ("assurance.generation.workflow.graph.generation-fuzz", "codegen-review-round-advance", "exhausted"),
-    (
-        "assurance.generation.workflow.graph.generation-fuzz",
-        "codegen-review-round-advance-retry",
-        "exhausted",
-    ),
     ("assurance.generation.workflow.graph.generation-performance", "codegen-human-review", "exhausted"),
-    (
-        "assurance.generation.workflow.graph.generation-performance",
-        "codegen-human-review-retry",
-        "exhausted",
-    ),
     ("assurance.generation.workflow.graph.generation-performance", "codegen-review", "exhausted"),
-    ("assurance.generation.workflow.graph.generation-performance", "codegen-review-retry", "exhausted"),
     (
         "assurance.generation.workflow.graph.generation-performance",
         "codegen-review-round-advance",
-        "exhausted",
-    ),
-    (
-        "assurance.generation.workflow.graph.generation-performance",
-        "codegen-review-round-advance-retry",
         "exhausted",
     ),
 )
@@ -145,11 +110,8 @@ def _named_matches_for(node_id: str) -> Callable[[Mapping[str, object]], dict[st
         return lambda state: family_select_named_matches(state, family)
     builders = {
         "codegen-review": plan_review_named_matches,
-        "codegen-review-retry": plan_review_retry_named_matches,
         "codegen-human-review": plan_human_review_named_matches,
-        "codegen-human-review-retry": plan_human_review_retry_named_matches,
         "codegen-review-round-advance": plan_advance_named_matches,
-        "codegen-review-round-advance-retry": plan_advance_retry_named_matches,
     }
     return builders[node_id]
 
@@ -246,22 +208,13 @@ def test_plan_review_pass_auto_fix_reject_human_and_not_ready() -> None:
                 attempt_failure={"resolution_kind": "permanent"},
             )
         )
-        == "failed"
+        == "codegen-review-round-advance"
     )
 
 
-def test_plan_review_retry_and_human_review_routes() -> None:
-    from assurance_generation.graphs.routes import (
-        route_plan_human_review,
-        route_plan_human_review_retry,
-        route_plan_review_retry,
-    )
+def test_plan_human_review_routes() -> None:
+    from assurance_generation.graphs.routes import route_plan_human_review
 
-    assert (
-        route_plan_review_retry(_review_state(route="auto_fix", rounds_used=1, rounds_budget=2))
-        == "codegen-review-round-advance-retry"
-    )
-    assert route_plan_review_retry(_review_state(route="human")) == "codegen-human-review-retry"
     assert route_plan_human_review(_review_state(action="approve")) == "done"
     assert route_plan_human_review(_review_state(action="reject")) == "rejected"
     assert (
@@ -272,17 +225,12 @@ def test_plan_review_retry_and_human_review_routes() -> None:
         route_plan_human_review(_review_state(action="request_rework", rounds_used=2, rounds_budget=2))
         == "exhausted"
     )
-    assert (
-        route_plan_human_review_retry(_review_state(action="request_rework", rounds_used=1, rounds_budget=2))
-        == "codegen-review-round-advance-retry"
-    )
 
 
 def test_last_budgeted_plan_advance_joins_after_increment() -> None:
-    from assurance_generation.graphs.routes import route_plan_advance, route_plan_advance_retry
+    from assurance_generation.graphs.routes import route_plan_advance
 
     assert route_plan_advance(_review_state(rounds_used=2, rounds_budget=2)) == "codegen-round-join"
-    assert route_plan_advance_retry(_review_state(rounds_used=2, rounds_budget=2)) == "codegen-round-join"
     assert route_plan_advance(_review_state(rounds_used=1, rounds_budget=2)) == "codegen-round-join"
     assert route_plan_advance(_review_state(rounds_used=3, rounds_budget=2)) == "exhausted"
 

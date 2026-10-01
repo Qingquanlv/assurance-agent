@@ -8,6 +8,13 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from agent_runtime_contracts.ops import (
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    validate_model,
+)
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -19,15 +26,7 @@ from assurance_quality.contracts.trace import (
     TraceRow,
     TraceTestRef,
 )
-from assurance_quality.operations.common import (
-    InputError,
-    OutputError,
-    catalog_context,
-    failed_input,
-    failed_output,
-    leafs_of,
-    validate_input,
-)
+from assurance_quality.operations.common import catalog_context, leafs_of
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 _CASE_TYPE_TO_TARGET: dict[str, Literal["api", "e2e", "fuzz", "performance"]] = {
@@ -224,7 +223,7 @@ class MaterializeTraceHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(TraceOperationInput, request.input)
+            payload = validate_model(TraceOperationInput, request.input)
             if payload.execution_evidence is not None:
                 try:
                     ExecutionEvidenceV1.model_validate(

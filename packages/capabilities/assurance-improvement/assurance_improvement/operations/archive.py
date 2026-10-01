@@ -6,17 +6,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_runtime_contracts.ops import InputError, failed_input
 from graph_engine.plugin_api import EffectIntent, TaskContext, TaskOutcome, TaskRequest
 from assurance_quality.contracts.report import QualityReport
 
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
-from assurance_improvement.operations.common import (
-    InputError,
-    as_json,
-    failed_input,
-    succeeded,
-    validate_input,
-)
+from assurance_improvement.operations.common import as_json, succeeded, validate_input
 from assurance_improvement.operations.keys import archive_effect_key
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")

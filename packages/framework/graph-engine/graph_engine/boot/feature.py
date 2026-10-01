@@ -32,7 +32,6 @@ class FeatureSpec(Generic[AgentContractT]):
     task_contracts: Mapping[str, TaskAttemptContract[Any, Any]]
     output_route_templates: Mapping[str, tuple[str, ...]]
     graph_factory: FeatureFactoryRef
-    agent_task_types: tuple[type[Any], ...]
 
     def __post_init__(self) -> None:
         owner = self.graph_factory.owner_id
@@ -50,9 +49,6 @@ class FeatureSpec(Generic[AgentContractT]):
             or any(contract.owner_id != owner for contract in (*agents.values(), *tasks.values()))
         ):
             raise ValueError(f"feature contract identity mismatch: {owner}")
-        task_type_ids = tuple(task_type.contract.contract_id for task_type in self.agent_task_types)
-        if len(set(task_type_ids)) != len(task_type_ids) or set(task_type_ids) != set(agent_ids):
-            raise ValueError(f"feature agent task mismatch: {owner}")
         if not set(agents).issubset(routes) or set(routes) - (set(agents) | set(tasks)):
             raise ValueError(f"feature output route mismatch: {owner}")
         object.__setattr__(self, "agent_contracts", MappingProxyType(agents))

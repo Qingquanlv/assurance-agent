@@ -9,9 +9,9 @@ from urllib.parse import quote
 
 import pytest
 
-from agent_runtime_opencode.protocol import canonical_json_text
-from agent_runtime_opencode.reducer import reduce_terminal
-from agent_runtime_opencode.redaction import (
+from agent_runtime_opencode.result import reduce_terminal
+from agent_runtime_opencode.transport.http import canonical_json_text
+from agent_runtime_opencode.security import (
     encoded_canary_forms,
     redact_text,
     redact_json,

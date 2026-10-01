@@ -4,11 +4,8 @@ import pytest
 
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
 from agent_runtime_opencode.handler import OpenCodeHandler
-from agent_runtime_opencode.protocol import (
-    OpenCodeHttpClient,
-    locked_opencode_profile,
-    resolve_advertised_profile,
-)
+from agent_runtime_opencode.transport.http import OpenCodeHttpClient
+from agent_runtime_opencode.transport.profile import locked_opencode_profile, resolve_advertised_profile
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from test_preflight import (  # pyright: ignore[reportMissingImports]  # noqa: PLC2701
     _SHA,

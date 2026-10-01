@@ -1,52 +1,37 @@
-"""Prepare and finalize an approved, existing-test implementation repair."""
+"""Authenticate and verify an approved, existing-test implementation repair."""
 
 from __future__ import annotations
 
 import ast
 import hashlib
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
-from agent_runtime_contracts import (
-    AgentRunRequest,
-    AgentRunResult,
-    InstructionPart,
-    prompt_model_json,
-    with_validation_retry,
-)
-from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
-from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from agent_runtime_contracts import AgentRunResult
+from agent_runtime_contracts.ops import OutputError
+from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
+from graph_engine.plugin_api import TaskContext
 from pydantic import ValidationError
 
 from assurance_execution.contracts import ExecutionEvidenceV1
 from assurance_generation.contracts.codegen import durable_test_path
 from assurance_generation.contracts.mapping import ClosedMappingV1, selected_test_file
-from assurance_healing.contracts.agent import AgentBindingDataV1
+from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.contracts.application import (
     ApplyTestRepairInputV1,
     TestRepairResultV1,
     VerifiedTestRepairV1,
 )
 from assurance_healing.contracts.effects import ProposalApprovedIntentV1
-from assurance_healing.contracts.agent import FixProposalResultV1
-from assurance_healing.operations.agent import agent_workspace, result_contract
-from assurance_healing.operations.common import (
-    InputError,
-    OutputError,
-    failed_input,
-    failed_output,
-    validate_input,
-)
 from assurance_healing.operations.keys import derive_approval_id
-from assurance_healing.resource_loader import resource_text
 from assurance_intake.contracts import LoopRoundHistoryV1
-from assurance_intake.operations.loop_history import build_loop_round_history
+from assurance_intake.domain.loop_history import build_loop_round_history
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
-APPLICATION_SKILL = "skills/aa-apply-test-repair/SKILL.md"
-APPLICATION_RESULT_ID = "assurance.healing.result.applied-test-repair.v1"
-APPLICATION_RESULT_FILE = "result-contracts/applied-test-repair.v1.schema.json"
+
+class _Workspace(Protocol):
+    project_root: Path
+    write_root: Path
 
 
 def repair_history_path(*, coverage_epoch: int, repair_round: int) -> str:
@@ -192,7 +177,7 @@ def _prove_implementation_only(before: bytes, after: bytes, symbols: set[str], p
         raise OutputError(f"repair removes or renames a mapped test identity: {path}")
 
 
-def _approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
+def approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
     for ref in (
         *business.reviewed_case.preparation_refs,
         *business.reviewed_case.case_refs,
@@ -249,16 +234,16 @@ def _approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str,
     return {path: mapped_sources[path] for path in sorted(proposed_sources)}
 
 
-def _verify_application(
+def verify_application(
     business: ApplyTestRepairInputV1,
     result: TestRepairResultV1,
-    context: TaskContext,
+    context: _Workspace,
 ) -> VerifiedTestRepairV1:
     if result.change_id != business.change_id:
         raise OutputError("repair result change_id does not match the locked change")
-    approved_sources = _approved_sources(business, context.project_root)
+    sources = approved_sources(business, context.project_root)
     outputs = set(result.output_files)
-    if outputs != set(approved_sources):
+    if outputs != set(sources):
         raise OutputError("repair output set must exactly equal the approved candidate write set")
     staged = {
         path.relative_to(context.write_root).as_posix()
@@ -274,7 +259,7 @@ def _verify_application(
     for path in result.output_files:
         before = _authenticate_ref(context.project_root, source_by_path[path])
         after = _canonical_file(context.write_root, path).read_bytes()
-        symbols = approved_sources[path]
+        symbols = sources[path]
         _prove_implementation_only(before, after, symbols, path)
         changed.append(EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(after).hexdigest()))
     return VerifiedTestRepairV1(
@@ -288,73 +273,15 @@ def _verify_application(
     )
 
 
-class ApplyTestRepairPrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            business = ApplyTestRepairInputV1.model_validate(request.input)
-            binding = AgentBindingDataV1.model_validate(request.binding_data)
-            approved_paths = tuple(_approved_sources(business, context.project_root))
-            payload = prompt_model_json(business)
-            payload["allowed_test_paths"] = list(approved_paths)
-            request_payload = AgentRunRequest(
-                instructions=with_validation_retry(
-                    (
-                        InstructionPart.text("text/plain", resource_text(APPLICATION_SKILL)),
-                        InstructionPart.from_json(payload),
-                    ),
-                    business.validation_error,
-                ),
-                result_contract=result_contract(APPLICATION_RESULT_ID, APPLICATION_RESULT_FILE),
-                execution=binding.execution,
-                workspace=agent_workspace(
-                    context,
-                    allowed_outputs=approved_paths,
-                    agent_profile=binding.agent_profile,
-                    scope_id=business.change_id,
-                ),
-                request_policy_digest=binding.request_policy_digest,
-                request_config_digest=binding.request_config_digest,
-            )
-            return TaskOutcome.succeeded(request_payload.model_dump(mode="json"))
-        except (ValidationError, InputError, OutputError) as error:
-            return failed_input(InputError(str(error)))
-
-
 class ApplyTestRepairFinalizeInputV1(ApplyTestRepairInputV1):
     agent_result: AgentRunResult
 
 
-class ApplyTestRepairFinalizeHandler:
-    input_model = ApplyTestRepairFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            business = validate_input(ApplyTestRepairFinalizeInputV1, request.input)
-            envelope = business.agent_result
-            try:
-                result = TestRepairResultV1.model_validate(thaw_json(envelope.result_payload))
-            except ValidationError as error:
-                raise OutputError(str(error)) from error
-            verified = _verify_application(business, result, context)
-            expected_history = expected_repair_history(business, verified)
-            history_relative = repair_history_path(
-                coverage_epoch=business.coverage_epoch,
-                repair_round=business.repair_round,
-            )
-            history_path = context.write_root / history_relative
-            history_path.parent.mkdir(parents=True, exist_ok=True)
-            history_path.write_bytes(canonical_json_bytes(expected_history.model_dump(mode="json")) + b"\n")
-            return TaskOutcome.succeeded(cast(JSONValue, verified.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))
-
-
 __all__ = [
-    "ApplyTestRepairFinalizeHandler",
-    "ApplyTestRepairPrepareHandler",
+    "ApplyTestRepairFinalizeInputV1",
+    "approved_sources",
     "authenticate_repair_history",
     "expected_repair_history",
     "repair_history_path",
+    "verify_application",
 ]

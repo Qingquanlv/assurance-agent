@@ -19,7 +19,6 @@ from assurance_generation.graphs.nodes import (
     HUMAN_REVIEW_ACTIONS,
     advance_review_round_node,
     human_review,
-    human_review_retry,
     publish_plan_review,
 )
 from assurance_generation.graphs.state import GenerationState
@@ -158,17 +157,39 @@ def _patch_interrupt(node: Callable[..., Any], **kwargs: Any):
     return patch.dict(node.__globals__, {"interrupt": MagicMock(**kwargs)})
 
 
+def _fresh_lane(family: str) -> dict[str, object]:
+    return {"family": family, "rounds_used": 0, "rounds_budget": 2, "decision": "needs_human_review"}
+
+
+def _lane_after_advance_and_join(family: str) -> dict[str, object]:
+    return {
+        **_fresh_lane(family),
+        "rounds_used": 1,
+        "plan_round_inbox": {
+            "arrivals": [],
+            "dispatched_ids": [],
+            "current_trigger": {
+                "business_epoch": 0,
+                "predecessor": "codegen-review-round-advance",
+                "source_activation": "codegen-review-round-advance-0-1",
+                "sequence": 1,
+                "value": {"rounds_used": 1, "rounds_budget": 2},
+                "arrival_id": "codegen-review-round-advance.0.1",
+            },
+        },
+    }
+
+
 @pytest.mark.parametrize("family", _FAMILIES)
 def test_both_interrupt_sites_accept_only_approve_reject_request_rework(family: str) -> None:
     assert HUMAN_REVIEW_ACTIONS == ("approve", "reject", "request_rework")
-    state = {"family": family, "rounds_used": 0, "rounds_budget": 2}
-    for node in (human_review, human_review_retry):
-        with _patch_interrupt(node, return_value={"action": "supersede"}):
+    for state in (_fresh_lane(family), _lane_after_advance_and_join(family)):
+        with _patch_interrupt(human_review, return_value={"action": "supersede"}):
             with pytest.raises(ValidationError):
-                node(state)
-        with _patch_interrupt(node, return_value={"action": "hold"}):
+                human_review(state)
+        with _patch_interrupt(human_review, return_value={"action": "hold"}):
             with pytest.raises(ValidationError):
-                node(state)
+                human_review(state)
 
 
 @pytest.mark.parametrize("family", _FAMILIES)
@@ -179,7 +200,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
         seen.append(payload)
         raise RuntimeError("interrupt")
 
-    state = {"family": family, "rounds_used": 0, "rounds_budget": 2, "decision": "needs_human_review"}
+    state = _fresh_lane(family)
     with _patch_interrupt(human_review, side_effect=_first):
         with pytest.raises(RuntimeError, match="interrupt"):
             human_review(state)
@@ -203,9 +224,10 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
         retry_seen.append(payload)
         raise RuntimeError("interrupt")
 
-    with _patch_interrupt(human_review_retry, side_effect=_retry):
+    triggered = _lane_after_advance_and_join(family)
+    with _patch_interrupt(human_review, side_effect=_retry):
         with pytest.raises(RuntimeError, match="interrupt"):
-            human_review_retry(state)
+            human_review(triggered)
     retry_request = retry_seen[0]
     assert isinstance(retry_request, dict)
     assert retry_request["interrupt_id"] == f"{family}-codegen-human-review-retry"

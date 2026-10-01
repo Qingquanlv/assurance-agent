@@ -14,7 +14,8 @@ def resource_bytes(relative_path: str) -> bytes:
     path = PurePosixPath(relative_path)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise ValueError("resource path must be canonical and relative")
-    content = _PACKAGE_FILES.joinpath("resources", *path.parts).read_bytes()
+    base = _PACKAGE_FILES if path.parts[:1] == ("ops",) else _PACKAGE_FILES.joinpath("resources")
+    content = base.joinpath(*path.parts).read_bytes()
     return content.rstrip(b"\n") if path.suffix == ".json" else content
 
 

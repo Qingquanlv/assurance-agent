@@ -40,6 +40,7 @@ EVIDENCE_ROOT = Path(__file__).resolve().parent / "fixtures" / "assembly"
 
 HISTORICAL_PREPARE_IDS = (
     "assurance.intake.case-design.prepare",
+    "assurance.intake.case-repair.prepare",
     "assurance.intake.case-review.prepare",
     "assurance.intake.explore.prepare",
     "assurance.intake.intake.prepare",
@@ -92,7 +93,6 @@ HISTORICAL_BINDING_IDS = tuple(
 PURE_DECISION_IDS = (
     "assurance.generation.complete",
     "assurance.generation.review-round.advance",
-    "assurance.intake.review-round.advance",
     "assurance.healing.repair-round.advance",
 )
 SEMANTIC_TRACE_IGNORED_FIELDS = frozenset(

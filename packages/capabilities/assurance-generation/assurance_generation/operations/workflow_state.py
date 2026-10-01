@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError, failed_input
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_generation.contracts.decisions import (
@@ -21,7 +22,6 @@ from assurance_generation.contracts.decisions import (
     advance_review_round,
     complete_generation,
 )
-from assurance_generation.operations.planning import InputError, failed_input
 
 REVIEW_ROUND_ADVANCE_ID = "assurance.generation.review-round.advance"
 GENERATION_COMPLETE_ID = "assurance.generation.complete"

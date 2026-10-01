@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
+from agent_runtime_contracts import AgentRunResult
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.execution import ExecutionReceiptV1
@@ -38,13 +38,6 @@ def _canonical_relative_paths(values: tuple[str, ...]) -> tuple[str, ...]:
         ):
             raise ValueError("artifact path must be canonical and relative")
     return paths
-
-
-class AgentBindingDataV1(FrozenModel):
-    agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-    execution: FrozenExecutionSelection
-    request_policy_digest: str = Field(pattern=_SHA256)
-    request_config_digest: str = Field(pattern=_SHA256)
 
 
 class SelectInputV1(FrozenModel):

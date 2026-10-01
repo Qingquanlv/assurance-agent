@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import Literal, cast
 
+from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_healing.contracts.agent import CoverageRepairSafetyInputV1
 from assurance_healing.contracts.coverage_repair import CoverageRepairSafetyCheck
 from assurance_healing.contracts.safety import CodegenFixerSafetyCheckV1, SafetyCheck
-from assurance_healing.operations.common import InputError, failed_input, validate_input
 
 
 def override_decision(*, require_approval: bool, token_valid: bool) -> Literal["allow", "deny"]:
@@ -88,7 +88,7 @@ class ComputeCoverageRepairSafetyHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(CoverageRepairSafetyInputV1, request.input)
+            payload = validate_model(CoverageRepairSafetyInputV1, request.input)
             test_changed = _diff(payload.baseline.test_files_sha256, payload.current_test_files)
             product_changed = _diff(payload.baseline.product_files_sha256, payload.current_product_files)
             declaration_changed = _diff(

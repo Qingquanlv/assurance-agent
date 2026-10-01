@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
+from agent_runtime_contracts import AgentRunResult
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts import LayerName
@@ -18,8 +18,6 @@ from assurance_healing.contracts.coverage_repair import (
 from assurance_healing.contracts.proposal import FixProposalSummary
 from assurance_healing.contracts.wire import FrozenContract, HexDigest, validate_repo_path
 from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr
-
-_SHA256 = r"^[0-9a-f]{64}$"
 
 
 def _sorted_unique(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
@@ -34,13 +32,6 @@ def _canonical_paths(values: tuple[str, ...]) -> tuple[str, ...]:
     for path in paths:
         validate_repo_path(path)
     return paths
-
-
-class AgentBindingDataV1(FrozenModel):
-    agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-    execution: FrozenExecutionSelection
-    request_policy_digest: str = Field(pattern=_SHA256)
-    request_config_digest: str = Field(pattern=_SHA256)
 
 
 class FixProposalResultItemV1(FrozenContract):
@@ -243,7 +234,6 @@ class CoverageRepairSafetyInputV1(FrozenModel):
 
 
 __all__ = [
-    "AgentBindingDataV1",
     "FixProposalFinalizeInputV1",
     "AllocateHealingInputV1",
     "CoverageRepairAllocateInputV1",

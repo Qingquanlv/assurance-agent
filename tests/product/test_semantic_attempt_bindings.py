@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from functools import wraps
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 import pytest
@@ -21,7 +21,6 @@ _PURE_FUNCTION_IDS = (
     "assurance.generation.complete",
     "assurance.generation.review-round.advance",
     "assurance.healing.repair-round.advance",
-    "assurance.intake.review-round.advance",
 )
 
 
@@ -32,9 +31,9 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract(opencode_com
     contracts = all_feature_agent_contracts()
     composition = opencode_composition
     bindings = runtime_bindings_from_composition(composition)
-    assert len(contracts) == 26
+    assert len(contracts) == 27
     assert set(bindings) == set(contracts)
-    assert len(bindings) == 26
+    assert len(bindings) == 27
     assert all(
         binding.model != "fixture-model" or binding.provider == "opencode" for binding in bindings.values()
     )
@@ -43,8 +42,8 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract(opencode_com
 def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) -> None:
     from assurance_product.agent_contracts import is_agent_contract
 
-    assert len(runtime_registry) == 44
-    assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 26
+    assert len(runtime_registry) == 45
+    assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 27
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
 
@@ -71,8 +70,8 @@ def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> 
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     composition = opencode_composition
-    assert len(composition.semantic_attempt_contracts) == 44
-    assert len(AGENT_EXECUTION_CONTRACTS) == 26
+    assert len(composition.semantic_attempt_contracts) == 45
+    assert len(AGENT_EXECUTION_CONTRACTS) == 27
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
 
@@ -125,7 +124,7 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
 
     composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
-    assert len(resolved) == 44
+    assert len(resolved) == 45
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
     assert all(item.contract.validators == () for item in resolved.values())
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
@@ -141,7 +140,7 @@ def test_raw_runtime_rows_are_canonical_and_digest_locked(opencode_composition) 
     contracts = all_feature_agent_contracts()
     composition = opencode_composition
     rows = raw_agent_runtime_binding_rows(composition)
-    assert len(rows) == 26
+    assert len(rows) == 27
     assert tuple(row.contract_id for row in rows) == tuple(sorted(contracts))
     assert all(isinstance(row, RawAgentRuntimeBindingProjectionV1) for row in rows)
     assert all(row.schema_version == "raw-agent-runtime-binding-v1" for row in rows)
@@ -171,7 +170,7 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     agents = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
-    assert len(agents) == 26
+    assert len(agents) == 27
     assert len(tasks) == 18
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)
@@ -180,137 +179,6 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     for contract_id in task_ids:
         assert not isinstance(resolved[contract_id].executor, ResolvedRawAgentExecutor)
         assert type(resolved[contract_id].executor).__name__ == "DeterministicTaskExecutor"
-
-
-def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
-    from agent_runtime_contracts import ResolvedRawAgentExecutor
-
-    from assurance_generation.task import (
-        ApiCodegenReviewTask,
-        ApiCodegenTask,
-        E2ECodegenReviewTask,
-        E2ECodegenTask,
-        FuzzCodegenReviewTask,
-        FuzzCodegenTask,
-        PerformanceCodegenReviewTask,
-        PerformanceCodegenTask,
-    )
-    from assurance_healing.task import (
-        ApplyTestRepairTask,
-        CoverageRepairTask,
-        FixProposalTask,
-    )
-    from assurance_improvement.task import (
-        ArchiveTask,
-        ImprovementReviewTask,
-        RetroEvalAnalysisTask,
-        RetroIssueAnalysisTask,
-        RetroTask,
-        RetroWorkflowAnalysisTask,
-    )
-    from assurance_intake.task import CaseDesignTask, CaseReviewTask, ExploreTask, IntakeTask
-    from assurance_quality.task import (
-        FactBaselineTask,
-        InspectTask,
-        IssueAnalysisTask,
-        IssueTriageTask,
-        ReportTask,
-    )
-
-    registry = opencode_composition.semantic_attempt_contracts
-    host = object()
-    for task_type in (
-        IntakeTask,
-        ExploreTask,
-        CaseDesignTask,
-        CaseReviewTask,
-        ApiCodegenTask,
-        ApiCodegenReviewTask,
-        E2ECodegenTask,
-        E2ECodegenReviewTask,
-        FuzzCodegenTask,
-        FuzzCodegenReviewTask,
-        PerformanceCodegenTask,
-        PerformanceCodegenReviewTask,
-        FixProposalTask,
-        ApplyTestRepairTask,
-        CoverageRepairTask,
-        FactBaselineTask,
-        InspectTask,
-        IssueAnalysisTask,
-        IssueTriageTask,
-        ReportTask,
-        ArchiveTask,
-        ImprovementReviewTask,
-        RetroEvalAnalysisTask,
-        RetroIssueAnalysisTask,
-        RetroWorkflowAnalysisTask,
-        RetroTask,
-    ):
-        selected = registry[task_type.contract.contract_id]
-        assert isinstance(selected.executor, ResolvedRawAgentExecutor)
-        assert selected.executor._task_type is task_type
-        assert selected.validation_context == selected.executor._result_context
-        bound = selected.executor.with_host(host, graph_revision="c" * 64, product_lock_digest="d" * 64)
-        task = bound._new_task()
-        assert isinstance(task, task_type)
-        for phase, handler_id in (
-            (task.prepare_phase, task_type.contract.prepare_handler_id),
-            (task.opencode, "runtime.opencode.execute"),
-            (task.finalize_phase, task_type.contract.finalize_handler_id),
-        ):
-            installed = cast(Any, phase)
-            assert installed.handler_id == handler_id
-            assert installed._host is host
-            assert installed._graph_revision == "c" * 64
-            assert installed._product_lock_digest == "d" * 64
-        assert cast(Any, task.opencode)._secret_handles == ("opencode.token",)
-
-
-def test_every_product_agent_has_its_declared_task(opencode_composition) -> None:
-    from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
-    from assurance_product.runtime_bindings import _AGENT_TASK_CLASSES, _AGENT_TASK_TYPES
-
-    agents = all_feature_agent_contracts()
-    tasks = all_feature_task_contracts()
-    assert len(agents) == len(_AGENT_TASK_CLASSES) == len(_AGENT_TASK_TYPES) == 26
-    assert len(tasks) == 18
-    assert set(_AGENT_TASK_TYPES) == set(agents)
-    assert set(_AGENT_TASK_TYPES).isdisjoint(item.contract_id for item in tasks.values())
-    for contract_id, contract in agents.items():
-        task_type = _AGENT_TASK_TYPES[contract_id]
-        resolved = opencode_composition.semantic_attempt_contracts[contract_id]
-        assert resolved.executor._task_type is task_type
-        assert task_type.contract.canonical_projection() == contract.canonical_projection()
-        assert resolved.validation_context == resolved.executor._result_context
-
-
-@pytest.mark.parametrize("mutation", ["missing", "duplicate", "extra", "drift"])
-def test_boot_rejects_invalid_agent_task_table(
-    mutation: str, opencode_composition, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from dataclasses import replace
-
-    from assurance_product import runtime_bindings
-
-    classes = runtime_bindings._AGENT_TASK_CLASSES
-    if mutation == "missing":
-        altered = classes[1:]
-    elif mutation == "duplicate":
-        altered = (*classes, classes[0])
-    else:
-        contract = replace(
-            classes[0].contract,
-            contract_id="assurance.intake.agent.forged.v1"
-            if mutation == "extra"
-            else classes[0].contract.contract_id,
-            skill_id="forged" if mutation == "drift" else classes[0].contract.skill_id,
-        )
-        forged = type("ForgedTask", (), {"contract": contract})
-        altered = (*classes, forged) if mutation == "extra" else (forged, *classes[1:])
-    monkeypatch.setattr(runtime_bindings, "_AGENT_TASK_CLASSES", altered)
-    with pytest.raises(ValueError, match=mutation):
-        runtime_bindings.boot_semantic_attempt_contracts(opencode_composition)
 
 
 @pytest.mark.parametrize(
@@ -629,7 +497,7 @@ def test_bound_agent_runtime_executes_through_host_with_runtime_authority(
     )
 
 
-def test_bound_case_design_task_runs_all_hooks_through_installed_host_phases(
+def test_bound_case_design_runs_phases_through_installed_host(
     tmp_path: Path,
     opencode_composition,
     monkeypatch: pytest.MonkeyPatch,
@@ -647,9 +515,9 @@ def test_bound_case_design_task_runs_all_hooks_through_installed_host_phases(
 
     from agent_runtime_fixture.contracts import frozen_run_request
 
-    from assurance_intake.contracts.agent import CaseDesignInputV1
+    from assurance_intake.ops.case_design import CaseDesignInputV1
+    from assurance_intake.feature import AGENT_JOB_CONTRACTS
     from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-    from assurance_intake.task import CaseDesignTask
 
     payload = {"output_files": ["qa/.qa.yaml"]}
     run_result = AgentRunResult.model_validate(
@@ -675,26 +543,17 @@ def test_bound_case_design_task_runs_all_hooks_through_installed_host_phases(
                 outcome=TaskOutcome.succeeded(outputs[call.identity.phase]),  # type: ignore[attr-defined]
             )
 
-    hooks: list[str] = []
-    for name in ("prepare", "run", "finalize"):
-        original = getattr(CaseDesignTask, name)
-
-        @wraps(original)
-        async def recorded(self: CaseDesignTask, *args: object, _name=name, _original=original):
-            hooks.append(_name)
-            return await _original(self, *args)
-
-        monkeypatch.setattr(CaseDesignTask, name, recorded)
-
     host = Host()
-    resolved = opencode_composition.semantic_attempt_contracts[CaseDesignTask.contract.contract_id]
+    resolved = opencode_composition.semantic_attempt_contracts[AGENT_JOB_CONTRACTS["case-design"].contract_id]
 
     async def direct_handler_must_not_run(request: object, context: object) -> object:
         del request, context
         raise AssertionError("direct handler must not run")
 
     for phase in (resolved.executor._prepare, resolved.executor._runtime, resolved.executor._finalize):
-        monkeypatch.setattr(type(phase._handler), "execute", direct_handler_must_not_run)
+        handler = phase._handler
+        target = handler if isinstance(handler, ModuleType) else type(handler)
+        monkeypatch.setattr(target, "execute", direct_handler_must_not_run)
     executor = resolved.executor.with_host(host, graph_revision="c" * 64, product_lock_digest="d" * 64)
     validated_input = CaseDesignInputV1(
         change_id="CH-1",
@@ -726,7 +585,6 @@ def test_bound_case_design_task_runs_all_hooks_through_installed_host_phases(
 
     assert isinstance(result, ExecutedAttemptResult)
     assert result.output.validation_status == "pass"
-    assert hooks == ["prepare", "run", "finalize"]
     calls = [cast(TaskHostExecuteCall, call) for call in host.calls]
     assert [call.identity.phase for call in calls] == ["prepare", "runtime", "finalize"]
     assert calls[1].capability_id == "runtime.opencode.execute"
@@ -771,18 +629,16 @@ def test_every_installed_agent_finalizer_declares_its_input_model(opencode_compo
         assert "agent_result" in input_model.model_fields, contract.finalize_handler_id
 
 
-def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_path: Path) -> None:
+def test_installed_finalize_wraps_the_bundle_in_the_op_envelope(tmp_path: Path) -> None:
     from agent_runtime_contracts import (
         AgentRunResult,
         RawFinalizeBundle,
         ReadOnlyRawWorkspace,
         canonical_digest,
     )
-    from assurance_intake.contracts.agent import (
-        AgentFinalizeInputV1,
-        ArtifactListResultV1,
-        IntakeInputV1,
-    )
+    from agent_runtime_contracts.ops import AgentOpFinalizeInputV1
+    from assurance_intake.domain.artifacts import ArtifactListResultV1
+    from assurance_intake.ops.intake import IntakeInputV1
     from assurance_product.runtime_bindings import InstalledFinalizePhase
 
     result_payload = {"output_files": ["qa/requirement.md"]}
@@ -799,7 +655,7 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
         change_id="CH-1",
         capability_leafs=("intake",),
         artifact_paths=("qa/requirement.md",),
-        requirement="must not leak into finalize",
+        requirement="travels in the locked prepare input",
     )
     raw = tmp_path / "raw-finalize"
     raw.mkdir()
@@ -810,7 +666,7 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
         run_evidence=run_evidence,
         raw_workspace=ReadOnlyRawWorkspace(raw),
     )
-    handler = _CapturingFinalizeHandler(AgentFinalizeInputV1)
+    handler = _CapturingFinalizeHandler(AgentOpFinalizeInputV1)
     phase = InstalledFinalizePhase(
         "assurance.intake.intake.finalize",
         handler,
@@ -820,15 +676,11 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
     result = asyncio.run(phase.execute(bundle, _phase_scope(tmp_path)))
 
     assert result == {"status": "ok"}
-    projected = AgentFinalizeInputV1.model_validate(handler.input)
+    projected = AgentOpFinalizeInputV1.model_validate(handler.input)
     assert projected.agent_result == run_evidence
-    assert projected.change_id == "CH-1"
-    assert projected.capability_leafs == ("intake",)
-    assert projected.artifact_paths == ("qa/requirement.md",)
+    assert projected.model_dump(mode="json")["prepare"] == validated_input.model_dump(mode="json")
     assert isinstance(handler.input, dict)
-    assert "prepared" not in handler.input
-    assert "validated_input" not in handler.input
-    assert "requirement" not in handler.input
+    assert set(handler.input) == {"prepare", "agent_result"}
 
 
 def test_installed_proposal_finalize_uses_current_input_without_approval_envelope(tmp_path: Path) -> None:
@@ -885,7 +737,7 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
         ResultContract,
         canonical_digest,
     )
-    from agent_runtime_contracts.models import ExecutionLimits
+    from agent_runtime_contracts.wire.models import ExecutionLimits
     from assurance_product.runtime_bindings import InstalledFinalizePhase
 
     result_payload = {"status": "ok"}

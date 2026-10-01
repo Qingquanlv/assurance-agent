@@ -12,7 +12,7 @@ from agent_runtime_contracts import (
     InstructionPart,
     ResultContract,
 )
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 
 INSTRUCTIONS_RESOURCE_ID = "fixture.runtime.instructions"

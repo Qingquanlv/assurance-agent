@@ -19,18 +19,15 @@ from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.cases import MinimumCoverageMatrixAuthoring
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.prepare import case_review_outputs
-from assurance_intake.operations.case_review_seal import (
+from assurance_intake.ops.case_review.hooks import case_review_outputs
+from assurance_intake.domain.case_review_seal import (
     collect_selected_cases,
     expected_case_selection,
     expected_review_history,
     expected_reviewed_case,
 )
-from assurance_intake.operations.finalize import (
-    CaseDesignFinalizeHandler,
-    CaseReviewFinalizeHandler,
-)
 from tests.acg_plan_fixture import install_plan
+from tests.op_handlers import op_handler
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
 
@@ -280,7 +277,7 @@ async def _finalize(
         structured: dict[str, Any] = {"output_files": list(outputs)}
         artifacts = outputs
         selected = list(plan.selected_test_families)
-        handler = CaseDesignFinalizeHandler()
+        handler = op_handler("assurance.intake.case-design.finalize")
     else:
         structured = {
             "schema_version": "1.0",
@@ -332,7 +329,7 @@ async def _finalize(
                 coverage_epoch=coverage_epoch,
             )
         selected = []
-        handler = CaseReviewFinalizeHandler()
+        handler = op_handler("assurance.intake.case-review.finalize")
     result = AgentRunResult(
         result_payload=cast(JSONValue, structured),
         result_digest=canonical_digest(cast(JSONValue, structured)),
@@ -340,8 +337,7 @@ async def _finalize(
         adapter_id="test.agent",
         adapter_version="1.0.0",
     )
-    request = {
-        "agent_result": result.model_dump(mode="json"),
+    request: dict[str, Any] = {
         "change_id": _CHANGE,
         "capability_leafs": list(_LEAFS),
         "artifact_paths": list(artifacts),
@@ -356,11 +352,12 @@ async def _finalize(
         ),
         "case_refs": [ref for ref in input_refs or [] if ref["path"] == _CASE],
     }
-    if validation_attempt is not None:
-        request["validation_attempt"] = validation_attempt
+    request["validation_attempt"] = 1 if validation_attempt is None else validation_attempt
+    if request["validation_attempt"] == 1:
+        request["validation_error"] = "prior validation failed"
     executed = await execute_task(
         handler,
-        cast(JSONValue, request),
+        cast(JSONValue, {"prepare": request, "agent_result": result.model_dump(mode="json")}),
         workspace=project,
         write_root=stage,
     )

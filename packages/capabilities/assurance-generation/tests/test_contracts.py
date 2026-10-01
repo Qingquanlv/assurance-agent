@@ -31,9 +31,9 @@ VALID_LEAFS = frozenset({"entities.item.create", "auth.session.create", "capabil
 _LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")
 _NON_CONTRACT_INTAKE = (
     "assurance_intake.plugin",
-    "assurance_intake.operations",
+    "assurance_intake.ops",
+    "assurance_intake.graphs",
     "assurance_intake.validators",
-    "assurance_intake.resource_loader",
 )
 _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.generation.schema.codegen-mapping.v1": (
@@ -95,6 +95,8 @@ def forbidden_generation_imports() -> set[str]:
             if module_name.startswith("assurance_intake.") and not (
                 module_name == "assurance_intake.contracts"
                 or module_name.startswith("assurance_intake.contracts.")
+                or module_name == "assurance_intake.domain"
+                or module_name.startswith("assurance_intake.domain.")
             ):
                 found.add(module_name)
             if module_name == "assurance_product" or module_name.startswith("assurance_product."):
@@ -236,8 +238,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-api-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/finding-scope.json",
-                "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/api-codegen-review-summary.md",
                 "qa/results/review/api-codegen-review.json",
             ),
@@ -254,8 +254,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-e2e-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/codegen/e2e/reviews/epochs/{coverage_epoch}/finding-scope.json",
-                "qa/results/codegen/e2e/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/e2e-codegen-review-summary.md",
                 "qa/results/review/e2e-codegen-review.json",
             ),
@@ -272,8 +270,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-fuzz-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/codegen/fuzz/reviews/epochs/{coverage_epoch}/finding-scope.json",
-                "qa/results/codegen/fuzz/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/fuzz-codegen-review-summary.md",
                 "qa/results/review/fuzz-codegen-review.json",
             ),
@@ -290,8 +286,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-performance-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/codegen/performance/reviews/epochs/{coverage_epoch}/finding-scope.json",
-                "qa/results/codegen/performance/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/performance-codegen-review-summary.md",
                 "qa/results/review/performance-codegen-review.json",
             ),

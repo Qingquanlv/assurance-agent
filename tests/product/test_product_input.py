@@ -188,7 +188,7 @@ def test_full_retro_binds_pre_retro_snapshot_and_all_review_rounds() -> None:
 
 
 def test_history_ref_reducer_accumulates_rounds_and_rejects_digest_conflicts() -> None:
-    from assurance_intake.operations.history_refs import merge_history_refs
+    from assurance_intake.domain.history_refs import merge_history_refs
 
     first = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
     second = {"path": "qa/cases/reviews/epochs/0/rounds/1.json", "digest": "b" * 64}
@@ -199,7 +199,7 @@ def test_history_ref_reducer_accumulates_rounds_and_rejects_digest_conflicts() -
 
 def test_review_publishers_forward_sealed_round_refs() -> None:
     from assurance_generation.graphs.nodes import publish_plan_review
-    from assurance_intake.graphs.nodes import publish_case_review
+    from assurance_intake.graphs.calls import publish_case_review
 
     ref = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
     case = publish_case_review(

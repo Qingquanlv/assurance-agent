@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, cast, get_type_hints
-from unittest.mock import MagicMock
+from typing import get_type_hints
 
 import pytest
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.attempts import TaskAttemptContract
-from graph_engine.plugin_api import AttemptContractRef, TaskContext
+from graph_engine.plugin_api import AttemptContractRef
 
 from agent_runtime_contracts import AgentExecutionContract
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_AGENT_JOBS
@@ -21,33 +20,25 @@ from assurance_healing.plugin import HealingPlugin
 from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPROVEMENT_AGENT_JOBS
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASKS
 from assurance_improvement.plugin import ImprovementPlugin
-from assurance_intake.contracts.agent import (
-    ArtifactListResultV1,
-    CaseDesignOutputV1,
-    CaseDesignInputV1,
-    CaseReviewInputV1,
-    ExploreInputV1,
-    FinalizedArtifactsV1,
-    IntakeInputV1,
-)
-from assurance_intake.contracts.attempts import (
-    AGENT_JOB_CONTRACTS,
-    TASK_ATTEMPT_CONTRACTS,
-    attempt_contract_refs,
-)
+from assurance_intake.domain.artifacts import ArtifactListResultV1, FinalizedArtifactsV1
+from assurance_intake.ops.case_design import CaseDesignOutputV1, CaseDesignInputV1
+from assurance_intake.ops.case_repair import CaseRepairInputV1, CaseRepairOutputV1
+from assurance_intake.ops.case_review import CaseReviewInputV1
+from assurance_intake.ops.explore import ExploreInputV1
+from assurance_intake.ops.intake import IntakeInputV1
+from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS, attempt_contract_refs
 from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceInput,
     ReviewRoundAdvanceOutput,
 )
 from assurance_intake.contracts.review import CaseReviewResultV1
-from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler, advance_review_round
+from assurance_intake.domain.review_rounds import advance_review_round
 from assurance_intake.plugin import IntakePlugin
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOBS
 from assurance_quality.plugin import QualityPlugin
-from tests.product.test_change_local_output_routing import execute_task
 
 EXPECTED_AGENT_COUNTS = {
-    "assurance.intake": 4,
+    "assurance.intake": 5,
     "assurance.generation": 8,
     "assurance.execution": 0,
     "assurance.quality": 5,
@@ -69,7 +60,6 @@ _PURE_IDS = frozenset(
         "assurance.generation.complete",
         "assurance.generation.review-round.advance",
         "assurance.healing.repair-round.advance",
-        "assurance.intake.review-round.advance",
     }
 )
 
@@ -88,12 +78,11 @@ def test_case_review_seal_files_are_finalize_not_runtime() -> None:
 
 
 def test_review_history_identity_includes_epoch() -> None:
-    from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.domain.case_review_seal import case_review_runtime_paths
 
-    pattern = "qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
-    assert pattern in OUTPUT_ROUTE_TEMPLATES["case-review"]
-    first = pattern.format(coverage_epoch=0, review_round=0)
-    second = pattern.format(coverage_epoch=1, review_round=0)
+    _, first, _ = case_review_runtime_paths(coverage_epoch=0, review_round=0)
+    _, second, _ = case_review_runtime_paths(coverage_epoch=1, review_round=0)
+    assert first == "qa/cases/reviews/epochs/0/rounds/0.json"
     assert first != second
 
 
@@ -109,7 +98,7 @@ def test_feature_agent_counts_are_frozen() -> None:
     for owner, expected in EXPECTED_AGENT_COUNTS.items():
         assert len(catalogs[owner]) == expected
         assert all(contract.owner_id == owner for contract in catalogs[owner].values())
-    assert sum(EXPECTED_AGENT_COUNTS.values()) == 26
+    assert sum(EXPECTED_AGENT_COUNTS.values()) == 27
 
 
 def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> None:
@@ -121,6 +110,14 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
             CaseDesignInputV1,
             ArtifactListResultV1,
             CaseDesignOutputV1,
+        ),
+        "case-repair": (
+            "assurance.intake.agent.case-repair.v1",
+            "aa-case-repair",
+            "assurance-v1-doc-author",
+            CaseRepairInputV1,
+            ArtifactListResultV1,
+            CaseRepairOutputV1,
         ),
         "case-review": (
             "assurance.intake.agent.case-review.v1",
@@ -223,11 +220,11 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
         assert contract.validators == ()
         effectful += 1
     assert registered == 19
-    assert effectful == 35
+    assert effectful == 36
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 
 
-def test_semantic_agent_contracts_are_thirty_four() -> None:
+def test_semantic_agent_contracts_are_twenty_seven() -> None:
     catalogs = (
         AGENT_JOB_CONTRACTS,
         GENERATION_AGENT_JOBS,
@@ -236,7 +233,7 @@ def test_semantic_agent_contracts_are_thirty_four() -> None:
         HEALING_AGENT_JOBS,
         IMPROVEMENT_AGENT_JOBS,
     )
-    assert sum(len(catalog) for catalog in catalogs) == 26
+    assert sum(len(catalog) for catalog in catalogs) == 27
 
 
 def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:
@@ -271,21 +268,10 @@ def test_review_round_advance_is_not_a_task_contract() -> None:
 
 
 @pytest.mark.parametrize(("used", "budget", "expected"), [(0, 2, 1), (1, 2, 2)])
-async def test_advance_review_round_matches_legacy_handler_without_touching_context(
-    used: int, budget: int, expected: int
-) -> None:
-    payload = {"rounds_used": used, "rounds_budget": budget}
-    spy = MagicMock(spec=TaskContext)
-    executed = await execute_task(
-        ReviewRoundAdvanceHandler(),
-        cast(Any, payload),
-        capability_id="assurance.intake.review-round.advance",
-    )
-    output = advance_review_round(payload)
+def test_advance_review_round_is_pure_budget_arithmetic(used: int, budget: int, expected: int) -> None:
+    output = advance_review_round({"rounds_used": used, "rounds_budget": budget})
     assert isinstance(output, ReviewRoundAdvanceOutput)
-    assert output.model_dump(mode="json") == executed.outcome.output
     assert output.model_dump(mode="json") == {"rounds_used": expected, "rounds_budget": budget}
-    assert spy.mock_calls == []
 
 
 @pytest.mark.parametrize(

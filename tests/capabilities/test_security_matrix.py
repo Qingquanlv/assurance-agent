@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_runtime_contracts.schema import MAX_DIAGNOSTIC_COUNT, MAX_DIAGNOSTIC_LENGTH
+from agent_runtime_contracts.wire.schema import MAX_DIAGNOSTIC_COUNT, MAX_DIAGNOSTIC_LENGTH
 
 from tests.capabilities.security_canaries import (
     assert_canaries_absent,

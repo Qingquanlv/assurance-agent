@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
-from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
+from agent_runtime_contracts import AgentRunResult
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.plans import canonical_relative_path
@@ -40,13 +40,6 @@ def _canonical_write_root(path: str) -> str:
     if path != stripped and not path.endswith("/"):
         raise ValueError("write root must be a canonical relative prefix")
     return path
-
-
-class AgentBindingDataV1(FrozenModel):
-    agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-    execution: FrozenExecutionSelection
-    request_policy_digest: str = Field(pattern=_SHA256)
-    request_config_digest: str = Field(pattern=_SHA256)
 
 
 class FamilyConstraintsV1(FrozenModel):

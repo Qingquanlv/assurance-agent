@@ -180,6 +180,15 @@
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
+                "assurance.intake.agent.case-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
                 "assurance.intake.agent.case-review.v1": {
                     "limits": {
                         "max_seconds": 3600
@@ -425,6 +434,15 @@
                     "worker_profile": "max"
                 },
                 "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-repair.v1": {
                     "limits": {
                         "max_seconds": 3600
                     },
@@ -707,6 +725,15 @@
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
+                "assurance.intake.agent.case-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
                 "assurance.intake.agent.case-review.v1": {
                     "limits": {
                         "max_seconds": 3600
@@ -952,6 +979,15 @@
                     "worker_profile": "max"
                 },
                 "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-repair.v1": {
                     "limits": {
                         "max_seconds": 3600
                     },
@@ -1234,6 +1270,15 @@
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
+                "assurance.intake.agent.case-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
                 "assurance.intake.agent.case-review.v1": {
                     "limits": {
                         "max_seconds": 3600
@@ -1479,6 +1524,15 @@
                     "worker_profile": "max"
                 },
                 "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-repair.v1": {
                     "limits": {
                         "max_seconds": 3600
                     },

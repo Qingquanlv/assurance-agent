@@ -174,7 +174,7 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
 
     change_id = "CH-CURRENT-001"
     catalog = OutputRouteCatalog()
-    assert len(AGENT_EXECUTION_CONTRACTS) == 26
+    assert len(AGENT_EXECUTION_CONTRACTS) == 27
     manifest = AssuranceOpenCodeProductProvider.manifest()
     assert not hasattr(manifest, "workflow")
     assert getattr(manifest, "workflow", None) is None

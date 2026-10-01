@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from agent_runtime_contracts.ops import InputError
 from graph_engine.attempts import AttemptExecutionContext, AttemptKey, AuthorizedAttemptScope
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import DirectoryIdentity, TaskWorkspaceBinding, TaskWorkspaceIdentity
@@ -16,14 +17,13 @@ from assurance_improvement.contracts.retro import (
     RetroCollectInput,
     RetroWindow,
 )
-from assurance_improvement.operations.common import InputError
 from assurance_improvement.operations.retro_slices import RetroBuildSlicesExecutor
 from assurance_improvement.operations.retro import AssembleRetroInput, assemble_context
 from assurance_improvement.contracts.delivery import artifact_digest
 from assurance_execution.contracts.selection import ClosedMappingV1
 from assurance_execution.operations.normalize import normalize_evidence
 from assurance_intake.contracts import EvidenceArtifactRefV1
-from assurance_intake.operations.loop_history import build_loop_round_history
+from assurance_intake.domain.loop_history import build_loop_round_history
 from assurance_quality.contracts.obligations import ObligationAssessmentV1
 from tests.acg_plan_fixture import install_plan
 

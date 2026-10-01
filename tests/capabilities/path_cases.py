@@ -18,12 +18,12 @@ from assurance_execution.operations.paths import resolve_selected_file
 from assurance_execution.validators.mapping import ClosedMappingValidator
 from assurance_generation.contracts.plans import canonical_relative_path
 from assurance_generation.validators.generated_files import GeneratedFilesValidator
-from assurance_healing.operations.agent import _workspace_file as healing_workspace_file
+from assurance_healing.operations.agent import workspace_file as healing_workspace_file
 from assurance_healing.validators.test_tree import TestTreeValidator
 from assurance_improvement.operations.agent import _workspace_file as improvement_workspace_file
 from assurance_improvement.validators.delivery import DeliveryValidator
 from assurance_improvement.validators.paths import canonical_relative as improvement_canonical
-from assurance_intake.operations.finalize import _workspace_file as intake_workspace_file
+from assurance_intake.domain.artifacts import workspace_file as intake_workspace_file
 from assurance_intake.validators.cases import CaseCandidateValidator
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.operations.assessment import _read_ref as quality_workspace_file

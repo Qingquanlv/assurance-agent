@@ -13,6 +13,7 @@ from typing import Any, cast
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from agent_runtime_contracts.ops import InputError
 from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
@@ -26,17 +27,17 @@ from assurance_intake.contracts.cases import (
     CaseYamlAuthoring,
     MinimumCoverageMatrixAuthoring,
 )
-from assurance_intake.operations.explore_context import load_exploration_document
+from assurance_intake.domain.explore_context import load_exploration_document
 from assurance_intake.contracts.quality_goals import (
     CoverageGoal,
     MrcCategory,
     MrcLayer,
     PreparedObligationV1,
 )
-from assurance_intake.operations.obligations import journey_keys_from_document, normalize_goal_obligations
+from assurance_intake.domain.obligations import journey_keys_from_document, normalize_goal_obligations
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
-from assurance_intake.operations.plan_codec import decode_plan
+from assurance_intake.domain.plan_codec import decode_plan
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
     MaterializeAssessmentInputV1,
@@ -81,7 +82,7 @@ from assurance_quality.operations.metrics import (
 )
 from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
-from assurance_quality.operations.common import InputError, json_digest
+from assurance_quality.operations.common import json_digest
 from assurance_quality.operations.obligations import (
     REPAIRABLE_OBLIGATION_GAPS,
     assess_obligations,

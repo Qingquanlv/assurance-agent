@@ -8,11 +8,11 @@ from typing import Any, cast
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
-from assurance_execution.task import ExecutionGraphs
-from assurance_generation.task import GenerationGraphs
-from assurance_healing.task import HealingGraphs
-from assurance_improvement.task import ImprovementGraphs
-from assurance_intake.task import IntakeGraphs
+from assurance_execution.feature import ExecutionGraphs
+from assurance_generation.feature import GenerationGraphs
+from assurance_healing.feature import HealingGraphs
+from assurance_improvement.feature import ImprovementGraphs
+from assurance_intake.feature import IntakeGraphs
 from assurance_product.graphs.entrypoints import (
     build_archive_root,
     build_improvement_apply_root,
@@ -29,7 +29,7 @@ from assurance_product.graphs.entrypoints import (
 )
 from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
 from assurance_product.models import FEATURE_WORKFLOW_OWNERS, PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
-from assurance_quality.task import QualityGraphs
+from assurance_quality.feature import QualityGraphs
 from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1

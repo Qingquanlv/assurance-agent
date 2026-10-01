@@ -11,21 +11,16 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from pydantic import ValidationError
 
-from assurance_intake.contracts.agent import ArtifactListResultV1
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_intake.domain.artifacts import ArtifactListResultV1
+from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_intake.contracts.decisions import ReviewRoundAdvanceOutput
-from assurance_intake.operations.workflow_state import advance_review_round
+from assurance_intake.domain.review_rounds import advance_review_round
 from assurance_intake.contracts.review import CaseReviewResultV1
+from assurance_intake.graphs.calls import publish_case_review
 from assurance_intake.graphs.factory import build_intake_graphs
-
-from assurance_intake.graphs.nodes import (
-    HUMAN_REVIEW_ACTIONS,
-    advance_review_round_node,
-    human_review,
-    human_review_retry,
-    publish_case_review,
-)
 from assurance_intake.graphs.state import IntakeState
+from assurance_intake.graphs.case import HUMAN_REVIEW_ACTIONS, human_review
+from assurance_intake.graphs.state import advance_review_round_node
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed
@@ -84,6 +79,17 @@ def _design() -> dict[str, object]:
     return {
         "output_files": ["qa/proposal.md"],
         "validation_status": "pass",
+        "artifacts": [
+            {
+                "path": "qa/cases/menus/case.yaml",
+                "digest": _SHA,
+            }
+        ],
+    }
+
+
+def _repair() -> dict[str, object]:
+    return {
         "artifacts": [
             {
                 "path": "qa/cases/menus/case.yaml",
@@ -195,15 +201,14 @@ def _patch_interrupt(node: Callable[..., Any], **kwargs: Any):
     return patch.dict(node.__globals__, {"interrupt": MagicMock(**kwargs)})
 
 
-def test_both_interrupt_sites_accept_only_approve_reject_request_rework() -> None:
+def test_interrupt_accepts_only_approve_reject_request_rework() -> None:
     assert HUMAN_REVIEW_ACTIONS == ("approve", "reject", "request_rework")
-    for node in (human_review, human_review_retry):
-        with _patch_interrupt(node, return_value={"action": "supersede"}):
-            with pytest.raises(ValidationError):
-                node({"rounds_used": 0, "rounds_budget": 2})
-        with _patch_interrupt(node, return_value={"action": "hold"}):
-            with pytest.raises(ValidationError):
-                node({"rounds_used": 0, "rounds_budget": 2})
+    with _patch_interrupt(human_review, return_value={"action": "supersede"}):
+        with pytest.raises(ValidationError):
+            human_review({"rounds_used": 0, "rounds_budget": 2})
+    with _patch_interrupt(human_review, return_value={"action": "hold"}):
+        with pytest.raises(ValidationError):
+            human_review({"rounds_used": 0, "rounds_budget": 2})
 
 
 def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_interrupt() -> None:
@@ -270,10 +275,8 @@ async def test_automatic_fix_advances_exactly_once() -> None:
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
             "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [
-                committed(_design(), _RECEIPT),
-                committed(_design(), _RECEIPT),
-            ],
+            "intake.case-design": [committed(_design(), _RECEIPT)],
+            "intake.case-repair": [committed(_repair(), _RECEIPT)],
             "intake.case-review": [
                 committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
                 committed(_review("pass", used=1), _RECEIPT),
@@ -283,7 +286,12 @@ async def test_automatic_fix_advances_exactly_once() -> None:
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("rounds_used") == 1
     assert terminal.get("decision") == "pass"
-    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 2
+    assert [call.semantic_node_id for call in result.semantic_calls] == [
+        "intake.case-design",
+        "intake.case-review",
+        "intake.case-repair",
+        "intake.case-review",
+    ]
 
 
 async def test_automatic_fix_advances_when_review_result_nulls_rounds() -> None:
@@ -297,10 +305,8 @@ async def test_automatic_fix_advances_when_review_result_nulls_rounds() -> None:
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
             "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [
-                committed(_design(), _RECEIPT),
-                committed(_design(), _RECEIPT),
-            ],
+            "intake.case-design": [committed(_design(), _RECEIPT)],
+            "intake.case-repair": [committed(_repair(), _RECEIPT)],
             "intake.case-review": [
                 committed(_review_result_v1("needs_fix", auto_fix=True), _RECEIPT),
                 committed(_review_result_v1("pass"), _RECEIPT),
@@ -310,7 +316,9 @@ async def test_automatic_fix_advances_when_review_result_nulls_rounds() -> None:
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("rounds_used") == 1
     assert terminal.get("decision") == "pass"
-    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 2
+    calls = [call.semantic_node_id for call in result.semantic_calls]
+    assert calls.count("intake.case-design") == 1
+    assert calls.count("intake.case-repair") == 1
 
 
 async def test_reject_is_explicit_terminal() -> None:
@@ -343,11 +351,8 @@ async def test_budget_exhaustion_is_explicit_after_two_advances() -> None:
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
             "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [
-                committed(_design(), _RECEIPT),
-                committed(_design(), _RECEIPT),
-                committed(_design(), _RECEIPT),
-            ],
+            "intake.case-design": [committed(_design(), _RECEIPT)],
+            "intake.case-repair": [committed(_repair(), _RECEIPT), committed(_repair(), _RECEIPT)],
             "intake.case-review": [
                 committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
                 committed(_review("needs_fix", auto_fix=True, used=1), _RECEIPT),
@@ -358,6 +363,9 @@ async def test_budget_exhaustion_is_explicit_after_two_advances() -> None:
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("decision") == "exhausted" or terminal.get("status") == "exhausted"
     assert terminal.get("rounds_used") == 2
+    calls = [call.semantic_node_id for call in result.semantic_calls]
+    assert calls.count("intake.case-design") == 1
+    assert calls.count("intake.case-repair") == 2
 
 
 def _interrupt_value(result: object) -> object | None:
@@ -410,7 +418,9 @@ async def test_request_rework_on_case_graph_advances_once_through_inbox() -> Non
     assert current["predecessor"] == "review-round-advance"
     assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
     assert resumed["current_trigger"] == current
-    assert [call.semantic_node_id for call in harness._kernel.semantic_calls].count("intake.case-design") == 2
+    calls = [call.semantic_node_id for call in harness._kernel.semantic_calls]
+    assert calls.count("intake.case-design") == 2
+    assert calls.count("intake.case-repair") == 0
     assert resumed.get("decision") == "pass"
 
 
@@ -453,7 +463,9 @@ async def test_request_rework_advances_when_review_result_nulls_rounds() -> None
     assert current is not None
     assert current["predecessor"] == "review-round-advance"
     assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
-    assert [call.semantic_node_id for call in harness._kernel.semantic_calls].count("intake.case-design") == 2
+    calls = [call.semantic_node_id for call in harness._kernel.semantic_calls]
+    assert calls.count("intake.case-design") == 2
+    assert calls.count("intake.case-repair") == 0
     assert resumed.get("decision") == "pass"
 
 

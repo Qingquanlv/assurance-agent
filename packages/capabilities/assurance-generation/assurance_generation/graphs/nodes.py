@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal, cast
 
-from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from assurance_generation.contracts.agent import CodegenInputV1, PlanInputV1
@@ -28,6 +27,7 @@ from assurance_generation.graphs.state import (
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.stategraph import human_gate
 
 HUMAN_REVIEW_ACTIONS = ("approve", "reject", "request_rework")
 activation_one_shot = BusinessActivation.one_shot()
@@ -358,11 +358,6 @@ def review_round_advance(state: Mapping[str, object]) -> dict[str, object]:
     return {**advanced, **offer_advance({**dict(state), **advanced}, "codegen-review-round-advance")}
 
 
-def review_round_advance_retry(state: Mapping[str, object]) -> dict[str, object]:
-    advanced = advance_review_round_node({**dict(state), "review_stage": "codegen"})
-    return {**advanced, **offer_advance({**dict(state), **advanced}, "codegen-review-round-advance-retry")}
-
-
 def plan_round_join(state: Mapping[str, object]) -> dict[str, object]:
     return apply_current_trigger(state)
 
@@ -484,15 +479,6 @@ def terminal_skipped(state: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _coerce_human_decision(raw: object) -> HumanReviewDecision:
-    if isinstance(raw, str):
-        return HumanReviewDecision(action=raw)  # type: ignore[arg-type]
-    if isinstance(raw, Mapping):
-        action = raw.get("action", raw.get("decision"))
-        return HumanReviewDecision.model_validate({"action": action})
-    return HumanReviewDecision.model_validate(raw)
-
-
 def _interrupt_payload(state: Mapping[str, object], *, retry: bool) -> dict[str, object]:
     family = str(state.get("family") or "api")
     suffix = "-retry" if retry else ""
@@ -506,16 +492,11 @@ def _interrupt_payload(state: Mapping[str, object], *, retry: bool) -> dict[str,
     }
 
 
-def human_review(state: Mapping[str, object]) -> dict[str, object]:
-    raw = interrupt(_interrupt_payload(state, retry=False))
-    decision = _coerce_human_decision(raw)
-    return {"human_action": decision.action}
+def _human_review_payload(state: Mapping[str, object]) -> dict[str, object]:
+    return _interrupt_payload(state, retry=_trigger(state) is not None)
 
 
-def human_review_retry(state: Mapping[str, object]) -> dict[str, object]:
-    raw = interrupt(_interrupt_payload(state, retry=True))
-    decision = _coerce_human_decision(raw)
-    return {"human_action": decision.action}
+human_review = human_gate(_human_review_payload, decision=HumanReviewDecision)
 
 
 __all__ = [
@@ -534,7 +515,6 @@ __all__ = [
     "complete_generation_node",
     "generation_done",
     "human_review",
-    "human_review_retry",
     "join_selected",
     "plan_round_join",
     "publish_codegen",
@@ -545,7 +525,6 @@ __all__ = [
     "publish_plan",
     "publish_plan_review",
     "review_round_advance",
-    "review_round_advance_retry",
     "route_generation_completion",
     "select_codegen",
     "select_codegen_review",

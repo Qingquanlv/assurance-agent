@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from assurance_execution.operations.common import InputError
+from agent_runtime_contracts.ops import InputError
 from assurance_execution.operations.observation_run import RunnerUnsupported, build_family_argv
 from assurance_execution.operations.runner import (
     ConfinedExecutionProcessHost,

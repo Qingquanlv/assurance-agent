@@ -23,6 +23,7 @@ from assurance_product.product import AssuranceCompositionRequest, resolve_assur
 
 _HISTORICAL_PREPARE_IDS = (
     "assurance.intake.case-design.prepare",
+    "assurance.intake.case-repair.prepare",
     "assurance.intake.case-review.prepare",
     "assurance.intake.explore.prepare",
     "assurance.intake.intake.prepare",

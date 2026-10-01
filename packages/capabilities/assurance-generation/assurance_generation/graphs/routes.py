@@ -56,16 +56,6 @@ def plan_review_named_matches(state: Mapping[str, object]) -> dict[str, str | No
     }
 
 
-def plan_review_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    matches = plan_review_named_matches(state)
-    return {
-        "pass": matches["pass"],
-        "auto_fix": "codegen-review-round-advance-retry" if matches["auto_fix"] else None,
-        "reject": matches["reject"],
-        "human": "codegen-human-review-retry" if matches["human"] else None,
-    }
-
-
 def plan_human_review_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     action = state.get("human_action")
     return {
@@ -77,21 +67,8 @@ def plan_human_review_named_matches(state: Mapping[str, object]) -> dict[str, st
     }
 
 
-def plan_human_review_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    matches = plan_human_review_named_matches(state)
-    return {
-        "approve": matches["approve"],
-        "reject": matches["reject"],
-        "rework": "codegen-review-round-advance-retry" if matches["rework"] else None,
-    }
-
-
 def plan_advance_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     return {"continue": "codegen-round-join" if _within_spent_budget(state) else None}
-
-
-def plan_advance_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    return plan_advance_named_matches(state)
 
 
 def family_entry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
@@ -143,31 +120,15 @@ def route_attempt_result(state: Mapping[str, object]) -> str:
 
 
 def route_plan_review(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return "failed"
     return select_exclusive_route(plan_review_named_matches(state), otherwise="exhausted")
-
-
-def route_plan_review_retry(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return "failed"
-    return select_exclusive_route(plan_review_retry_named_matches(state), otherwise="exhausted")
 
 
 def route_plan_human_review(state: Mapping[str, object]) -> str:
     return select_exclusive_route(plan_human_review_named_matches(state), otherwise="exhausted")
 
 
-def route_plan_human_review_retry(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(plan_human_review_retry_named_matches(state), otherwise="exhausted")
-
-
 def route_plan_advance(state: Mapping[str, object]) -> str:
     return select_exclusive_route(plan_advance_named_matches(state), otherwise="exhausted")
-
-
-def route_plan_advance_retry(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(plan_advance_retry_named_matches(state), otherwise="exhausted")
 
 
 __all__ = [
@@ -175,18 +136,12 @@ __all__ = [
     "family_entry_named_matches",
     "family_select_named_matches",
     "plan_advance_named_matches",
-    "plan_advance_retry_named_matches",
     "plan_human_review_named_matches",
-    "plan_human_review_retry_named_matches",
     "plan_review_named_matches",
-    "plan_review_retry_named_matches",
     "route_attempt_result",
     "route_families",
     "route_family_entry",
     "route_plan_advance",
-    "route_plan_advance_retry",
     "route_plan_human_review",
-    "route_plan_human_review_retry",
     "route_plan_review",
-    "route_plan_review_retry",
 ]

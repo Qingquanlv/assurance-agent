@@ -14,6 +14,7 @@ from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
 from assurance_quality.contracts.attempts import attempt_contract_refs
 from assurance_quality.operations import quality_handlers
+from assurance_quality.ops import router
 from assurance_quality.resource_loader import resource_bytes
 from assurance_quality.validators.issues import IssueValidator, ProblemApplyValidator
 from assurance_quality.validators.metrics import CrossArtifactValidator, MetricsValidator
@@ -38,17 +39,8 @@ QUALITY_DEPENDENCIES: tuple[PluginDependency, ...] = (
 )
 
 QUALITY_RESOURCE_FILES: dict[str, str] = {
-    "assurance.quality.result.fact-baseline.v1": "result-contracts/fact-baseline.v1.schema.json",
-    "assurance.quality.result.inspection.v1": "result-contracts/inspection.v1.schema.json",
-    "assurance.quality.result.issue-analysis.v1": "result-contracts/issue-analysis.v1.schema.json",
-    "assurance.quality.result.issue-triage.v1": "result-contracts/issue-triage.v1.schema.json",
-    "assurance.quality.result.report.v1": "result-contracts/report.v1.schema.json",
+    **router.resource_files(),
     "assurance.quality.skill.aa-dashboard.v1": "skills/aa-dashboard/SKILL.md",
-    "assurance.quality.skill.aa-fact-baseline.v1": "skills/aa-fact-baseline/SKILL.md",
-    "assurance.quality.skill.aa-inspect.v1": "skills/aa-inspect/SKILL.md",
-    "assurance.quality.skill.aa-issue-analyzer.v1": "skills/aa-issue-analyzer/SKILL.md",
-    "assurance.quality.skill.aa-issue-triage-advisor.v1": "skills/aa-issue-triage-advisor/SKILL.md",
-    "assurance.quality.skill.aa-report-generator.v1": "skills/aa-report-generator/SKILL.md",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

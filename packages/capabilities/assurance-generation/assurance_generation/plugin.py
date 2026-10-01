@@ -14,6 +14,7 @@ from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
 from assurance_generation.contracts.attempts import attempt_contract_refs
 from assurance_generation.operations import generation_handlers
+from assurance_generation.ops import router
 from assurance_generation.resource_loader import resource_bytes
 from assurance_generation.validators import (
     CodegenMappingValidator,
@@ -33,17 +34,8 @@ GENERATION_SOURCE = ProviderSource(
 GENERATION_DEPENDENCIES: tuple[PluginDependency, ...] = (PluginDependency("assurance.intake", "==0.3.0"),)
 
 GENERATION_RESOURCE_FILES: dict[str, str] = {
-    "assurance.generation.result.codegen.v1": "result-contracts/codegen.v1.schema.json",
-    "assurance.generation.result.codegen-review.v1": "result-contracts/plan-review.v1.schema.json",
+    **router.resource_files(),
     "assurance.generation.result.plan.v1": "result-contracts/plan.v1.schema.json",
-    "assurance.generation.skill.aa-api-codegen.v1": "skills/aa-api-codegen/SKILL.md",
-    "assurance.generation.skill.aa-api-codegen-reviewer.v1": "skills/aa-api-codegen-reviewer/SKILL.md",
-    "assurance.generation.skill.aa-e2e-codegen.v1": "skills/aa-e2e-codegen/SKILL.md",
-    "assurance.generation.skill.aa-e2e-codegen-reviewer.v1": "skills/aa-e2e-codegen-reviewer/SKILL.md",
-    "assurance.generation.skill.aa-fuzz-codegen.v1": "skills/aa-fuzz-codegen/SKILL.md",
-    "assurance.generation.skill.aa-fuzz-codegen-reviewer.v1": "skills/aa-fuzz-codegen-reviewer/SKILL.md",
-    "assurance.generation.skill.aa-performance-codegen.v1": "skills/aa-performance-codegen/SKILL.md",
-    "assurance.generation.skill.aa-performance-codegen-reviewer.v1": "skills/aa-performance-codegen-reviewer/SKILL.md",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

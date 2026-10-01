@@ -6,6 +6,7 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_runtime_contracts.ops import InputError, failed_input
 from graph_engine.plugin_api import EffectIntent, TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.delivery import (
@@ -27,13 +28,7 @@ from assurance_improvement.contracts.improvements import (
     ImprovementState,
 )
 from assurance_improvement.contracts.promotion import PromotionReceipt, TestPromotionManifest
-from assurance_improvement.operations.common import (
-    InputError,
-    as_json,
-    failed_input,
-    succeeded,
-    validate_input,
-)
+from assurance_improvement.operations.common import as_json, succeeded, validate_input
 from assurance_improvement.operations.keys import promotion_effect_key
 from assurance_improvement.operations.review import assert_improvement_transition
 

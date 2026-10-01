@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.plugin_api import TaskHandler
 from tests.capabilities.conformance import execute_task
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
@@ -21,7 +22,10 @@ from assurance_generation.contracts.reviews import PlanReviewAuthoring
 from assurance_generation.operations.planning import validate_plan_input
 from assurance_healing.contracts.agent import FixProposalInputV1
 from assurance_healing.contracts.status import HealingStatusV1
-from assurance_healing.operations.proposal import FixProposalFinalizeHandler, FixProposalPrepareHandler
+from assurance_healing.ops.fix_proposal import (
+    finalize as fix_proposal_finalize,
+    prepare as fix_proposal_prepare,
+)
 from assurance_improvement.operations.archive import (
     ArchivePublishReceipt,
     ProjectArchiveInput,
@@ -290,7 +294,7 @@ def _quality_project_trace_leaf(value: str, *, catalog: object) -> None:
 
 def _healing_claimed_leaf(value: str, *, catalog: object) -> None:
     leafs = catalog_leafs(catalog)
-    outcome = _run(FixProposalFinalizeHandler(), _healing_finalize_payload(value, leafs))
+    outcome = _run(cast(TaskHandler, fix_proposal_finalize), _healing_finalize_payload(value, leafs))
     if outcome.status != "failed" or outcome.failure is None:
         raise ValueError("healing finalize accepted an unknown capability leaf")
     raise ValueError(outcome.failure.message)
@@ -470,7 +474,7 @@ def _consume_evidence(payload: dict[str, Any], leafs: frozenset[str]) -> object:
         _fix_proposal_input(leafs, canonical_digest(cast(JSONValue, payload)))
     )
     outcome = _run(
-        FixProposalPrepareHandler(),
+        cast(TaskHandler, fix_proposal_prepare),
         proposal.model_dump(mode="json"),
         binding_data=_PROPOSAL_BINDING,
     )
@@ -805,7 +809,7 @@ def _healing_finalize_payload(
     evidence_digest: str | None = None,
 ) -> dict[str, Any]:
     from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.schema import canonical_digest as runtime_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest as runtime_digest
     from tests.capabilities.agent_harness import FakeAgentAdapter
 
     structured = {

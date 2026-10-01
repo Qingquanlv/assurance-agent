@@ -41,6 +41,11 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
 )
 
 
+def _review_skill(skill_id: str) -> str:
+    family = skill_id.removeprefix("aa-").removesuffix("-reviewer")
+    return f"ops/{family.replace('-', '_')}_review/SKILL.md"
+
+
 def _codegen_with_method() -> dict[str, object]:
     return {
         "schema_version": "1",
@@ -94,7 +99,7 @@ def test_plan_review_schema_has_no_review_audit() -> None:
     from assurance_generation.resource_loader import resource_bytes
 
     for relative in (
-        "result-contracts/plan-review.v1.schema.json",
+        "ops/api_codegen_review/result.schema.json",
         "schemas/plan-review.v1.schema.json",
     ):
         schema = json.loads(resource_bytes(relative))
@@ -244,7 +249,7 @@ async def test_api_review_finalize_strips_leftover_review_audit(tmp_path: Path) 
     ),
 )
 def test_plan_reviewer_skills_do_not_instruct_removed_decisions(skill_id: str) -> None:
-    skill = resource_text(f"skills/{skill_id}/SKILL.md")
+    skill = resource_text(_review_skill(skill_id))
     assert '"approved"' not in skill
     assert "changes_requested" not in skill
 
@@ -259,7 +264,7 @@ def test_plan_reviewer_skills_do_not_instruct_removed_decisions(skill_id: str) -
     ),
 )
 def test_codegen_reviewer_skills_do_not_require_review_audit(skill_id: str) -> None:
-    skill = resource_text(f"skills/{skill_id}/SKILL.md")
+    skill = resource_text(_review_skill(skill_id))
     assert "review_audit" not in skill
     assert "review_requirements" not in skill
     assert "plan_location" not in skill
@@ -267,7 +272,7 @@ def test_codegen_reviewer_skills_do_not_require_review_audit(skill_id: str) -> N
 
 
 def test_e2e_reviewer_skill_outputs_use_family_prefixed_names() -> None:
-    skill = resource_text("skills/aa-e2e-codegen-reviewer/SKILL.md")
+    skill = resource_text("ops/e2e_codegen_review/SKILL.md")
     assert "qa/results/review/e2e-codegen-review.json" in skill
     assert "qa/results/review/e2e-codegen-review-summary.md" in skill
     assert "qa/results/review/plan-review.json" not in skill

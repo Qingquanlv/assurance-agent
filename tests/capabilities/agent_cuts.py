@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import ModuleType
 from typing import Any, cast
 
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from tests.capabilities.conformance import ExecutedTask, execute_task
 from tests.capabilities.six_wheel_harness import (
@@ -20,12 +21,12 @@ from tests.capabilities.six_wheel_harness import (
     resolve_fixture,
 )
 from tests.acg_plan_fixture import install_plan
+from tests.op_handlers import op_handler
 
 from assurance_generation.operations.planning import PlanFinalizeHandler
-from assurance_healing.operations.agent import FixProposalFinalizeHandler
-from assurance_improvement.operations.agent import RetroFinalizeHandler
-from assurance_intake.operations.finalize import CaseReviewFinalizeHandler
-from assurance_quality.operations.agent_skills import InspectFinalizeHandler
+from assurance_healing.ops.fix_proposal import finalize as fix_proposal_finalize
+from assurance_improvement.ops.retro import finalize as retro_finalize
+from assurance_quality.ops.inspect import finalize as inspect_finalize
 
 AGENT_CUTS = (
     "prepare-complete",
@@ -35,11 +36,11 @@ AGENT_CUTS = (
     "terminal-observed",
 )
 WHEEL_FINALIZERS = {
-    "intake": CaseReviewFinalizeHandler,
+    "intake": lambda: op_handler("assurance.intake.case-review.finalize"),
     "generation": lambda: PlanFinalizeHandler("api"),
-    "healing": FixProposalFinalizeHandler,
-    "quality": InspectFinalizeHandler,
-    "improvement": RetroFinalizeHandler,
+    "healing": fix_proposal_finalize,
+    "quality": inspect_finalize,
+    "improvement": retro_finalize,
 }
 
 _HEX = "a" * 64
@@ -81,7 +82,9 @@ class CuttingTaskHost(SixWheelTaskHost):
 
 def _handler(wheel: str) -> object:
     factory = WHEEL_FINALIZERS[wheel]
-    return factory() if callable(factory) and not isinstance(factory, type) else factory()
+    if isinstance(factory, ModuleType):
+        return factory
+    return factory()
 
 
 def _cut_payload(wheel: str, cut: str) -> JSONValue:
@@ -304,10 +307,16 @@ async def run_finalize_cut(wheel: str, cut: str) -> IndeterminateObservation:
                 "CH-DEMO-001",
                 capability_leafs=("auth.session.create", "entities.item.create"),
             )
-            payload = cast(
-                JSONValue,
-                {**cast(dict[str, Any], payload), "plan_digest": plan.plan_digest, "plan_ref": plan_ref},
-            )
+            prepare = {
+                **cast(dict[str, Any], payload),
+                "change_id": "CH-DEMO-001",
+                "plan_digest": plan.plan_digest,
+                "plan_ref": plan_ref,
+            }
+            envelope = {"prepare": prepare}
+            if "agent_result" in prepare:
+                envelope["agent_result"] = prepare.pop("agent_result")
+            payload = cast(JSONValue, envelope)
         executed = await execute_task(cast(Any, handler), payload, workspace)
         return _from_executed(executed, workspace, marker.exists())
 

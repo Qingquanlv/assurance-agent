@@ -540,11 +540,26 @@ def test_intake_imports_no_legacy_package() -> None:
 def test_intake_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.feature import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "case-design": (
             "aa-case-design",
+            "assurance-v1-doc-author",
+            (
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
+            ),
+            (
+                "qa/.qa.yaml",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
+            ),
+        ),
+        "case-repair": (
+            "aa-case-repair",
             "assurance-v1-doc-author",
             (
                 "qa/.qa.yaml",
@@ -568,13 +583,7 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
                 "qa/results/review/case-review-summary.md",
                 "qa/results/review/case-review.json",
             ),
-            (
-                "qa/cases/reviewed-case.json",
-                "qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/results/cases/epochs/{coverage_epoch}/selection.json",
-                "qa/results/review/case-review-summary.md",
-                "qa/results/review/case-review.json",
-            ),
+            ("qa/results/review/case-review-summary.md", "qa/results/review/case-review.json"),
         ),
         "explore": (
             "aa-explore",
@@ -599,7 +608,7 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
     assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
-    assert len(AGENT_JOB_CONTRACTS) == 4
+    assert len(AGENT_JOB_CONTRACTS) == 5
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
     assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
     for base, (skill_id, agent_profile, writes, routes) in expected.items():
@@ -616,7 +625,7 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
 
 
 def test_output_routes_are_flat_qa_paths() -> None:
-    from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.feature import OUTPUT_ROUTE_TEMPLATES
 
     rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
     assert "qa/" + "changes" not in rendered

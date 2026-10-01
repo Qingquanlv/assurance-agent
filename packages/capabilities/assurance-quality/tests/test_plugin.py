@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 from importlib.resources import files
-from types import FunctionType
+from types import FunctionType, ModuleType
 
 import pytest
 
@@ -79,6 +79,13 @@ def test_quality_source_identity() -> None:
 
 def test_quality_handlers_own_execute() -> None:
     for handler_id, handler in quality_handlers().items():
+        if isinstance(handler, ModuleType):
+            execute = handler.__dict__.get("execute")
+            assert isinstance(execute, FunctionType), handler_id
+            assert execute.__module__ == handler.__name__, handler_id
+            assert execute.__globals__ is handler.__dict__, handler_id
+            assert execute.__qualname__ == "execute", handler_id
+            continue
         cls = type(handler)
         descriptor = inspect.getattr_static(cls, "execute")
         declaring = next(

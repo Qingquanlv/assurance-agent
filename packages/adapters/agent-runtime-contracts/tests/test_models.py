@@ -19,7 +19,7 @@ from agent_runtime_contracts import (
     ResultContract,
     rebind_agent_run_workspace,
 )
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -721,7 +721,7 @@ def _local_agent_contract():
 
 
 def test_agent_contract_exposes_local_result_schema_independent_of_capabilities() -> None:
-    from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
+    from agent_runtime_contracts.runtime.binding import AgentRuntimeCapabilities
 
     contract = _local_agent_contract()
     schema = contract.agent_result_schema_document()
@@ -749,7 +749,7 @@ def test_agent_execution_contract_projection_is_raw_agent_contract_v1() -> None:
 
 
 def test_agent_result_validates_and_digests_exact_payload_before_pydantic() -> None:
-    from agent_runtime_contracts.schema import validate_local_agent_result
+    from agent_runtime_contracts.wire.schema import validate_local_agent_result
 
     contract = _local_agent_contract()
     payload = {"output_files": ["qa/proposal.md"]}
@@ -773,7 +773,7 @@ def test_agent_result_validation_keeps_feature_owned_context() -> None:
     from graph_engine.plugin_api import ResourceClaims
 
     from agent_runtime_contracts import AgentExecutionContract
-    from agent_runtime_contracts.schema import validate_local_agent_result
+    from agent_runtime_contracts.wire.schema import validate_local_agent_result
 
     class LeafInput(BaseModel):
         change_id: str

@@ -13,7 +13,7 @@ from assurance_intake.contracts.impact import (
     ImpactProjectionV1,
     ImpactSeedV1,
 )
-from assurance_intake.operations.impact_validation import (
+from assurance_intake.domain.impact_validation import (
     impact_required_families,
     validate_inventory_closed_keys,
     validate_inventory_references,

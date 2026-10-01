@@ -8,12 +8,12 @@ import yaml
 
 from typing import cast
 
-from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
+from assurance_intake.domain.obligations import TrustedIntakeSourcesV1
 from assurance_intake.contracts.common import TestFamily
-from assurance_intake.operations.explore_context import build_explore_context
+from assurance_intake.domain.explore_context import build_explore_context
 from assurance_intake.contracts.obligations import SourceRefV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.obligations import (
+from assurance_intake.domain.obligations import (
     authenticate_source,
     build_source_index,
     resolve_requirement_quote,

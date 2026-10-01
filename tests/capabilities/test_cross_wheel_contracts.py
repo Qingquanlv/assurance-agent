@@ -7,9 +7,10 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.plugin_api import TaskHandler
+from assurance_healing.ops.fix_proposal import finalize as fix_proposal_finalize
 from assurance_healing.contracts.agent import FixProposalInputV1
 from assurance_healing.contracts.coverage_repair import CoverageRepairBrief
-from assurance_healing.operations.proposal import FixProposalFinalizeHandler
 from assurance_quality.operations.coverage import coverage_gap_to_repair_brief
 from tests.capabilities.cross_wheel import (
     CAPABILITY_CATALOG,
@@ -153,7 +154,7 @@ def test_execution_evidence_handoff_binds_healing_proposal_digest() -> None:
 
     finalize = _healing_finalize_payload("entities.item.create", CAPABILITY_CATALOG, evidence_digest=digest)
     finalize["execution_evidence_digest"] = "0" * 64
-    outcome = _run(FixProposalFinalizeHandler(), finalize)
+    outcome = _run(cast(TaskHandler, fix_proposal_finalize), finalize)
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
 

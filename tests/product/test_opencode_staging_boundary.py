@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from agent_runtime_contracts import AgentWorkspaceV1
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskWorkspaceIdentity
 
 from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_document
@@ -259,7 +259,7 @@ def _workspace(*, agent_profile: str = _AGENT) -> AgentWorkspaceV1:
 
 
 def test_product_and_adapter_builders_produce_the_same_plugin_acceptable_binding(tmp_path: Path) -> None:
-    from agent_runtime_opencode.workspace_binding import workspace_binding_for
+    from agent_runtime_opencode.session.binding import workspace_binding_for
 
     project = tmp_path / "project"
     project.mkdir()
@@ -281,7 +281,7 @@ def test_product_and_adapter_builders_produce_the_same_plugin_acceptable_binding
 
 
 def test_stored_binding_is_plugin_acceptable_and_session_agent_matches(tmp_path: Path) -> None:
-    from agent_runtime_opencode.workspace_binding import workspace_binding_for
+    from agent_runtime_opencode.session.binding import workspace_binding_for
 
     project = tmp_path / "project"
     project.mkdir()

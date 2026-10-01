@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from types import MappingProxyType
 
 from agent_runtime_contracts import AgentRunResult
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
     CandidateFile,

@@ -25,10 +25,14 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 
 ### Python plugin registration and generated declarations
 
-Author handlers, schemas, resources, and validators in each wheel's `plugin.py`.
-Task lifecycle definitions stay in each wheel's `task.py` and topology stays in
-`graphs/`. Do not hand-edit `plugin-declaration.json`: it is generated from the
-provider's `descriptor()`, including its attempt-contract digests.
+Each wheel's `plugin.py` publishes handlers, schemas, resources, and validators.
+Each wheel's agent ops live in `ops/<op>/`, and `plugin.py` derives its handler map
+and resource manifest from the ops router. Execution has no agent phase; its two
+task contracts stay hand-written because their ids and shared handler do not match
+the router's task shape. The Feature bundle lives in
+`feature.py` and topology in `graphs/`. Do not hand-edit `plugin-declaration.json`:
+it is generated from the provider's `descriptor()`, including its attempt-contract
+digests.
 
 Run the build entry point from the repository root after `uv sync --dev`:
 
@@ -129,30 +133,73 @@ The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.
 
 Each capability wheel exports a static `FEATURE` and public graph-bundle type
-from its `task.py`. `assurance_product.features` explicitly lists the six
-exports; Product uses them for graph factories, contracts, output routes and
-Agent Task binding. `plugin.py` still owns installed handlers/resources, while
-`graphs/factory.py` still owns LangGraph topology. No decorator scan or new
-graph DSL is involved.
+from its `feature.py`. `assurance_product.features` explicitly lists the six
+exports; Product uses them for graph factories, contracts and output routes.
+`plugin.py` still owns installed handlers/resources, while `graphs/factory.py`
+still owns LangGraph topology. No decorator scan or new graph DSL is involved.
 
-### Agent Task authoring
+### Agent op authoring
 
-All 26 Agent contracts have named Task classes with `before`/`run`/`after` and
-optional `finally_` hooks. [CaseDesignTask](packages/capabilities/assurance-intake/assurance_intake/operations/case_design.py)
-is one example, not a special execution path. Product injects installed,
-authenticated phases; Task code does not create a client or own retries.
+Each of the 27 Agent contracts has a prepare handler and a finalize handler.
+
+Intake declares every operation, like a FastAPI route, in its own directory under
+[`ops/`](packages/capabilities/assurance-intake/assurance_intake/ops/), for example
+[case design](packages/capabilities/assurance-intake/assurance_intake/ops/case_design/):
+
+- `__init__.py` calls `router.agent(...)` (or `router.task(...)` for a deterministic
+  op such as `resolve_plan`) with `input`, `prepare=Prepare(...)`, `agent=Agent(...)`,
+  `finalize=Finalize(...)` and `output`, in run order;
+- `Prepare(hook, depends, writes, errors)` and `Finalize(hook, on_output_error, writes)`
+  are the Kernel phases around the run, and their `writes` are the files those hooks
+  may write;
+- `Agent(profile, skill, result, writes)` is the run itself. Its `writes` lists exact
+  files and `Dir(root, files=...)` entries: the contract claims each `Dir` root, the
+  OpenCode boundary allows only the exact files `files(business)` returns for that run
+  (each must sit under the root), and the output route is the exact files;
+- `hooks.py` holds the op's own `before(ctx, business)` and `after(ctx, business, result)`
+  steps; `ctx.write` enforces the phase's declared writes;
+- `models.py`, exactly one `SKILL.md`, and `result.schema.json` sit next to them.
+
+A run that needs its own skill, input or output is its own op rather than a branch
+inside another op, and a second `*.SKILL.md` in an op directory fails discovery:
+[case repair](packages/capabilities/assurance-intake/assurance_intake/ops/case_repair/)
+applies a `needs_fix` review's bounded actions, while case design always authors the
+full delta, and the case graph routes automatic fixes to case repair and human rework
+to case design.
+
+The [`OpRouter`](packages/adapters/agent-runtime-contracts/agent_runtime_contracts/ops/router.py)
+in `ops/__init__.py` runs the shared prepare/finalize pipeline and generates the
+contracts, output routes, handler map and resource manifest from the declarations.
+Every handler id dispatches through the single module-level `ops.execute`, and an
+`ops/` subpackage without a declaration fails discovery. Graphs import only
+`ops/<op>` declaration packages; ops never import graphs or one another; other wheels
+read only intake `contracts/` and `domain/`.
+
+Quality, healing, improvement, and generation declare the same shape. Generation's
+eight family jobs are `ops/<family>_codegen` and `ops/<family>_codegen_review`;
+the family handler classes in `operations/` remain for direct callers. Execution's
+task contracts stay in `contracts/attempts.py`. `InputError` and `OutputError`
+become `invalid_input` and `invalid_output`. Product injects installed,
+authenticated phases; op code does not create a client or own retries.
+
+Adding an agent op takes one `ops/<op>/` directory. The router publishes the
+contract, routes, handler ids, and skill resources. A deterministic task whose
+contract id or handler id does not match `router.task` stays hand-written in
+`contracts/attempts.py`.
 
 [`add_attempt_node`](packages/framework/graph-engine/graph_engine/stategraph/registration.py)
 registers a normal Attempt node in a native LangGraph `StateGraph`, including
-the 19 deterministic Task contracts. Pure state nodes and compiled subgraphs
-still use native `add_node`. Routing, activation, selection and post-commit
+the 18 deterministic Task contracts.
+[`add_attempt_edge` and `add_route`](packages/framework/graph-engine/graph_engine/stategraph/routing.py)
+wire failure edges and conditional routes;
+[`human_gate`](packages/framework/graph-engine/graph_engine/stategraph/human.py)
+builds a human decision node on LangGraph `interrupt`. Pure state nodes and compiled subgraphs still
+use native `add_node`. Routing, activation, selection and post-commit
 publication stay in the graph. All 28 Feature graph exports and 15 Product
 roots are covered.
 
-`after` validates business output before Kernel commit. `finally_` observes
-local execution-segment exit, not durable completion; terminal replay may
-skip it. Existing production in-flight recovery gaps are not closed by this
-authoring refactor.
+Finalize validates business output before Kernel commit. Existing production
+in-flight recovery gaps are not closed by this authoring refactor.
 
 Execute and run are deterministic tasks. They do not call an LLM. Same-process
 `aa_observe` collection detects omitted or mismatched observations; it is not a

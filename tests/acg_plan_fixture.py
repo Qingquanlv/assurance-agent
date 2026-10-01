@@ -21,8 +21,8 @@ from assurance_intake.contracts.plan import (
     plan_artifact_ref,
     plan_bytes,
 )
-from assurance_intake.operations.plan_artifacts import prepare_quality_goal
-from assurance_intake.operations.resolve_plan import resolve_plan
+from assurance_intake.domain.plan_artifacts import prepare_quality_goal
+from assurance_intake.domain.resolve_plan import resolve_plan
 
 
 DEFAULT_POLICY: dict[str, object] = {

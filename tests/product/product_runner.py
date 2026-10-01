@@ -69,7 +69,6 @@ PURE_HANDLER_IDS = frozenset(
     {
         "assurance.generation.complete",
         "assurance.generation.review-round.advance",
-        "assurance.intake.review-round.advance",
         "assurance.healing.repair-round.advance",
     }
 )
@@ -122,7 +121,6 @@ class _ScriptedTaskHost:
                             {
                                 "instructions": [
                                     {"text_content": "skill"},
-                                    {"text_content": "persona"},
                                     {"json_content": {"review_repair": None}},
                                 ]
                             }

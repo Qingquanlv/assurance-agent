@@ -14,10 +14,15 @@ from agent_runtime_contracts import (
     ResultContract,
     rebind_agent_run_workspace,
 )
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.plugin_api import TaskOutcome
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
-from agent_runtime_opencode.discovery import (
+from agent_runtime_opencode.handler import OpenCodeHandler
+from agent_runtime_opencode.session.binding import (
+    activity_label_for_session,
+    workspace_binding_for,
+)
+from agent_runtime_opencode.session.discovery import (
     ADAPTER_VERSION,
     OpenCodeActivityReference,
     adapter_source_digest,
@@ -27,12 +32,8 @@ from agent_runtime_opencode.discovery import (
     metadata_match_digest,
     prompt_body_digest,
 )
-from agent_runtime_opencode.handler import OpenCodeHandler, workspace_identity_digest_for
-from agent_runtime_opencode.protocol import OpenCodeProtocolProfile
-from agent_runtime_opencode.workspace_binding import (
-    activity_label_for_session,
-    workspace_binding_for,
-)
+from agent_runtime_opencode.session.identity import workspace_identity_digest_for
+from agent_runtime_opencode.transport.profile import OpenCodeProtocolProfile
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from graph_engine.plugin_api import (
     InvocationMetadata,
@@ -485,9 +486,9 @@ def _bound_fixture(
 
 
 def prompt_admission_body(request: TaskRequest, message_id: str) -> dict[str, object]:
-    from agent_runtime_opencode.observation import prompt_admission_body as production_body
+    from agent_runtime_opencode import prompt
 
-    return production_body(agent_run_from_request(request), message_id)
+    return prompt.prompt_admission_body(agent_run_from_request(request), message_id)
 
 
 def _fingerprint(config: OpenCodeAdapterConfig, profile: OpenCodeProtocolProfile) -> dict[str, object]:

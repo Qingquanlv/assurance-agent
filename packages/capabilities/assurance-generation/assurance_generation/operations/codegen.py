@@ -10,14 +10,23 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract, with_validation_retry
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    InputError,
+    OutputError,
+    agent_run_request,
+    failed_input,
+    failed_output,
+    result_contract_from,
+    run_prepare,
+)
+from agent_runtime_contracts.ops.request import WorkspaceRoots
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
 from assurance_generation.contracts.agent import (
-    AgentBindingDataV1,
     AgentFinalizeInputV1,
     CodegenFinalizeInputV1,
     CodegenInputV1,
@@ -38,12 +47,7 @@ from assurance_generation.operations.codegen_scope import build_codegen_scope
 from assurance_generation.operations.planning import (
     FAMILIES,
     Family,
-    InputError,
-    OutputError,
-    agent_workspace,
     closed_family,
-    failed_input,
-    failed_output,
     leafs_of,
     constraints_for_cases,
     load_family_case_modules,
@@ -53,21 +57,21 @@ from assurance_generation.operations.resolve_inputs import authenticate_reviewed
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.explore import PreparedExploreV1
-from assurance_intake.operations.explore_context import load_exploration_document
+from assurance_intake.domain.explore_context import load_exploration_document
 from assurance_intake.contracts.obligations import PreparedObligationV1
-from assurance_intake.operations.plan_codec import decode_plan
-from assurance_intake.operations.obligations import normalize_obligation_drafts
+from assurance_intake.domain.plan_codec import decode_plan
+from assurance_intake.domain.obligations import normalize_obligation_drafts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 CODEGEN_RESULT_ID = "assurance.generation.result.codegen.v1"
 _RESULT_FILES: Mapping[str, str] = {
-    CODEGEN_RESULT_ID: "result-contracts/codegen.v1.schema.json",
+    CODEGEN_RESULT_ID: "ops/api_codegen/result.schema.json",
 }
 _SKILL_FILES: Mapping[Family, str] = {
-    "api": "skills/aa-api-codegen/SKILL.md",
-    "e2e": "skills/aa-e2e-codegen/SKILL.md",
-    "fuzz": "skills/aa-fuzz-codegen/SKILL.md",
-    "performance": "skills/aa-performance-codegen/SKILL.md",
+    "api": "ops/api_codegen/SKILL.md",
+    "e2e": "ops/e2e_codegen/SKILL.md",
+    "fuzz": "ops/fuzz_codegen/SKILL.md",
+    "performance": "ops/performance_codegen/SKILL.md",
 }
 
 
@@ -170,13 +174,7 @@ def _validate_method_plans(
 
 
 def codegen_result_contract(schema_id: str) -> ResultContract:
-    payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
-    return ResultContract(
-        schema_id=schema_id,
-        schema_digest=canonical_digest(payload),
-        delivery_mode="assistant_json_local_v1",
-        schema_document=payload,
-    )
+    return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
 
 
 def validate_codegen_input(
@@ -255,7 +253,7 @@ def codegen_outputs(scope: CodegenScopeV1) -> tuple[str, ...]:
     return scope.locked_outputs
 
 
-def prepare_codegen_outcome(
+def prepare_codegen_request(
     *,
     skill_path: str,
     scope: CodegenScopeV1,
@@ -263,33 +261,112 @@ def prepare_codegen_outcome(
     context_payload: Mapping[str, object],
     binding: AgentBindingDataV1,
     result_schema_id: str,
-    context: TaskContext,
+    context: WorkspaceRoots,
     scope_id: str,
     allowed_outputs: tuple[str, ...],
     validation_error: str | None = None,
-) -> TaskOutcome:
-    agent_request = AgentRunRequest(
-        instructions=with_validation_retry(
-            (
-                InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.from_json(scope.model_dump(mode="json")),
-                InstructionPart.from_json(cases.model_dump(mode="json")),
-                InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
+    skill_text: str | None = None,
+) -> AgentRunRequest:
+    return agent_run_request(
+        instructions=(
+            InstructionPart.text(
+                "text/plain",
+                resource_text(skill_path) if skill_text is None else skill_text,
             ),
-            validation_error,
+            InstructionPart.from_json(scope.model_dump(mode="json")),
+            InstructionPart.from_json(cases.model_dump(mode="json")),
+            InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
         ),
-        result_contract=codegen_result_contract(result_schema_id),
-        execution=binding.execution,
-        workspace=agent_workspace(
-            context,
-            allowed_outputs=allowed_outputs,
-            agent_profile=binding.agent_profile,
-            scope_id=scope_id,
-        ),
-        request_policy_digest=binding.request_policy_digest,
-        request_config_digest=binding.request_config_digest,
+        validation_error=validation_error,
+        result=codegen_result_contract(result_schema_id),
+        binding=binding,
+        roots=context,
+        allowed_outputs=allowed_outputs,
+        scope_id=scope_id,
     )
-    return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
+
+
+def codegen_prepare_state(
+    family: Family,
+    business: CodegenInputV1,
+    context: WorkspaceRoots,
+) -> tuple[CodegenInputV1, tuple[str, ...]]:
+    """Validate the locked scope, seed repair baselines, and name this run's test files."""
+
+    validated, scope, _cases = validate_codegen_input(business, family, context.project_root)
+    baseline = _baseline_files(validated.codegen_output, scope, validated.capability_leafs)
+    _seed_baseline(context.project_root, context.write_root, baseline)
+    test_paths = tuple(path for path in scope.locked_outputs if path.startswith("qa/tests/"))
+    return validated, test_paths
+
+
+def assemble_codegen_request(
+    *,
+    family: Family,
+    business: CodegenInputV1,
+    binding: AgentBindingDataV1,
+    context: WorkspaceRoots,
+    skill_text: str | None = None,
+) -> AgentRunRequest:
+    validated, scope, cases = validate_codegen_input(business, family, context.project_root)
+    if validated.family_constraints is None:
+        raise InputError("family_constraints were not materialized")
+    baseline = _baseline_files(validated.codegen_output, scope, validated.capability_leafs)
+    _seed_baseline(context.project_root, context.write_root, baseline)
+    context_payload: dict[str, object] = {
+        "change_id": validated.change_id,
+        "family_constraints": validated.family_constraints.model_dump(mode="json"),
+        "generated_files_root": "qa/tests",
+        "codegen_scope": scope.model_dump(mode="json"),
+        "baseline_files": sorted(baseline),
+        "verification_obligations": [
+            item.model_dump(mode="json")
+            for item in _verification_obligations(
+                context.project_root,
+                plan_ref=validated.plan_ref,
+                family=family,
+                required=validated.reviewed_case is not None,
+            )
+        ],
+    }
+    # Lazy: quality.contracts.surface must not load at generation import time.
+    if validated.ui_exploration_ref is not None or validated.api_discovery_ref is not None:
+        from assurance_quality.contracts.surface import (
+            ApiDiscoveryDocument,
+            UiExplorationDocument,
+        )
+
+        if validated.ui_exploration_ref is not None:
+            ui_path = _authenticate_surface_ref(context.project_root, validated.ui_exploration_ref)
+            try:
+                ui_exploration = UiExplorationDocument.model_validate_json(ui_path.read_bytes())
+            except (OSError, ValidationError, ValueError) as error:
+                raise InputError(f"invalid ui-exploration.json: {error}") from error
+            if ui_exploration.change_id != validated.change_id:
+                raise InputError("ui-exploration.json change_id does not match codegen change_id")
+            context_payload["ui_exploration"] = ui_exploration.model_dump(mode="json")
+        if validated.api_discovery_ref is not None:
+            api_path = _authenticate_surface_ref(context.project_root, validated.api_discovery_ref)
+            try:
+                api_discovery = ApiDiscoveryDocument.model_validate_json(api_path.read_bytes())
+            except (OSError, ValidationError, ValueError) as error:
+                raise InputError(f"invalid api-discovery.json: {error}") from error
+            if api_discovery.change_id != validated.change_id:
+                raise InputError("api-discovery.json change_id does not match codegen change_id")
+            context_payload["api_discovery"] = api_discovery.model_dump(mode="json")
+    return prepare_codegen_request(
+        skill_path=_SKILL_FILES[family],
+        scope=scope,
+        cases=cases,
+        context_payload=context_payload,
+        binding=binding,
+        result_schema_id=CODEGEN_RESULT_ID,
+        context=context,
+        scope_id=validated.change_id,
+        allowed_outputs=codegen_outputs(scope),
+        validation_error=validated.validation_error,
+        skill_text=skill_text,
+    )
 
 
 def _workspace_path(workspace: Path, relative: str) -> Path:
@@ -499,73 +576,25 @@ class CodegenPrepareHandler:
         self._family: Family | None = None if family is None else closed_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            family = resolve_family(self._family, request)
-            business, scope, cases = validate_codegen_input(
-                request.input,
-                family,
-                context.project_root,
-            )
-            binding = AgentBindingDataV1.model_validate(request.binding_data)
-            if business.family_constraints is None:
-                raise InputError("family_constraints were not materialized")
-            baseline = _baseline_files(business.codegen_output, scope, business.capability_leafs)
-            _seed_baseline(context.project_root, context.write_root, baseline)
-            context_payload: dict[str, object] = {
-                "change_id": business.change_id,
-                "family_constraints": business.family_constraints.model_dump(mode="json"),
-                "generated_files_root": "qa/tests",
-                "codegen_scope": scope.model_dump(mode="json"),
-                "baseline_files": sorted(baseline),
-                "verification_obligations": [
-                    item.model_dump(mode="json")
-                    for item in _verification_obligations(
-                        context.project_root,
-                        plan_ref=business.plan_ref,
-                        family=family,
-                        required=business.reviewed_case is not None,
-                    )
-                ],
-            }
-            # Lazy: quality.contracts.surface must not load at generation import time.
-            if business.ui_exploration_ref is not None or business.api_discovery_ref is not None:
-                from assurance_quality.contracts.surface import (
-                    ApiDiscoveryDocument,
-                    UiExplorationDocument,
-                )
-
-                if business.ui_exploration_ref is not None:
-                    ui_path = _authenticate_surface_ref(context.project_root, business.ui_exploration_ref)
-                    try:
-                        ui_exploration = UiExplorationDocument.model_validate_json(ui_path.read_bytes())
-                    except (OSError, ValidationError, ValueError) as error:
-                        raise InputError(f"invalid ui-exploration.json: {error}") from error
-                    if ui_exploration.change_id != business.change_id:
-                        raise InputError("ui-exploration.json change_id does not match codegen change_id")
-                    context_payload["ui_exploration"] = ui_exploration.model_dump(mode="json")
-                if business.api_discovery_ref is not None:
-                    api_path = _authenticate_surface_ref(context.project_root, business.api_discovery_ref)
-                    try:
-                        api_discovery = ApiDiscoveryDocument.model_validate_json(api_path.read_bytes())
-                    except (OSError, ValidationError, ValueError) as error:
-                        raise InputError(f"invalid api-discovery.json: {error}") from error
-                    if api_discovery.change_id != business.change_id:
-                        raise InputError("api-discovery.json change_id does not match codegen change_id")
-                    context_payload["api_discovery"] = api_discovery.model_dump(mode="json")
-            return prepare_codegen_outcome(
-                skill_path=_SKILL_FILES[family],
-                scope=scope,
-                cases=cases,
-                context_payload=context_payload,
+        def build(
+            business: CodegenInputV1,
+            binding: AgentBindingDataV1,
+            build_context: TaskContext,
+        ) -> AgentRunRequest:
+            return assemble_codegen_request(
+                family=resolve_family(self._family, request),
+                business=business,
                 binding=binding,
-                result_schema_id=CODEGEN_RESULT_ID,
-                context=context,
-                scope_id=business.change_id,
-                allowed_outputs=codegen_outputs(scope),
-                validation_error=business.validation_error,
+                context=build_context,
             )
-        except (InputError, ValidationError) as error:
-            return failed_input(error)
+
+        return run_prepare(
+            request,
+            context,
+            input_model=CodegenInputV1,
+            build=build,
+            input_errors=(InputError, ValidationError),
+        )
 
 
 class CodegenFinalizeHandler:
@@ -578,82 +607,85 @@ class CodegenFinalizeHandler:
         try:
             family = resolve_family(self._family, request)
             payload = CodegenFinalizeInputV1.model_validate(request.input)
-            document = _finalize_authoring(payload, family)
-            _, scope, _ = validate_codegen_input(
-                {
-                    "change_id": payload.change_id or document.change_id,
-                    "plan_digest": payload.plan_digest,
-                    "plan_ref": payload.plan_ref.model_dump(mode="json"),
-                    "capability_leafs": list(payload.capability_leafs),
-                    "reviewed_case": None
-                    if payload.reviewed_case is None
-                    else payload.reviewed_case.model_dump(mode="json"),
-                },
-                family,
-                context.project_root,
-            )
-            mapped_ids = tuple(sorted(item.case_id for item in document.mapping.entries))
-            if mapped_ids != scope.case_ids:
-                raise OutputError("mapping case IDs must exactly match the host codegen scope")
-            locked_generated = {path for path in scope.locked_outputs if path.startswith("qa/tests/")}
-            test_by_case = {
-                case_id: row.test_file for row in scope.locked_modules for case_id in row.case_ids
-            }
-            receipt_tests = {entry.repo_path for entry in document.files}
-            if receipt_tests != locked_generated:
-                raise OutputError(
-                    "codegen receipt test paths do not match locked outputs; "
-                    f"missing={sorted(locked_generated - receipt_tests)}, "
-                    f"unexpected={sorted(receipt_tests - locked_generated)}"
-                )
-            for item in document.mapping.entries:
-                expected = test_by_case.get(item.case_id)
-                if expected is None or item.target_file != expected:
-                    raise OutputError(
-                        f"mapping target_file must equal the locked test file for {item.case_id}"
-                    )
-            _validate_method_plans(
-                obligations=_verification_obligations(
-                    context.project_root,
-                    plan_ref=payload.plan_ref,
-                    family=family,
-                    required=payload.reviewed_case is not None,
-                ),
-                methods=document.method_plans,
-                scope=scope,
-                mapping=document.mapping,
-            )
-            files = _complete_files(
-                context.write_root,
-                document.files,
-                document.mapping,
-                change_id=document.change_id,
-                family=family,
-                allowed_paths=locked_generated,
-                baseline=_baseline_files(payload.codegen_output, scope, payload.capability_leafs),
-            )
-            result = CodegenResultV1.model_validate(
-                {
-                    "schema_version": "1",
-                    "change_id": document.change_id,
-                    "layer": document.layer,
-                    "files": [item.model_dump(mode="json") for item in files],
-                    "mapping": document.mapping.model_dump(mode="json"),
-                    "required_capabilities": list(document.required_capabilities),
-                    "method_plans": [item.model_dump(mode="json") for item in document.method_plans],
-                },
-                context={"capability_leafs": leafs_of(payload.capability_leafs)},
-            )
-            _authenticate_manifest(
-                context.write_root,
-                document=document,
-                capability_leafs=payload.capability_leafs,
-            )
+            result = commit_codegen(family, payload, context)
             return TaskOutcome.succeeded(cast(JSONValue, result.model_dump(mode="json")))
         except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:
             return failed_output(str(error))
+
+
+def commit_codegen(
+    family: Family, payload: CodegenFinalizeInputV1, context: WorkspaceRoots
+) -> CodegenResultV1:
+    document = _finalize_authoring(payload, family)
+    _, scope, _ = validate_codegen_input(
+        {
+            "change_id": payload.change_id or document.change_id,
+            "plan_digest": payload.plan_digest,
+            "plan_ref": payload.plan_ref.model_dump(mode="json"),
+            "capability_leafs": list(payload.capability_leafs),
+            "reviewed_case": None
+            if payload.reviewed_case is None
+            else payload.reviewed_case.model_dump(mode="json"),
+        },
+        family,
+        context.project_root,
+    )
+    mapped_ids = tuple(sorted(item.case_id for item in document.mapping.entries))
+    if mapped_ids != scope.case_ids:
+        raise OutputError("mapping case IDs must exactly match the host codegen scope")
+    locked_generated = {path for path in scope.locked_outputs if path.startswith("qa/tests/")}
+    test_by_case = {case_id: row.test_file for row in scope.locked_modules for case_id in row.case_ids}
+    receipt_tests = {entry.repo_path for entry in document.files}
+    if receipt_tests != locked_generated:
+        raise OutputError(
+            "codegen receipt test paths do not match locked outputs; "
+            f"missing={sorted(locked_generated - receipt_tests)}, "
+            f"unexpected={sorted(receipt_tests - locked_generated)}"
+        )
+    for item in document.mapping.entries:
+        expected = test_by_case.get(item.case_id)
+        if expected is None or item.target_file != expected:
+            raise OutputError(f"mapping target_file must equal the locked test file for {item.case_id}")
+    _validate_method_plans(
+        obligations=_verification_obligations(
+            context.project_root,
+            plan_ref=payload.plan_ref,
+            family=family,
+            required=payload.reviewed_case is not None,
+        ),
+        methods=document.method_plans,
+        scope=scope,
+        mapping=document.mapping,
+    )
+    files = _complete_files(
+        context.write_root,
+        document.files,
+        document.mapping,
+        change_id=document.change_id,
+        family=family,
+        allowed_paths=locked_generated,
+        baseline=_baseline_files(payload.codegen_output, scope, payload.capability_leafs),
+    )
+    result = CodegenResultV1.model_validate(
+        {
+            "schema_version": "1",
+            "change_id": document.change_id,
+            "layer": document.layer,
+            "files": [item.model_dump(mode="json") for item in files],
+            "mapping": document.mapping.model_dump(mode="json"),
+            "required_capabilities": list(document.required_capabilities),
+            "method_plans": [item.model_dump(mode="json") for item in document.method_plans],
+        },
+        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+    )
+    _authenticate_manifest(
+        context.write_root,
+        document=document,
+        capability_leafs=payload.capability_leafs,
+    )
+    return result
 
 
 def codegen_prepare_handler(family: str) -> TaskHandler:

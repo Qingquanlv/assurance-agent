@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from agent_runtime_contracts.ops import OutputError
+
 from assurance_execution.contracts.execution import ExecutionFamily
 from assurance_execution.contracts.observations import CollectorDocumentV1, PytestReportV1
-from assurance_execution.operations.common import OutputError
 
 
 OBSERVE_CONTEXT_FLAG = "--assurance-observe-context="

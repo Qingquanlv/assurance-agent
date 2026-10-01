@@ -1131,7 +1131,7 @@ def test_codegen_rejects_repair_control_fields(
 def test_e2e_codegen_skill_reads_host_codegen_scope() -> None:
     from assurance_generation.resource_loader import resource_text
 
-    skill = resource_text("skills/aa-e2e-codegen/SKILL.md")
+    skill = resource_text("ops/e2e_codegen/SKILL.md")
     assert "host-built E2E codegen scope" in skill
     assert "locked_outputs" in skill
     assert "qa/cases/**/case.yaml" in skill
@@ -1143,6 +1143,6 @@ def test_e2e_codegen_skill_reads_host_codegen_scope() -> None:
 def test_codegen_skill_requires_locked_testdata(family: str) -> None:
     from assurance_generation.resource_loader import resource_text
 
-    skill = resource_text(f"skills/aa-{family}-codegen/SKILL.md")
+    skill = resource_text(f"ops/{family}_codegen/SKILL.md")
     assert "the locked testdata file (host `locked_outputs` always include it)" in skill
     assert "### conditional" not in skill

@@ -1,11 +1,9 @@
-"""Shared handler errors, catalog helpers, and outcome builders."""
+"""Shared catalog helpers and outcome builders."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any, cast
-
-from pydantic import ValidationError
+from typing import cast
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import TaskOutcome
@@ -13,31 +11,8 @@ from graph_engine.plugin_api import TaskOutcome
 from assurance_quality.contracts.metrics import MetricScope
 
 
-class InputError(ValueError):
-    """Malformed caller input or missing locked configuration."""
-
-
-class OutputError(ValueError):
-    """Model-authored semantic invalidity."""
-
-
 def leafs_of(values: Iterable[str]) -> frozenset[str]:
     return frozenset(values)
-
-
-def validate_input(model: type[Any], data: object) -> Any:
-    try:
-        return model.model_validate(data)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
-
-
-def failed_input(error: Exception) -> TaskOutcome:
-    return TaskOutcome.failed("invalid_input", str(error), retryable=True)
-
-
-def failed_output(message: str) -> TaskOutcome:
-    return TaskOutcome.failed("invalid_output", message, retryable=True)
 
 
 def json_digest(value: Mapping[str, object] | JSONValue) -> str:

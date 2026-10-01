@@ -163,11 +163,11 @@ def _compile_family_two_predecessor_join(
     family: str, *, late_writes_lww: bool, first_added_first: bool
 ) -> Any:
     first = _arrival("codegen-review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("codegen-review-round-advance-retry", epoch=0, sequence=1, used=1)
+    late = _arrival("codegen-review-round-advance", epoch=0, sequence=2, used=1)
     join_name = f"{family}-codegen-round-join"
     nodes = [
         (f"{family}-codegen-review-round-advance", _offer_node(first, poison_lww=not late_writes_lww)),
-        (f"{family}-codegen-review-round-advance-retry", _offer_node(late, poison_lww=late_writes_lww)),
+        (f"{family}-late-advance", _offer_node(late, poison_lww=late_writes_lww)),
     ]
     ordered = nodes if first_added_first else list(reversed(nodes))
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
@@ -175,9 +175,9 @@ def _compile_family_two_predecessor_join(
         builder.add_node(name, cast(Callable[..., Any], node))
     builder.add_node(join_name, cast(Callable[..., Any], plan_round_join))
     builder.add_edge(START, f"{family}-codegen-review-round-advance")
-    builder.add_edge(START, f"{family}-codegen-review-round-advance-retry")
+    builder.add_edge(START, f"{family}-late-advance")
     builder.add_edge(f"{family}-codegen-review-round-advance", join_name)
-    builder.add_edge(f"{family}-codegen-review-round-advance-retry", join_name)
+    builder.add_edge(f"{family}-late-advance", join_name)
     builder.add_edge(join_name, END)
     return builder.compile(checkpointer=None)
 
@@ -203,10 +203,7 @@ def _join_seed(family: str) -> dict[str, object]:
 
 
 def test_join_predecessors_are_the_two_plan_advance_sites() -> None:
-    assert PLAN_ROUND_PREDECESSORS == (
-        "codegen-review-round-advance",
-        "codegen-review-round-advance-retry",
-    )
+    assert PLAN_ROUND_PREDECESSORS == ("codegen-review-round-advance",)
 
 
 def test_first_arrival_becomes_exact_current_trigger() -> None:
@@ -225,7 +222,7 @@ def test_first_arrival_becomes_exact_current_trigger() -> None:
 
 def test_late_second_arrival_in_same_epoch_is_retained_and_dispatched_once() -> None:
     first = _arrival("codegen-review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("codegen-review-round-advance-retry", epoch=0, sequence=2, used=1)
+    late = _arrival("codegen-review-round-advance", epoch=0, sequence=2, used=1)
     inbox = offer_plan_round_arrival(empty_plan_round_inbox(), first)
     inbox = offer_plan_round_arrival(inbox, late)
     assert inbox["current_trigger"] == first
@@ -243,7 +240,7 @@ def test_late_second_arrival_in_same_epoch_is_retained_and_dispatched_once() -> 
 
 
 def test_replay_of_the_same_arrival_id_is_deduplicated() -> None:
-    arrival = _arrival("codegen-review-round-advance-retry", sequence=4)
+    arrival = _arrival("codegen-review-round-advance", sequence=4)
     inbox = offer_plan_round_arrival(empty_plan_round_inbox(), arrival)
     replayed = offer_plan_round_arrival(inbox, arrival)
     assert replayed["arrivals"] == [arrival]
@@ -252,7 +249,7 @@ def test_replay_of_the_same_arrival_id_is_deduplicated() -> None:
 
 def test_two_reducer_merge_orders_produce_identical_inbox_state() -> None:
     first = _arrival("codegen-review-round-advance", sequence=1, used=1)
-    second = _arrival("codegen-review-round-advance-retry", sequence=2, used=1)
+    second = _arrival("codegen-review-round-advance", sequence=2, used=1)
     empty = empty_plan_round_inbox()
     left = merge_plan_round_inbox(
         offer_plan_round_arrival(empty, first),
@@ -269,7 +266,7 @@ def test_two_reducer_merge_orders_produce_identical_inbox_state() -> None:
 
 def test_repeated_business_epochs_preserve_exact_rounds_used_and_budget() -> None:
     epoch_one = _arrival("codegen-review-round-advance", epoch=0, sequence=1, used=1, budget=2)
-    epoch_two = _arrival("codegen-review-round-advance-retry", epoch=1, sequence=1, used=2, budget=2)
+    epoch_two = _arrival("codegen-review-round-advance", epoch=1, sequence=1, used=2, budget=2)
     inbox = consume_plan_round_trigger(offer_plan_round_arrival(empty_plan_round_inbox(), epoch_one))
     inbox = offer_plan_round_arrival(inbox, epoch_two)
     current = inbox["current_trigger"]
@@ -292,7 +289,7 @@ def test_dispatch_cursor_never_reclaims_a_consumed_arrival() -> None:
 
 def test_downstream_plan_retry_reads_current_trigger_value_only() -> None:
     stale = {"rounds_used": 0, "rounds_budget": 2}
-    arrival = _arrival("codegen-review-round-advance-retry", used=1, budget=2)
+    arrival = _arrival("codegen-review-round-advance", used=1, budget=2)
     inbox = offer_plan_round_arrival(empty_plan_round_inbox(), arrival)
     state: dict[str, Any] = {
         "family": "api",
@@ -403,7 +400,7 @@ def test_current_trigger(row: tuple[str, str]) -> None:
             "family": family,
             "rounds_used": 0,
             "rounds_budget": 2,
-            "current_trigger": _arrival("codegen-review-round-advance-retry", used=9, budget=9),
+            "current_trigger": _arrival("codegen-review-round-advance", used=9, budget=9, sequence=9),
             "plan_round_inbox": inbox,
         }
     )
@@ -415,7 +412,7 @@ def test_current_trigger(row: tuple[str, str]) -> None:
 @pytest.mark.parametrize("family", _FAMILIES)
 async def test_compiled_join_reads_inbox_cursor_not_lww_shadow(family: str) -> None:
     first = _arrival("codegen-review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("codegen-review-round-advance-retry", epoch=0, sequence=2, used=9, budget=9)
+    late = _arrival("codegen-review-round-advance", epoch=0, sequence=2, used=9, budget=9)
     inbox = offer_plan_round_arrival(empty_plan_round_inbox(), first)
     inbox = offer_plan_round_arrival(inbox, late)
     result = await _compile_family_join_graph(family).ainvoke(
@@ -441,7 +438,7 @@ async def test_compiled_graph_same_epoch_arrivals_retained_first_current_then_la
     family: str,
 ) -> None:
     first = _arrival("codegen-review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("codegen-review-round-advance-retry", epoch=0, sequence=1, used=1)
+    late = _arrival("codegen-review-round-advance", epoch=0, sequence=2, used=1)
     result = await _compile_family_two_predecessor_join(
         family, late_writes_lww=True, first_added_first=True
     ).ainvoke(_join_seed(family))
@@ -478,7 +475,7 @@ async def test_compiled_graph_two_reducer_merge_orders_are_identical(family: str
 
 @pytest.mark.parametrize("family", _FAMILIES)
 async def test_compiled_graph_replay_of_same_arrival_id_is_deduplicated(family: str) -> None:
-    arrival = _arrival("codegen-review-round-advance-retry", sequence=4)
+    arrival = _arrival("codegen-review-round-advance", sequence=4)
     join_name = f"{family}-codegen-round-join"
 
     def _offer(state: dict[str, Any]) -> dict[str, object]:
@@ -608,7 +605,7 @@ async def test_last_budgeted_plan_retry_reaches_join(family: str) -> None:
     current = terminal["plan_round_inbox"]["current_trigger"]
     assert current is not None
     assert current["value"] == {"rounds_used": 2, "rounds_budget": 2}
-    assert current["predecessor"] == "codegen-review-round-advance-retry"
+    assert current["predecessor"] == "codegen-review-round-advance"
     assert terminal["current_trigger"] == current
     assert terminal["rounds_used"] == 2
     assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") == "pass"

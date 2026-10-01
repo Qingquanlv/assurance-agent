@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from agent_runtime_contracts.ops import OutputError
 from assurance_execution.contracts.observations import CollectorDocumentV1
-from assurance_execution.operations.common import OutputError
 from assurance_execution.operations.observation_run import (
     RunnerUnsupported,
     build_family_argv,

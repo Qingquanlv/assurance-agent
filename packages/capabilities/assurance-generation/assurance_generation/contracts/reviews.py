@@ -79,6 +79,9 @@ def _validate_fully_qualified_capabilities(caps: list[str] | None) -> None:
 
 def _require_exact_capability_leafs(caps: list[str] | None, info: ValidationInfo) -> None:
     context = info.context or {}
+    if "capability_leafs" not in context:
+        # Shape checks run before a caller supplies the closed leaf set.
+        return
     leafs = context.get("capability_leafs")
     if not isinstance(leafs, frozenset) or any(not isinstance(item, str) for item in leafs):
         raise ValueError("capability_leafs context must be a frozenset of declared typed leaves")

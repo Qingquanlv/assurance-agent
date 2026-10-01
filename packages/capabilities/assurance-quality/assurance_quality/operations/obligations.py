@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Literal, NamedTuple
 
+from agent_runtime_contracts.ops import InputError
 from pydantic import ValidationError
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1, FamilyExecutionOutcomeV1
@@ -19,9 +20,9 @@ from assurance_generation.contracts.plans import ObligationMethodPlanV1
 from assurance_generation.contracts.reviews import ObligationSemanticReviewV1
 from assurance_intake.contracts.obligations import PreparedObligationV1, VerificationRequirementV1
 from assurance_intake.contracts.explore import PreparedExploreV1
-from assurance_intake.operations.explore_context import load_exploration_document
-from assurance_intake.operations.plan_codec import decode_plan
-from assurance_intake.operations.obligations import normalize_obligation_drafts
+from assurance_intake.domain.explore_context import load_exploration_document
+from assurance_intake.domain.plan_codec import decode_plan
+from assurance_intake.domain.obligations import normalize_obligation_drafts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
 from assurance_quality.contracts.obligations import (
@@ -31,7 +32,6 @@ from assurance_quality.contracts.obligations import (
     ObligationGateFactsV1,
     ObligationVerdict,
 )
-from assurance_quality.operations.common import InputError
 
 REPAIRABLE_OBLIGATION_GAPS = frozenset(
     {

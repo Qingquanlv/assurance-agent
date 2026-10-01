@@ -6,111 +6,34 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from assurance_intake.task import IntakeGraphs
-from assurance_intake.graphs.case import build_case_graph
-from assurance_intake.graphs.nodes import (
+from assurance_intake.feature import IntakeGraphs
+from assurance_intake.graphs.calls import (
     activation_case_design,
-    activation_case_design_repair,
-    activation_case_review,
-    activation_one_shot,
-    publish_artifacts,
+    activation_case_design_validation_retry,
     publish_case_design,
-    publish_case_review,
-    publish_plan,
     select_case_design,
-    select_case_design_repair,
-    select_case_review,
-    select_explore,
-    select_intake,
-    select_resolve_plan,
-    terminal_done,
-    terminal_failed,
+    select_case_design_validation_retry,
 )
+from assurance_intake.graphs.case import build_case_graph
 from assurance_intake.graphs.prepare import build_prepare_graph
-from assurance_intake.graphs.routes import route_case_design, route_case_design_repair
-from assurance_intake.graphs.state import IntakeState
+from assurance_intake.graphs.routes import route_case_design, route_case_design_validation_retry
+from assurance_intake.graphs.state import IntakeState, terminal_done, terminal_failed
+from assurance_intake.ops.case_design import op as case_design
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import add_attempt_node
 
-_INTAKE_ID = "assurance.intake.agent.intake.v1"
-_EXPLORE_ID = "assurance.intake.agent.explore.v1"
-_CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
-_CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
-_RESOLVE_PLAN_ID = "assurance.intake.task.resolve-plan"
 _CASE_DESIGN_PATHS: dict[Hashable, str] = {
     "done": "done",
-    "case-design-repair": "intake.case-design-repair",
+    "case-design-validation-retry": "intake.case-design-validation-retry",
     "failed": "failed",
 }
 
 
 def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:
-    intake = _compile_leaf(
-        context,
-        contract_id=_INTAKE_ID,
-        semantic_node_id="intake.intake",
-        activation=activation_one_shot,
-        select=select_intake,
-        publish=publish_artifacts,
-    )
-    explore = _compile_leaf(
-        context,
-        contract_id=_EXPLORE_ID,
-        semantic_node_id="intake.explore",
-        activation=activation_one_shot,
-        select=select_explore,
-        publish=publish_artifacts,
-    )
-    resolve_plan = _compile_leaf(
-        context,
-        contract_id=_RESOLVE_PLAN_ID,
-        semantic_node_id="intake.resolve-plan",
-        activation=activation_one_shot,
-        select=select_resolve_plan,
-        publish=publish_plan,
-    )
-    case_design = _compile_case_design(context)
-    case_review = _compile_leaf(
-        context,
-        contract_id=_CASE_REVIEW_ID,
-        semantic_node_id="intake.case-review",
-        activation=activation_case_review,
-        select=select_case_review,
-        publish=publish_case_review,
-    )
     return IntakeGraphs(
-        prepare=build_prepare_graph(
-            context,
-            intake=intake,
-            explore=explore,
-            resolve_plan=resolve_plan,
-        ),
-        case=build_case_graph(context, case_design=case_design, case_review=case_review),
+        prepare=build_prepare_graph(context),
+        case=build_case_graph(context, case_design=_compile_case_design(context)),
     )
-
-
-def _compile_leaf(
-    context: CapabilityBuildContext,
-    *,
-    contract_id: str,
-    semantic_node_id: str,
-    activation: object,
-    select: object,
-    publish: object,
-) -> CompiledStateGraph:
-    builder: StateGraph[IntakeState] = StateGraph(IntakeState)
-    add_attempt_node(
-        builder,
-        context,
-        semantic_node_id,
-        contract_id=contract_id,
-        activation=activation,
-        select=select,
-        publish=publish,
-    )
-    builder.add_edge(START, semantic_node_id)
-    builder.add_edge(semantic_node_id, END)
-    return context.compile_subgraph(builder)
 
 
 def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
@@ -119,7 +42,8 @@ def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
         builder,
         context,
         "intake.case-design",
-        contract_id=_CASE_DESIGN_ID,
+        semantic_node_id="intake.case-design",
+        contract_id=case_design.contract_id,
         activation=activation_case_design,
         select=select_case_design,
         publish=publish_case_design,
@@ -127,10 +51,11 @@ def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
     add_attempt_node(
         builder,
         context,
-        "intake.case-design-repair",
-        contract_id=_CASE_DESIGN_ID,
-        activation=activation_case_design_repair,
-        select=select_case_design_repair,
+        "intake.case-design-validation-retry",
+        semantic_node_id="intake.case-design-validation-retry",
+        contract_id=case_design.contract_id,
+        activation=activation_case_design_validation_retry,
+        select=select_case_design_validation_retry,
         publish=publish_case_design,
     )
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
@@ -142,8 +67,8 @@ def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
         _CASE_DESIGN_PATHS,
     )
     builder.add_conditional_edges(
-        "intake.case-design-repair",
-        cast(Callable[..., Any], route_case_design_repair),
+        "intake.case-design-validation-retry",
+        cast(Callable[..., Any], route_case_design_validation_retry),
         {"done": "done", "failed": "failed"},
     )
     builder.add_edge("done", END)

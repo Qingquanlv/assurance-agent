@@ -10,6 +10,7 @@ from agent_runtime_contracts import AgentRunResult
 from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.plugin_api import TaskHandler
 from assurance_quality.contracts.assessment import (
     AssessmentSkillInputV1,
     FactBaselineSkillInputV1,
@@ -22,12 +23,11 @@ from assurance_quality.contracts.assessment import FailureClassificationFactsV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.graphs.nodes import publish_inspect
 from assurance_quality.graphs.routes import route_coverage
-from assurance_quality.operations.agent_skills import (
-    FactBaselineFinalizeHandler,
-    FactBaselinePrepareHandler,
-    InspectFinalizeHandler,
-    InspectPrepareHandler,
+from assurance_quality.ops.fact_baseline import (
+    finalize as fact_baseline_finalize,
+    prepare as fact_baseline_prepare,
 )
+from assurance_quality.ops.inspect import finalize as inspect_finalize, prepare as inspect_prepare
 from assurance_quality.operations.assessment import (
     classify_inspection_disposition,
     materialize_assessment_inputs,
@@ -143,7 +143,7 @@ async def _finalize_inspection(
         inspection_document,
     )
     return await execute_task(
-        InspectFinalizeHandler(),
+        cast(TaskHandler, inspect_finalize),
         cast(
             JSONValue,
             {
@@ -447,7 +447,7 @@ async def test_prepare_rejects_assessment_evidence_that_changed_after_materializ
     metrics.write_bytes(metrics.read_bytes() + b"\n")
 
     result = await execute_task(
-        InspectPrepareHandler(),
+        cast(TaskHandler, inspect_prepare),
         cast(JSONValue, business.model_dump(mode="json")),
         tmp_path,
         binding_data=BINDING,
@@ -459,11 +459,14 @@ async def test_prepare_rejects_assessment_evidence_that_changed_after_materializ
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("handler_type", [FactBaselineFinalizeHandler, InspectFinalizeHandler])
-async def test_assessment_finalizer_rejects_wrapped_input(tmp_path: Path, handler_type) -> None:
+@pytest.mark.parametrize(
+    "handler",
+    [fact_baseline_finalize, inspect_finalize],
+)
+async def test_assessment_finalizer_rejects_wrapped_input(tmp_path: Path, handler: object) -> None:
     business = _assessment_business(tmp_path).model_dump(mode="json")
     result = await execute_task(
-        handler_type(),
+        cast(TaskHandler, handler),
         cast(
             JSONValue,
             {
@@ -484,7 +487,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
 ) -> None:
     business = _assessment_business(tmp_path)
     prepared = await execute_task(
-        FactBaselinePrepareHandler(),
+        cast(TaskHandler, fact_baseline_prepare),
         cast(JSONValue, _fact_baseline_business(business).model_dump(mode="json")),
         tmp_path,
         binding_data=BINDING,
@@ -496,7 +499,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
     baseline_path = "qa/results/facts/fact-baseline.json"
     _write_stage(stage, baseline_path, baseline_document)
     baseline_result = await execute_task(
-        FactBaselineFinalizeHandler(),
+        cast(TaskHandler, fact_baseline_finalize),
         cast(
             JSONValue,
             {
@@ -531,7 +534,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
     inspection_path = "qa/results/inspect/inspection.json"
     _write_stage(stage, inspection_path, inspection_document)
     inspection_result = await execute_task(
-        InspectFinalizeHandler(),
+        cast(TaskHandler, inspect_finalize),
         cast(
             JSONValue,
             {
@@ -609,7 +612,7 @@ async def test_failing_execution_requires_analyzed_agent_status(
     baseline_document = {"source": "unavailable", "change_id": MATERIALIZED_CHANGE_ID}
     _write_stage(stage, baseline_path, baseline_document)
     baseline_result = await execute_task(
-        FactBaselineFinalizeHandler(),
+        cast(TaskHandler, fact_baseline_finalize),
         cast(
             JSONValue,
             {
@@ -647,7 +650,7 @@ async def test_failing_execution_requires_analyzed_agent_status(
     )
 
     outcome = await execute_task(
-        InspectFinalizeHandler(),
+        cast(TaskHandler, inspect_finalize),
         cast(
             JSONValue,
             {
@@ -676,7 +679,7 @@ async def test_failing_execution_requires_analyzed_agent_status(
         inspection_document,
     )
     rejected = await execute_task(
-        InspectFinalizeHandler(),
+        cast(TaskHandler, inspect_finalize),
         cast(
             JSONValue,
             {

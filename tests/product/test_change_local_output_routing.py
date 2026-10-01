@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
     InvocationMetadata,
@@ -158,7 +158,7 @@ def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
 def test_every_agent_triplet_has_a_closed_output_route_that_stays_inside_the_change() -> None:
     catalog = OutputRouteCatalog()
 
-    assert len(EXECUTE_ALIASES) == 26
+    assert len(EXECUTE_ALIASES) == 27
     assert catalog.aliases() == EXECUTE_ALIASES
 
     for alias in EXECUTE_ALIASES:
@@ -196,12 +196,12 @@ def test_output_routes_are_owned_by_the_installed_product_and_are_not_project_co
 
 
 def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_path: Path) -> None:
-    from assurance_intake.operations import IntakePrepareHandler
+    from tests.op_handlers import op_handler
 
     project, write_root = dual_roots(tmp_path, "RET-dept-management")
     prepared = asyncio.run(
         execute_task(
-            IntakePrepareHandler(),
+            op_handler("assurance.intake.intake.prepare"),
             {
                 "change_id": "RET-dept-management",
                 "requirement": "Cover department CRUD.",
@@ -229,7 +229,7 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
 
 
 def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Path) -> None:
-    from assurance_intake.operations import ExploreFinalizeHandler
+    from tests.op_handlers import finalize_input, op_handler
 
     project, write_root = dual_roots(tmp_path)
     canonical = project / "qa/results/explore/exploration.json"
@@ -239,19 +239,22 @@ def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Pat
 
     executed = asyncio.run(
         execute_task(
-            ExploreFinalizeHandler(),
-            {
-                "agent_result": fake_agent_result(
+            op_handler("assurance.intake.explore.finalize"),
+            finalize_input(
+                {
+                    "change_id": "CH-DEMO-001",
+                    "capability_leafs": ["entities.item.create"],
+                    "candidate_test_families": ["api"],
+                    "artifact_paths": ["qa/results/explore/exploration.json"],
+                },
+                fake_agent_result(
                     {
                         "output_files": [
                             "qa/results/explore/exploration.json",
                         ]
                     }
                 ).model_dump(mode="json"),
-                "change_id": "CH-DEMO-001",
-                "capability_leafs": ["entities.item.create"],
-                "artifact_paths": ["qa/results/explore/exploration.json"],
-            },
+            ),
             project,
             write_root=write_root,
         )

@@ -3,13 +3,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from agent_runtime_contracts.ops import InputError
+
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.obligations import (
     ObligationAssessmentRowV1,
     ObligationAssessmentV1,
     ObligationGateFactsV1,
 )
-from assurance_quality.operations.common import InputError
 from assurance_quality.contracts.obligations import obligation_gate
 from assurance_quality.operations.obligations import derive_obligation_gate_facts
 

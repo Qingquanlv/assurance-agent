@@ -3,13 +3,15 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_runtime_opencode.discovery import (
+from agent_runtime_opencode.session.discovery import (
     OpenCodeActivityReference,
-    OpenCodeDiscoveryMetadata,
-    OpenCodeSessionCreateRequest,
     exact_metadata_matches,
 )
-from agent_runtime_opencode.protocol import canonical_json_text
+from agent_runtime_opencode.transport.http import (
+    OpenCodeDiscoveryMetadata,
+    OpenCodeSessionCreateRequest,
+    canonical_json_text,
+)
 from harness import (  # pyright: ignore[reportMissingImports]
     _SECRET_TEXT,
     _open_code_fixture,
@@ -101,7 +103,7 @@ async def test_multiple_exact_metadata_matches_fail_closed() -> None:
 
 
 def test_metadata_match_digest_is_canonical() -> None:
-    from agent_runtime_contracts.schema import canonical_digest
+    from agent_runtime_contracts.wire.schema import canonical_digest
 
     first = OpenCodeDiscoveryMetadata.model_validate(metadata_payload())
     reordered = OpenCodeDiscoveryMetadata.model_validate(

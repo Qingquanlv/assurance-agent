@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from assurance_intake.contracts.agent import CaseDesignInputV1, CaseFinalizeInputV1
+from assurance_intake.ops.case_design import CaseDesignInputV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, require_same_plan
 
 
@@ -30,5 +30,5 @@ def test_case_design_requires_plan_binding() -> None:
 
 
 def test_case_finalize_requires_plan_binding() -> None:
-    assert CaseFinalizeInputV1.model_fields["plan_digest"].is_required()
-    assert CaseFinalizeInputV1.model_fields["plan_ref"].is_required()
+    assert CaseDesignInputV1.model_fields["plan_digest"].is_required()
+    assert CaseDesignInputV1.model_fields["plan_ref"].is_required()

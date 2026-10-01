@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 import uuid
 
-from agent_runtime_contracts.schema import bound_redacted_diagnostics
+from agent_runtime_contracts.wire.schema import bound_redacted_diagnostics
 from graph_engine.plugin_api import SecretHandleUnauthorized
 
 from tests.capabilities.agent_harness import FakeAgentAdapter

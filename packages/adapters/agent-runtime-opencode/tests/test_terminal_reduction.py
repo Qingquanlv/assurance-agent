@@ -5,7 +5,7 @@ import json
 import pytest
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult, ResultContract
-from agent_runtime_contracts.schema import (
+from agent_runtime_contracts.wire.schema import (
     canonical_digest,
     thaw_json,
     validate_local_agent_result,
@@ -14,10 +14,10 @@ from agent_runtime_contracts.schema import (
 from assurance_quality.contracts.agent import FactBaselineResultV1
 from assurance_quality.operations.agent_skills import FACT_BASELINE_RESULT_ID
 from assurance_quality.resource_loader import resource_bytes
-from agent_runtime_opencode.discovery import ADAPTER_VERSION
-from agent_runtime_opencode.observation import classify_provider_state, parse_closed_terminal_result
-from agent_runtime_opencode.reducer import reduce_terminal
-from agent_runtime_opencode.redaction import encoded_canary_forms
+from agent_runtime_opencode.observe.state import classify_provider_state, parse_closed_terminal_result
+from agent_runtime_opencode.result import reduce_terminal
+from agent_runtime_opencode.security import encoded_canary_forms
+from agent_runtime_opencode.session.discovery import ADAPTER_VERSION
 from harness import (  # pyright: ignore[reportMissingImports]
     _completed_engine_invocation,
     _terminal_success_fixture,
@@ -124,7 +124,7 @@ def _intake_messages(payload: object) -> list[dict[str, object]]:
 
 
 def _fact_baseline_request() -> AgentRunRequest:
-    schema = json.loads(resource_bytes("result-contracts/fact-baseline.v1.schema.json"))
+    schema = json.loads(resource_bytes("ops/fact_baseline/result.schema.json"))
     base = agent_run_request()
     return AgentRunRequest.model_validate(
         {

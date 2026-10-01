@@ -310,11 +310,11 @@ class CaseYamlAuthoring(_CaseYamlBase[CaseEntryAuthoring]):
             return self
         if not isinstance(inventory, ChangeImpactInventoryV1):
             raise ValueError("inventory context must be a ChangeImpactInventoryV1")
-        _require_impact_row_coverage(self, inventory)
+        require_impact_row_coverage(self, inventory)
         return self
 
 
-def _require_impact_row_coverage(
+def require_impact_row_coverage(
     document: CaseYamlAuthoring,
     inventory: ChangeImpactInventoryV1,
 ) -> None:
