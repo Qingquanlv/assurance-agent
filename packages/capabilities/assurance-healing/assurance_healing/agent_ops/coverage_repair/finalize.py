@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from pydantic import ValidationError
-
-from agent_runtime_contracts.ops import InputError, OutputError, run_finalize
+from agent_runtime_contracts.ops import InputError, OutputError, run_finalize, validate_output
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -24,10 +22,7 @@ def _commit(payload: CoverageRepairFinalizeInputV1, context: TaskContext) -> Tas
         or payload.brief != payload.prepare.brief
     ):
         raise InputError("finalize digests do not match the locked prepare payload")
-    try:
-        summary = CoverageRepairApplySummary.model_validate(structured(payload.agent_result.result_payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    summary = validate_output(CoverageRepairApplySummary, structured(payload.agent_result.result_payload))
     if summary.change_id != payload.change_id or summary.change_id != payload.brief.change_id:
         raise OutputError("coverage repair identity does not match the locked change")
     locators = brief_locator_ids(payload.brief)

@@ -8,6 +8,7 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.agent import RetroAnalysisInputV1
 from assurance_improvement.operations.agent import RETRO_ISSUE_SKILL, RETRO_RESULT_ID, prepare_request
+from assurance_improvement.operations.common import validate_input
 
 
 def _build(
@@ -25,4 +26,6 @@ def _build(
 
 
 async def execute(request: TaskRequest, context: TaskContext) -> TaskOutcome:
-    return run_prepare(request, context, input_model=RetroAnalysisInputV1, build=_build)
+    return run_prepare(
+        request, context, input_model=RetroAnalysisInputV1, build=_build, validate=validate_input
+    )

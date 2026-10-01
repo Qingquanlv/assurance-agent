@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from pydantic import ValidationError
-
-from agent_runtime_contracts.ops import OutputError, run_finalize
+from agent_runtime_contracts.ops import OutputError, run_finalize, validate_output
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
@@ -20,10 +18,7 @@ input_model = FactBaselineFinalizeInputV1
 
 def _commit(business: FactBaselineFinalizeInputV1, context: TaskContext) -> TaskOutcome:
     agent_run = business.agent_result
-    try:
-        document = FactBaselineResultV1.model_validate(thaw_json(agent_run.result_payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    document = validate_output(FactBaselineResultV1, thaw_json(agent_run.result_payload))
     authenticate_fact_baseline_input(business, context.project_root)
     if document.change_id != business.change_id:
         raise OutputError("fact baseline change_id does not match the locked Reviewed Case")

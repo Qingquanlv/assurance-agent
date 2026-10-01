@@ -6,8 +6,9 @@ from typing import cast
 import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
+from graph_engine.frozen_json import freeze_json
 from graph_engine.plugin_api import TaskHandler
-from tests.product.test_change_local_output_routing import execute_task
+from tests.product.test_change_local_output_routing import execute_task, task_request
 
 from assurance_improvement.contracts.agent import ArchiveResultV1
 from assurance_improvement.contracts.improvements import ImprovementProjection
@@ -420,6 +421,14 @@ async def test_archive_finalize_accepts_warning_status(tmp_path: Path) -> None:
     assert outcome.status == "succeeded"
     document = ArchiveResultV1.model_validate(outcome.output)
     assert document.archive_status == "archived_with_warnings"
+
+
+@pytest.mark.asyncio
+async def test_archive_finalize_normalizes_frozen_wire_input(tmp_path: Path) -> None:
+    payload = locked_archive_input(archive_result(issue_risk="high", archive_status="archived_with_warnings"))
+    request = task_request(payload).model_copy(update={"input": freeze_json(payload)})
+    outcome = await execute_task(cast(TaskHandler, archive_finalize), request, tmp_path)
+    assert outcome.status == "succeeded"
 
 
 def test_archive_result_contract_bytes_equal_typed_model() -> None:

@@ -26,6 +26,13 @@ def validate_model(model: type[ModelT], data: object) -> ModelT:
         raise InputError(str(error)) from error
 
 
+def validate_output(model: type[ModelT], data: object) -> ModelT:
+    try:
+        return model.model_validate(data)
+    except ValidationError as error:
+        raise OutputError(str(error)) from error
+
+
 def failed_input(error: Exception) -> TaskOutcome:
     return TaskOutcome.failed("invalid_input", str(error), retryable=True)
 

@@ -18,6 +18,8 @@ from agent_runtime_contracts.ops import (
     OutputError,
     run_finalize,
     run_prepare,
+    validate_model,
+    validate_output,
 )
 from agent_runtime_contracts.ops.request import result_contract_from, skill_request
 from agent_runtime_contracts.wire.models import AgentRunRequest
@@ -215,6 +217,55 @@ def test_run_finalize_maps_invalid_input(tmp_path: Path) -> None:
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
     assert outcome.failure.retryable is True
+
+
+def test_validate_output_maps_schema_failure_to_output_error() -> None:
+    assert validate_output(_Business, {"change_id": "chg-1"}) == _Business(change_id="chg-1")
+    with pytest.raises(OutputError, match="change_id"):
+        validate_output(_Business, {"missing": "change_id"})
+
+
+def _unwrap_then_validate(model: type[_Business], data: object) -> _Business:
+    assert isinstance(data, dict)
+    return validate_model(model, data["wrapped"])
+
+
+def test_run_prepare_uses_custom_input_validator(tmp_path: Path) -> None:
+    seen: list[_Business] = []
+
+    def build(business: _Business, bound: AgentBindingDataV1, ctx: TaskContext) -> AgentRunRequest:
+        seen.append(business)
+        return _run_request(tmp_path, bound)
+
+    outcome = run_prepare(
+        _Request(input={"wrapped": {"change_id": "chg-1"}}, binding_data=_binding_data()),
+        _context(tmp_path),
+        input_model=_Business,
+        build=build,
+        validate=_unwrap_then_validate,
+    )
+
+    assert outcome.status == "succeeded"
+    assert seen == [_Business(change_id="chg-1")]
+
+
+def test_run_finalize_uses_custom_input_validator(tmp_path: Path) -> None:
+    seen: list[_Business] = []
+
+    def commit(payload: _Business, ctx: TaskContext) -> TaskOutcome:
+        seen.append(payload)
+        return TaskOutcome.succeeded({"status": "ok"})
+
+    outcome = run_finalize(
+        _Request(input={"wrapped": {"change_id": "chg-1"}}, binding_data=None),
+        _context(tmp_path),
+        input_model=_Business,
+        commit=commit,
+        validate=_unwrap_then_validate,
+    )
+
+    assert outcome.status == "succeeded"
+    assert seen == [_Business(change_id="chg-1")]
 
 
 def test_run_finalize_maps_output_error_to_invalid_output(tmp_path: Path) -> None:

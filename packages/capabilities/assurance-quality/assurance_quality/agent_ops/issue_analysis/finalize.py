@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from pydantic import ValidationError
-
-from agent_runtime_contracts.ops import InputError, OutputError, run_finalize
+from agent_runtime_contracts.ops import InputError, OutputError, run_finalize, validate_output
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -27,10 +25,7 @@ input_model = AgentFinalizeInputV1
 
 
 def _commit(payload: AgentFinalizeInputV1, context: TaskContext) -> TaskOutcome:
-    try:
-        document = IssueAnalysisResultV1.model_validate(structured(payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    document = validate_output(IssueAnalysisResultV1, structured(payload))
     if document.change_id != payload.change_id or document.batch_id != payload.batch_id:
         raise OutputError("issue analysis identity does not match the locked change")
     if not payload.evidence_bundle_digest:

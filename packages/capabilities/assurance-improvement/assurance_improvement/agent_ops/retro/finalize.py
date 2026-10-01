@@ -7,6 +7,7 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.agent import RetroSynthesisFinalizeInputV1
 from assurance_improvement.operations.agent import commit_retro
+from assurance_improvement.operations.common import validate_input
 
 input_model = RetroSynthesisFinalizeInputV1
 
@@ -16,4 +17,6 @@ def _commit(payload: RetroSynthesisFinalizeInputV1, context: TaskContext) -> Tas
 
 
 async def execute(request: TaskRequest, context: TaskContext) -> TaskOutcome:
-    return run_finalize(request, context, input_model=RetroSynthesisFinalizeInputV1, commit=_commit)
+    return run_finalize(
+        request, context, input_model=RetroSynthesisFinalizeInputV1, commit=_commit, validate=validate_input
+    )

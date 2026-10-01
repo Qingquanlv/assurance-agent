@@ -25,10 +25,10 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 
 ### Python plugin registration and generated declarations
 
-Author handlers, schemas, resources, and validators in each wheel's `plugin.py`.
-Task lifecycle definitions stay in each wheel's `task.py` and topology stays in
-`graphs/`. Do not hand-edit `plugin-declaration.json`: it is generated from the
-provider's `descriptor()`, including its attempt-contract digests.
+Register handlers, schemas, resources, and validators in each wheel's `plugin.py`.
+Agent op code lives in `agent_ops/<op>/`, the Feature bundle in `feature.py`, and
+topology in `graphs/`. Do not hand-edit `plugin-declaration.json`: it is generated
+from the provider's `descriptor()`, including its attempt-contract digests.
 
 Run the build entry point from the repository root after `uv sync --dev`:
 
@@ -129,30 +129,45 @@ The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.
 
 Each capability wheel exports a static `FEATURE` and public graph-bundle type
-from its `task.py`. `assurance_product.features` explicitly lists the six
-exports; Product uses them for graph factories, contracts, output routes and
-Agent Task binding. `plugin.py` still owns installed handlers/resources, while
-`graphs/factory.py` still owns LangGraph topology. No decorator scan or new
-graph DSL is involved.
+from its `feature.py`. `assurance_product.features` explicitly lists the six
+exports; Product uses them for graph factories, contracts and output routes.
+`plugin.py` still owns installed handlers/resources, while `graphs/factory.py`
+still owns LangGraph topology. No decorator scan or new graph DSL is involved.
 
-### Agent Task authoring
+### Agent op authoring
 
-All 26 Agent contracts have named Task classes with `before`/`run`/`after` and
-optional `finally_` hooks. [CaseDesignTask](packages/capabilities/assurance-intake/assurance_intake/operations/case_design.py)
-is one example, not a special execution path. Product injects installed,
-authenticated phases; Task code does not create a client or own retries.
+Each of the 26 Agent contracts has a prepare handler and a finalize handler.
+In intake, quality, healing and improvement they are modules under
+`agent_ops/<op>/`, for example
+[case design](packages/capabilities/assurance-intake/assurance_intake/agent_ops/case_design/).
+Each module defines a module-level `async def execute(request, context)` that
+delegates to `run_prepare` or `run_finalize` from
+[`agent_runtime_contracts.ops`](packages/adapters/agent-runtime-contracts/agent_runtime_contracts/ops/op.py);
+finalize modules also expose `input_model`. `run_prepare` validates the
+business input and binding and returns the `AgentRunRequest`; `run_finalize`
+validates the locked input and commits the result. `InputError` and
+`OutputError` become `invalid_input` and `invalid_output`. Generation keeps
+family-parametrized handler classes in `operations/`. Product injects
+installed, authenticated phases; op code does not create a client or own
+retries.
+
+Adding an Agent op takes a contract row in the wheel's `contracts/attempts.py`,
+the `agent_ops/<op>/` modules, and their entries in the wheel's handler map
+(`plugin.py` for intake, `operations/__init__.py` elsewhere).
 
 [`add_attempt_node`](packages/framework/graph-engine/graph_engine/stategraph/registration.py)
 registers a normal Attempt node in a native LangGraph `StateGraph`, including
-the 19 deterministic Task contracts. Pure state nodes and compiled subgraphs
-still use native `add_node`. Routing, activation, selection and post-commit
+the 18 deterministic Task contracts.
+[`add_attempt_edge` and `add_route`](packages/framework/graph-engine/graph_engine/stategraph/routing.py)
+wire failure edges and conditional routes;
+[`human_gate`](packages/framework/graph-engine/graph_engine/stategraph/human.py)
+builds a human decision node on LangGraph `interrupt`. Pure state nodes and compiled subgraphs still
+use native `add_node`. Routing, activation, selection and post-commit
 publication stay in the graph. All 28 Feature graph exports and 15 Product
 roots are covered.
 
-`after` validates business output before Kernel commit. `finally_` observes
-local execution-segment exit, not durable completion; terminal replay may
-skip it. Existing production in-flight recovery gaps are not closed by this
-authoring refactor.
+Finalize validates business output before Kernel commit. Existing production
+in-flight recovery gaps are not closed by this authoring refactor.
 
 Execute and run are deterministic tasks. They do not call an LLM. Same-process
 `aa_observe` collection detects omitted or mismatched observations; it is not a

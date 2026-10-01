@@ -7,6 +7,7 @@ from agent_runtime_contracts.ops.errors import (
     failed_input,
     failed_output,
     validate_model,
+    validate_output,
 )
 from agent_runtime_contracts.ops.op import run_finalize, run_prepare
 from agent_runtime_contracts.ops.request import (
@@ -38,4 +39,5 @@ __all__ = [
     "skill_request",
     "validate_binding",
     "validate_model",
+    "validate_output",
 ]

@@ -4,25 +4,21 @@ from __future__ import annotations
 
 from typing import cast
 
-from pydantic import ValidationError
-
-from agent_runtime_contracts.ops import InputError, OutputError, run_finalize
+from agent_runtime_contracts.ops import InputError, OutputError, run_finalize, validate_output
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.agent import AgentFinalizeInputV1, ImprovementReviewResultV1
 from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
 from assurance_improvement.operations.agent import structured
+from assurance_improvement.operations.common import validate_input
 
 input_model = AgentFinalizeInputV1
 
 
 def _commit(payload: AgentFinalizeInputV1, context: TaskContext) -> TaskOutcome:
     del context
-    try:
-        document = ImprovementReviewResultV1.model_validate(structured(payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    document = validate_output(ImprovementReviewResultV1, structured(payload))
     if payload.subject is None or payload.projection is None:
         raise InputError("review finalize requires the authenticated subject and projection")
     if payload.subject.improvement_id != payload.improvement_id:
@@ -39,4 +35,6 @@ def _commit(payload: AgentFinalizeInputV1, context: TaskContext) -> TaskOutcome:
 
 
 async def execute(request: TaskRequest, context: TaskContext) -> TaskOutcome:
-    return run_finalize(request, context, input_model=AgentFinalizeInputV1, commit=_commit)
+    return run_finalize(
+        request, context, input_model=AgentFinalizeInputV1, commit=_commit, validate=validate_input
+    )

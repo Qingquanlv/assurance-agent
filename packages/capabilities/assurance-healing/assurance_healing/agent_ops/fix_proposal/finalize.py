@@ -7,7 +7,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts.ops import OutputError, run_finalize
+from agent_runtime_contracts.ops import OutputError, run_finalize, validate_output
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -23,10 +23,7 @@ def _commit(business: FixProposalFinalizeInputV1, context: TaskContext) -> TaskO
     unknown = [item for item in business.claimed_capabilities if item not in business.capability_leafs]
     if unknown:
         raise OutputError(f"unknown capability: {unknown[0]}")
-    try:
-        proposal = FixProposalResultV1.model_validate(structured(agent_result.result_payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    proposal = validate_output(FixProposalResultV1, structured(agent_result.result_payload))
     if proposal.change_id != business.change_id:
         raise OutputError("proposal change_id does not match the locked change")
     allowed = set(business.allowed_paths)

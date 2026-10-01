@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from pydantic import ValidationError
-
-from agent_runtime_contracts.ops import InputError, OutputError, run_finalize
+from agent_runtime_contracts.ops import InputError, OutputError, run_finalize, validate_output
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
@@ -28,10 +26,7 @@ input_model = AssessmentFinalizeInputV1
 
 def _commit(business: AssessmentFinalizeInputV1, context: TaskContext) -> TaskOutcome:
     agent_run = business.agent_result
-    try:
-        document = InspectionResultV1.model_validate(thaw_json(agent_run.result_payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    document = validate_output(InspectionResultV1, thaw_json(agent_run.result_payload))
     authenticate_assessment_input(business, context.project_root)
     if business.fact_baseline_ref is None:
         raise InputError("Inspect requires an authenticated fact baseline")

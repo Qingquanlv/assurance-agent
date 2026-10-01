@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import yaml
 from pydantic import ValidationError
 
-from agent_runtime_contracts.ops import InputError, OutputError, run_finalize
+from agent_runtime_contracts.ops import InputError, OutputError, run_finalize, validate_output
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -53,10 +53,7 @@ def _commit(payload: CaseFinalizeInputV1, context: TaskContext) -> TaskOutcome:
         raise InputError(f"invalid frozen assurance plan: {error}") from error
     if plan.plan_digest != payload.plan_digest:
         raise InputError("frozen assurance plan does not match case review input")
-    try:
-        document = CaseReviewResultV1.model_validate(structured(payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    document = validate_output(CaseReviewResultV1, structured(payload))
     runtime_document = document
     change_id = case_change_id(payload.change_id or document.change_id)
     if document.change_id != change_id:

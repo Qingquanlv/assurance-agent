@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from pydantic import ValidationError
-
-from agent_runtime_contracts.ops import InputError, OutputError, run_finalize
+from agent_runtime_contracts.ops import InputError, OutputError, run_finalize, validate_output
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -18,10 +16,7 @@ input_model = AgentFinalizeInputV1
 
 def _commit(payload: AgentFinalizeInputV1, context: TaskContext) -> TaskOutcome:
     del context
-    try:
-        document = IssueTriageResultV1.model_validate(structured(payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    document = validate_output(IssueTriageResultV1, structured(payload))
     if document.recommended_action not in TRIAGE_ACTIONS:
         raise OutputError(f"issue triage recommended_action is not declared: {document.recommended_action}")
     locked = payload.locked_evidence_digests

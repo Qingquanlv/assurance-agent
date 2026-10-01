@@ -15,6 +15,7 @@ from agent_runtime_contracts.ops import (
     OutputError,
     result_contract_from,
     skill_request,
+    validate_output,
 )
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
@@ -116,10 +117,7 @@ def commit_retro(
     *,
     expected_domain: DomainName | None,
 ) -> TaskOutcome:
-    try:
-        document = RetroAnalysisResultV3.model_validate(structured(payload))
-    except ValidationError as error:
-        raise OutputError(str(error)) from error
+    document = validate_output(RetroAnalysisResultV3, structured(payload))
     if expected_domain is None:
         context_lock = cast(RetroSynthesisFinalizeInputV1, payload).context
         if document.retro_id != context_lock.retro_id:

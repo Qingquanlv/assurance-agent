@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import TypeVar, cast
 
 from pydantic import BaseModel
 
 from agent_runtime_contracts.ops import validate_model
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import EffectIntent, TaskOutcome
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 def _wire_value(value: object) -> object:
@@ -23,7 +25,7 @@ def _wire_value(value: object) -> object:
     return value
 
 
-def validate_input(model: type[Any], data: object) -> Any:
+def validate_input(model: type[ModelT], data: object) -> ModelT:
     return validate_model(model, _wire_value(data))
 
 
