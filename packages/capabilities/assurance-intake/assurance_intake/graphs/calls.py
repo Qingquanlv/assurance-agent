@@ -171,7 +171,7 @@ def select_case_design_retry(state: Mapping[str, object]) -> CaseDesignInputV1:
     return select_case_design(state)
 
 
-def select_case_design_repair(state: Mapping[str, object]) -> CaseDesignInputV1:
+def select_case_design_validation_retry(state: Mapping[str, object]) -> CaseDesignInputV1:
     payload: dict[str, object] = {
         **_skill_payload(state),
         "plan_digest": state["plan_digest"],
@@ -227,11 +227,11 @@ def activation_case_design(state: Mapping[str, object]) -> BusinessActivation:
     return BusinessActivation.one_shot()
 
 
-def activation_case_design_repair(state: Mapping[str, object]) -> BusinessActivation:
+def activation_case_design_validation_retry(state: Mapping[str, object]) -> BusinessActivation:
     trigger = current_trigger(state)
     arrival_id = trigger.get("arrival_id") if trigger is not None else None
     if isinstance(arrival_id, str) and arrival_id:
-        return BusinessActivation.for_trigger(f"{arrival_id}.repair")
+        return BusinessActivation.for_trigger(f"{arrival_id}.validation-retry")
     return BusinessActivation.for_round(1)
 
 
@@ -398,7 +398,7 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
 
 __all__ = [
     "activation_case_design",
-    "activation_case_design_repair",
+    "activation_case_design_validation_retry",
     "activation_case_repair",
     "activation_case_review",
     "activation_one_shot",
@@ -406,7 +406,7 @@ __all__ = [
     "publish_case_design",
     "publish_case_review",
     "select_case_design",
-    "select_case_design_repair",
+    "select_case_design_validation_retry",
     "select_case_design_retry",
     "select_case_repair",
     "select_case_review",

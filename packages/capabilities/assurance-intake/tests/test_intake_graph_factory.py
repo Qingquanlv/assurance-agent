@@ -237,10 +237,10 @@ def recording_context():
 def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch: pytest.MonkeyPatch) -> None:
     from assurance_intake.graphs.calls import (
         activation_case_design,
-        activation_case_design_repair,
+        activation_case_design_validation_retry,
         activation_case_repair,
         select_case_design,
-        select_case_design_repair,
+        select_case_design_validation_retry,
         select_case_repair,
     )
 
@@ -284,9 +284,10 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
     assert tuple((fn.__module__, fn.__qualname__) for fn in calls[3][2:]) == tuple(
         (fn.__module__, fn.__qualname__) for fn in (activation_case_design, select_case_design)
     )
-    assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design-repair")
+    assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design-validation-retry")
     assert tuple((fn.__module__, fn.__qualname__) for fn in calls[4][2:]) == tuple(
-        (fn.__module__, fn.__qualname__) for fn in (activation_case_design_repair, select_case_design_repair)
+        (fn.__module__, fn.__qualname__)
+        for fn in (activation_case_design_validation_retry, select_case_design_validation_retry)
     )
     assert calls[6][:2] == (_CASE_REPAIR_ID, "intake.case-repair")
     assert tuple((fn.__module__, fn.__qualname__) for fn in calls[6][2:]) == tuple(
@@ -350,13 +351,15 @@ async def test_case_graph_runs_primary_and_repair_through_one_composite_attempt_
         input=intake_graph_input(),
         script={
             "intake.case-design": [committed(_design_output(validation_status="needs_fix"), receipt)],
-            "intake.case-design-repair": [committed(_design_output(validation_status="pass"), receipt)],
+            "intake.case-design-validation-retry": [
+                committed(_design_output(validation_status="pass"), receipt)
+            ],
             "intake.case-review": [committed(_review_output(), receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
         "intake.case-design",
-        "intake.case-design-repair",
+        "intake.case-design-validation-retry",
         "intake.case-review",
     ]
     assert [call.contract_id for call in result.semantic_calls] == [
@@ -625,7 +628,7 @@ def _case_design_input(*, validation_attempt: int = 0) -> CaseDesignInputV1:
     ("path", "semantic_node_id", "validation_attempt"),
     [
         ("primary", "intake.case-design", 0),
-        ("repair", "intake.case-design-repair", 1),
+        ("validation-retry", "intake.case-design-validation-retry", 1),
     ],
 )
 async def test_prepared_value_and_agent_result_reach_finalize_through_one_composite_attempt(

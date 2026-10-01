@@ -52,7 +52,6 @@ from PKG.ops import router
 
 class EchoInput(FrozenModel):
     change_id: str
-    repair: bool = False
 
 
 class EchoResult(FrozenModel):
@@ -71,8 +70,6 @@ def frozen_plan(ctx, business):
 
 def before(ctx, business):
     ctx.write("qa/seed.txt", ctx.dep(frozen_plan).encode())
-    if business.repair:
-        ctx.use_skill("repair")
     ctx.extra("planning_facts", {"plan": ctx.dep(frozen_plan)})
     return business
 
@@ -102,7 +99,6 @@ op = router.agent(
     writes=("qa/echo.json",),
     prepare_writes=("qa/seed.txt",),
     finalize_writes=("qa/final.txt",),
-    skills={"repair": "aa-echo-repair"},
     depends=(frozen_plan,),
     before=before,
     after=after,
@@ -164,7 +160,6 @@ def _capability(tmp_path: Path, *, extra: dict[str, str] | None = None) -> Modul
         "ops/__init__.py": _OPS_INIT,
         "ops/echo/__init__.py": _ECHO_INIT.replace("PKG", name),
         "ops/echo/SKILL.md": "echo skill\n",
-        "ops/echo/repair.SKILL.md": "echo repair skill\n",
         "ops/echo/notes.md": "echo notes\n",
         "ops/echo/result.schema.json": json.dumps({"type": "object"}),
         "ops/count/__init__.py": _COUNT_INIT.replace("PKG", name),
@@ -291,21 +286,20 @@ def test_resource_manifest_comes_from_op_directories(tmp_path: Path) -> None:
 
     assert router.resource_files() == {
         "fixture.cap.result.echo.v1": "ops/echo/result.schema.json",
-        "fixture.cap.skill.aa-echo-repair.v1": "ops/echo/repair.SKILL.md",
         "fixture.cap.skill.aa-echo.notes.v1": "ops/echo/notes.md",
         "fixture.cap.skill.aa-echo.v1": "ops/echo/SKILL.md",
     }
     assert router.resource_text("ops/echo/notes.md") == "echo notes\n"
 
 
-def test_undeclared_alternative_skill_is_rejected(tmp_path: Path) -> None:
-    router = _router(_capability(tmp_path, extra={"ops/echo/other.SKILL.md": "x"}))
+def test_second_skill_file_in_an_op_is_rejected(tmp_path: Path) -> None:
+    router = _router(_capability(tmp_path, extra={"ops/echo/repair.SKILL.md": "x"}))
 
-    with pytest.raises(ValueError, match="not declared in skills"):
+    with pytest.raises(ValueError, match="declare another skill as its own op"):
         router.resource_files()
 
 
-def test_prepare_runs_depends_before_and_selects_skill(tmp_path: Path) -> None:
+def test_prepare_runs_depends_and_before(tmp_path: Path) -> None:
     module = _capability(tmp_path)
     context = _context(tmp_path)
 
@@ -314,23 +308,16 @@ def test_prepare_runs_depends_before_and_selects_skill(tmp_path: Path) -> None:
         _Request("fixture.cap.echo.prepare", {"change_id": "c1"}, _binding()),
         context,
     )
-    repair = _run(
-        module,
-        _Request("fixture.cap.echo.prepare", {"change_id": "c1", "repair": True}, _binding()),
-        context,
-    )
 
     assert plain.status == "succeeded"
     request = AgentRunRequest.model_validate(plain.output)
     texts = [part.text_content for part in request.instructions if part.media_type == "text/plain"]
     assert texts == ["echo skill\n"]
     business = [part.json_content for part in request.instructions if part.media_type == "application/json"]
-    assert business == [{"change_id": "c1", "repair": False, "planning_facts": {"plan": "plan-for-c1"}}]
+    assert business == [{"change_id": "c1", "planning_facts": {"plan": "plan-for-c1"}}]
     assert request.workspace.scope_id == "c1"
     assert request.workspace.allowed_outputs == ("qa/echo.json",)
     assert (context.write_root / "qa" / "seed.txt").read_text() == "plan-for-c1"
-    repaired = AgentRunRequest.model_validate(repair.output)
-    assert repaired.instructions[0].text_content == "echo repair skill\n"
 
 
 def test_override_replaces_a_dependency_for_tests(tmp_path: Path) -> None:

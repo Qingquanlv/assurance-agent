@@ -149,12 +149,12 @@ Intake declares every operation, like a FastAPI route, in its own directory unde
   op such as `resolve_plan`) with the op's input, result and output models, skill,
   write claims per phase, `depends` and hooks;
 - `hooks.py` holds the op's own `before(ctx, business)` and `after(ctx, business, result)`
-  steps; `ctx.write` enforces the phase's declared claims and `ctx.use_skill` picks an
-  alternative `<key>.SKILL.md`;
-- `models.py`, `SKILL.md` and `result.schema.json` sit next to them.
+  steps; `ctx.write` enforces the phase's declared claims;
+- `models.py`, exactly one `SKILL.md`, and `result.schema.json` sit next to them.
 
 A run that needs its own skill, input or output is its own op rather than a branch
-inside another op: [case repair](packages/capabilities/assurance-intake/assurance_intake/ops/case_repair/)
+inside another op, and a second `*.SKILL.md` in an op directory fails discovery:
+[case repair](packages/capabilities/assurance-intake/assurance_intake/ops/case_repair/)
 applies a `needs_fix` review's bounded actions, while case design always authors the
 full delta, and the case graph routes automatic fixes to case repair and human rework
 to case design.

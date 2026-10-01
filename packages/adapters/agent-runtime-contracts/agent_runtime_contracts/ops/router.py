@@ -15,7 +15,7 @@ import pkgutil
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -53,7 +53,7 @@ OutputT = TypeVar("OutputT", bound=BaseModel)
 DepT = TypeVar("DepT")
 
 _SKILL_FILE = "SKILL.md"
-_ALT_SKILL_SUFFIX = ".SKILL.md"
+_SKILL_SUFFIX = ".SKILL.md"
 _RESULT_FILE = "result.schema.json"
 
 
@@ -130,7 +130,6 @@ class PrepareContext:
         self.project_root = task.project_root
         self.write_root = task.write_root
         self._deps: dict[Callable[..., object], object] = {}
-        self._skill: str | None = None
         self._extra: dict[str, JSONValue] = {}
 
     def dep(self, dependency: Callable[..., DepT]) -> DepT:
@@ -141,12 +140,6 @@ class PrepareContext:
 
     def write(self, relative: str, data: bytes) -> None:
         _write_claimed(self.write_root, relative, data, self.op.prepare_writes, phase="prepare")
-
-    def use_skill(self, key: str) -> None:
-        """Send the op's alternative ``<key>.SKILL.md`` instead of ``SKILL.md``."""
-        if key not in self.op.skills:
-            raise LookupError(f"{self.op.name} declares no alternative skill {key!r}")
-        self._skill = key
 
     def extra(self, name: str, value: JSONValue) -> None:
         """Add a prompt-only field next to the business input."""
@@ -198,7 +191,6 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
     finalize_writes: tuple[str, ...] = ()
     routes: tuple[str, ...] | None = None
     outputs: Outputs[InputT] | None = None
-    skills: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     depends: tuple[Dependency[InputT], ...] = ()
     before: Before[InputT] | None = None
     after: After[InputT, ResultT, OutputT] | None = None
@@ -213,7 +205,6 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         )
         if self.routes is not None:
             object.__setattr__(self, "routes", _sorted_paths(self.routes, kind="routes"))
-        object.__setattr__(self, "skills", MappingProxyType(dict(self.skills)))
 
     @property
     def directory(self) -> str:
@@ -269,20 +260,11 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         for filename in self.router.list_files(base):
             if filename == _SKILL_FILE or not filename.endswith(".md"):
                 continue
-            if filename.endswith(_ALT_SKILL_SUFFIX):
-                key = filename.removesuffix(_ALT_SKILL_SUFFIX)
-                if key not in self.skills:
-                    raise ValueError(f"{base}/{filename} is not declared in skills")
-                manifest[f"{owner}.skill.{self.skills[key]}.v1"] = f"{base}/{filename}"
-            else:
-                manifest[f"{owner}.skill.{self.skill}.{filename.removesuffix('.md')}.v1"] = (
-                    f"{base}/{filename}"
-                )
-        for key in self.skills:
-            if f"{base}/{key}{_ALT_SKILL_SUFFIX}" not in manifest.values():
+            if filename.endswith(_SKILL_SUFFIX):
                 raise ValueError(
-                    f"{self.name} declares skill {key!r} without {base}/{key}{_ALT_SKILL_SUFFIX}"
+                    f"{base}/{filename}: an op has one SKILL.md; declare another skill as its own op"
                 )
+            manifest[f"{owner}.skill.{self.skill}.{filename.removesuffix('.md')}.v1"] = f"{base}/{filename}"
         return manifest
 
     def result_contract(self) -> ResultContract:
@@ -298,13 +280,9 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
                 ctx._deps[dependency] = self.router.resolve(dependency)(ctx, business)
             if self.before is not None:
                 business = self.before(ctx, business)
-            if ctx._skill is None:
-                skill_path = f"ops/{self.directory}/{_SKILL_FILE}"
-            else:
-                skill_path = f"ops/{self.directory}/{ctx._skill}{_ALT_SKILL_SUFFIX}"
             return prepared_outcome(
                 skill_request(
-                    skill_text=self.router.resource_text(skill_path),
+                    skill_text=self.router.resource_text(f"ops/{self.directory}/{_SKILL_FILE}"),
                     business=cast(FrozenModel, business),
                     business_extra=ctx._extra or None,
                     binding=binding,
@@ -453,7 +431,6 @@ class OpRouter:
         finalize_writes: tuple[str, ...] = (),
         routes: tuple[str, ...] | None = None,
         outputs: Outputs[InputT] | None = None,
-        skills: Mapping[str, str] | None = None,
         depends: tuple[Dependency[InputT], ...] = (),
         before: Before[InputT] | None = None,
         after: After[InputT, ResultT, OutputT] | None = None,
@@ -473,7 +450,6 @@ class OpRouter:
             finalize_writes=finalize_writes,
             routes=routes,
             outputs=outputs,
-            skills=MappingProxyType(dict(skills or {})),
             depends=depends,
             before=before,
             after=after,

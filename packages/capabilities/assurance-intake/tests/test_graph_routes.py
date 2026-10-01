@@ -60,7 +60,7 @@ def test_routes_use_select_exclusive_route_without_priority_if_elif() -> None:
     [
         (case_review_named_matches, "exhausted"),
         (human_review_named_matches, "exhausted"),
-        (case_design_named_matches, "case-design-repair"),
+        (case_design_named_matches, "case-design-validation-retry"),
     ],
 )
 def test_exclusive_route_zero_and_two_simultaneous_named_matches(
@@ -116,7 +116,7 @@ def test_case_design_result_names_case_review_or_exhausted() -> None:
 
 def test_case_design_routes_pass_to_done_and_otherwise_to_repair() -> None:
     assert route_case_design(_review_state(validation_status="pass")) == "done"
-    assert route_case_design(_review_state(validation_status="needs_fix")) == "case-design-repair"
+    assert route_case_design(_review_state(validation_status="needs_fix")) == "case-design-validation-retry"
 
 
 def test_review_round_sends_automatic_fix_to_repair_and_human_rework_to_full_design() -> None:

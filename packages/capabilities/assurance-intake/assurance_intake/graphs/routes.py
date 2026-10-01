@@ -67,7 +67,7 @@ def route_case_design_result(state: Mapping[str, object]) -> str:
     return "case-review" if state.get("status") == "passed" else "exhausted"
 
 
-def route_case_design_repair(state: Mapping[str, object]) -> str:
+def route_case_design_validation_retry(state: Mapping[str, object]) -> str:
     if state.get("attempt_failure"):
         return "failed"
     return "done" if state.get("validation_status") == "pass" else "failed"
@@ -82,7 +82,7 @@ def route_human_review(state: Mapping[str, object]) -> str:
 
 
 def route_case_design(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(case_design_named_matches(state), otherwise="case-design-repair")
+    return select_exclusive_route(case_design_named_matches(state), otherwise="case-design-validation-retry")
 
 
 def route_review_round(state: Mapping[str, object]) -> str:
@@ -95,7 +95,7 @@ __all__ = [
     "case_review_named_matches",
     "human_review_named_matches",
     "route_case_design",
-    "route_case_design_repair",
+    "route_case_design_validation_retry",
     "route_case_design_result",
     "route_case_review",
     "route_human_review",
