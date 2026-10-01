@@ -256,7 +256,7 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
     )
 
     assert Counter(occurrences) == expected
-    assert expected.total() == 35
+    assert expected.total() == 36
 
 
 def test_all_attempt_occurrences_are_exact() -> None:
@@ -277,8 +277,8 @@ def test_all_attempt_occurrences_are_exact() -> None:
         for owner in _FACTORY_BUILDERS
         for contract_id in _build_owner(owner)[1].bound_contract_ids
     )
-    assert len(ids) == 44
-    assert expected.total() == 55
+    assert len(ids) == 45
+    assert expected.total() == 56
     assert actual == expected
     assert sum(len(names) for names in IMPLEMENTED_BUNDLE_FIELDS.values()) == 27
 
@@ -334,7 +334,7 @@ def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) 
         patch_graph_function(factory)
     contexts = [_build_owner(owner)[1] for owner in _FACTORY_BUILDERS]
     assert len(visited) >= 12
-    assert len(calls) == 55
+    assert len(calls) == 56
     assert Counter(contract_id for _, contract_id in calls) == Counter(
         contract_id for context in contexts for contract_id in context.bound_contract_ids
     )

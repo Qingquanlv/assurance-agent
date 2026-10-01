@@ -163,8 +163,8 @@ def assert_production_inventory_unbound() -> None:
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
     assert TEST_CONTRACT_ID not in {item.contract_id for item in contribution.attempt_contracts}
     assert TEST_CONTRACT_ID not in all_feature_agent_contracts()
-    assert len(all_feature_agent_contracts()) == 26
-    assert len(all_feature_agent_contracts()) == 26
+    assert len(all_feature_agent_contracts()) == 27
+    assert len(all_feature_agent_contracts()) == 27
     registered = _registered_validator_count()
     bound = sum(1 for contract in all_feature_agent_contracts().values() if contract.validators)
     from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS

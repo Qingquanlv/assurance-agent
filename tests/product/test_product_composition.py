@@ -37,14 +37,14 @@ def test_composition_has_exact_opencode_identity_and_binding_closure(opencode_co
     entries = composition.registries.capabilities.entries
     bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
     assert set(bindings) == set(ALL_BINDING_IDS) == set(AGENT_EXECUTION_CONTRACTS)
-    assert len(bindings) == 26
+    assert len(bindings) == 27
     assert not hasattr(composition, "workflow")
     assert composition.manifest.graph_factory_symbol == _PRODUCT_FACTORY
     assert composition.lock.schema_version == "3"
     contracts = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
-    assert len(contracts) == 26
-    assert len(contracts) + len(tasks) == 44
+    assert len(contracts) == 27
+    assert len(contracts) + len(tasks) == 45
     assert not any(item.startswith("assurance.product.agent.") for item in bindings)
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         binding = bindings[contract_id]

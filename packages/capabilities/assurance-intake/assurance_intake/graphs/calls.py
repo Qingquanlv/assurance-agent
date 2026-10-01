@@ -6,6 +6,7 @@ from typing import cast
 from pydantic import BaseModel
 
 from assurance_intake.ops.case_design import CaseDesignInputV1
+from assurance_intake.ops.case_repair import CaseRepairInputV1
 from assurance_intake.ops.case_review import CaseReviewInputV1
 from assurance_intake.ops.explore import ExploreInputV1
 from assurance_intake.ops.intake import IntakeInputV1
@@ -187,6 +188,22 @@ def select_case_design_repair(state: Mapping[str, object]) -> CaseDesignInputV1:
     return CaseDesignInputV1.model_validate(payload)
 
 
+def select_case_repair(state: Mapping[str, object]) -> CaseRepairInputV1:
+    payload: dict[str, object] = {
+        **_skill_payload(state),
+        "plan_digest": state["plan_digest"],
+        "plan_ref": state["plan_ref"],
+        "selected_test_families": state["selected_test_families"],
+        "case_delta_paths": state["case_delta_paths"],
+        "preparation_refs": state.get("preparation_refs", ()),
+    }
+    if state.get("ui_exploration_ref") is not None:
+        payload["ui_exploration_ref"] = state["ui_exploration_ref"]
+    if state.get("api_discovery_ref") is not None:
+        payload["api_discovery_ref"] = state["api_discovery_ref"]
+    return CaseRepairInputV1.model_validate(payload)
+
+
 def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
     return CaseReviewInputV1.model_validate(
         {
@@ -216,6 +233,15 @@ def activation_case_design_repair(state: Mapping[str, object]) -> BusinessActiva
     if isinstance(arrival_id, str) and arrival_id:
         return BusinessActivation.for_trigger(f"{arrival_id}.repair")
     return BusinessActivation.for_round(1)
+
+
+def activation_case_repair(state: Mapping[str, object]) -> BusinessActivation:
+    trigger = current_trigger(state)
+    arrival_id = trigger.get("arrival_id") if trigger is not None else None
+    if isinstance(arrival_id, str) and arrival_id:
+        return BusinessActivation.for_trigger(arrival_id)
+    used = state.get("rounds_used", 0)
+    return BusinessActivation.for_round(int(used) if isinstance(used, int) else 0)
 
 
 def activation_case_review(state: Mapping[str, object]) -> BusinessActivation:
@@ -373,6 +399,7 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
 __all__ = [
     "activation_case_design",
     "activation_case_design_repair",
+    "activation_case_repair",
     "activation_case_review",
     "activation_one_shot",
     "publish_artifacts",
@@ -381,6 +408,7 @@ __all__ = [
     "select_case_design",
     "select_case_design_repair",
     "select_case_design_retry",
+    "select_case_repair",
     "select_case_review",
     "select_explore",
     "select_resolve_plan",

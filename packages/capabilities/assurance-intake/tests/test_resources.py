@@ -38,7 +38,7 @@ def _resource_files() -> Iterator[str]:
 
 def test_intake_resources_forbid_legacy_and_provider_names() -> None:
     texts = {relative: resource_bytes(relative).decode("utf-8") for relative in _resource_files()}
-    assert len(texts) == 21
+    assert len(texts) == 22
     hits = [relative for relative, text in texts.items() if _TOKEN.search(text)]
     assert hits == [], f"forbidden provider/legacy tokens in resources: {hits}"
     lowered = "\n".join(text.lower() for text in texts.values())
@@ -51,6 +51,9 @@ def test_result_contracts_match_capability_schemas() -> None:
         cast(JSONValue, CaseReviewResultV1.model_json_schema())
     )
     assert resource_bytes("ops/case_design/result.schema.json") == canonical_json_bytes(
+        cast(JSONValue, ArtifactListResultV1.model_json_schema())
+    )
+    assert resource_bytes("ops/case_repair/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, ArtifactListResultV1.model_json_schema())
     )
     assert resource_bytes("ops/intake/result.schema.json") == canonical_json_bytes(
@@ -71,7 +74,7 @@ def test_artifact_list_model_and_result_contracts_reject_an_empty_receipt() -> N
         "qa/requirement.md",
     )
 
-    for name in ("intake", "explore", "case_design"):
+    for name in ("intake", "explore", "case_design", "case_repair"):
         schema = cast(
             dict[str, JSONValue],
             json.loads(resource_bytes(f"ops/{name}/result.schema.json")),

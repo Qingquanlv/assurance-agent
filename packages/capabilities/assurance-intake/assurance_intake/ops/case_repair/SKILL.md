@@ -1,8 +1,8 @@
 # Locator-bounded case repair
 
-Capability-owned repair skill. Use it only when the graph supplies a non-null
-`review_repair` contract. Do not select a provider, model, adapter, skill, or
-alternative repair scope.
+Capability-owned case-repair skill. The business input always carries the frozen
+`review_repair` contract built from the committed `needs_fix` case review. Do not
+select a provider, model, adapter, skill, or alternative repair scope.
 
 ## Prepared source observations
 
@@ -60,10 +60,6 @@ not change a target case's `trace`, identity, type, module, or automation fields
 unless that exact field path is present in `allowed_paths`. Never replace an
 existing file wholesale. If a patch cannot be applied narrowly, return failure;
 do not broaden the edit.
-
-If `validation_attempt` is `1`, also satisfy `validation_error`, but only inside
-the same action locators. If the validation error cannot be repaired inside those
-locators, return failure rather than changing unrelated data.
 
 ## Result
 

@@ -558,6 +558,21 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
                 "qa/results/trace/minimum-coverage-matrix.json",
             ),
         ),
+        "case-repair": (
+            "aa-case-repair",
+            "assurance-v1-doc-author",
+            (
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
+            ),
+            (
+                "qa/.qa.yaml",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
+            ),
+        ),
         "case-review": (
             "aa-case-reviewer",
             "assurance-v1-reviewer",
@@ -599,7 +614,7 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
     assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
-    assert len(AGENT_JOB_CONTRACTS) == 4
+    assert len(AGENT_JOB_CONTRACTS) == 5
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
     assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
     for base, (skill_id, agent_profile, writes, routes) in expected.items():

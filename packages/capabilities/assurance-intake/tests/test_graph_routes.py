@@ -15,6 +15,7 @@ from assurance_intake.graphs.routes import (
     route_case_design_result,
     route_case_review,
     route_human_review,
+    route_review_round,
 )
 
 _ROUTES_PATH = Path(__file__).resolve().parents[1] / "assurance_intake" / "graphs" / "routes.py"
@@ -116,3 +117,26 @@ def test_case_design_result_names_case_review_or_exhausted() -> None:
 def test_case_design_routes_pass_to_done_and_otherwise_to_repair() -> None:
     assert route_case_design(_review_state(validation_status="pass")) == "done"
     assert route_case_design(_review_state(validation_status="needs_fix")) == "case-design-repair"
+
+
+def test_review_round_sends_automatic_fix_to_repair_and_human_rework_to_full_design() -> None:
+    budget_spent_by_advance = _review_state(
+        decision="needs_fix", auto_fix_allowed=True, rounds_used=2, rounds_budget=2
+    )
+    assert route_review_round(budget_spent_by_advance) == "case-repair"
+    assert (
+        route_review_round(
+            _review_state(
+                decision="needs_fix",
+                auto_fix_allowed=True,
+                human_review_required=True,
+                action="request_rework",
+            )
+        )
+        == "case-design"
+    )
+    assert (
+        route_review_round(_review_state(decision="needs_human_review", action="request_rework"))
+        == "case-design"
+    )
+    assert route_review_round(_review_state(decision="needs_fix", action="request_rework")) == "case-design"

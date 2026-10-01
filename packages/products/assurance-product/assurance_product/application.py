@@ -71,6 +71,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
             "assurance.intake.agent.intake.v1",
             "assurance.intake.agent.explore.v1",
             "assurance.intake.agent.case-design.v1",
+            "assurance.intake.agent.case-repair.v1",
             "assurance.intake.agent.case-review.v1",
         ),
         "issue-analyze": ("assurance.quality.agent.issue-analysis.v1",),

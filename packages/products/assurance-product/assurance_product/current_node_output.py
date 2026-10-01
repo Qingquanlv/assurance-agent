@@ -39,6 +39,7 @@ _PATHS: dict[str, tuple[str, ...]] = {
     "intake.intake": ("qa/requirement.md", "qa/proposal.md", "qa/.qa.yaml", "qa/results/intake/**/*"),
     "intake.explore": ("qa/results/explore/**/*",),
     "intake.case-design": ("qa/cases/**/*.yaml", "qa/results/cases/**/*", "qa/results/trace/**/*"),
+    "intake.case-repair": ("qa/cases/**/*.yaml", "qa/results/cases/**/*", "qa/results/trace/**/*"),
     "intake.case-review": (
         "qa/results/review/case-review*",
         "qa/cases/reviewed-case.json",

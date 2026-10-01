@@ -277,6 +277,17 @@ def _design() -> dict[str, object]:
     }
 
 
+def _repair() -> dict[str, object]:
+    return {
+        "artifacts": [
+            {
+                "path": "qa/cases/menus/case.yaml",
+                "digest": _SHA,
+            }
+        ],
+    }
+
+
 def _review(
     decision: str,
     *,
@@ -484,7 +495,8 @@ async def test_compiled_case_first_arrival_is_exact_current_trigger() -> None:
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
             "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [committed(_design(), _RECEIPT), committed(_design(), _RECEIPT)],
+            "intake.case-design": [committed(_design(), _RECEIPT)],
+            "intake.case-repair": [committed(_repair(), _RECEIPT)],
             "intake.case-review": [
                 committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
                 committed(_review("pass", used=1), _RECEIPT),
@@ -501,7 +513,9 @@ async def test_compiled_case_first_arrival_is_exact_current_trigger() -> None:
     assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
     assert terminal["current_trigger"] == current
     assert terminal["rounds_used"] == current["value"]["rounds_used"]
-    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 2
+    calls = [call.semantic_node_id for call in result.semantic_calls]
+    assert calls.count("intake.case-design") == 1
+    assert calls.count("intake.case-repair") == 1
 
 
 async def test_compiled_case_repeated_epochs_preserve_exact_rounds() -> None:
@@ -515,11 +529,8 @@ async def test_compiled_case_repeated_epochs_preserve_exact_rounds() -> None:
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
             "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [
-                committed(_design(), _RECEIPT),
-                committed(_design(), _RECEIPT),
-                committed(_design(), _RECEIPT),
-            ],
+            "intake.case-design": [committed(_design(), _RECEIPT)],
+            "intake.case-repair": [committed(_repair(), _RECEIPT), committed(_repair(), _RECEIPT)],
             "intake.case-review": [
                 committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
                 committed(_review("needs_fix", auto_fix=True, used=1), _RECEIPT),
@@ -537,13 +548,17 @@ async def test_compiled_case_repeated_epochs_preserve_exact_rounds() -> None:
     assert terminal["rounds_used"] == 2
     edges = {(edge.source, edge.target) for edge in bundle.case.get_graph().edges}
     assert ("advance-join", "case-design") in edges
+    assert ("advance-join", "case-repair") in edges
+    assert ("case-repair", "case-review") in edges
     arrivals = terminal["case_review_inbox"]["arrivals"]
     assert [item["predecessor"] for item in arrivals] == [
         "review-round-advance",
         "review-round-advance",
     ]
     assert arrivals[0]["arrival_id"] != arrivals[1]["arrival_id"]
-    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 3
+    calls = [call.semantic_node_id for call in result.semantic_calls]
+    assert calls.count("intake.case-design") == 1
+    assert calls.count("intake.case-repair") == 2
 
 
 async def test_compiled_case_keeps_review_budget_authoritative_when_agent_replays_round_zero() -> None:
@@ -557,7 +572,8 @@ async def test_compiled_case_keeps_review_budget_authoritative_when_agent_replay
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
             "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [committed(_design(), _RECEIPT) for _index in range(4)],
+            "intake.case-design": [committed(_design(), _RECEIPT)],
+            "intake.case-repair": [committed(_repair(), _RECEIPT) for _index in range(3)],
             "intake.case-review": [
                 committed(_review("needs_fix", auto_fix=True, used=0, budget=99), _RECEIPT),
                 committed(_review("needs_fix", auto_fix=True, used=0, budget=99), _RECEIPT),
@@ -573,8 +589,10 @@ async def test_compiled_case_keeps_review_budget_authoritative_when_agent_replay
     assert terminal["decision"] == "exhausted"
     assert terminal["rounds_used"] == 2
     assert terminal["rounds_budget"] == 2
-    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 3
-    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-review") == 3
+    calls = [call.semantic_node_id for call in result.semantic_calls]
+    assert calls.count("intake.case-design") == 1
+    assert calls.count("intake.case-repair") == 2
+    assert calls.count("intake.case-review") == 3
 
 
 def test_arrival_contains_required_identity_fields() -> None:

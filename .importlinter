@@ -284,6 +284,7 @@ name = Intake ops never import one another
 type = independence
 modules =
     assurance_intake.ops.case_design
+    assurance_intake.ops.case_repair
     assurance_intake.ops.case_review
     assurance_intake.ops.explore
     assurance_intake.ops.intake

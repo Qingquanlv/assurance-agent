@@ -20,6 +20,7 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 EXPECTED_AGENT_PROFILES = {
     "assurance.intake.agent.case-design.v1": "assurance-v1-doc-author",
+    "assurance.intake.agent.case-repair.v1": "assurance-v1-doc-author",
     "assurance.intake.agent.case-review.v1": "assurance-v1-reviewer",
     "assurance.intake.agent.explore.v1": "assurance-v1-explorer",
     "assurance.intake.agent.intake.v1": "assurance-v1-doc-author",
@@ -323,8 +324,8 @@ def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
     from assurance_product.models import all_binding_ids
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
-    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 26
-    assert len(all_feature_agent_contracts()) == 26
+    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 27
+    assert len(all_feature_agent_contracts()) == 27
     assert set(all_feature_agent_contracts()) == set(all_binding_ids())
     assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
     assert all(
@@ -388,6 +389,7 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
     )
     extra_claims = {
         "assurance.intake.agent.case-design.v1": ("qa/cases",),
+        "assurance.intake.agent.case-repair.v1": ("qa/cases",),
         "assurance.intake.agent.case-review.v1": ("qa/results/cases/epochs",),
         "assurance.intake.agent.intake.v1": (
             "qa/requirement.md",

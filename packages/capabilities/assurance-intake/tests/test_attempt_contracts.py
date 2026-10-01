@@ -22,6 +22,7 @@ from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as I
 from assurance_improvement.plugin import ImprovementPlugin
 from assurance_intake.domain.artifacts import ArtifactListResultV1, FinalizedArtifactsV1
 from assurance_intake.ops.case_design import CaseDesignOutputV1, CaseDesignInputV1
+from assurance_intake.ops.case_repair import CaseRepairInputV1, CaseRepairOutputV1
 from assurance_intake.ops.case_review import CaseReviewInputV1
 from assurance_intake.ops.explore import ExploreInputV1
 from assurance_intake.ops.intake import IntakeInputV1
@@ -37,7 +38,7 @@ from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_
 from assurance_quality.plugin import QualityPlugin
 
 EXPECTED_AGENT_COUNTS = {
-    "assurance.intake": 4,
+    "assurance.intake": 5,
     "assurance.generation": 8,
     "assurance.execution": 0,
     "assurance.quality": 5,
@@ -98,7 +99,7 @@ def test_feature_agent_counts_are_frozen() -> None:
     for owner, expected in EXPECTED_AGENT_COUNTS.items():
         assert len(catalogs[owner]) == expected
         assert all(contract.owner_id == owner for contract in catalogs[owner].values())
-    assert sum(EXPECTED_AGENT_COUNTS.values()) == 26
+    assert sum(EXPECTED_AGENT_COUNTS.values()) == 27
 
 
 def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> None:
@@ -110,6 +111,14 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
             CaseDesignInputV1,
             ArtifactListResultV1,
             CaseDesignOutputV1,
+        ),
+        "case-repair": (
+            "assurance.intake.agent.case-repair.v1",
+            "aa-case-repair",
+            "assurance-v1-doc-author",
+            CaseRepairInputV1,
+            ArtifactListResultV1,
+            CaseRepairOutputV1,
         ),
         "case-review": (
             "assurance.intake.agent.case-review.v1",
@@ -212,11 +221,11 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
         assert contract.validators == ()
         effectful += 1
     assert registered == 19
-    assert effectful == 35
+    assert effectful == 36
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 
 
-def test_semantic_agent_contracts_are_thirty_four() -> None:
+def test_semantic_agent_contracts_are_twenty_seven() -> None:
     catalogs = (
         AGENT_JOB_CONTRACTS,
         GENERATION_AGENT_JOBS,
@@ -225,7 +234,7 @@ def test_semantic_agent_contracts_are_thirty_four() -> None:
         HEALING_AGENT_JOBS,
         IMPROVEMENT_AGENT_JOBS,
     )
-    assert sum(len(catalog) for catalog in catalogs) == 26
+    assert sum(len(catalog) for catalog in catalogs) == 27
 
 
 def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:

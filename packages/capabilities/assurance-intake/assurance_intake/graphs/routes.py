@@ -15,13 +15,16 @@ def _is_pass(state: Mapping[str, object]) -> bool:
     return state.get("decision") == "pass" and state.get("human_review_required") is not True
 
 
-def _is_auto_fix(state: Mapping[str, object]) -> bool:
+def _is_review_repair(state: Mapping[str, object]) -> bool:
     return (
         state.get("decision") == "needs_fix"
         and state.get("auto_fix_allowed") is True
         and state.get("human_review_required") is not True
-        and _has_budget(state)
     )
+
+
+def _is_auto_fix(state: Mapping[str, object]) -> bool:
+    return _is_review_repair(state) and _has_budget(state)
 
 
 def _is_reject(state: Mapping[str, object]) -> bool:
@@ -82,6 +85,11 @@ def route_case_design(state: Mapping[str, object]) -> str:
     return select_exclusive_route(case_design_named_matches(state), otherwise="case-design-repair")
 
 
+def route_review_round(state: Mapping[str, object]) -> str:
+    # The advance has already spent this round's budget; only the latest review outcome decides.
+    return "case-repair" if _is_review_repair(state) else "case-design"
+
+
 __all__ = [
     "case_design_named_matches",
     "case_review_named_matches",
@@ -91,4 +99,5 @@ __all__ = [
     "route_case_design_result",
     "route_case_review",
     "route_human_review",
+    "route_review_round",
 ]

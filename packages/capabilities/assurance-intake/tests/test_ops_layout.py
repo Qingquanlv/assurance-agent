@@ -18,8 +18,15 @@ def test_every_op_directory_declares_exactly_one_op() -> None:
     )
     declared = ops.router.ops()
     assert sorted(op.directory for op in declared.values()) == directories
-    assert tuple(declared) == ("case-design", "case-review", "explore", "intake", "resolve-plan")
-    assert tuple(AGENT_JOB_CONTRACTS) == ("case-design", "case-review", "explore", "intake")
+    assert tuple(declared) == (
+        "case-design",
+        "case-repair",
+        "case-review",
+        "explore",
+        "intake",
+        "resolve-plan",
+    )
+    assert tuple(AGENT_JOB_CONTRACTS) == ("case-design", "case-repair", "case-review", "explore", "intake")
     assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-plan",)
 
 

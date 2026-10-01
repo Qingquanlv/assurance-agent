@@ -139,7 +139,7 @@ still owns LangGraph topology. No decorator scan or new graph DSL is involved.
 
 ### Agent op authoring
 
-Each of the 26 Agent contracts has a prepare handler and a finalize handler.
+Each of the 27 Agent contracts has a prepare handler and a finalize handler.
 
 Intake declares every operation, like a FastAPI route, in its own directory under
 [`ops/`](packages/capabilities/assurance-intake/assurance_intake/ops/), for example
@@ -152,6 +152,12 @@ Intake declares every operation, like a FastAPI route, in its own directory unde
   steps; `ctx.write` enforces the phase's declared claims and `ctx.use_skill` picks an
   alternative `<key>.SKILL.md`;
 - `models.py`, `SKILL.md` and `result.schema.json` sit next to them.
+
+A run that needs its own skill, input or output is its own op rather than a branch
+inside another op: [case repair](packages/capabilities/assurance-intake/assurance_intake/ops/case_repair/)
+applies a `needs_fix` review's bounded actions, while case design always authors the
+full delta, and the case graph routes automatic fixes to case repair and human rework
+to case design.
 
 The [`OpRouter`](packages/adapters/agent-runtime-contracts/agent_runtime_contracts/ops/router.py)
 in `ops/__init__.py` runs the shared prepare/finalize pipeline and generates the

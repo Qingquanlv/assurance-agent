@@ -40,6 +40,7 @@ EVIDENCE_ROOT = Path(__file__).resolve().parent / "fixtures" / "assembly"
 
 HISTORICAL_PREPARE_IDS = (
     "assurance.intake.case-design.prepare",
+    "assurance.intake.case-repair.prepare",
     "assurance.intake.case-review.prepare",
     "assurance.intake.explore.prepare",
     "assurance.intake.intake.prepare",
