@@ -435,14 +435,9 @@ class ProductRuntimePorts:
         root_input_digest: str,
         fencing_token: int,
     ) -> BootArtifact:
-        from assurance_execution.graphs.factory import build_execution_graphs
-        from assurance_generation.graphs.factory import build_generation_graphs
-        from assurance_healing.graphs.factory import build_healing_graphs
-        from assurance_improvement.graphs.factory import build_improvement_graphs
-        from assurance_intake.graphs.factory import build_intake_graphs
+        from assurance_product.graph_factories import build_feature_graphs
         from assurance_product.graphs.factory import build_product_graphs
         from assurance_product.retro_evidence import snapshot_runtime_evidence
-        from assurance_quality.graphs.factory import build_quality_graphs
 
         if fencing_token < 1:
             raise ValueError("fencing token")
@@ -477,16 +472,7 @@ class ProductRuntimePorts:
             attempt_factory=factory,
             resolved_contracts=semantic,
         )
-        features = {
-            "assurance.intake": build_intake_graphs(context.for_capability("assurance.intake")),
-            "assurance.generation": build_generation_graphs(context.for_capability("assurance.generation")),
-            "assurance.execution": build_execution_graphs(context.for_capability("assurance.execution")),
-            "assurance.quality": build_quality_graphs(context.for_capability("assurance.quality")),
-            "assurance.healing": build_healing_graphs(context.for_capability("assurance.healing")),
-            "assurance.improvement": build_improvement_graphs(
-                context.for_capability("assurance.improvement")
-            ),
-        }
+        features = build_feature_graphs(context)
 
         async def runtime_snapshot():
             return await snapshot_runtime_evidence(

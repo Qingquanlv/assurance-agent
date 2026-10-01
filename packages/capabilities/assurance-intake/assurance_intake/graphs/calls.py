@@ -5,17 +5,20 @@ from typing import cast
 
 from pydantic import BaseModel
 
+from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import JSONValue, canonical_digest
+
+from assurance_intake.contracts.explore import EXPLORATION_PATH
+from assurance_intake.contracts.impact import INVENTORY_PATH
+from assurance_intake.contracts.plan import ResolvePlanInputV1, ResolvePlanOutputV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.graphs.state import as_int
 from assurance_intake.ops.case_design import CaseDesignInputV1
 from assurance_intake.ops.case_repair import CaseRepairInputV1
 from assurance_intake.ops.case_review import CaseReviewInputV1
 from assurance_intake.ops.explore import ExploreInputV1
 from assurance_intake.ops.intake import IntakeInputV1
-from assurance_intake.contracts.plan import ResolvePlanInputV1, ResolvePlanOutputV1
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_intake.graphs.state import as_int, current_trigger
-from graph_engine.attempts.keys import BusinessActivation
-from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.canonical import JSONValue, canonical_digest
 
 activation_one_shot = BusinessActivation.one_shot()
 
@@ -82,14 +85,10 @@ def select_resolve_plan(state: Mapping[str, object]) -> ResolvePlanInputV1:
             "policy_digest": policy["sha256"],
             "family_policy": state["family_policy"],
             "exploration_ref": next(
-                item
-                for item in _preparation_refs(state)
-                if item["path"] == "qa/results/explore/exploration.json"
+                item for item in _preparation_refs(state) if item["path"] == EXPLORATION_PATH
             ),
             "impact_inventory_ref": next(
-                item
-                for item in _preparation_refs(state)
-                if item["path"] == "qa/results/explore/impact-inventory.json"
+                item for item in _preparation_refs(state) if item["path"] == INVENTORY_PATH
             ),
             "source_resource_digests": (
                 (catalog["resource_id"], catalog["sha256"]),
@@ -148,60 +147,34 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
     return published
 
 
-def select_case_design(state: Mapping[str, object]) -> CaseDesignInputV1:
+def _case_delta_payload(state: Mapping[str, object]) -> dict[str, object]:
     payload: dict[str, object] = {
         **_skill_payload(state),
         "plan_digest": state["plan_digest"],
         "plan_ref": state["plan_ref"],
         "selected_test_families": state["selected_test_families"],
         "case_delta_paths": state["case_delta_paths"],
-        "coverage_epoch": state.get("coverage_epoch", 0),
         "preparation_refs": state.get("preparation_refs", ()),
-        "case_rework_context": state.get("case_rework_context"),
-        "validation_attempt": 0,
     }
     if state.get("ui_exploration_ref") is not None:
         payload["ui_exploration_ref"] = state["ui_exploration_ref"]
     if state.get("api_discovery_ref") is not None:
         payload["api_discovery_ref"] = state["api_discovery_ref"]
-    return CaseDesignInputV1.model_validate(payload)
+    return payload
 
 
-def select_case_design_retry(state: Mapping[str, object]) -> CaseDesignInputV1:
-    return select_case_design(state)
-
-
-def select_case_design_validation_retry(state: Mapping[str, object]) -> CaseDesignInputV1:
-    payload: dict[str, object] = {
-        **_skill_payload(state),
-        "plan_digest": state["plan_digest"],
-        "plan_ref": state["plan_ref"],
-        "selected_test_families": state["selected_test_families"],
-        "case_delta_paths": state["case_delta_paths"],
-        "validation_attempt": 1,
-        "validation_error": state["validation_error"],
-    }
-    if state.get("ui_exploration_ref") is not None:
-        payload["ui_exploration_ref"] = state["ui_exploration_ref"]
-    if state.get("api_discovery_ref") is not None:
-        payload["api_discovery_ref"] = state["api_discovery_ref"]
-    return CaseDesignInputV1.model_validate(payload)
+def select_case_design(state: Mapping[str, object]) -> CaseDesignInputV1:
+    return CaseDesignInputV1.model_validate(
+        {
+            **_case_delta_payload(state),
+            "coverage_epoch": state.get("coverage_epoch", 0),
+            "case_rework_context": state.get("case_rework_context"),
+        }
+    )
 
 
 def select_case_repair(state: Mapping[str, object]) -> CaseRepairInputV1:
-    payload: dict[str, object] = {
-        **_skill_payload(state),
-        "plan_digest": state["plan_digest"],
-        "plan_ref": state["plan_ref"],
-        "selected_test_families": state["selected_test_families"],
-        "case_delta_paths": state["case_delta_paths"],
-        "preparation_refs": state.get("preparation_refs", ()),
-    }
-    if state.get("ui_exploration_ref") is not None:
-        payload["ui_exploration_ref"] = state["ui_exploration_ref"]
-    if state.get("api_discovery_ref") is not None:
-        payload["api_discovery_ref"] = state["api_discovery_ref"]
-    return CaseRepairInputV1.model_validate(payload)
+    return CaseRepairInputV1.model_validate(_case_delta_payload(state))
 
 
 def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
@@ -219,38 +192,8 @@ def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
     )
 
 
-def activation_case_design(state: Mapping[str, object]) -> BusinessActivation:
-    trigger = current_trigger(state)
-    arrival_id = trigger.get("arrival_id") if trigger is not None else None
-    if isinstance(arrival_id, str) and arrival_id:
-        return BusinessActivation.for_trigger(arrival_id)
-    return BusinessActivation.one_shot()
-
-
-def activation_case_design_validation_retry(state: Mapping[str, object]) -> BusinessActivation:
-    trigger = current_trigger(state)
-    arrival_id = trigger.get("arrival_id") if trigger is not None else None
-    if isinstance(arrival_id, str) and arrival_id:
-        return BusinessActivation.for_trigger(f"{arrival_id}.validation-retry")
-    return BusinessActivation.for_round(1)
-
-
-def activation_case_repair(state: Mapping[str, object]) -> BusinessActivation:
-    trigger = current_trigger(state)
-    arrival_id = trigger.get("arrival_id") if trigger is not None else None
-    if isinstance(arrival_id, str) and arrival_id:
-        return BusinessActivation.for_trigger(arrival_id)
-    used = state.get("rounds_used", 0)
-    return BusinessActivation.for_round(int(used) if isinstance(used, int) else 0)
-
-
-def activation_case_review(state: Mapping[str, object]) -> BusinessActivation:
-    trigger = current_trigger(state)
-    arrival_id = trigger.get("arrival_id") if trigger is not None else None
-    if isinstance(arrival_id, str) and arrival_id:
-        return BusinessActivation.for_trigger(f"{arrival_id}.review")
-    used = state.get("rounds_used", 0)
-    return BusinessActivation.for_round(int(used) if isinstance(used, int) else 0)
+def activation_review_round(state: Mapping[str, object]) -> BusinessActivation:
+    return BusinessActivation.for_round(as_int(state["rounds_used"], name="rounds_used"))
 
 
 def _output_payload(output: object) -> dict[str, object]:
@@ -267,32 +210,11 @@ def _mapping_items(value: object) -> list[Mapping[str, object]]:
     return [item for item in value if isinstance(item, Mapping)]
 
 
-def _selection_ref(
-    state: Mapping[str, object], payload: Mapping[str, object]
-) -> EvidenceArtifactRefV1 | None:
-    reviewed = payload.get("reviewed_case")
-    if isinstance(reviewed, Mapping) and reviewed.get("selection_ref") is not None:
-        return EvidenceArtifactRefV1.model_validate(reviewed["selection_ref"])
-    epoch = state.get("coverage_epoch", 0)
-    expected = f"qa/results/cases/epochs/{epoch}/selection.json"
-    for item in _mapping_items(payload.get("artifacts")):
-        if item.get("path") == expected:
-            return EvidenceArtifactRefV1.model_validate(item)
-    raw = state.get("selection_ref")
-    if raw is not None:
-        return EvidenceArtifactRefV1.model_validate(raw)
-    return None
-
-
 def publish_artifacts(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del receipt
     payload = _output_payload(output)
-    artifacts = payload.get("artifacts")
-    files = payload.get("output_files")
-    if artifacts is None and isinstance(files, list):
-        artifacts = [{"path": path} for path in files]
     current_refs = _mapping_items(state.get("preparation_refs"))
-    artifact_items = _mapping_items(artifacts)
+    artifact_items = _mapping_items(payload.get("artifacts"))
     for item in artifact_items:
         if isinstance(item, Mapping) and isinstance(item.get("digest"), str):
             current_refs.append(EvidenceArtifactRefV1.model_validate(item).model_dump(mode="json"))
@@ -304,9 +226,6 @@ def publish_artifacts(state: Mapping[str, object], output: object, receipt: obje
     return {
         "artifacts": artifact_items,
         "preparation_refs": [unique_refs[key] for key in sorted(unique_refs)],
-        "decision": payload.get("decision", "pass"),
-        "rounds_used": state.get("rounds_used", 0),
-        "rounds_budget": state.get("rounds_budget", 2),
     }
 
 
@@ -331,24 +250,28 @@ def publish_case_design(state: Mapping[str, object], output: object, receipt: ob
     preparation_by_path = {str(item["path"]): item for item in preparation_refs}
     published_case_refs = sorted(case_refs, key=lambda item: (item["path"], item["digest"]))
     update = {
-        "validation_status": payload.get("validation_status", "pass"),
-        "validation_attempt": payload.get("validation_attempt", 0),
-        "validation_error": payload.get("validation_error"),
         "artifacts": artifacts,
         "case_refs": published_case_refs,
         "preparation_refs": [preparation_by_path[path] for path in sorted(preparation_by_path)],
-        "rounds_used": state.get("rounds_used", 0),
-        "rounds_budget": state.get("rounds_budget", 2),
     }
     if published_case_refs:
         update["case_delta_paths"] = [item["path"] for item in published_case_refs]
     return update
 
 
+def _receipt_ref(receipt: object) -> ReceiptRef | None:
+    if isinstance(receipt, ReceiptRef):
+        return receipt
+    if isinstance(receipt, Mapping):
+        return ReceiptRef.model_validate(receipt)
+    return None
+
+
 def publish_case_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     payload = _output_payload(output)
-    update = {
-        "decision": payload["decision"],
+    decision = payload["decision"]
+    update: dict[str, object] = {
+        "decision": decision,
         "auto_fix_allowed": bool(payload.get("auto_fix_allowed", False)),
         "human_review_required": bool(payload.get("human_review_required", False)),
         "artifacts": payload.get("artifacts") or [],
@@ -359,59 +282,28 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
         update["history_refs"] = [
             EvidenceArtifactRefV1.model_validate(payload["history_ref"]).model_dump(mode="json")
         ]
-    if payload.get("decision") != "pass":
-        return update
-    review_path = "qa/results/review/case-review.json"
-    review_ref = next(
-        (
-            EvidenceArtifactRefV1.model_validate(item)
-            for item in _mapping_items(payload.get("artifacts"))
-            if item.get("path") == review_path
-        ),
-        None,
-    )
-    if review_ref is None:
-        return update
-    selection_ref = _selection_ref(state, payload)
-    if selection_ref is None:
-        return update
-    reviewed = ReviewedCaseV1.model_validate(
-        {
-            "change_id": state["change_id"],
-            "coverage_epoch": state.get("coverage_epoch", 0),
-            "plan_digest": state["plan_digest"],
-            "plan_ref": state["plan_ref"],
-            "preparation_refs": state.get("preparation_refs", ()),
-            "case_refs": state.get("case_refs", ()),
-            "review_ref": review_ref,
-            "selection_ref": selection_ref,
-        }
-    )
-    receipt_ref = receipt if isinstance(receipt, ReceiptRef) else None
-    if receipt_ref is None and isinstance(receipt, Mapping):
-        receipt_ref = ReceiptRef.model_validate(receipt)
-    if receipt_ref is not None:
+    if decision in {"pass", "needs_human_review"}:
+        reviewed = ReviewedCaseV1.model_validate(payload["reviewed_case"])
+        receipt_ref = _receipt_ref(receipt)
         update["reviewed_case"] = reviewed.model_dump(mode="json")
-        update["case_receipt"] = receipt_ref.model_dump(mode="json")
+        update["case_receipt"] = receipt_ref.model_dump(mode="json") if receipt_ref is not None else None
+    else:
+        update["reviewed_case"] = None
+        update["case_receipt"] = None
     return update
 
 
 __all__ = [
-    "activation_case_design",
-    "activation_case_design_validation_retry",
-    "activation_case_repair",
-    "activation_case_review",
     "activation_one_shot",
+    "activation_review_round",
     "publish_artifacts",
     "publish_case_design",
     "publish_case_review",
+    "publish_plan",
     "select_case_design",
-    "select_case_design_validation_retry",
-    "select_case_design_retry",
     "select_case_repair",
     "select_case_review",
     "select_explore",
-    "select_resolve_plan",
-    "publish_plan",
     "select_intake",
+    "select_resolve_plan",
 ]

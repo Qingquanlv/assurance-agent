@@ -23,12 +23,12 @@ from tests.acg_plan_fixture import install_plan
 from tests.op_handlers import op_handler
 
 from assurance_intake import ops as intake_ops
-from assurance_intake.domain.artifacts import ArtifactListResultV1
+from agent_runtime_contracts.ops import ArtifactListResultV1
 from assurance_intake.feature import AGENT_JOB_CONTRACTS
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.ops.case_review.hooks import case_review_outputs
-from assurance_intake.domain.case_review_seal import (
+from assurance_intake.ops.case_review.hooks.seal import (
     collect_selected_cases,
     expected_case_selection,
     expected_review_history,
@@ -710,9 +710,8 @@ def test_case_reviewer_applies_frozen_explore_oracle_before_normal_review() -> N
 def test_case_design_repairs_e2e_journey_mapping_from_authenticated_keys() -> None:
     designer = " ".join(intake_ops.router.resource_text("ops/case_design/SKILL.md").split())
 
-    assert "repair-only mode" in designer
-    assert "every semicolon-separated validation error" in designer
-    assert "must apply at least one narrow patch" in designer.lower()
+    assert "validation_error" in designer
+    assert "semicolon-separated" in designer
     assert "E2E cases have no valid journey mapping" in designer
     assert "authenticated journey keys" in designer
     assert "covered_by_cases" in designer
@@ -810,7 +809,6 @@ async def test_case_design_prepare_includes_deterministic_validation_feedback(tm
         cast(TaskHandler, case_design_prepare),
         {
             **CASE_INPUT,
-            "validation_attempt": 1,
             "validation_error": (
                 "capability key is not a declared typed leaf: "
                 "entities.dept.constraints.unauthorized_user_management_api_access"
@@ -825,7 +823,6 @@ async def test_case_design_prepare_includes_deterministic_validation_feedback(tm
     notice = request.instructions[1].text_content or ""
     business = cast(Mapping[str, object], request.instructions[2].json_content)
     assert "capability key is not a declared typed leaf" in notice
-    assert business["validation_attempt"] == 1
     assert business["validation_error"] == (
         "capability key is not a declared typed leaf: "
         "entities.dept.constraints.unauthorized_user_management_api_access"
@@ -1520,7 +1517,7 @@ async def _finalize_files(
     selected_test_families: list[str] | None = None,
     write_root: Path | None = None,
     case_delta_paths: list[str] | None = None,
-    validation_attempt: int | None = None,
+    validation_error: str | None = None,
     review_repair: object | None = None,
     coverage_epoch: int = 0,
     review_round: int = 0,
@@ -1547,12 +1544,8 @@ async def _finalize_files(
         bound_preparation_refs.append(plan_ref)
         bound_preparation_refs.sort(key=lambda item: (item["path"], item["digest"]))
     validation: dict[str, object] = {}
-    if ".case-repair." not in handler_module:
-        attempt = 1 if validation_attempt is None else validation_attempt
-        validation = {
-            "validation_attempt": attempt,
-            **({"validation_error": "prior validation failed"} if attempt == 1 else {}),
-        }
+    if validation_error is not None:
+        validation = {"validation_error": validation_error}
     locked_input: dict[str, object] = {
         "change_id": change_id or "CH-DEMO-001",
         "requirement": "Cover department CRUD.",
@@ -1692,11 +1685,8 @@ async def test_intake_rejects_invalid_or_missing_change_marker(tmp_path: Path, m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("attempt", [0, 1])
 @pytest.mark.parametrize("invalid_kind", ["syntax", "missing_fields", "wrong_change"])
-async def test_case_design_validates_complete_change_marker(
-    tmp_path: Path, attempt: int, invalid_kind: str
-) -> None:
+async def test_case_design_validates_complete_change_marker(tmp_path: Path, invalid_kind: str) -> None:
     project, stage = dual_roots(tmp_path)
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
     outputs = _write_case_design_outputs(stage, authored)
@@ -1717,16 +1707,10 @@ async def test_case_design_validates_complete_change_marker(
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=stage,
-        validation_attempt=attempt,
     )
-    if attempt == 0:
-        assert result.status == "succeeded"
-        assert result.output["validation_status"] == "needs_fix"
-        assert ".qa.yaml" in result.output["validation_error"]
-    else:
-        assert result.status == "failed"
-        assert result.failure.kind == "invalid_output"
-        assert ".qa.yaml" in result.failure.message
+    assert result.status == "failed"
+    assert result.failure.kind == "invalid_output"
+    assert ".qa.yaml" in result.failure.message
 
 
 @pytest.mark.asyncio
@@ -1764,13 +1748,11 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=stage,
-        validation_attempt=0,
     )
+    assert result.status == "failed"
     if phase == "case-design":
-        assert result.output["validation_status"] == "needs_fix"
-        assert "qa/.qa.yaml changed" in result.output["validation_error"]
+        assert "qa/.qa.yaml changed" in result.failure.message
     else:
-        assert result.status == "failed"
         assert "qa/.qa.yaml changed" in result.failure.message
 
 
@@ -1974,8 +1956,13 @@ def _explore_context_document(
     seeds: tuple[tuple[str, str], ...] = (("CF-001", "app/controllers/item.py"),),
     case_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    from assurance_intake.contracts.explore import ExploreContextV1, RequirementReadFactsV1
-    from assurance_intake.contracts.impact import CandidateCaseV1, ImpactProjectionV1, ImpactSeedV1
+    from assurance_intake.ops.explore.models import (
+        CandidateCaseV1,
+        ExploreContextV1,
+        ImpactProjectionV1,
+        ImpactSeedV1,
+        RequirementReadFactsV1,
+    )
 
     return ExploreContextV1(
         change_id="CH-DEMO-001",
@@ -2448,7 +2435,6 @@ async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> N
         write_root=write_root,
     )
     assert executed.status == "succeeded", executed.failure
-    assert executed.output["validation_status"] == "pass"
     assert [artifact["path"] for artifact in executed.output["artifacts"]] == sorted(outputs)
     assert not (write_root / "qa/results/case-index.json").exists()
     assert "added" not in executed.output
@@ -2479,12 +2465,10 @@ async def test_case_design_finalize_routes_endpoint_literals_to_validation_repai
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
-        validation_attempt=0,
     )
-    assert executed.status == "succeeded", executed.failure
-    assert executed.output["validation_status"] == "needs_fix"
-    assert executed.output["validation_attempt"] == 1
-    error = executed.output["validation_error"]
+    assert executed.status == "failed"
+    assert executed.failure.kind == "invalid_output"
+    error = executed.failure.message
     assert "must not contain an HTTP method + endpoint path" in error
     assert "'POST /api/v1/menu/create'" in error
     assert ".steps:" in error
@@ -2517,12 +2501,10 @@ async def test_case_design_validation_repair_reads_unchanged_outputs_from_baseli
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
-        validation_attempt=1,
     )
 
-    assert executed.status == "succeeded"
-    assert executed.output["validation_status"] == "pass"
-    assert [artifact["path"] for artifact in executed.output["artifacts"]] == sorted(outputs)
+    assert executed.status == "failed"
+    assert executed.failure.kind == "invalid_output"
     assert (write_root / "qa/cases/menus/case.yaml").is_file()
     assert not (write_root / "qa/.qa.yaml").exists()
     assert not (write_root / "qa/proposal.md").exists()
@@ -3376,13 +3358,11 @@ async def test_case_design_finalize_returns_one_bounded_repair_for_first_invalid
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
-        validation_attempt=0,
     )
 
-    assert executed.status == "succeeded"
-    assert executed.output["validation_status"] == "needs_fix"
-    assert executed.output["validation_attempt"] == 1
-    assert "capability key is not a declared typed leaf" in executed.output["validation_error"]
+    assert executed.status == "failed"
+    assert executed.failure.kind == "invalid_output"
+    assert "capability key is not a declared typed leaf" in executed.failure.message
 
 
 @pytest.mark.asyncio

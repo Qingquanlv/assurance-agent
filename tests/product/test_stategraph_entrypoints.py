@@ -39,8 +39,8 @@ from assurance_product.graphs.factory import (
     coerce_feature_bundles,
 )
 from assurance_product.graphs.state import ProductState
+from assurance_product.feature_set import CAPABILITY_OWNERS
 from assurance_product.models import (
-    FEATURE_WORKFLOW_OWNERS,
     PRODUCT_ENTRYPOINTS,
     THIN_ENTRYPOINTS,
     ProductInputV1,
@@ -276,7 +276,7 @@ def thin_graphs(real_features: dict[str, object]) -> ThinEntrypointGraphs:
 def test_factory_accepts_exactly_six_owner_ids(
     real_features: dict[str, object], thin_graphs: ThinEntrypointGraphs
 ) -> None:
-    assert tuple(sorted(real_features)) == tuple(sorted(FEATURE_WORKFLOW_OWNERS))
+    assert tuple(sorted(real_features)) == tuple(sorted(CAPABILITY_OWNERS))
     typed = coerce_feature_bundles(real_features)
     assert isinstance(typed, ProductFeatureBundles)
     assert {field.name for field in fields(ProductFeatureBundles)} == {

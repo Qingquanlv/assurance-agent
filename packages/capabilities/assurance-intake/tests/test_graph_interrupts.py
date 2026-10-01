@@ -11,16 +11,22 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from pydantic import ValidationError
 
-from assurance_intake.domain.artifacts import ArtifactListResultV1
+from agent_runtime_contracts.ops import ArtifactListResultV1
 from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_intake.contracts.decisions import ReviewRoundAdvanceOutput
-from assurance_intake.domain.review_rounds import advance_review_round
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.graphs.calls import publish_case_review
+from assurance_intake.graphs.case import (
+    HUMAN_REVIEW_ACTIONS,
+    ReviewRoundAdvanceOutput,
+    advance_review_round,
+    human_review,
+    review_round_advance,
+    route_human_review,
+    terminal_rejected,
+    terminal_reviewed,
+)
 from assurance_intake.graphs.factory import build_intake_graphs
 from assurance_intake.graphs.state import IntakeState
-from assurance_intake.graphs.case import HUMAN_REVIEW_ACTIONS, human_review
-from assurance_intake.graphs.state import advance_review_round_node
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed
@@ -78,7 +84,6 @@ def _artifact() -> ArtifactListResultV1:
 def _design() -> dict[str, object]:
     return {
         "output_files": ["qa/proposal.md"],
-        "validation_status": "pass",
         "artifacts": [
             {
                 "path": "qa/cases/menus/case.yaml",
@@ -96,6 +101,26 @@ def _repair() -> dict[str, object]:
                 "digest": _SHA,
             }
         ],
+    }
+
+
+def _reviewed_case() -> dict[str, object]:
+    plan_ref = {
+        "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
+        "digest": _SHA,
+    }
+    return {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 0,
+        "plan_digest": _SHA,
+        "plan_ref": plan_ref,
+        "preparation_refs": [
+            {"path": "qa/requirement.md", "digest": _SHA},
+            plan_ref,
+        ],
+        "case_refs": [{"path": "qa/cases/menus/case.yaml", "digest": _SHA}],
+        "review_ref": {"path": "qa/results/review/case-review.json", "digest": _SHA},
+        "selection_ref": {"path": "qa/results/cases/epochs/0/selection.json", "digest": _SHA},
     }
 
 
@@ -121,6 +146,7 @@ def _review(
                 "digest": _SHA,
             },
         ],
+        "reviewed_case": _reviewed_case(),
         "rounds_used": used,
         "rounds_budget": budget,
     }
@@ -165,6 +191,7 @@ def _review_result_v1(
                     "digest": _SHA,
                 },
             ],
+            "reviewed_case": _reviewed_case(),
         }
     )
 
@@ -233,15 +260,41 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
     assert "rounds_used" not in update
 
 
-def test_advance_review_round_node_is_the_moved_pure_function() -> None:
+def test_review_round_advance_is_budget_arithmetic() -> None:
     payload = {"rounds_used": 0, "rounds_budget": 2}
-    output = advance_review_round_node(payload)
+    output = review_round_advance(payload)
     expected = advance_review_round(payload)
     assert isinstance(expected, ReviewRoundAdvanceOutput)
     assert output["rounds_used"] == expected.rounds_used == 1
     assert output["rounds_budget"] == expected.rounds_budget == 2
     with pytest.raises((ValidationError, ValueError)):
-        advance_review_round_node({"rounds_used": 2, "rounds_budget": 2})
+        review_round_advance({"rounds_used": 2, "rounds_budget": 2})
+
+
+def test_needs_human_review_approve_reaches_reviewed_terminal() -> None:
+    state = {"rounds_used": 0, "rounds_budget": 2, "reviewed_case": {"stale": True}, "case_receipt": None}
+    published = publish_case_review(state, _review("needs_human_review", human=True), _RECEIPT)
+    assert published["reviewed_case"] == _reviewed_case()
+    assert published["case_receipt"] == _RECEIPT.model_dump(mode="json")
+    merged = {**state, **published, "human_action": "approve"}
+    assert route_human_review(merged) == "done"
+    terminal = terminal_reviewed(merged)
+    assert terminal["status"] == "reviewed"
+    assert terminal["reviewed_case"] == _reviewed_case()
+    assert terminal["receipt"] == _RECEIPT.model_dump(mode="json")
+
+
+def test_human_reject_clears_reviewed_evidence() -> None:
+    state = {"rounds_used": 0, "rounds_budget": 2}
+    published = publish_case_review(state, _review("needs_human_review", human=True), _RECEIPT)
+    assert published["reviewed_case"] is not None
+    rejected = terminal_rejected({**state, **published, "human_action": "reject"})
+    assert route_human_review({**state, **published, "human_action": "reject"}) == "rejected"
+    assert rejected["reviewed_case"] is None
+    assert rejected["case_receipt"] is None
+    dropped = publish_case_review(state, _review("reject"), _RECEIPT)
+    assert dropped["reviewed_case"] is None
+    assert dropped["case_receipt"] is None
 
 
 async def test_pass_completes_without_advance() -> None:
@@ -338,6 +391,41 @@ async def test_reject_is_explicit_terminal() -> None:
     )
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("decision") == "reject"
+    assert terminal.get("reviewed_case") is None
+    assert terminal.get("case_receipt") is None
+
+
+async def test_human_approve_completes_reviewed_terminal() -> None:
+    harness = GraphHarness()
+    backend = harness.anchored_memory_checkpointer()
+    await _prepare_anchored_backend(backend)
+    bundle = build_intake_graphs(
+        harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
+    )
+    harness._kernel.load_script(
+        {
+            "intake.case-design": [committed(_design(), _RECEIPT)],
+            "intake.case-review": [committed(_review("needs_human_review", human=True), _RECEIPT)],
+        }
+    )
+    wrapper: StateGraph[IntakeState] = StateGraph(IntakeState)
+    wrapper.add_node("case", bundle.case)
+    wrapper.add_edge(START, "case")
+    wrapper.add_edge("case", END)
+    graph = wrapper.compile(checkpointer=backend)
+    config = _config()
+    interrupted: object | None
+    try:
+        interrupted = await graph.ainvoke(cast(Any, _input()), config=config)
+    except GraphInterrupt as error:
+        interrupted = error
+    else:
+        assert _interrupt_value(interrupted) is not None
+    resumed = await graph.ainvoke(Command(resume={"action": "approve"}), config=config)
+    assert resumed["status"] == "reviewed"
+    assert resumed["reviewed_case"] == _reviewed_case()
+    assert resumed["receipt"] == _RECEIPT.model_dump(mode="json")
+    assert resumed["human_action"] == "approve"
 
 
 async def test_budget_exhaustion_is_explicit_after_two_advances() -> None:
@@ -412,12 +500,7 @@ async def test_request_rework_on_case_graph_advances_once_through_inbox() -> Non
     resumed = await graph.ainvoke(Command(resume={"action": "request_rework"}), config=config)
     assert resumed["human_action"] == "request_rework"
     assert resumed["rounds_used"] == 1
-    inbox = resumed["case_review_inbox"]
-    current = inbox["current_trigger"]
-    assert current is not None
-    assert current["predecessor"] == "review-round-advance"
-    assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
-    assert resumed["current_trigger"] == current
+    assert "case_review_inbox" not in resumed
     calls = [call.semantic_node_id for call in harness._kernel.semantic_calls]
     assert calls.count("intake.case-design") == 2
     assert calls.count("intake.case-repair") == 0
@@ -458,11 +541,7 @@ async def test_request_rework_advances_when_review_result_nulls_rounds() -> None
     resumed = await graph.ainvoke(Command(resume={"action": "request_rework"}), config=config)
     assert resumed["human_action"] == "request_rework"
     assert resumed["rounds_used"] == 1
-    inbox = resumed["case_review_inbox"]
-    current = inbox["current_trigger"]
-    assert current is not None
-    assert current["predecessor"] == "review-round-advance"
-    assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
+    assert "case_review_inbox" not in resumed
     calls = [call.semantic_node_id for call in harness._kernel.semantic_calls]
     assert calls.count("intake.case-design") == 2
     assert calls.count("intake.case-repair") == 0
@@ -486,5 +565,5 @@ async def test_request_rework_validates_after_restart_and_advances_once() -> Non
     del first
     resumed = await graph.ainvoke(Command(resume={"action": "request_rework"}), config=_config())
     assert resumed["human_action"] == "request_rework"
-    advanced = advance_review_round_node(resumed)
+    advanced = review_round_advance(resumed)
     assert advanced["rounds_used"] == 1

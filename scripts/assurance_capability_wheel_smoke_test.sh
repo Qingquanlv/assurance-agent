@@ -91,9 +91,10 @@ for declaration in sorted(Path("packages/capabilities").glob("*/assurance_*/plug
     module_name, attr = source["entrypoint_value"].split(":")
     spec = getattr(import_module(module_name), attr).spec
     reader = spec.resource_bytes
-    base = "resources/" if str(getattr(reader, "__module__", "")).endswith(".resource_loader") else ""
+    loader = str(getattr(reader, "__module__", "")).endswith(".resource_loader")
     paths: list[str] = []
     for relative in sorted({*spec.resource_files.values(), *spec.schema_files.values()}):
+        base = "resources/" if loader and not relative.startswith("ops/") else ""
         raw = (declaration.parent / f"{base}{relative}").read_bytes()
         if raw.rstrip(b"\n") != reader(relative).rstrip(b"\n"):
             raise SystemExit(f"{source['distribution']} reader disagrees with {base}{relative}")

@@ -4,15 +4,12 @@ from __future__ import annotations
 
 from pydantic import Field, field_validator, model_validator
 
+from assurance_intake.contracts.agent import SkillInputV1, canonical_relative_paths
+from assurance_intake.contracts.common import SHA256_PATTERN
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
 )
-from assurance_intake.domain.inputs import (
-    SHA256_PATTERN,
-    SkillInputV1,
-    canonical_relative_paths,
-    validate_case_delta_paths,
-)
+from assurance_intake.domain.case_delta import validate_case_delta_paths
 
 
 class CaseReviewInputV1(SkillInputV1):
@@ -35,7 +32,7 @@ class CaseReviewInputV1(SkillInputV1):
 
     @model_validator(mode="after")
     def _paths_match_change(self) -> CaseReviewInputV1:
-        validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        validate_case_delta_paths(self.case_delta_paths)
         if self.review_input_paths:
             change_root = "qa"
             expected = tuple(

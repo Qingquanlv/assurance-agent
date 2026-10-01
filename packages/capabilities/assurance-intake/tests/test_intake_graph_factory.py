@@ -4,7 +4,7 @@ import ast
 from collections.abc import Iterator
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 from langgraph.graph.state import CompiledStateGraph
@@ -18,7 +18,8 @@ from agent_runtime_contracts import (
     canonical_digest,
 )
 from agent_runtime_contracts.wire.models import AgentRunResult
-from assurance_intake.domain.artifacts import ArtifactDigestV1, ArtifactListResultV1
+from agent_runtime_contracts.ops import ArtifactListResultV1
+from assurance_intake.contracts.agent import ArtifactDigestV1
 from assurance_intake.ops.case_design import CaseDesignInputV1, CaseDesignOutputV1
 from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
@@ -142,6 +143,26 @@ def _artifact_output() -> ArtifactListResultV1:
     return ArtifactListResultV1(output_files=("qa/proposal.md",))
 
 
+def _reviewed_case() -> dict[str, object]:
+    plan_ref = {
+        "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
+        "digest": _SHA,
+    }
+    return {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 0,
+        "plan_digest": _SHA,
+        "plan_ref": plan_ref,
+        "preparation_refs": [
+            {"path": "qa/requirement.md", "digest": _SHA},
+            plan_ref,
+        ],
+        "case_refs": [{"path": "qa/cases/menus/case.yaml", "digest": _SHA}],
+        "review_ref": {"path": "qa/results/review/case-review.json", "digest": _SHA},
+        "selection_ref": {"path": "qa/results/cases/epochs/0/selection.json", "digest": _SHA},
+    }
+
+
 def _review_output(
     *,
     decision: str = "pass",
@@ -164,17 +185,15 @@ def _review_output(
                 "digest": _SHA,
             },
         ],
+        "reviewed_case": _reviewed_case(),
         "rounds_used": rounds_used,
         "rounds_budget": rounds_budget,
     }
 
 
-def _design_output(*, validation_status: str = "pass") -> dict[str, object]:
+def _design_output() -> dict[str, object]:
     return {
         "output_files": ["qa/proposal.md"],
-        "validation_status": validation_status,
-        "validation_attempt": 0 if validation_status == "pass" else 1,
-        "validation_error": None if validation_status == "pass" else "authored cases failed validation",
         "artifacts": [
             {
                 "path": "qa/cases/menus/case.yaml",
@@ -236,12 +255,10 @@ def recording_context():
 
 def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch: pytest.MonkeyPatch) -> None:
     from assurance_intake.graphs.calls import (
-        activation_case_design,
-        activation_case_design_validation_retry,
-        activation_case_repair,
+        activation_review_round,
         select_case_design,
-        select_case_design_validation_retry,
         select_case_repair,
+        select_case_review,
     )
 
     calls: list[tuple[str, str, object, object]] = []
@@ -273,25 +290,23 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
         _EXPLORE_ID,
         _RESOLVE_PLAN_ID,
         _CASE_DESIGN_ID,
-        _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
         _CASE_REPAIR_ID,
     )
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
-    assert recording_context.bound_contract_ids.count(_CASE_DESIGN_ID) == 2
+    assert recording_context.bound_contract_ids.count(_CASE_DESIGN_ID) == 1
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
     assert calls[3][:2] == (_CASE_DESIGN_ID, "intake.case-design")
     assert tuple((fn.__module__, fn.__qualname__) for fn in calls[3][2:]) == tuple(
-        (fn.__module__, fn.__qualname__) for fn in (activation_case_design, select_case_design)
+        (fn.__module__, fn.__qualname__) for fn in (activation_review_round, select_case_design)
     )
-    assert calls[4][:2] == (_CASE_DESIGN_ID, "intake.case-design-validation-retry")
+    assert calls[4][:2] == (_CASE_REVIEW_ID, "intake.case-review")
     assert tuple((fn.__module__, fn.__qualname__) for fn in calls[4][2:]) == tuple(
-        (fn.__module__, fn.__qualname__)
-        for fn in (activation_case_design_validation_retry, select_case_design_validation_retry)
+        (fn.__module__, fn.__qualname__) for fn in (activation_review_round, select_case_review)
     )
-    assert calls[6][:2] == (_CASE_REPAIR_ID, "intake.case-repair")
-    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[6][2:]) == tuple(
-        (fn.__module__, fn.__qualname__) for fn in (activation_case_repair, select_case_repair)
+    assert calls[5][:2] == (_CASE_REPAIR_ID, "intake.case-repair")
+    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[5][2:]) == tuple(
+        (fn.__module__, fn.__qualname__) for fn in (activation_review_round, select_case_repair)
     )
 
 
@@ -311,13 +326,13 @@ def test_shared_case_contains_complete_review_flow(recording_context) -> None:
         "case-repair",
         "case-review",
         "review-round-advance",
-        "advance-join",
         "human-review",
         "done",
         "rejected",
         "exhausted",
+        "failed",
     }
-    assert _is_compiled_subgraph(bundle.case, "case-design")
+    assert not _is_compiled_subgraph(bundle.case, "case-design")
     assert not _is_compiled_subgraph(bundle.case, "case-review")
     assert not _is_compiled_subgraph(bundle.case, "case-repair")
 
@@ -341,7 +356,7 @@ def test_target_graphs_contain_no_phase_nodes_or_send(recording_context) -> None
     assert fanout_hits == []
 
 
-async def test_case_graph_runs_primary_and_repair_through_one_composite_attempt_each() -> None:
+async def test_case_graph_runs_design_then_review() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
     bundle = build_intake_graphs(context)
@@ -350,29 +365,21 @@ async def test_case_graph_runs_primary_and_repair_through_one_composite_attempt_
         bundle.case,
         input=intake_graph_input(),
         script={
-            "intake.case-design": [committed(_design_output(validation_status="needs_fix"), receipt)],
-            "intake.case-design-validation-retry": [
-                committed(_design_output(validation_status="pass"), receipt)
-            ],
+            "intake.case-design": [committed(_design_output(), receipt)],
             "intake.case-review": [committed(_review_output(), receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
         "intake.case-design",
-        "intake.case-design-validation-retry",
         "intake.case-review",
     ]
     assert [call.contract_id for call in result.semantic_calls] == [
         _CASE_DESIGN_ID,
-        _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
     ]
-    primary, repair, _ = result.select_values
+    primary = result.select_values[0]
     assert isinstance(primary, dict)
-    assert isinstance(repair, dict)
-    assert primary["validation_attempt"] == 0
-    assert repair["validation_attempt"] == 1
-    assert repair["validation_error"] == "authored cases failed validation"
+    assert "validation_attempt" not in primary
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "reviewed"
@@ -408,6 +415,8 @@ async def test_case_rejection_is_an_explicit_unsuccessful_terminal() -> None:
     assert isinstance(terminal, dict)
     assert terminal["status"] == "rejected"
     assert terminal["decision"] == "reject"
+    assert terminal["reviewed_case"] is None
+    assert terminal["case_receipt"] is None
 
 
 async def test_case_auto_fix_runs_repair_and_review_again() -> None:
@@ -506,6 +515,24 @@ async def test_case_budget_exhaustion_is_explicit() -> None:
     assert isinstance(terminal, dict)
     assert terminal["status"] == "exhausted"
     assert terminal["rounds_used"] == 2
+    assert terminal["reviewed_case"] is None
+    assert terminal["case_receipt"] is None
+
+
+async def test_case_design_failure_is_failed_not_exhausted() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
+    bundle = build_intake_graphs(context)
+    result = await harness.run(
+        bundle.case,
+        input=intake_graph_input(),
+        script={"intake.case-design": [RejectedTaskResult(reason="case design failed")]},
+    )
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "failed"
+    assert terminal["reviewed_case"] is None
+    assert terminal["case_receipt"] is None
 
 
 class _RecordingPrepare:
@@ -597,52 +624,38 @@ def _attempt_scope(semantic_node_id: str, tmp_path: Path) -> AuthorizedAttemptSc
     )
 
 
-def _case_design_input(*, validation_attempt: int = 0) -> CaseDesignInputV1:
-    payload: dict[str, object] = {
-        "change_id": "CH-DEMO-001",
-        "plan_digest": _SHA,
-        "plan_ref": {
-            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
-            "digest": _SHA,
-        },
-        "capability_leafs": ["entities.item.create"],
-        "artifact_paths": [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
-        "selected_test_families": ["api"],
-        "case_delta_paths": ["qa/cases/menus/case.yaml"],
-        "validation_attempt": validation_attempt,
-    }
-    if validation_attempt == 1:
-        payload["validation_error"] = "authored cases failed validation"
-    return CaseDesignInputV1.model_validate(payload)
+def _case_design_input() -> CaseDesignInputV1:
+    return CaseDesignInputV1.model_validate(
+        {
+            "change_id": "CH-DEMO-001",
+            "plan_digest": _SHA,
+            "plan_ref": {
+                "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
+                "digest": _SHA,
+            },
+            "capability_leafs": ["entities.item.create"],
+            "artifact_paths": [
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/fixtures",
+                "qa/proposal.md",
+                "qa/requirement.md",
+                "qa/results",
+                "qa/tests",
+            ],
+            "selected_test_families": ["api"],
+            "case_delta_paths": ["qa/cases/menus/case.yaml"],
+        }
+    )
 
 
-@pytest.mark.parametrize(
-    ("path", "semantic_node_id", "validation_attempt"),
-    [
-        ("primary", "intake.case-design", 0),
-        ("validation-retry", "intake.case-design-validation-retry", 1),
-    ],
-)
 async def test_prepared_value_and_agent_result_reach_finalize_through_one_composite_attempt(
-    path: str,
-    semantic_node_id: str,
-    validation_attempt: Literal[0, 1],
     tmp_path: Path,
 ) -> None:
-    del path
+    semantic_node_id = "intake.case-design"
     prepared: dict[str, object] = {"prompt": "design cases", "path": semantic_node_id}
     agent_result = ArtifactListResultV1(output_files=("qa/proposal.md",))
     finalized = CaseDesignOutputV1(
-        validation_status="pass",
-        validation_attempt=validation_attempt,
         artifacts=(ArtifactDigestV1(path="qa/proposal.md", digest=_SHA),),
     )
     prepare = _RecordingPrepare(prepared)
@@ -658,11 +671,11 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     writable = ResourceClaims()
     del writable
     output = await executor.execute(
-        _case_design_input(validation_attempt=validation_attempt),
+        _case_design_input(),
         _attempt_scope(semantic_node_id, tmp_path),
     )
     assert prepare.seen_input is not None
-    assert prepare.seen_input.validation_attempt == validation_attempt
+    assert prepare.seen_input.validation_error is None
     assert runtime.seen_prepared == prepared
     assert finalize.seen is not None
     assert finalize.seen.prepared == prepared

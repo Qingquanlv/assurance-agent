@@ -4,6 +4,7 @@ import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
+from assurance_product.feature_set import CAPABILITIES
 from tests.capabilities.wheel_isolation import REPO_ROOT
 
 ASSURANCE_WHEEL_DEPENDENCIES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -48,14 +49,7 @@ ASSURANCE_WHEEL_DEPENDENCIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
-_ASSURANCE_DAG: tuple[str, ...] = (
-    "assurance-intake",
-    "assurance-generation",
-    "assurance-execution",
-    "assurance-healing",
-    "assurance-quality",
-    "assurance-improvement",
-)
+_ASSURANCE_DAG: tuple[str, ...] = tuple(pin.distribution for pin in CAPABILITIES)
 _FORBIDDEN_DISTRIBUTIONS = frozenset({"assurance-agent", "assurance-kernel"})
 _CAPABILITY_RUNTIME_ORDER: tuple[str, ...] = (
     "graph-engine",

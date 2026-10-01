@@ -96,13 +96,13 @@ def test_review_audit_modules_are_gone() -> None:
 
 
 def test_plan_review_schema_has_no_review_audit() -> None:
+    from assurance_generation.contracts import PlanReviewAuthoring
     from assurance_generation.resource_loader import resource_bytes
 
-    for relative in (
-        "ops/api_codegen_review/result.schema.json",
-        "schemas/plan-review.v1.schema.json",
+    for schema in (
+        PlanReviewAuthoring.model_json_schema(),
+        json.loads(resource_bytes("schemas/plan-review.v1.schema.json")),
     ):
-        schema = json.loads(resource_bytes(relative))
         assert "review_audit" not in schema["properties"]
         assert "review_audit" not in schema["required"]
         defs = schema.get("$defs", {})

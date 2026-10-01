@@ -22,14 +22,6 @@ from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 PRODUCT_ID = "assurance"
 ENGINE_API = "2.0"
 PRODUCT_WORKFLOW_MODULE_ID = "assurance.product.workflow"
-FEATURE_WORKFLOW_OWNERS: tuple[str, ...] = (
-    "assurance.execution",
-    "assurance.generation",
-    "assurance.healing",
-    "assurance.improvement",
-    "assurance.intake",
-    "assurance.quality",
-)
 PUBLIC_WORKFLOW_IMPORT_ALIASES: tuple[str, ...] = (
     "execution.execute",
     "execution.rerun",

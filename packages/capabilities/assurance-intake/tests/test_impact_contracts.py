@@ -5,18 +5,18 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from assurance_intake.contracts.impact import (
-    CandidateCaseV1,
-    ChangeEvidenceV1,
-    ChangeImpactInventoryV1,
-    HistoricalProblemV1,
-    ImpactProjectionV1,
-    ImpactSeedV1,
-)
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.domain.impact_validation import (
     impact_required_families,
     validate_inventory_closed_keys,
     validate_inventory_references,
+)
+from assurance_intake.ops.explore.models import (
+    CandidateCaseV1,
+    ChangeEvidenceV1,
+    HistoricalProblemV1,
+    ImpactProjectionV1,
+    ImpactSeedV1,
 )
 
 _LEAFS = frozenset(

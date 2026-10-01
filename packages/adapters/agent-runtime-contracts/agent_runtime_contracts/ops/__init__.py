@@ -10,6 +10,7 @@ from agent_runtime_contracts.ops.errors import (
     validate_output,
 )
 from agent_runtime_contracts.ops.op import run_finalize, run_prepare
+from agent_runtime_contracts.ops.receipt import ArtifactListResultV1
 from agent_runtime_contracts.ops.router import (
     Agent,
     AgentOp,
@@ -38,6 +39,7 @@ from agent_runtime_contracts.ops.request import (
 __all__ = [
     "Agent",
     "AgentBindingDataV1",
+    "ArtifactListResultV1",
     "AgentOp",
     "AgentOpFinalizeInputV1",
     "BOUNDED_PROFILES",

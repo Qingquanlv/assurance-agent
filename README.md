@@ -152,13 +152,16 @@ Intake declares every operation, like a FastAPI route, in its own directory unde
 - `Prepare(hook, depends, writes, errors)` and `Finalize(hook, on_output_error, writes)`
   are the Kernel phases around the run, and their `writes` are the files those hooks
   may write;
-- `Agent(profile, skill, result, writes)` is the run itself. Its `writes` lists exact
+- `Agent(profile, skill, result, writes)` is the run itself. `result` defaults to
+  `ArtifactListResultV1`, the receipt of the files the run wrote; its JSON Schema is
+  the result contract OpenCode receives and the Kernel validates. Its `writes` lists exact
   files and `Dir(root, files=...)` entries: the contract claims each `Dir` root, the
   OpenCode boundary allows only the exact files `files(business)` returns for that run
-  (each must sit under the root), and the output route is the exact files;
+  (each must sit under the root), and the output route is the exact files, or the
+  `Dir` roots when the Agent declares no exact file;
 - `hooks.py` holds the op's own `before(ctx, business)` and `after(ctx, business, result)`
   steps; `ctx.write` enforces the phase's declared writes;
-- `models.py`, exactly one `SKILL.md`, and `result.schema.json` sit next to them.
+- `models.py` and exactly one `SKILL.md` sit next to them.
 
 A run that needs its own skill, input or output is its own op rather than a branch
 inside another op, and a second `*.SKILL.md` in an op directory fails discovery:

@@ -26,7 +26,6 @@ forbidden_modules =
     assurance_intake.plugin
     assurance_intake.feature
     assurance_intake.ops
-    assurance_intake.validators
     assurance_intake.graphs
 
 [importlinter:contract:execution-assurance-contracts-only]
@@ -38,7 +37,6 @@ forbidden_modules =
     assurance_intake.plugin
     assurance_intake.feature
     assurance_intake.ops
-    assurance_intake.validators
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -57,7 +55,6 @@ forbidden_modules =
     assurance_intake.plugin
     assurance_intake.feature
     assurance_intake.ops
-    assurance_intake.validators
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -91,7 +88,6 @@ forbidden_modules =
     assurance_intake.plugin
     assurance_intake.feature
     assurance_intake.ops
-    assurance_intake.validators
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -124,7 +120,6 @@ forbidden_modules =
     assurance_intake.plugin
     assurance_intake.feature
     assurance_intake.ops
-    assurance_intake.validators
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -263,7 +258,6 @@ forbidden_modules =
     assurance_intake.graphs
     assurance_intake.plugin
     assurance_intake.feature
-    assurance_intake.validators
     assurance_intake.effects
 
 [importlinter:contract:intake-ops-below-graphs]

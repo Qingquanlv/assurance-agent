@@ -20,7 +20,7 @@ from assurance_intake.contracts.cases import MinimumCoverageMatrixAuthoring
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.ops.case_review.hooks import case_review_outputs
-from assurance_intake.domain.case_review_seal import (
+from assurance_intake.ops.case_review.hooks.seal import (
     collect_selected_cases,
     expected_case_selection,
     expected_review_history,
@@ -87,8 +87,9 @@ async def test_case_finalization_preserves_unresolved_row_by_mrc_id(
         )
     ]
     plan, plan_ref = install_plan(project, _CHANGE, capability_leafs=_LEAFS, minimum_required_coverage=drafts)
-    outputs = _write_outputs(project, e2e_required=None)
-    matrix_path = project / _MATRIX
+    source = stage if phase == "design" else project
+    outputs = _write_outputs(source, e2e_required=None)
+    matrix_path = source / _MATRIX
     matrix = json.loads(matrix_path.read_bytes())
     if matrix_mode != "dropped":
         matrix.append(
@@ -112,7 +113,7 @@ async def test_case_finalization_preserves_unresolved_row_by_mrc_id(
         plan,
         plan_ref,
         outputs,
-        input_refs=_refs(project, outputs),
+        input_refs=_refs(source, outputs),
         write_runtime_seal=phase == "review",
     )
 
@@ -269,7 +270,6 @@ async def _finalize(
     outputs: tuple[str, ...],
     *,
     coverage_epoch: int = 0,
-    validation_attempt: int | None = None,
     input_refs: list[dict[str, str]] | None = None,
     write_runtime_seal: bool = False,
 ) -> TaskOutcome:
@@ -352,9 +352,6 @@ async def _finalize(
         ),
         "case_refs": [ref for ref in input_refs or [] if ref["path"] == _CASE],
     }
-    request["validation_attempt"] = 1 if validation_attempt is None else validation_attempt
-    if request["validation_attempt"] == 1:
-        request["validation_error"] = "prior validation failed"
     executed = await execute_task(
         handler,
         cast(JSONValue, {"prepare": request, "agent_result": result.model_dump(mode="json")}),
@@ -448,7 +445,10 @@ async def test_finalize_allows_optional_case_outside_frozen_scope(
 
     assert outcome.status == "succeeded", outcome.failure
     assert isinstance(outcome.output, dict)
-    assert outcome.output["validation_status" if phase == "design" else "decision"] == "pass"
+    if phase == "design":
+        assert "artifacts" in outcome.output
+    else:
+        assert outcome.output["decision"] == "pass"
 
 
 @pytest.mark.asyncio
@@ -477,14 +477,11 @@ async def test_case_design_requests_repair_before_quality_when_e2e_case_has_no_j
         plan,
         plan_ref,
         outputs,
-        validation_attempt=0,
     )
 
-    assert outcome.status == "succeeded", outcome.failure
-    assert isinstance(outcome.output, dict)
-    assert outcome.output["validation_status"] == "needs_fix"
-    error = outcome.output["validation_error"]
-    assert isinstance(error, str)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    error = outcome.failure.message
     assert "TC_MENU_002" in error
     assert "manage_menu" in error
 
@@ -512,7 +509,7 @@ async def test_case_design_infers_e2e_mapping_from_authenticated_journey_key(
 
     assert outcome.status == "succeeded", outcome.failure
     assert isinstance(outcome.output, dict)
-    assert outcome.output["validation_status"] == "pass"
+    assert "artifacts" in outcome.output
 
 
 @pytest.mark.asyncio
@@ -542,14 +539,11 @@ async def test_case_design_reports_family_and_journey_errors_in_one_repair_attem
         plan,
         plan_ref,
         outputs,
-        validation_attempt=0,
     )
 
-    assert outcome.status == "succeeded", outcome.failure
-    assert isinstance(outcome.output, dict)
-    assert outcome.output["validation_status"] == "needs_fix"
-    error = outcome.output["validation_error"]
-    assert isinstance(error, str)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    error = outcome.failure.message
     assert "missing required automated cases" in error
     assert "api, e2e" in error
     assert "TC_MENU_002" in error

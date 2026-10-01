@@ -13,21 +13,13 @@ import yaml
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 
 from assurance_intake.contracts.explore import (
+    RUN_SPEC_SNAPSHOT_PATH,
     ExploreAdvisoryV1,
     PreparedExploreV1,
-    RUN_SPEC_SNAPSHOT_PATH,
     TestStrategyV1,
 )
-from assurance_intake.contracts.obligations import SourceRefV1
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.domain.obligations import (
-    apply_scope_exclusions,
-    journey_keys_from_document,
-    normalize_goal_obligations,
-    required_goal_families,
-)
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
-from assurance_intake.domain.impact_validation import validate_inventory_closed_keys
+from assurance_intake.contracts.obligations import PreparedObligationV1, SourceRefV1
 from assurance_intake.contracts.plan import (
     PreparedQualityGoalV1,
     ResolvePlanInputV1,
@@ -36,14 +28,21 @@ from assurance_intake.contracts.plan import (
     plan_artifact_ref,
     plan_bytes,
 )
-from assurance_intake.contracts.obligations import PreparedObligationV1
 from assurance_intake.contracts.quality_goals import (
     COVERAGE_GOAL_ORDER,
     CoverageGoalPolicyV1,
     SufficiencyPolicyV1,
 )
-from assurance_intake.domain.resolve_plan import derive_family_proposal, resolve_plan
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.domain.explore_context import load_exploration_document
+from assurance_intake.domain.impact_validation import validate_inventory_closed_keys
+from assurance_intake.domain.obligations import (
+    apply_scope_exclusions,
+    journey_keys_from_document,
+    normalize_goal_obligations,
+    required_goal_families,
+)
+from assurance_intake.ops.resolve_plan.hooks.plan import derive_family_proposal, resolve_plan
 
 _RESOURCE_PATHS = {
     "assurance.product.configuration.capability-catalog": ".aa/capability-catalog.json",

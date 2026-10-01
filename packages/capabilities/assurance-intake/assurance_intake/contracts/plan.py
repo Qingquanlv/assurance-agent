@@ -12,7 +12,7 @@ from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
-from assurance_intake.contracts.common import TestFamily, validate_family_tuple
+from assurance_intake.contracts.common import SHA256_PATTERN, TestFamily, validate_family_tuple
 from assurance_intake.contracts.impact import INVENTORY_PATH, impact_row_identity
 from assurance_intake.contracts.quality_goals import (
     PreparedQualityGoalV1,
@@ -20,7 +20,6 @@ from assurance_intake.contracts.quality_goals import (
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
-_SHA256 = r"^[0-9a-f]{64}$"
 _REASON_ORDER = {
     "accepted_proposal": 0,
     "fallback_all_candidates": 1,
@@ -130,7 +129,7 @@ def resolution_reason_sort_key(reason: ResolutionReasonV1) -> tuple[int, int]:
 class ResolvedAssurancePlan(FrozenModel):
     schema_version: Literal["1"] = "1"
     change_id: str = Field(min_length=1)
-    requirement_digest: str = Field(pattern=_SHA256)
+    requirement_digest: str = Field(pattern=SHA256_PATTERN)
     gdt: Literal["in-execution"] = "in-execution"
     gpm: Literal["select"] = "select"
     candidate_test_families: tuple[TestFamily, ...]
@@ -139,10 +138,10 @@ class ResolvedAssurancePlan(FrozenModel):
     quality_goal: PreparedQualityGoalV1
     resolved_budgets: PlanBudgetsV1
     policy_resource_id: str
-    policy_digest: str = Field(pattern=_SHA256)
+    policy_digest: str = Field(pattern=SHA256_PATTERN)
     exploration_ref: EvidenceArtifactRefV1
     impact_inventory_ref: EvidenceArtifactRefV1
-    plan_digest: str = Field(pattern=_SHA256)
+    plan_digest: str = Field(pattern=SHA256_PATTERN)
     resolution_reasons: tuple[ResolutionReasonV1, ...]
 
     @field_validator("change_id")
@@ -196,11 +195,11 @@ class ResolvedAssurancePlan(FrozenModel):
 
 class ResolvePlanInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
-    requirement_digest: str = Field(pattern=_SHA256)
+    requirement_digest: str = Field(pattern=SHA256_PATTERN)
     candidate_test_families: tuple[TestFamily, ...] = Field(min_length=1)
     budgets: PlanBudgetsV1
     policy_resource_id: str
-    policy_digest: str = Field(pattern=_SHA256)
+    policy_digest: str = Field(pattern=SHA256_PATTERN)
     family_policy: TestFamilyPolicyV1
     exploration_ref: EvidenceArtifactRefV1
     impact_inventory_ref: EvidenceArtifactRefV1

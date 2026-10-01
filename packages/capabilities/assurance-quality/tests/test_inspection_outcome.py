@@ -22,7 +22,7 @@ from assurance_quality.contracts.agent import InspectionResultV1
 from assurance_quality.contracts.assessment import FailureClassificationFactsV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.graphs.nodes import publish_inspect
-from assurance_quality.graphs.routes import route_coverage
+from assurance_quality.graphs.assessment import route_coverage
 from assurance_quality.ops.fact_baseline import (
     finalize as fact_baseline_finalize,
     prepare as fact_baseline_prepare,

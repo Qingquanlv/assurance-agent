@@ -409,7 +409,7 @@ _ASSEMBLY_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/capabilities/assurance-generation/tests/test_graph_join_any.py::test_first_arrival_becomes_exact_current_trigger"
         ),
         "projection-missing-predecessor": (
-            "packages/capabilities/assurance-intake/tests/test_graph_join_any.py::test_join_predecessors_are_the_three_advance_sites"
+            "packages/capabilities/assurance-generation/tests/test_graph_join_any.py::test_two_reducer_merge_orders_produce_identical_inbox_state"
         ),
         "projection-duplicate-predecessor-token": (
             "packages/capabilities/assurance-generation/tests/test_graph_join_any.py::test_dispatch_cursor_never_reclaims_a_consumed_arrival"

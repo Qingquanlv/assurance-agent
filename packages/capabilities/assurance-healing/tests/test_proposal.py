@@ -27,7 +27,6 @@ from assurance_healing.operations.proposal import (
     RecordCodegenFixApplyHandler,
     RecordFixerApprovalHandler,
 )
-from assurance_healing.resource_loader import resource_bytes
 from healing_fixtures import as_object  # pyright: ignore[reportMissingImports]
 
 _PACKAGE = Path(__file__).resolve().parent.parent / "assurance_healing"
@@ -510,9 +509,6 @@ def test_healing_resources_forbid_legacy_and_provider_names() -> None:
         _PACKAGE / "ops/fix_proposal/SKILL.md",
         _PACKAGE / "ops/coverage_repair/SKILL.md",
         _PACKAGE / "ops/apply_test_repair/SKILL.md",
-        _PACKAGE / "ops/fix_proposal/result.schema.json",
-        _PACKAGE / "ops/coverage_repair/result.schema.json",
-        _PACKAGE / "ops/apply_test_repair/result.schema.json",
     )
     missing = [item for item in required if not item.is_file()]
     assert missing == []
@@ -534,13 +530,17 @@ def test_healing_resources_forbid_legacy_and_provider_names() -> None:
 def test_result_contracts_match_typed_models() -> None:
     from assurance_healing.contracts import CoverageRepairApplySummary
     from assurance_healing.contracts.application import TestRepairResultV1
+    from assurance_healing.ops import router
 
-    assert resource_bytes("ops/fix_proposal/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, FixProposalResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/coverage_repair/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, CoverageRepairApplySummary.model_json_schema())
-    )
-    assert resource_bytes("ops/apply_test_repair/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, TestRepairResultV1.model_json_schema())
-    )
+    expected = {
+        "apply-test-repair": TestRepairResultV1,
+        "coverage-repair": CoverageRepairApplySummary,
+        "fix-proposal": FixProposalResultV1,
+    }
+    assert {name: _symbol(op.agent.result) for name, op in router.agent_ops().items()} == {
+        name: _symbol(model) for name, model in expected.items()
+    }
+
+
+def _symbol(model: type) -> str:
+    return f"{model.__module__}.{model.__qualname__}"

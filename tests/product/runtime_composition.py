@@ -23,6 +23,8 @@ from graph_engine.composition import (
 )
 from graph_engine.plugin_api import PluginDescriptor, ProviderSource, TaskHandler
 
+from assurance_product.feature_set import CAPABILITY_OWNERS
+
 _CALLBACK_REGISTRY_NAME = "_assurance_product_runtime_test_callbacks"
 _VALIDATOR_REGISTRY_NAME = "_assurance_product_runtime_test_validators"
 _CALLBACKS: dict[str, Mapping[str, TaskHandler]] = {}
@@ -30,15 +32,7 @@ _VALIDATORS: dict[str, Mapping[str, object]] = {}
 setattr(builtins, _CALLBACK_REGISTRY_NAME, _CALLBACKS)
 setattr(builtins, _VALIDATOR_REGISTRY_NAME, _VALIDATORS)
 
-_PLUGIN_OWNERS = (
-    "assurance.product.agent",
-    "assurance.intake",
-    "assurance.generation",
-    "assurance.execution",
-    "assurance.quality",
-    "assurance.healing",
-    "assurance.improvement",
-)
+_PLUGIN_OWNERS = ("assurance.product.agent", *CAPABILITY_OWNERS)
 
 
 class _MetadataProvider:

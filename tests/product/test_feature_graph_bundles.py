@@ -241,7 +241,6 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
     )
 
     duplicated_contract_ids = {
-        "assurance.intake.agent.case-design.v1",
         *(
             f"assurance.generation.agent.{family}.{stage}.v1"
             for family in ("api", "e2e", "fuzz", "performance")
@@ -256,7 +255,7 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
     )
 
     assert Counter(occurrences) == expected
-    assert expected.total() == 36
+    assert expected.total() == 35
 
 
 def test_all_attempt_occurrences_are_exact() -> None:
@@ -266,7 +265,7 @@ def test_all_attempt_occurrences_are_exact() -> None:
     tasks = all_feature_task_contracts()
     ids = set(agents) | {item.contract_id for item in tasks.values()}
     expected = Counter({contract_id: 1 for contract_id in ids})
-    expected["assurance.intake.agent.case-design.v1"] = 2
+    expected["assurance.intake.agent.case-design.v1"] = 1
     expected["assurance.generation.resolve-inputs"] = 2
     expected["assurance.improvement.task.evaluate-memory-improvement"] = 2
     for family in ("api", "e2e", "fuzz", "performance"):
@@ -278,7 +277,7 @@ def test_all_attempt_occurrences_are_exact() -> None:
         for contract_id in _build_owner(owner)[1].bound_contract_ids
     )
     assert len(ids) == 45
-    assert expected.total() == 56
+    assert expected.total() == 55
     assert actual == expected
     assert sum(len(names) for names in IMPLEMENTED_BUNDLE_FIELDS.values()) == 27
 
@@ -286,6 +285,7 @@ def test_all_attempt_occurrences_are_exact() -> None:
 def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) -> None:
     from inspect import isfunction
 
+    import graph_engine.stategraph.attempt_graph as attempt_graph
     from graph_engine.stategraph import add_attempt_node
 
     calls: list[tuple[str, str]] = []
@@ -332,25 +332,28 @@ def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) 
 
     for factory in _FACTORY_BUILDERS.values():
         patch_graph_function(factory)
+    # AttemptGraph.add_attempt looks up this module global. Graph modules that
+    # still call the helper are patched above. record invokes the original
+    # function, so the two patches do not count the same registration twice.
+    assert attempt_graph.add_attempt_node is add_attempt_node
+    monkeypatch.setattr(attempt_graph, "add_attempt_node", record)
     contexts = [_build_owner(owner)[1] for owner in _FACTORY_BUILDERS]
     assert len(visited) >= 12
-    assert len(calls) == 56
+    assert len(calls) == 55
     assert Counter(contract_id for _, contract_id in calls) == Counter(
         contract_id for context in contexts for contract_id in context.bound_contract_ids
     )
 
 
 def test_product_allowlist_pairs_match_the_six_factory_builders() -> None:
-    assert tuple((item.owner_id, item.symbol) for item in FEATURE_GRAPH_FACTORIES) == (
-        ("assurance.intake", "assurance_intake.graphs.factory:build_intake_graphs"),
-        ("assurance.generation", "assurance_generation.graphs.factory:build_generation_graphs"),
-        ("assurance.execution", "assurance_execution.graphs.factory:build_execution_graphs"),
-        ("assurance.quality", "assurance_quality.graphs.factory:build_quality_graphs"),
-        ("assurance.healing", "assurance_healing.graphs.factory:build_healing_graphs"),
-        ("assurance.improvement", "assurance_improvement.graphs.factory:build_improvement_graphs"),
-    )
+    from assurance_product.feature_set import CAPABILITY_OWNERS
+
+    assert tuple(item.owner_id for item in FEATURE_GRAPH_FACTORIES) == CAPABILITY_OWNERS
     assert all(isinstance(item, FeatureFactoryRef) for item in FEATURE_GRAPH_FACTORIES)
     assert set(_FACTORY_BUILDERS) == {item.owner_id for item in FEATURE_GRAPH_FACTORIES}
+    assert {owner: builder.__name__ for owner, builder in _FACTORY_BUILDERS.items()} == {
+        item.owner_id: item.symbol.split(":", 1)[1] for item in FEATURE_GRAPH_FACTORIES
+    }
 
 
 def test_bundle_inventory_is_exact() -> None:

@@ -36,7 +36,6 @@ from assurance_quality.ops.issue_triage import (
     prepare as issue_triage_prepare,
 )
 from assurance_quality.ops.report import finalize as report_finalize
-from assurance_quality.resource_loader import resource_bytes
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     BATCH_ID,
     CHANGE_ID,
@@ -615,11 +614,6 @@ def test_quality_resources_forbid_legacy_and_provider_names() -> None:
         _PACKAGE / "ops/issue_triage/SKILL.md",
         _PACKAGE / "ops/report/SKILL.md",
         _RESOURCES / "skills/aa-dashboard/SKILL.md",
-        _PACKAGE / "ops/fact_baseline/result.schema.json",
-        _PACKAGE / "ops/inspect/result.schema.json",
-        _PACKAGE / "ops/issue_analysis/result.schema.json",
-        _PACKAGE / "ops/issue_triage/result.schema.json",
-        _PACKAGE / "ops/report/result.schema.json",
     )
     missing = [item for item in required if not item.is_file()]
     assert missing == [], f"missing quality resources: {missing}"
@@ -635,9 +629,9 @@ def test_quality_resources_forbid_legacy_and_provider_names() -> None:
     )
     for token in _FORBIDDEN:
         assert token not in lowered
-    assert "Do not claim a lifecycle transition" in (
-        _PACKAGE / "ops/issue_triage/SKILL.md"
-    ).read_text(encoding="utf-8")
+    assert "Do not claim a lifecycle transition" in (_PACKAGE / "ops/issue_triage/SKILL.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_fact_baseline_records_only_source_proven_initial_admin_credentials() -> None:
@@ -650,22 +644,23 @@ def test_fact_baseline_records_only_source_proven_initial_admin_credentials() ->
     assert "Never read `.env` or `*.env` files" in skill
 
 
-def test_result_contracts_match_capability_schemas() -> None:
-    assert resource_bytes("ops/fact_baseline/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, FactBaselineResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/inspect/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, InspectionResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/issue_analysis/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, IssueAnalysisResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/issue_triage/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, IssueTriageResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/report/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, ReportResultV1.model_json_schema())
-    )
+def test_result_contracts_are_the_typed_result_models() -> None:
+    from assurance_quality.ops import router
+
+    expected = {
+        "fact-baseline": FactBaselineResultV1,
+        "inspect": InspectionResultV1,
+        "issue-analysis": IssueAnalysisResultV1,
+        "issue-triage": IssueTriageResultV1,
+        "report": ReportResultV1,
+    }
+    assert {name: _symbol(op.agent.result) for name, op in router.agent_ops().items()} == {
+        name: _symbol(model) for name, model in expected.items()
+    }
+
+
+def _symbol(model: type) -> str:
+    return f"{model.__module__}.{model.__qualname__}"
 
 
 def test_inspect_skill_distinguishes_execution_failure_from_inspection_failure() -> None:

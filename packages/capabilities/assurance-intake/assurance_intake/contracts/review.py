@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from graph_engine.plugin_api import FrozenModel
+
+from assurance_intake.contracts.agent import canonical_relative_paths
 from assurance_intake.contracts.common import NonEmptyStr
 
 ReviewDecision = Literal["pass", "needs_fix", "needs_human_review", "reject"]
@@ -18,6 +22,8 @@ _PASS_DECISIONS = frozenset({"pass"})
 _FIX_DECISIONS = frozenset({"needs_fix"})
 _HUMAN_DECISIONS = frozenset({"needs_human_review"})
 _REJECT_DECISIONS = frozenset({"reject"})
+_FIELD_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+_MRC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 def normalized_auto_fix_case_id(item: Mapping[str, object], locator_case_id: str | None) -> str | None:
@@ -34,6 +40,63 @@ def normalized_auto_fix_edits(item: Mapping[str, object]) -> tuple[str, ...]:
     if isinstance(raw, list) and raw and all(isinstance(edit, str) and edit.strip() for edit in raw):
         return tuple(edit.strip() for edit in raw)
     raise ValueError("automatic repair edits must be a non-empty string list")
+
+
+class ReviewRepairActionV1(FrozenModel):
+    finding_id: str = Field(min_length=1)
+    artifact: str = Field(min_length=1)
+    case_id: str | None = Field(default=None, min_length=1)
+    allowed_paths: tuple[str, ...] = Field(min_length=1)
+    instructions: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("artifact")
+    @classmethod
+    def _artifact(cls, value: str) -> str:
+        return canonical_relative_paths((value,))[0]
+
+    @field_validator("allowed_paths")
+    @classmethod
+    def _allowed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = tuple(item.strip() for item in value)
+        if any(not item for item in cleaned):
+            raise ValueError("review repair allowed path must be a non-empty string")
+        if cleaned != value or len(value) != len(set(value)):
+            raise ValueError("review repair allowed_paths must be trimmed and unique")
+        return cleaned
+
+    @field_validator("instructions")
+    @classmethod
+    def _instructions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = tuple(item.strip() for item in value)
+        if any(not item for item in cleaned):
+            raise ValueError("review repair instructions must be non-empty strings")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _artifact_locator_is_bounded(self) -> ReviewRepairActionV1:
+        if self.artifact.endswith("/case.yaml"):
+            if self.case_id is None:
+                raise ValueError("case.yaml repair requires an exact case_id")
+            if any(_FIELD_PATH.fullmatch(path) is None for path in self.allowed_paths):
+                raise ValueError("case.yaml repair allowed_paths must be dotted field paths")
+        elif self.artifact.endswith("/proposal.md"):
+            if self.case_id is not None:
+                raise ValueError("proposal.md repair case_id must be null")
+            if len(self.allowed_paths) != 1 or not self.allowed_paths[0].startswith("## "):
+                raise ValueError("proposal.md repair requires one full level-two Markdown heading")
+            heading = self.allowed_paths[0]
+            if "\n" in heading or "\r" in heading or not heading[3:].strip():
+                raise ValueError("proposal.md repair requires one full level-two Markdown heading")
+        elif self.artifact.endswith("/trace/minimum-coverage-matrix.json"):
+            if self.case_id is not None:
+                raise ValueError("minimum coverage matrix repair case_id must be null")
+            if any(_MRC_ID.fullmatch(path) is None for path in self.allowed_paths):
+                raise ValueError("minimum coverage matrix repair allowed_paths must be exact mrc_id values")
+        elif self.artifact.endswith("/.qa.yaml"):
+            raise ValueError(".qa.yaml cannot be repaired automatically")
+        else:
+            raise ValueError("review repair artifact type is not supported")
+        return self
 
 
 class ReviewFindingLocator(BaseModel):

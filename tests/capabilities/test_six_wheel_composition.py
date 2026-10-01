@@ -10,6 +10,7 @@ import zipfile
 
 import yaml
 
+from assurance_product.feature_set import CAPABILITY_OWNERS
 from tests.capabilities.six_wheel_harness import (
     BINDINGS_ROOTS,
     FIXTURE_PERMISSION_BYTES,
@@ -27,12 +28,7 @@ from tests.capabilities.six_wheel_harness import (
 def test_six_wheel_product_resolves_exact_dependency_order() -> None:
     composition = resolve_fixture("six-wheel-opencode")
     assert composition.dependency_order == (
-        "assurance.intake",
-        "assurance.generation",
-        "assurance.execution",
-        "assurance.healing",
-        "assurance.quality",
-        "assurance.improvement",
+        *CAPABILITY_OWNERS,
         "runtime.opencode",
         "test.assurance.bindings",
     )

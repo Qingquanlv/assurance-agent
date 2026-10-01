@@ -20,7 +20,6 @@ from assurance_generation.graphs.state import (
     PlanRoundArrival,
     consume_plan_round_trigger,
     empty_plan_round_inbox,
-    make_family_lane_result,
     make_plan_round_arrival,
     offer_plan_round_arrival,
 )
@@ -403,80 +402,11 @@ def join_selected(state: Mapping[str, object]) -> dict[str, object]:
     return {}
 
 
-def _family_result(state: Mapping[str, object], *, status: str, selected: bool) -> dict[str, object]:
-    family = state.get("family")
-    if not isinstance(family, str) or not family:
-        raise ValueError("family lane result requires family")
-    result = {
-        "family_results": [
-            make_family_lane_result(
-                coverage_epoch=_as_int(state.get("coverage_epoch", 0), name="coverage_epoch"),
-                family=family,
-                receipt_id=f"receipt-{family}",
-                selected=selected,
-                status=status,
-            )
-        ]
-    }
-    if selected and status == "passed":
-        codegen = state.get("codegen_output")
-        receipt = state.get("codegen_receipt")
-        if isinstance(codegen, Mapping) and isinstance(receipt, Mapping):
-            lane = result["family_results"][0]
-            lane["receipt_id"] = str(receipt["receipt_id"])
-            lane["generated"] = {
-                "family": family,
-                "coverage_epoch": state.get("coverage_epoch", 0),
-                "plan_files": state.get("plan_files", []),
-                "files": codegen.get("files", []),
-                "mapping": codegen.get("mapping"),
-                "receipt": dict(receipt),
-                "method_plans": codegen.get("method_plans") or [],
-                "semantic_reviews": state.get("semantic_reviews") or [],
-            }
-    return {"family_results": result["family_results"]}
-
-
 def generation_done(state: Mapping[str, object]) -> dict[str, object]:
     if state.get("attempt_failure") or state.get("status") == "failed":
         return {"status": "failed", "generation_result": {}}
     GenerationCycleResultV1.model_validate(state.get("generation_result"))
     return {"status": "passed"}
-
-
-def terminal_done(state: Mapping[str, object]) -> dict[str, object]:
-    status = "failed" if state.get("attempt_failure") else "passed"
-    update: dict[str, object] = {
-        "status": status,
-        "decision": state.get("decision", "pass") if status == "passed" else "failed",
-    }
-    if isinstance(state.get("family"), str) and state.get("family"):
-        update.update(_family_result(state, status=status, selected=True))
-    return update
-
-
-def terminal_rejected(state: Mapping[str, object]) -> dict[str, object]:
-    return {
-        "status": "rejected",
-        "decision": "reject",
-        **_family_result(state, status="rejected", selected=True),
-    }
-
-
-def terminal_exhausted(state: Mapping[str, object]) -> dict[str, object]:
-    return {
-        "status": "exhausted",
-        "decision": "exhausted",
-        "rounds_used": state.get("rounds_used", 0),
-        **_family_result(state, status="exhausted", selected=True),
-    }
-
-
-def terminal_skipped(state: Mapping[str, object]) -> dict[str, object]:
-    return {
-        "status": "skipped",
-        **_family_result(state, status="skipped", selected=False),
-    }
 
 
 def _interrupt_payload(state: Mapping[str, object], *, retry: bool) -> dict[str, object]:
@@ -533,8 +463,4 @@ __all__ = [
     "select_init_runtime",
     "select_plan",
     "select_plan_review",
-    "terminal_done",
-    "terminal_exhausted",
-    "terminal_rejected",
-    "terminal_skipped",
 ]

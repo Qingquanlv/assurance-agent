@@ -10,7 +10,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
+from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract, result_schema_from_model
 from agent_runtime_contracts.ops import (
     AgentBindingDataV1,
     InputError,
@@ -54,7 +54,7 @@ from assurance_generation.operations.planning import (
     resolve_family,
 )
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
-from assurance_generation.resource_loader import resource_bytes, resource_text
+from assurance_generation.resource_loader import resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.explore import PreparedExploreV1
 from assurance_intake.domain.explore_context import load_exploration_document
@@ -64,9 +64,7 @@ from assurance_intake.domain.obligations import normalize_obligation_drafts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 CODEGEN_RESULT_ID = "assurance.generation.result.codegen.v1"
-_RESULT_FILES: Mapping[str, str] = {
-    CODEGEN_RESULT_ID: "ops/api_codegen/result.schema.json",
-}
+_RESULT_MODELS: Mapping[str, type[CodegenAuthoringV1]] = {CODEGEN_RESULT_ID: CodegenAuthoringV1}
 _SKILL_FILES: Mapping[Family, str] = {
     "api": "ops/api_codegen/SKILL.md",
     "e2e": "ops/e2e_codegen/SKILL.md",
@@ -174,7 +172,8 @@ def _validate_method_plans(
 
 
 def codegen_result_contract(schema_id: str) -> ResultContract:
-    return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
+    schema = cast(JSONValue, result_schema_from_model(_RESULT_MODELS[schema_id]))
+    return result_contract_from(schema_id, schema)
 
 
 def validate_codegen_input(

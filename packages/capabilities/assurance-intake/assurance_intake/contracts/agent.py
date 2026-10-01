@@ -1,23 +1,14 @@
-"""Validated pieces shared by every intake skill input."""
+"""Agent op contracts shared by every intake op: the input shell and the finalized artifacts."""
 
 from __future__ import annotations
 
-import re
 from pathlib import PurePosixPath
 
 from pydantic import Field, field_validator
 
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_intake.contracts.common import TestFamily, validate_family_tuple
-
-SHA256_PATTERN = r"^[0-9a-f]{64}$"
-
-
-FIELD_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
-
-
-MRC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+from assurance_intake.contracts.common import SHA256_PATTERN, is_canonical_relative
 
 
 def sorted_unique(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
@@ -29,30 +20,8 @@ def sorted_unique(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
 
 def canonical_relative_paths(values: tuple[str, ...]) -> tuple[str, ...]:
     paths = sorted_unique(values, label="artifact path")
-    for path in paths:
-        posix = PurePosixPath(path)
-        if (
-            posix.is_absolute()
-            or "\\" in path
-            or (len(path) >= 2 and path[1] == ":")
-            or posix.as_posix() != path
-            or any(part in {"", ".", ".."} for part in posix.parts)
-        ):
-            raise ValueError("artifact path must be canonical and relative")
-    return paths
-
-
-def canonical_test_families(values: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
-    return validate_family_tuple(values)
-
-
-def validate_case_delta_paths(change_id: str, paths: tuple[str, ...]) -> tuple[str, ...]:
-    del change_id
-    prefix = ("qa", "cases")
-    for path in paths:
-        parts = PurePosixPath(path).parts
-        if len(parts) < 4 or parts[:2] != prefix or parts[-1] != "case.yaml":
-            raise ValueError("case_delta_paths must be exact current-change cases/<module>/case.yaml paths")
+    if not all(is_canonical_relative(path) for path in paths):
+        raise ValueError("artifact path must be canonical and relative")
     return paths
 
 
@@ -85,3 +54,34 @@ class SkillInputV1(FrozenModel):
     @classmethod
     def _artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return canonical_relative_paths(value)
+
+
+class ArtifactDigestV1(FrozenModel):
+    path: str
+    digest: str = Field(pattern=SHA256_PATTERN)
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, value: str) -> str:
+        return canonical_relative_paths((value,))[0]
+
+
+class FinalizedArtifactsV1(FrozenModel):
+    artifacts: tuple[ArtifactDigestV1, ...] = Field(min_length=1)
+
+    @field_validator("artifacts")
+    @classmethod
+    def _artifacts(cls, value: tuple[ArtifactDigestV1, ...]) -> tuple[ArtifactDigestV1, ...]:
+        paths = tuple(item.path for item in value)
+        if paths != tuple(sorted(set(paths))):
+            raise ValueError("finalized artifact paths must be sorted and unique")
+        return value
+
+
+__all__ = [
+    "ArtifactDigestV1",
+    "FinalizedArtifactsV1",
+    "SkillInputV1",
+    "canonical_relative_paths",
+    "sorted_unique",
+]

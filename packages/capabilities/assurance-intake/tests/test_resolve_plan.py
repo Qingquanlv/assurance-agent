@@ -23,7 +23,7 @@ from assurance_intake.contracts.quality_goals import (
     CoverageGoalPolicyV1,
     SufficiencyPolicyV1,
 )
-from assurance_intake.domain.resolve_plan import (
+from assurance_intake.ops.resolve_plan.hooks.plan import (
     InputError,
     derive_family_proposal,
     resolve_families,

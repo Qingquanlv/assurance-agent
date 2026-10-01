@@ -5,19 +5,17 @@ from __future__ import annotations
 import yaml
 from pydantic import ValidationError
 
-from agent_runtime_contracts.ops import FinalizeContext, OutputError, PrepareContext
+from agent_runtime_contracts.ops import ArtifactListResultV1, FinalizeContext, OutputError, PrepareContext
 
-from assurance_intake.contracts.cases import IntakeQaV1
+from assurance_intake.contracts.agent import FinalizedArtifactsV1
 from assurance_intake.contracts.explore import REQUIREMENT_PATH, RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.domain.artifacts import (
-    ArtifactListResultV1,
-    FinalizedArtifactsV1,
     authenticate_files,
     authenticate_receipt,
     file_digest,
     read_regular_bytes,
 )
-from assurance_intake.ops.intake.models import IntakeInputV1
+from assurance_intake.ops.intake.models import IntakeInputV1, IntakeQaV1
 
 MARKER_PATH = "qa/.qa.yaml"
 

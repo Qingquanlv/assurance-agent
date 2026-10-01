@@ -1,4 +1,4 @@
-"""Agent receipt models and authentication of the files they name."""
+"""Authentication of the workspace files an Agent receipt names."""
 
 from __future__ import annotations
 
@@ -8,46 +8,9 @@ import stat
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 
-from pydantic import Field, field_validator
+from agent_runtime_contracts.ops import ArtifactListResultV1, InputError, OutputError
 
-from agent_runtime_contracts.ops import (
-    InputError,
-    OutputError,
-)
-from graph_engine.plugin_api import FrozenModel
-
-from assurance_intake.domain.inputs import SHA256_PATTERN, canonical_relative_paths
-
-
-class ArtifactListResultV1(FrozenModel):
-    output_files: tuple[str, ...] = Field(min_length=1)
-
-    @field_validator("output_files")
-    @classmethod
-    def _output_files(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return canonical_relative_paths(value)
-
-
-class ArtifactDigestV1(FrozenModel):
-    path: str
-    digest: str = Field(pattern=SHA256_PATTERN)
-
-    @field_validator("path")
-    @classmethod
-    def _path(cls, value: str) -> str:
-        return canonical_relative_paths((value,))[0]
-
-
-class FinalizedArtifactsV1(FrozenModel):
-    artifacts: tuple[ArtifactDigestV1, ...] = Field(min_length=1)
-
-    @field_validator("artifacts")
-    @classmethod
-    def _artifacts(cls, value: tuple[ArtifactDigestV1, ...]) -> tuple[ArtifactDigestV1, ...]:
-        paths = tuple(item.path for item in value)
-        if paths != tuple(sorted(set(paths))):
-            raise ValueError("finalized artifact paths must be sorted and unique")
-        return value
+from assurance_intake.contracts.common import is_canonical_relative
 
 
 def leafs(values: Iterable[str]) -> frozenset[str]:
@@ -58,19 +21,8 @@ def file_digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _canonical_relative(path: str) -> bool:
-    posix = PurePosixPath(path)
-    return not (
-        posix.is_absolute()
-        or "\\" in path
-        or (len(path) >= 2 and path[1] == ":")
-        or posix.as_posix() != path
-        or any(part in {"", ".", ".."} for part in posix.parts)
-    )
-
-
 def workspace_file(workspace: Path, relative: str) -> Path:
-    if not _canonical_relative(relative):
+    if not is_canonical_relative(relative):
         raise OutputError(f"output file path must be canonical and relative: {relative}")
     path = workspace
     for part in PurePosixPath(relative).parts:
@@ -170,39 +122,11 @@ def authenticate_review_repair_images(
     return artifacts
 
 
-def validation_repair_images(
-    project_root: Path,
-    write_root: Path,
-    declared: tuple[str, ...],
-    locked: tuple[str, ...],
-) -> dict[str, bytes]:
-    if not locked:
-        raise InputError("artifact_paths must lock the expected output files")
-    images: dict[str, bytes] = {}
-    for relative in declared:
-        if not allowed_by_lock(relative, locked):
-            raise OutputError(f"undeclared output file: {relative}")
-        candidate = workspace_file(write_root, relative)
-        if candidate.exists() or candidate.is_symlink():
-            images[relative] = read_regular_bytes(
-                write_root,
-                relative,
-                kind="validation repair output",
-            )
-        else:
-            images[relative] = read_regular_bytes(
-                project_root,
-                relative,
-                kind="validation repair baseline",
-            )
-    return images
-
-
 def case_change_id(value: str | None) -> str:
     if value is None:
         raise InputError("change_id is required for case-design finalize")
     posix = PurePosixPath(value)
-    if len(posix.parts) != 1 or not _canonical_relative(value):
+    if len(posix.parts) != 1 or not is_canonical_relative(value):
         raise InputError("change_id must be a canonical path segment")
     return value
 

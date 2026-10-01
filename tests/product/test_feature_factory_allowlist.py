@@ -23,6 +23,7 @@ from graph_engine.boot.source_authentication import (
     authenticated_editable_source,
 )
 
+from assurance_product.feature_set import CAPABILITY_OWNERS
 from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
 from tests.product.unused_runtime_ports import (
     UNUSED_ATTEMPT_KERNEL,
@@ -31,38 +32,9 @@ from tests.product.unused_runtime_ports import (
 )
 
 
-EXPECTED_FEATURE_GRAPH_FACTORIES = (
-    FeatureFactoryRef("assurance.intake", "assurance_intake.graphs.factory:build_intake_graphs"),
-    FeatureFactoryRef(
-        "assurance.generation",
-        "assurance_generation.graphs.factory:build_generation_graphs",
-    ),
-    FeatureFactoryRef(
-        "assurance.execution",
-        "assurance_execution.graphs.factory:build_execution_graphs",
-    ),
-    FeatureFactoryRef("assurance.quality", "assurance_quality.graphs.factory:build_quality_graphs"),
-    FeatureFactoryRef("assurance.healing", "assurance_healing.graphs.factory:build_healing_graphs"),
-    FeatureFactoryRef(
-        "assurance.improvement",
-        "assurance_improvement.graphs.factory:build_improvement_graphs",
-    ),
-)
-
-
 def test_feature_graph_factories_are_the_fixed_six_owner_symbol_pairs() -> None:
-    assert FEATURE_GRAPH_FACTORIES == EXPECTED_FEATURE_GRAPH_FACTORIES
-    assert tuple((item.owner_id, item.symbol) for item in FEATURE_GRAPH_FACTORIES) == tuple(
-        (item.owner_id, item.symbol) for item in EXPECTED_FEATURE_GRAPH_FACTORIES
-    )
-    assert {item.owner_id for item in FEATURE_GRAPH_FACTORIES} == {
-        "assurance.intake",
-        "assurance.generation",
-        "assurance.execution",
-        "assurance.quality",
-        "assurance.healing",
-        "assurance.improvement",
-    }
+    assert tuple(item.owner_id for item in FEATURE_GRAPH_FACTORIES) == CAPABILITY_OWNERS
+    assert len({item.symbol for item in FEATURE_GRAPH_FACTORIES}) == len(FEATURE_GRAPH_FACTORIES) == 6
 
 
 def test_feature_graph_factories_are_not_derived_from_an_entrypoint_scan() -> None:
@@ -89,7 +61,7 @@ def test_feature_graph_factories_ignore_configuration_override(tmp_path: Path, m
     importlib.reload(sys.modules["assurance_product.graph_factories"])
     from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES as reloaded
 
-    assert reloaded == EXPECTED_FEATURE_GRAPH_FACTORIES
+    assert reloaded == FEATURE_GRAPH_FACTORIES
     assert all(item.owner_id != "assurance.rogue" for item in reloaded)
 
 

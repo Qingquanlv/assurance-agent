@@ -3731,18 +3731,18 @@ items:
   verification: packages/features/assurance-improvement/tests/test_plugin.py::test_improvement_plugin_conforms
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-case-design/case-delta-reviewer-prompt.md
-  disposition: migrate
-  owner: assurance.intake
-  new_id: assurance.intake.skill.aa-case-design.case-delta-reviewer-prompt.v1
-  status: verified
-  verification: packages/features/assurance-intake/tests/test_plugin.py::test_intake_plugin_conforms
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-case-design/visual-companion.md
-  disposition: migrate
-  owner: assurance.intake
-  new_id: assurance.intake.skill.aa-case-design.visual-companion.v1
-  status: verified
-  verification: packages/features/assurance-intake/tests/test_plugin.py::test_intake_plugin_conforms
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-dashboard/scripts/case-center.html
   disposition: delete_phase6

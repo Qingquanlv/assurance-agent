@@ -9,7 +9,7 @@ from typing import cast
 import pytest
 from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.wire.schema import validate_structured_result
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskHandler
 from tests.product.test_change_local_output_routing import execute_task
 
@@ -36,7 +36,6 @@ from assurance_improvement.operations.retro import (
     AssembleRetroInput,
     RetroCollectHandler,
 )
-from assurance_improvement.resource_loader import resource_bytes
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     HEX_A,
@@ -247,10 +246,14 @@ def test_resources_have_no_forbidden_provider_tokens() -> None:
             assert token not in lowered
 
 
-def test_result_contract_bytes_equal_typed_models() -> None:
-    assert resource_bytes("ops/retro/result.schema.json") == canonical_json_bytes(
-        RetroAnalysisResultV3.model_json_schema()
-    )
+def test_retro_result_contracts_are_the_typed_model() -> None:
+    from assurance_improvement.ops import router
+
+    retro = ("retro", "retro-eval-analysis", "retro-issue-analysis", "retro-workflow-analysis")
+    expected = (RetroAnalysisResultV3.__module__, RetroAnalysisResultV3.__qualname__)
+    for name in retro:
+        result = router.agent_ops()[name].agent.result
+        assert (result.__module__, result.__qualname__) == expected, name
 
 
 @pytest.mark.asyncio

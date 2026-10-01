@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import sys
 import uuid
 from dataclasses import dataclass
@@ -19,7 +18,7 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
 )
 
-from agent_runtime_contracts.ops import Agent, Dir, OpRouter, WriteScopeError
+from agent_runtime_contracts.ops import Agent, ArtifactListResultV1, Dir, OpRouter, WriteScopeError
 from agent_runtime_contracts.wire.models import AgentRunRequest, AgentRunResult
 
 _SHA = "a" * 64
@@ -160,7 +159,6 @@ def _capability(tmp_path: Path, *, extra: dict[str, str] | None = None) -> Modul
         "ops/echo/__init__.py": _ECHO_INIT.replace("PKG", name),
         "ops/echo/SKILL.md": "echo skill\n",
         "ops/echo/notes.md": "echo notes\n",
-        "ops/echo/result.schema.json": json.dumps({"type": "object"}),
         "ops/count/__init__.py": _COUNT_INIT.replace("PKG", name),
         **(extra or {}),
     }
@@ -284,11 +282,19 @@ def test_resource_manifest_comes_from_op_directories(tmp_path: Path) -> None:
     router = _router(_capability(tmp_path))
 
     assert router.resource_files() == {
-        "fixture.cap.result.echo.v1": "ops/echo/result.schema.json",
         "fixture.cap.skill.aa-echo.notes.v1": "ops/echo/notes.md",
         "fixture.cap.skill.aa-echo.v1": "ops/echo/SKILL.md",
     }
     assert router.resource_text("ops/echo/notes.md") == "echo notes\n"
+
+
+def test_result_contract_is_the_agent_result_model_schema(tmp_path: Path) -> None:
+    op = _router(_capability(tmp_path)).agent_ops()["echo"]
+    contract = op.result_contract()
+
+    assert op.agent.result.__name__ == "EchoResult"
+    assert contract.schema_id == "fixture.cap.result.echo.v1"
+    assert contract.schema_digest == canonical_digest(op.agent.result.model_json_schema())
 
 
 def test_second_skill_file_in_an_op_is_rejected(tmp_path: Path) -> None:
@@ -347,6 +353,16 @@ def test_agent_writes_must_be_unique_across_files_and_dirs() -> None:
             result=AgentRunResult,
             writes=("qa/notes", Dir("qa/notes", files=lambda business: ())),
         )
+
+
+def test_agent_result_defaults_to_the_file_receipt() -> None:
+    agent = Agent(profile="assurance-v1-reviewer", skill="aa-echo", writes=("qa/notes.md",))
+
+    assert agent.result is ArtifactListResultV1
+    receipt = ArtifactListResultV1.model_validate({"output_files": ["qa/b.md", " qa/a.md", "qa/b.md"]})
+    assert receipt.output_files == ("qa/a.md", "qa/b.md")
+    with pytest.raises(ValueError, match="canonical and relative"):
+        ArtifactListResultV1.model_validate({"output_files": ["../escape.md"]})
 
 
 def test_override_replaces_a_dependency_for_tests(tmp_path: Path) -> None:
@@ -516,7 +532,6 @@ def test_dotted_op_keeps_a_directory_shared_by_prepare_and_runtime(tmp_path: Pat
         extra={
             "ops/api_codegen/__init__.py": _DOTTED_INIT,
             "ops/api_codegen/SKILL.md": "codegen skill\n",
-            "ops/api_codegen/result.schema.json": json.dumps({"type": "object"}),
         },
     )
     router = _router(module)
@@ -547,13 +562,28 @@ def test_dotted_op_keeps_a_directory_shared_by_prepare_and_runtime(tmp_path: Pat
     )
 
 
+def test_directory_only_agent_routes_its_directory(tmp_path: Path) -> None:
+    declaration = _DOTTED_INIT.replace(
+        '("qa/results/codegen/api-codegen-summary.md", Dir("qa/tests"))', '(Dir("qa/tests"),)'
+    )
+    assert declaration != _DOTTED_INIT
+    module = _capability(
+        tmp_path,
+        extra={
+            "ops/api_codegen/__init__.py": declaration,
+            "ops/api_codegen/SKILL.md": "codegen skill\n",
+        },
+    )
+
+    assert _router(module).output_routes()["api.codegen"] == ("qa/tests",)
+
+
 def test_unbound_directory_is_invalid_input(tmp_path: Path) -> None:
     module = _capability(
         tmp_path,
         extra={
             "ops/api_codegen/__init__.py": _DOTTED_INIT,
             "ops/api_codegen/SKILL.md": "codegen skill\n",
-            "ops/api_codegen/result.schema.json": json.dumps({"type": "object"}),
         },
     )
 

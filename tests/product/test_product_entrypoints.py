@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from assurance_product.feature_set import CAPABILITY_OWNERS
 from assurance_product.graphs.factory import (
     ProductFeatureBundles,
     ThinEntrypointGraphs,
@@ -35,14 +36,7 @@ def test_product_entrypoints_are_thirteen_python_roots() -> None:
 
 
 def test_feature_bundles_cover_six_owners() -> None:
-    assert set(PUBLIC_BUNDLE_FIELDS) == {
-        "assurance.intake",
-        "assurance.generation",
-        "assurance.execution",
-        "assurance.quality",
-        "assurance.healing",
-        "assurance.improvement",
-    }
+    assert set(PUBLIC_BUNDLE_FIELDS) == set(CAPABILITY_OWNERS)
     assert set(ProductFeatureBundles.__dataclass_fields__) == {
         "intake",
         "generation",

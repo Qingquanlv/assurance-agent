@@ -1,11 +1,11 @@
-"""Intake op input."""
+"""Intake op input and the change marker its Agent writes."""
 
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from assurance_intake.contracts.common import TestFamily
-from assurance_intake.domain.inputs import SkillInputV1, canonical_test_families
+from assurance_intake.contracts.agent import SkillInputV1
+from assurance_intake.contracts.common import NonEmptyStr, TestFamily, validate_family_tuple
 
 
 class IntakeInputV1(SkillInputV1):
@@ -22,4 +22,12 @@ class IntakeInputV1(SkillInputV1):
     @field_validator("candidate_test_families")
     @classmethod
     def _candidate_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
-        return canonical_test_families(value)
+        return validate_family_tuple(value)
+
+
+class IntakeQaV1(BaseModel):
+    """Bootstrap marker, before case-design adds the full change document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    change_id: NonEmptyStr

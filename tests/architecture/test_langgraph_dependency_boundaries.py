@@ -1,15 +1,10 @@
 from pathlib import Path
 import tomllib
 
+from assurance_product.feature_set import CAPABILITIES
+
 ROOT = Path(__file__).resolve().parents[2]
-FEATURES = (
-    "assurance-intake",
-    "assurance-generation",
-    "assurance-execution",
-    "assurance-quality",
-    "assurance-healing",
-    "assurance-improvement",
-)
+FEATURES = tuple(pin.distribution for pin in CAPABILITIES)
 
 
 def dependencies(path: Path) -> set[str]:

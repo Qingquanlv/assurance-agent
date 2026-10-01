@@ -37,11 +37,16 @@ class DemoContract:
     owner_id: str = "assurance.demo"
 
 
+class DemoGraphs:
+    pass
+
+
 def _feature(
     *,
     agent_contracts: Mapping[str, DemoContract] | None = None,
     output_route_templates: Mapping[str, tuple[str, ...]] | None = None,
     graph_factory: FeatureFactoryRef | None = None,
+    bundle_type: type = DemoGraphs,
 ) -> FeatureSpec[DemoContract]:
     return FeatureSpec(
         plugin=DemoPlugin,
@@ -55,6 +60,7 @@ def _feature(
             {"demo": ("out/{change_id}.json",)} if output_route_templates is None else output_route_templates
         ),
         graph_factory=graph_factory or FeatureFactoryRef("assurance.demo", "demo.graphs.factory:build"),
+        bundle_type=bundle_type,
     )
 
 
@@ -76,3 +82,8 @@ def test_feature_spec_rejects_plugin_factory_owner_drift() -> None:
 def test_feature_spec_rejects_missing_output_route() -> None:
     with pytest.raises(ValueError, match="output route"):
         _feature(output_route_templates={})
+
+
+def test_feature_spec_rejects_non_class_bundle_type() -> None:
+    with pytest.raises(TypeError):
+        _feature(bundle_type=DemoGraphs())  # type: ignore[arg-type]

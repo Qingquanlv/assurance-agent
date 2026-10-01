@@ -14,7 +14,6 @@ from graph_engine.plugin_api import (
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
 from assurance_intake import ops
-from assurance_intake.validators import CaseCandidateValidator, CaseReferenceValidator
 
 INTAKE_SOURCE = ProviderSource(
     distribution="assurance-intake",
@@ -43,11 +42,6 @@ _SCHEMA_FILES: dict[str, str] = {
     ),
 }
 
-_VALIDATORS = {
-    "assurance.intake.validator.case-candidate.v1": CaseCandidateValidator(),
-    "assurance.intake.validator.case-references.v1": CaseReferenceValidator(),
-}
-
 
 class IntakePlugin(CapabilityPlugin):
     spec = CapabilitySpec(
@@ -59,7 +53,6 @@ class IntakePlugin(CapabilityPlugin):
         schema_files=_SCHEMA_FILES,
         resource_files=dict(ops.router.resource_files()),
         task_handlers=dict(ops.router.handlers(cast(TaskHandler, ops))),
-        commit_validators=_VALIDATORS,
     )
 
     @classmethod

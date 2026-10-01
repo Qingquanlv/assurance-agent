@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from agent_runtime_contracts.ops import Agent, Finalize, Prepare
 
+from assurance_intake.contracts.agent import FinalizedArtifactsV1
 from assurance_intake.contracts.explore import REQUIREMENT_PATH, RUN_SPEC_SNAPSHOT_PATH
-from assurance_intake.domain.artifacts import ArtifactListResultV1, FinalizedArtifactsV1
 from assurance_intake.ops import router
 from assurance_intake.ops.intake import hooks
 from assurance_intake.ops.intake.models import IntakeInputV1
@@ -17,7 +17,6 @@ op = router.agent(
     agent=Agent(
         profile="assurance-v1-doc-author",
         skill="aa-intake",
-        result=ArtifactListResultV1,
         writes=(hooks.MARKER_PATH,),
     ),
     finalize=Finalize(hook=hooks.after),

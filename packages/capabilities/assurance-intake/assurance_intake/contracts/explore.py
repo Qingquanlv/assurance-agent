@@ -7,27 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validat
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_intake.contracts.common import MrcCategory, MrcLayer
-from assurance_intake.contracts.obligations import PreparedObligationV1, SourceKind
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.contracts.impact import (
-    INVENTORY_PATH,
-    ImpactProjectionV1,
-)
+from assurance_intake.contracts.obligations import PreparedObligationV1
 
 EXPLORATION_PATH = "qa/results/explore/exploration.json"
-EXPLORATION_DRAFT_PATH = "qa/results/explore/exploration-draft.json"
 REQUIREMENT_PATH = "qa/requirement.md"
 RUN_SPEC_SNAPSHOT_PATH = "qa/results/intake/sources/run-spec.effective.yaml"
-REQUIREMENT_CONTEXT_BUDGET = 65536
-EXPLORE_AGENT_OUTPUT_PATHS: tuple[str, ...] = (EXPLORATION_DRAFT_PATH, INVENTORY_PATH)
-EXPLORE_OFFICIAL_OUTPUT_PATHS: tuple[str, ...] = (EXPLORATION_PATH, INVENTORY_PATH)
-EXPLORE_OUTPUT_PATHS: tuple[str, ...] = EXPLORE_AGENT_OUTPUT_PATHS
-
-
-class RequirementReadFactsV1(FrozenModel):
-    total_bytes: int = Field(ge=0)
-    provided_bytes: int = Field(ge=0)
-    read_state: Literal["complete", "truncated"]
 
 
 class SourceCodeEvidenceV1(BaseModel):
@@ -89,13 +73,6 @@ class TestStrategyV1(BaseModel):
         if layers != expected:
             raise ValueError("layer_recommendation must list API, E2E, Fuzz, Performance once")
         return self
-
-
-class SourceCatalogEntryV1(FrozenModel):
-    source_id: str = Field(min_length=1)
-    kind: SourceKind
-    artifact: EvidenceArtifactRefV1
-    quotable: bool
 
 
 class SourceQuoteV1(FrozenModel):
@@ -188,45 +165,13 @@ class PreparedExploreV1(FrozenModel):
     test_strategy: TestStrategyV1
 
 
-class ExploreContextV1(BaseModel):
-    """Deterministic graph-owned evidence inventory supplied to Explore."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["1.0"] = "1.0"
-    change_id: str = Field(min_length=1)
-    generated_at: Literal["1970-01-01T00:00:00Z"] = "1970-01-01T00:00:00Z"
-    requirement_summary: str | None = None
-    aggregation_policy: dict[str, Any]
-    archive_window: dict[str, Any]
-    staleness: dict[str, Any]
-    impact: ImpactProjectionV1
-    case_signals: list[Any]
-    test_health: list[Any]
-    historical_issues: list[Any]
-    evidence: list[Any]
-    source_catalog: tuple[SourceCatalogEntryV1, ...]
-    requirement_read_facts: RequirementReadFactsV1
-    degraded: bool
-    degraded_reasons: list[str]
-    no_git: bool
-
-
 __all__ = [
-    "EXPLORATION_DRAFT_PATH",
     "EXPLORATION_PATH",
-    "EXPLORE_AGENT_OUTPUT_PATHS",
-    "EXPLORE_OFFICIAL_OUTPUT_PATHS",
-    "EXPLORE_OUTPUT_PATHS",
-    "REQUIREMENT_CONTEXT_BUDGET",
     "REQUIREMENT_PATH",
     "RUN_SPEC_SNAPSHOT_PATH",
     "ExploreAdvisoryV1",
-    "ExploreContextV1",
     "ObligationDraftV1",
     "ObservationDraftV1",
     "PreparedExploreV1",
-    "RequirementReadFactsV1",
-    "SourceCatalogEntryV1",
     "SourceQuoteV1",
 ]

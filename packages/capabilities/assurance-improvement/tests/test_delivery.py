@@ -5,7 +5,6 @@ from typing import cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest
-from graph_engine.canonical import canonical_json_bytes
 from graph_engine.frozen_json import freeze_json
 from graph_engine.plugin_api import TaskHandler
 from tests.product.test_change_local_output_routing import execute_task, task_request
@@ -21,7 +20,6 @@ from assurance_improvement.operations.delivery import (
     LoadImprovementDeliveryHandler,
     RollbackMemoryImprovementHandler,
 )
-from assurance_improvement.resource_loader import resource_bytes
 from assurance_improvement.validators.archive import ArchiveIntegrityValidator
 from assurance_improvement.validators.candidates import CandidatesValidator
 from assurance_improvement.validators.delivery import DeliveryValidator
@@ -431,9 +429,13 @@ async def test_archive_finalize_normalizes_frozen_wire_input(tmp_path: Path) -> 
     assert outcome.status == "succeeded"
 
 
-def test_archive_result_contract_bytes_equal_typed_model() -> None:
-    assert resource_bytes("ops/archive/result.schema.json") == canonical_json_bytes(
-        ArchiveResultV1.model_json_schema()
+def test_archive_result_contract_is_the_typed_model() -> None:
+    from assurance_improvement.ops import router
+
+    result = router.agent_ops()["archive"].agent.result
+    assert (result.__module__, result.__qualname__) == (
+        ArchiveResultV1.__module__,
+        ArchiveResultV1.__qualname__,
     )
 
 

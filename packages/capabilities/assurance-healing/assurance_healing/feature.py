@@ -29,6 +29,7 @@ FEATURE = FeatureSpec(
     graph_factory=FeatureFactoryRef(
         "assurance.healing", "assurance_healing.graphs.factory:build_healing_graphs"
     ),
+    bundle_type=HealingGraphs,
 )
 
 __all__ = ["FEATURE", "HealingGraphs"]

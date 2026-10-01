@@ -32,6 +32,7 @@ from graph_engine.plugin_api import FrozenModel, ProviderSource
 
 from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 from assurance_product.change_workspace import ChangeWorkspace
+from assurance_product.feature_set import CAPABILITIES, CAPABILITY_OWNERS
 from assurance_product.models import (
     CONFIGURATION_PLUGIN_ID,
     CONFIGURATION_PLUGIN_VERSION,
@@ -50,21 +51,14 @@ from assurance_product.source_catalog import (
 
 _PRODUCT_VERSION = "0.3.0"
 _MANIFEST_PRODUCT_ID = "assurance.product"
-_CAPABILITY_PLUGIN_IDS: tuple[str, ...] = (
-    "assurance.intake",
-    "assurance.generation",
-    "assurance.execution",
-    "assurance.healing",
-    "assurance.quality",
-    "assurance.improvement",
-)
+_CAPABILITY_PLUGIN_IDS: tuple[str, ...] = CAPABILITY_OWNERS
 _RUNTIME_PLUGIN_ID = "runtime.opencode"
 _PRODUCT_ENTRYPOINT = "assurance-opencode"
 _DECLARATION_FILENAME = "product-declaration-opencode.json"
 _DECLARATION_PATH = f"assurance_product/{_DECLARATION_FILENAME}"
 _PROVIDER_SYMBOL = "AssuranceOpenCodeProductProvider"
 _PLUGIN_VERSIONS: dict[str, str] = {
-    **{plugin_id: "==0.3.0" for plugin_id in _CAPABILITY_PLUGIN_IDS},
+    **{pin.owner_id: f"=={pin.version}" for pin in CAPABILITIES},
     _RUNTIME_PLUGIN_ID: "==0.1.0",
     PLUGIN_ID: f"=={PLUGIN_VERSION}",
     CONFIGURATION_PLUGIN_ID: f"=={CONFIGURATION_PLUGIN_VERSION}",
@@ -424,14 +418,7 @@ def product_graph_manifest(
     product_key = SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
     if product_key in sources:
         wheel_source_digests["assurance.product"] = sources[product_key].snapshot.digest
-    for owner in (
-        "assurance.intake",
-        "assurance.generation",
-        "assurance.execution",
-        "assurance.quality",
-        "assurance.healing",
-        "assurance.improvement",
-    ):
+    for owner in _CAPABILITY_PLUGIN_IDS:
         key = SourceKey(SourceRole.PLUGIN, owner)
         if key in sources:
             wheel_source_digests[owner] = sources[key].snapshot.digest

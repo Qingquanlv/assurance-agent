@@ -40,10 +40,6 @@ from assurance_intake.contracts.plan import (
     ResolvedAssurancePlan,
     TestFamilyPolicyV1,
 )
-from assurance_intake.contracts.decisions import (
-    ReviewRoundAdvanceInput,
-    ReviewRoundAdvanceOutput,
-)
 from assurance_intake.contracts.review import CaseReviewFindingV1, CaseReviewResultV1, ReviewDecision
 from assurance_intake.contracts.workflow import (
     CaseFlowResultV1,
@@ -83,8 +79,6 @@ __all__ = [
     "QaYaml",
     "ReviewDecision",
     "ReviewedCaseV1",
-    "ReviewRoundAdvanceInput",
-    "ReviewRoundAdvanceOutput",
     "RiskTier",
     "TestFamily",
     "TEST_FAMILY_ORDER",
