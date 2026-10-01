@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
 import yaml
 from pydantic import Field, ValidationError, field_validator, model_validator
 
-from agent_runtime_contracts.ops import InputError, OutputError
+from agent_runtime_contracts.ops import ArtifactListResultV1, InputError, OutputError
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 
+from assurance_intake.contracts.agent import SkillInputV1, canonical_relative_paths
 from assurance_intake.contracts.cases import QaYaml, require_impact_row_coverage
-from assurance_intake.contracts.common import TestFamily
-from assurance_intake.contracts.explore import ExploreAdvisoryV1, PreparedExploreV1
+from assurance_intake.contracts.common import SHA256_PATTERN, TestFamily, validate_family_tuple
+from assurance_intake.contracts.explore import EXPLORATION_PATH, ExploreAdvisoryV1, PreparedExploreV1
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.domain.artifacts import (
-    ArtifactListResultV1,
     file_digest,
     leafs,
     read_regular_bytes,
@@ -37,20 +37,20 @@ from assurance_intake.domain.case_checks import (
 )
 from assurance_intake.domain.case_modules import infer_case_delta_paths
 from assurance_intake.domain.explore_context import load_exploration_document
-from assurance_intake.domain.inputs import (
-    SHA256_PATTERN,
-    SkillInputV1,
-    canonical_relative_paths,
-    canonical_test_families,
-    validate_case_delta_paths,
-)
 from assurance_intake.domain.plan_codec import decode_plan
 from assurance_intake.domain.prepare_evidence import authenticate_evidence_refs
 
 MARKER_PATH = "qa/.qa.yaml"
 PROPOSAL_PATH = "qa/proposal.md"
 MATRIX_PATH = "qa/results/trace/minimum-coverage-matrix.json"
-EXPLORATION_PATH = "qa/results/explore/exploration.json"
+
+
+def validate_case_delta_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    for path in paths:
+        parts = PurePosixPath(path).parts
+        if len(parts) < 4 or parts[:2] != ("qa", "cases") or parts[-1] != "case.yaml":
+            raise ValueError("case_delta_paths must be exact current-change cases/<module>/case.yaml paths")
+    return paths
 
 
 def case_delta_outputs(case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -73,7 +73,7 @@ class CaseDeltaInputV1(SkillInputV1):
     @field_validator("selected_test_families")
     @classmethod
     def _selected_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
-        return canonical_test_families(value)
+        return validate_family_tuple(value)
 
     @field_validator("case_delta_paths")
     @classmethod
@@ -85,7 +85,7 @@ class CaseDeltaInputV1(SkillInputV1):
 
     @model_validator(mode="after")
     def _case_delta_paths_match_change(self) -> CaseDeltaInputV1:
-        validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        validate_case_delta_paths(self.case_delta_paths)
         return self
 
 

@@ -15,7 +15,7 @@ from assurance_intake.domain.obligations import (
     normalize_obligation_drafts,
     required_goal_families,
 )
-from assurance_intake.domain.plan_artifacts import prepare_quality_goal
+from assurance_intake.ops.resolve_plan.hooks.artifacts import prepare_quality_goal
 from tests.op_handlers import op_handler
 from tests.product.test_change_local_output_routing import execute_task
 

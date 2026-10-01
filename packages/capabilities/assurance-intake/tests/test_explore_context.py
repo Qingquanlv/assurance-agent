@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from assurance_intake.contracts.explore import EXPLORE_OUTPUT_PATHS
-from assurance_intake.domain.explore_context import build_explore_context
+from assurance_intake.ops.explore.models import EXPLORE_AGENT_OUTPUT_PATHS
+from assurance_intake.ops.explore.hooks.context import build_explore_context
 
 _LEAFS = (
     "capabilities.domain_factories.dept.make_dept",
@@ -65,7 +65,7 @@ def _workspace(tmp_path: Path) -> Path:
 
 
 def test_output_paths_are_fixed() -> None:
-    assert EXPLORE_OUTPUT_PATHS == (
+    assert EXPLORE_AGENT_OUTPUT_PATHS == (
         "qa/results/explore/exploration-draft.json",
         "qa/results/explore/impact-inventory.json",
     )

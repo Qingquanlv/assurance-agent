@@ -27,6 +27,7 @@ FEATURE = FeatureSpec(
     graph_factory=FeatureFactoryRef(
         "assurance.execution", "assurance_execution.graphs.factory:build_execution_graphs"
     ),
+    bundle_type=ExecutionGraphs,
 )
 
 __all__ = ["ExecutionGraphs", "FEATURE"]

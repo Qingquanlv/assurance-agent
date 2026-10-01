@@ -11,7 +11,7 @@ from pydantic import Field, field_validator
 
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_intake.contracts.common import TestFamily
+from assurance_intake.contracts.common import SHA256_PATTERN, TestFamily, validate_family_tuple
 from assurance_intake.contracts.explore import ObligationDraftV1, SourceQuoteV1
 from assurance_intake.contracts.obligations import (
     DiscoveryAuditRowV1,
@@ -22,7 +22,6 @@ from assurance_intake.contracts.obligations import (
     VerificationRequirementV1,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.domain.inputs import SHA256_PATTERN, canonical_test_families
 
 
 class InputError(ValueError):
@@ -38,7 +37,7 @@ class TrustedIntakeSourcesV1(FrozenModel):
     @field_validator("candidate_test_families")
     @classmethod
     def _candidate_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
-        return canonical_test_families(value)
+        return validate_family_tuple(value)
 
 
 _AUTH_PURPOSE = Literal["expected_basis", "scope_exclusion", "analysis"]

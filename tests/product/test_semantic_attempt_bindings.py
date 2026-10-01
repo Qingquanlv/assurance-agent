@@ -532,7 +532,7 @@ def test_bound_case_design_runs_phases_through_installed_host(
     outputs = {
         "prepare": frozen_run_request().model_dump(mode="json"),
         "runtime": run_result.model_dump(mode="json"),
-        "finalize": {"validation_status": "pass", "validation_attempt": 0, "artifacts": []},
+        "finalize": {"artifacts": []},
     }
 
     class Host(_RecordingTaskHost):
@@ -584,7 +584,7 @@ def test_bound_case_design_runs_phases_through_installed_host(
         store.close()
 
     assert isinstance(result, ExecutedAttemptResult)
-    assert result.output.validation_status == "pass"
+    assert result.output.artifacts == ()
     calls = [cast(TaskHostExecuteCall, call) for call in host.calls]
     assert [call.identity.phase for call in calls] == ["prepare", "runtime", "finalize"]
     assert calls[1].capability_id == "runtime.opencode.execute"
@@ -637,7 +637,7 @@ def test_installed_finalize_wraps_the_bundle_in_the_op_envelope(tmp_path: Path) 
         canonical_digest,
     )
     from agent_runtime_contracts.ops import AgentOpFinalizeInputV1
-    from assurance_intake.domain.artifacts import ArtifactListResultV1
+    from agent_runtime_contracts.ops import ArtifactListResultV1
     from assurance_intake.ops.intake import IntakeInputV1
     from assurance_product.runtime_bindings import InstalledFinalizePhase
 

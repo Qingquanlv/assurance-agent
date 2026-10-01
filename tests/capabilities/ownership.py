@@ -11,6 +11,8 @@ from typing import Literal
 
 import yaml
 
+from assurance_product.feature_set import CAPABILITY_OWNERS as ASSURANCE_OWNERS
+
 Kind = Literal[
     "module",
     "callable",
@@ -26,15 +28,6 @@ Kind = Literal[
 ]
 Disposition = Literal["migrate", "replace_phase5", "retain_harness", "delete_phase6"]
 Status = Literal["planned", "verified"]
-
-ASSURANCE_OWNERS: tuple[str, ...] = (
-    "assurance.intake",
-    "assurance.generation",
-    "assurance.execution",
-    "assurance.healing",
-    "assurance.quality",
-    "assurance.improvement",
-)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OWNERSHIP_PATH = REPO_ROOT / "tests" / "capabilities" / "fixtures" / "ownership.yaml"

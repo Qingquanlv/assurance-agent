@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Iterator
 from typing import cast
@@ -9,10 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from agent_runtime_contracts import validate_structured_result
-from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from agent_runtime_contracts.ops import ArtifactListResultV1
+from agent_runtime_contracts.wire.schema import thaw_json
+from graph_engine.canonical import JSONValue, canonical_digest
 
-from assurance_intake.contracts import CaseReviewResultV1
-from assurance_intake.domain.artifacts import ArtifactListResultV1
 from assurance_intake.ops import router
 from assurance_intake.plugin import IntakePlugin
 
@@ -38,7 +37,7 @@ def _resource_files() -> Iterator[str]:
 
 def test_intake_resources_forbid_legacy_and_provider_names() -> None:
     texts = {relative: resource_bytes(relative).decode("utf-8") for relative in _resource_files()}
-    assert len(texts) == 22
+    assert len(texts) == 15
     hits = [relative for relative, text in texts.items() if _TOKEN.search(text)]
     assert hits == [], f"forbidden provider/legacy tokens in resources: {hits}"
     lowered = "\n".join(text.lower() for text in texts.values())
@@ -46,22 +45,19 @@ def test_intake_resources_forbid_legacy_and_provider_names() -> None:
         assert token not in lowered
 
 
-def test_result_contracts_match_capability_schemas() -> None:
-    assert resource_bytes("ops/case_review/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, CaseReviewResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/case_design/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, ArtifactListResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/case_repair/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, ArtifactListResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/intake/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, ArtifactListResultV1.model_json_schema())
-    )
-    assert resource_bytes("ops/explore/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, ArtifactListResultV1.model_json_schema())
-    )
+def test_result_contracts_are_the_typed_result_models() -> None:
+    results = {
+        name: f"{op.agent.result.__module__}.{op.agent.result.__qualname__}"
+        for name, op in router.agent_ops().items()
+    }
+    receipt = "agent_runtime_contracts.ops.receipt.ArtifactListResultV1"
+    assert results == {
+        "case-design": receipt,
+        "case-repair": receipt,
+        "case-review": "assurance_intake.contracts.review.CaseReviewResultV1",
+        "explore": receipt,
+        "intake": receipt,
+    }
 
 
 def test_artifact_list_model_and_result_contracts_reject_an_empty_receipt() -> None:
@@ -74,10 +70,9 @@ def test_artifact_list_model_and_result_contracts_reject_an_empty_receipt() -> N
         "qa/requirement.md",
     )
 
-    for name in ("intake", "explore", "case_design", "case_repair"):
+    for name in ("intake", "explore", "case-design", "case-repair"):
         schema = cast(
-            dict[str, JSONValue],
-            json.loads(resource_bytes(f"ops/{name}/result.schema.json")),
+            dict[str, JSONValue], thaw_json(router.agent_ops()[name].result_contract().schema_document)
         )
         output_files = cast(dict[str, JSONValue], schema["properties"])["output_files"]
         assert isinstance(output_files, dict)

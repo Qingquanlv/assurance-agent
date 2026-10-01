@@ -8,13 +8,13 @@ from pydantic import ValidationError
 from assurance_intake.contracts.explore import (
     ExploreAdvisoryV1,
     ObligationDraftV1,
-    SourceCatalogEntryV1,
     SourceQuoteV1,
 )
 from assurance_intake.contracts.impact import impact_row_identity
 from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObligationV1
 from assurance_intake.contracts.plan import bind_impact_row_ids
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.ops.explore.models import SourceCatalogEntryV1
 
 
 def _digest() -> str:

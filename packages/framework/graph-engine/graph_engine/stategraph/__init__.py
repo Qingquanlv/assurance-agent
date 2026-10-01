@@ -1,3 +1,4 @@
+from graph_engine.stategraph.attempt_graph import AttemptGraph
 from graph_engine.stategraph.checkpoint_bridge import (
     CHECKPOINT_MARKERS_STATE_KEY,
     CheckpointBridgeMarker,
@@ -17,6 +18,7 @@ __all__ = [
     "MAX_ACTIVE_GENERATIONS",
     "omit_checkpoint_bridge_fields",
     "replace_checkpoint_marker_batch",
+    "AttemptGraph",
     "add_attempt_edge",
     "add_attempt_node",
     "add_route",

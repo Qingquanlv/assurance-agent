@@ -20,19 +20,20 @@ from assurance_healing.plugin import HealingPlugin
 from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPROVEMENT_AGENT_JOBS
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASKS
 from assurance_improvement.plugin import ImprovementPlugin
-from assurance_intake.domain.artifacts import ArtifactListResultV1, FinalizedArtifactsV1
+from agent_runtime_contracts.ops import ArtifactListResultV1
+from assurance_intake.contracts.agent import FinalizedArtifactsV1
 from assurance_intake.ops.case_design import CaseDesignOutputV1, CaseDesignInputV1
 from assurance_intake.ops.case_repair import CaseRepairInputV1, CaseRepairOutputV1
 from assurance_intake.ops.case_review import CaseReviewInputV1
 from assurance_intake.ops.explore import ExploreInputV1
 from assurance_intake.ops.intake import IntakeInputV1
 from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS, attempt_contract_refs
-from assurance_intake.contracts.decisions import (
+from assurance_intake.contracts.review import CaseReviewResultV1
+from assurance_intake.graphs.case import (
     ReviewRoundAdvanceInput,
     ReviewRoundAdvanceOutput,
+    advance_review_round,
 )
-from assurance_intake.contracts.review import CaseReviewResultV1
-from assurance_intake.domain.review_rounds import advance_review_round
 from assurance_intake.plugin import IntakePlugin
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOBS
 from assurance_quality.plugin import QualityPlugin
@@ -47,7 +48,7 @@ EXPECTED_AGENT_COUNTS = {
 }
 
 EXPECTED_VALIDATOR_COUNTS = {
-    "assurance.intake": 2,
+    "assurance.intake": 0,
     "assurance.generation": 2,
     "assurance.execution": 2,
     "assurance.quality": 6,
@@ -78,7 +79,7 @@ def test_case_review_seal_files_are_finalize_not_runtime() -> None:
 
 
 def test_review_history_identity_includes_epoch() -> None:
-    from assurance_intake.domain.case_review_seal import case_review_runtime_paths
+    from assurance_intake.ops.case_review.hooks.seal import case_review_runtime_paths
 
     _, first, _ = case_review_runtime_paths(coverage_epoch=0, review_round=0)
     _, second, _ = case_review_runtime_paths(coverage_epoch=1, review_round=0)
@@ -219,7 +220,7 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
         assert isinstance(contract, TaskAttemptContract)
         assert contract.validators == ()
         effectful += 1
-    assert registered == 19
+    assert registered == 17
     assert effectful == 36
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 

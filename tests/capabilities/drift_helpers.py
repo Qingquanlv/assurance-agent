@@ -145,7 +145,16 @@ def _mutate_capability_catalog(workspace: Path, product_root: Path, fixtures: Pa
 
 def _mutate_plugin_code(workspace: Path, product_root: Path, fixtures: Path) -> None:
     del product_root, fixtures
-    path = workspace / "wheels" / "assurance-intake" / "assurance_intake" / "ops" / "case_review" / "hooks.py"
+    path = (
+        workspace
+        / "wheels"
+        / "assurance-intake"
+        / "assurance_intake"
+        / "ops"
+        / "case_review"
+        / "hooks"
+        / "__init__.py"
+    )
     path.write_text(
         path.read_text(encoding="utf-8") + "\n# capabilities-drift-plugin-code\n", encoding="utf-8"
     )
@@ -190,18 +199,16 @@ def _mutate_skill_bytes(workspace: Path, product_root: Path, fixtures: Path) -> 
     )
 
 
-def _mutate_result_contract_bytes(workspace: Path, product_root: Path, fixtures: Path) -> None:
+def _mutate_result_contract_model(workspace: Path, product_root: Path, fixtures: Path) -> None:
     del product_root, fixtures
-    path = (
-        workspace
-        / "wheels"
-        / "assurance-intake"
-        / "assurance_intake"
-        / "ops"
-        / "case_review"
-        / "result.schema.json"
+    path = workspace / "wheels" / "assurance-intake" / "assurance_intake" / "contracts" / "review.py"
+    docstring = '"""Agent-authored case review, including independent SUT-source evidence."""'
+    source = path.read_text(encoding="utf-8")
+    if docstring not in source:
+        raise AssertionError("CaseReviewResultV1 docstring moved; update the drift mutation")
+    path.write_text(
+        source.replace(docstring, f'"""{docstring[3:-3]} (capabilities-drift)"""', 1), encoding="utf-8"
     )
-    path.write_bytes(path.read_bytes() + b"\n")
 
 
 def _mutate_policy_bytes(workspace: Path, product_root: Path, fixtures: Path) -> None:
@@ -224,7 +231,7 @@ _MUTATORS: dict[str, Callable[[Path, Path, Path], None]] = {
     "plugin-version": _mutate_plugin_version,
     "schema-bytes": _mutate_schema_bytes,
     "skill-bytes": _mutate_skill_bytes,
-    "result-contract-bytes": _mutate_result_contract_bytes,
+    "result-contract-model": _mutate_result_contract_model,
     "policy-bytes": _mutate_policy_bytes,
     "binding-data": _mutate_binding_data,
     "capability-catalog": _mutate_capability_catalog,

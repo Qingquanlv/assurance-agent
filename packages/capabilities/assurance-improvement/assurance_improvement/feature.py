@@ -35,6 +35,7 @@ FEATURE = FeatureSpec(
         "assurance.improvement",
         "assurance_improvement.graphs.factory:build_improvement_graphs",
     ),
+    bundle_type=ImprovementGraphs,
 )
 
 __all__ = ["FEATURE", "ImprovementGraphs"]

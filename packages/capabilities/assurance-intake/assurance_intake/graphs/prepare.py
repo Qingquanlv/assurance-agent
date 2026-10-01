@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END, START
 from langgraph.graph.state import CompiledStateGraph
 
 from assurance_intake.graphs.calls import (
@@ -14,59 +14,47 @@ from assurance_intake.graphs.calls import (
     select_intake,
     select_resolve_plan,
 )
-from assurance_intake.graphs.state import IntakeState, terminal_failed, terminal_prepared
+from assurance_intake.graphs.state import IntakeState, terminal_failed
 from assurance_intake.ops.explore import op as explore
 from assurance_intake.ops.intake import op as intake
 from assurance_intake.ops.resolve_plan import op as resolve_plan
 from graph_engine.boot.boot import CapabilityBuildContext
-from graph_engine.stategraph import add_attempt_edge, add_attempt_node
+from graph_engine.stategraph import AttemptGraph
 
 
 def _node(fn: object) -> Callable[..., Any]:
     return cast(Callable[..., Any], fn)
 
 
+def terminal_prepared(state: Mapping[str, object]) -> dict[str, object]:
+    del state
+    return {"status": "prepared"}
+
+
 def build_prepare_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
-    builder: StateGraph[IntakeState] = StateGraph(IntakeState)
-    add_attempt_node(
-        builder,
+    builder: AttemptGraph[IntakeState] = AttemptGraph(
+        IntakeState,
         context,
-        "intake",
-        semantic_node_id="intake.intake",
-        contract_id=intake.contract_id,
+        namespace="intake",
         activation=activation_one_shot,
-        select=select_intake,
-        publish=publish_artifacts,
     )
-    add_attempt_node(
-        builder,
-        context,
-        "explore",
-        semantic_node_id="intake.explore",
-        contract_id=explore.contract_id,
-        activation=activation_one_shot,
-        select=select_explore,
-        publish=publish_artifacts,
-    )
-    add_attempt_node(
-        builder,
-        context,
+    builder.add_attempt("intake", intake, select=select_intake, publish=publish_artifacts)
+    builder.add_attempt("explore", explore, select=select_explore, publish=publish_artifacts)
+    builder.add_attempt(
         "resolve-plan",
-        semantic_node_id="intake.resolve-plan",
-        contract_id=resolve_plan.contract_id,
-        activation=activation_one_shot,
+        resolve_plan,
         select=select_resolve_plan,
         publish=publish_plan,
     )
     builder.add_node("prepared", _node(terminal_prepared))
     builder.add_node("failed", _node(terminal_failed))
     builder.add_edge(START, "intake")
-    add_attempt_edge(builder, "intake", "explore", on_failure="failed")
-    add_attempt_edge(builder, "explore", "resolve-plan", on_failure="failed")
-    add_attempt_edge(builder, "resolve-plan", "prepared", on_failure="failed")
+    builder.add_attempt_edge("intake", "explore", on_failure="failed")
+    builder.add_attempt_edge("explore", "resolve-plan", on_failure="failed")
+    builder.add_attempt_edge("resolve-plan", "prepared", on_failure="failed")
     builder.add_edge("prepared", END)
     builder.add_edge("failed", END)
-    return context.compile_subgraph(builder)
+    return builder.compile_subgraph()
 
 
-__all__ = ["build_prepare_graph"]
+__all__ = ["build_prepare_graph", "terminal_prepared"]

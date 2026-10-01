@@ -14,30 +14,22 @@ from assurance_improvement.feature import FEATURE as IMPROVEMENT
 from assurance_intake.feature import FEATURE as INTAKE
 from assurance_quality.feature import FEATURE as QUALITY
 
+from assurance_product.feature_set import CAPABILITY_OWNERS
 from assurance_product.source_catalog import product_source_catalog
 
 FEATURES: tuple[FeatureSpec[AgentExecutionContract], ...] = (
     INTAKE,
     GENERATION,
     EXECUTION,
-    QUALITY,
     HEALING,
+    QUALITY,
     IMPROVEMENT,
-)
-
-_EXPECTED_OWNERS = (
-    "assurance.intake",
-    "assurance.generation",
-    "assurance.execution",
-    "assurance.quality",
-    "assurance.healing",
-    "assurance.improvement",
 )
 
 
 def validate_feature_set(features: Sequence[FeatureSpec[AgentExecutionContract]]) -> None:
-    owners = tuple(feature.graph_factory.owner_id for feature in features)
-    if owners != _EXPECTED_OWNERS:
+    owners = tuple(feature.owner_id for feature in features)
+    if owners != CAPABILITY_OWNERS:
         raise ValueError(f"feature owners drifted: {owners}")
     pinned_sources = {source.distribution: source for source in product_source_catalog()[:-1]}
     actual_sources = {

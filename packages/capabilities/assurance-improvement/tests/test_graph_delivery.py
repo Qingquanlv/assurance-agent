@@ -21,7 +21,7 @@ from assurance_improvement.contracts.improvements import ImprovementProjection
 from assurance_improvement.effects.delivery import ImprovementDeliveryEffect
 from graph_engine.effects.state import EffectCallContext, MemoryEffectState
 from assurance_improvement.graphs.factory import build_improvement_graphs
-from assurance_improvement.graphs.routes import (
+from assurance_improvement.graphs.delivery import (
     route_apply_evaluate,
     route_auto_review,
     route_human_review_result,
@@ -241,18 +241,18 @@ def test_registered_receipt_traces_use_only_the_three_improvement_effects() -> N
 
 
 def test_auto_review_and_evaluate_routes_are_exclusive() -> None:
-    assert route_auto_review({"lifecycle_state": "approved"}) == "evaluate"
+    assert route_auto_review({"lifecycle_state": "approved"}) == "improvement.apply-evaluate"
     assert route_auto_review({"lifecycle_state": "needs_rework"}) == "rework"
     assert route_auto_review({"lifecycle_state": "rejected"}) == "rejected"
     assert route_auto_review({"lifecycle_state": "proposed"}) == "human-review"
     assert route_auto_review({"lifecycle_state": "unknown"}) == "failed"
     assert route_auto_review({"attempt_failure": {"resolution_kind": "rejected"}}) == "failed"
-    assert route_human_review_result({"lifecycle_state": "approved"}) == "evaluate"
+    assert route_human_review_result({"lifecycle_state": "approved"}) == "improvement.apply-evaluate"
     assert route_human_review_result({"lifecycle_state": "rejected"}) == "rejected"
     assert route_human_review_result({"lifecycle_state": "needs_rework"}) == "rework"
     assert route_human_review_result({"lifecycle_state": "superseded"}) == "superseded"
     assert route_human_review_result({"lifecycle_state": "proposed"}) == "failed"
-    assert route_apply_evaluate({"outcome": "passed"}) == "apply"
+    assert route_apply_evaluate({"outcome": "passed"}) == "improvement.apply"
     assert route_apply_evaluate({"outcome": "regressed"}) == "failed"
     assert route_apply_evaluate({"attempt_failure": {"resolution_kind": "permanent"}}) == "failed"
 

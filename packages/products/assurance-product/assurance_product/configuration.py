@@ -16,6 +16,7 @@ from graph_engine.composition import (
 from graph_engine.frozen_json import freeze_json, thaw_json
 from graph_engine.plugin_api import PluginContribution, ResourceContribution
 
+from assurance_product.feature_set import CAPABILITIES
 from assurance_product.models import (
     CONFIGURATION_PLUGIN_ID,
     CONFIGURATION_PLUGIN_VERSION,
@@ -40,14 +41,7 @@ _REQUIRED_FILES = frozenset({_PLUGIN_MANIFEST, _CONFIG_PATH, _POLICY_PATH, _KNOW
 _ALLOWED_DECLARED_RESOURCE_IDS = frozenset(
     {_POLICY_RESOURCE_ID, _KNOWLEDGE_RESOURCE_ID, _CATALOG_RESOURCE_ID, _ENVELOPE_RESOURCE_ID}
 )
-_REQUIRED_DEPENDENCIES = (
-    ("assurance.intake", "==0.3.0"),
-    ("assurance.generation", "==0.3.0"),
-    ("assurance.execution", "==0.3.0"),
-    ("assurance.healing", "==0.3.0"),
-    ("assurance.quality", "==0.3.0"),
-    ("assurance.improvement", "==0.3.0"),
-)
+_REQUIRED_DEPENDENCIES = tuple((pin.owner_id, f"=={pin.version}") for pin in CAPABILITIES)
 _AUTHORITY_KEYS = frozenset(
     {
         "adapter",

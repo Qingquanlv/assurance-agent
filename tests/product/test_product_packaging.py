@@ -107,18 +107,18 @@ def test_wheels_omit_whole_tree_modules_and_result_export_schema(
     assert "graph_engine.graphs" not in read_wheel_metadata(built_product_wheel).entry_points
 
 
-_CAPABILITY_WHEELS = (
-    ("assurance-intake", "assurance_intake", "build_intake_graphs"),
-    ("assurance-generation", "assurance_generation", "build_generation_graphs"),
-    ("assurance-execution", "assurance_execution", "build_execution_graphs"),
-    ("assurance-quality", "assurance_quality", "build_quality_graphs"),
-    ("assurance-healing", "assurance_healing", "build_healing_graphs"),
-    ("assurance-improvement", "assurance_improvement", "build_improvement_graphs"),
-)
+def _capability_wheels() -> tuple[tuple[str, str, str], ...]:
+    from assurance_product.feature_set import CAPABILITIES
+    from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
+
+    symbols = {ref.owner_id: ref.symbol for ref in FEATURE_GRAPH_FACTORIES}
+    return tuple(
+        (pin.distribution, pin.package, symbols[pin.owner_id].split(":", 1)[1]) for pin in CAPABILITIES
+    )
 
 
 def test_capability_wheels_ship_python_graphs_without_topology_yaml(tmp_path: Path) -> None:
-    for package, module, factory in _CAPABILITY_WHEELS:
+    for package, module, factory in _capability_wheels():
         out_dir = tmp_path / package
         subprocess.run(
             ["uv", "build", "--package", package, "--out-dir", str(out_dir)],

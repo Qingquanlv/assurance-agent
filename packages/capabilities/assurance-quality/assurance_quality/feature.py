@@ -34,6 +34,7 @@ FEATURE = FeatureSpec(
     graph_factory=FeatureFactoryRef(
         "assurance.quality", "assurance_quality.graphs.factory:build_quality_graphs"
     ),
+    bundle_type=QualityGraphs,
 )
 
 __all__ = ["FEATURE", "QualityGraphs"]

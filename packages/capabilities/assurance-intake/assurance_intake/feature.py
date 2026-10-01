@@ -31,6 +31,7 @@ FEATURE = FeatureSpec(
     graph_factory=FeatureFactoryRef(
         "assurance.intake", "assurance_intake.graphs.factory:build_intake_graphs"
     ),
+    bundle_type=IntakeGraphs,
 )
 
 __all__ = [

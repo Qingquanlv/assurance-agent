@@ -32,8 +32,15 @@ class FeatureSpec(Generic[AgentContractT]):
     task_contracts: Mapping[str, TaskAttemptContract[Any, Any]]
     output_route_templates: Mapping[str, tuple[str, ...]]
     graph_factory: FeatureFactoryRef
+    bundle_type: type
+
+    @property
+    def owner_id(self) -> str:
+        return self.graph_factory.owner_id
 
     def __post_init__(self) -> None:
+        if not isinstance(self.bundle_type, type):
+            raise TypeError("feature bundle_type must be a class")
         owner = self.graph_factory.owner_id
         if self.plugin.spec.plugin_id != owner:
             raise ValueError(f"feature owner mismatch: {owner}")

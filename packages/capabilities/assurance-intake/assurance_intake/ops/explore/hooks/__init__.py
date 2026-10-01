@@ -2,27 +2,26 @@
 
 from __future__ import annotations
 
-from agent_runtime_contracts.ops import FinalizeContext, InputError, OutputError, PrepareContext
+from agent_runtime_contracts.ops import (
+    ArtifactListResultV1,
+    FinalizeContext,
+    InputError,
+    OutputError,
+    PrepareContext,
+)
 from graph_engine.canonical import canonical_json_bytes
 
-from assurance_intake.contracts.explore import (
-    EXPLORATION_PATH,
+from assurance_intake.contracts.agent import FinalizedArtifactsV1
+from assurance_intake.contracts.explore import EXPLORATION_PATH, ExploreAdvisoryV1
+from assurance_intake.domain.artifacts import authenticate_receipt, file_digest, leafs
+from assurance_intake.ops.explore.hooks.context import build_explore_context
+from assurance_intake.ops.explore.hooks.outputs import seal_official_exploration, validate_explore_outputs
+from assurance_intake.ops.explore.models import (
+    CONTEXT_PATH,
     EXPLORE_AGENT_OUTPUT_PATHS,
     EXPLORE_OFFICIAL_OUTPUT_PATHS,
-    ExploreAdvisoryV1,
+    ExploreInputV1,
 )
-from assurance_intake.domain.artifacts import (
-    ArtifactListResultV1,
-    FinalizedArtifactsV1,
-    authenticate_receipt,
-    file_digest,
-    leafs,
-)
-from assurance_intake.domain.explore_context import build_explore_context
-from assurance_intake.domain.exploration import seal_official_exploration, validate_explore_outputs
-from assurance_intake.ops.explore.models import ExploreInputV1
-
-CONTEXT_PATH = "qa/results/explore/context.json"
 
 
 def before(ctx: PrepareContext, business: ExploreInputV1) -> ExploreInputV1:

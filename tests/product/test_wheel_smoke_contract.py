@@ -31,15 +31,12 @@ def closure_check(smoke_script: str) -> ClosureCheck:
 
 
 def _selected_sources(binding_distribution: str) -> PluginSources:
+    from assurance_product.feature_set import CAPABILITIES
+
     return {
-        "assurance.execution": ("wheel_plugin", "assurance-execution"),
-        "assurance.generation": ("wheel_plugin", "assurance-generation"),
-        "assurance.healing": ("wheel_plugin", "assurance-healing"),
-        "assurance.improvement": ("wheel_plugin", "assurance-improvement"),
-        "assurance.intake": ("wheel_plugin", "assurance-intake"),
+        **{pin.owner_id: ("wheel_plugin", pin.distribution) for pin in CAPABILITIES},
         "assurance.product.agent": ("wheel_plugin", binding_distribution),
         "assurance.product.configuration": ("config_tree", None),
-        "assurance.quality": ("wheel_plugin", "assurance-quality"),
         "runtime.opencode": ("wheel_plugin", "agent-runtime-opencode"),
     }
 

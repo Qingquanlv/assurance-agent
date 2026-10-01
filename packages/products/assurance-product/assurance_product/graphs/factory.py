@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
@@ -27,21 +27,15 @@ from assurance_product.graphs.entrypoints import (
     build_issue_review_root,
     build_retro_root,
 )
+from assurance_product.feature_set import CAPABILITY_OWNERS
+from assurance_product.features import FEATURES
 from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
-from assurance_product.models import FEATURE_WORKFLOW_OWNERS, PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
+from assurance_product.models import PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
 from assurance_quality.feature import QualityGraphs
 from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
-_BUNDLE_TYPES: Mapping[str, type] = {
-    "assurance.intake": IntakeGraphs,
-    "assurance.generation": GenerationGraphs,
-    "assurance.execution": ExecutionGraphs,
-    "assurance.quality": QualityGraphs,
-    "assurance.healing": HealingGraphs,
-    "assurance.improvement": ImprovementGraphs,
-}
 _FORBIDDEN_PRODUCT_TAIL_NODES = frozenset(
     {"coverage-repair", "coverage-repair-brief", "quality-recheck", "coverage-needed"}
 )
@@ -57,6 +51,14 @@ class ProductFeatureBundles:
     improvement: ImprovementGraphs
 
 
+_DECLARED_BUNDLE_TYPES = get_type_hints(ProductFeatureBundles)
+_INSTALLED_BUNDLE_TYPES = {
+    feature.owner_id.removeprefix("assurance."): feature.bundle_type for feature in FEATURES
+}
+if _DECLARED_BUNDLE_TYPES != _INSTALLED_BUNDLE_TYPES:
+    raise RuntimeError("ProductFeatureBundles drifted from installed feature bundle types")
+
+
 @dataclass(frozen=True, slots=True)
 class ThinEntrypointGraphs:
     entrypoints: Mapping[str, CompiledStateGraph]
@@ -66,7 +68,7 @@ def coerce_feature_bundles(features: Mapping[str, object]) -> ProductFeatureBund
     owners = tuple(features)
     if len(owners) != len(set(owners)):
         raise ValueError("duplicate feature owners")
-    expected = set(FEATURE_WORKFLOW_OWNERS)
+    expected = set(CAPABILITY_OWNERS)
     got = set(owners)
     missing = expected - got
     extra = got - expected
@@ -74,20 +76,19 @@ def coerce_feature_bundles(features: Mapping[str, object]) -> ProductFeatureBund
         raise ValueError(f"missing feature owners: {sorted(missing)}")
     if extra:
         raise ValueError(f"extra feature owners: {sorted(extra)}")
-    typed: dict[str, object] = {}
-    for owner in FEATURE_WORKFLOW_OWNERS:
-        bundle = features[owner]
-        required = _BUNDLE_TYPES[owner]
-        if not isinstance(bundle, required):
-            raise TypeError(f"{owner} must be {required.__name__}")
-        typed[owner] = bundle
+    checked: dict[str, object] = {}
+    for feature in FEATURES:
+        bundle = features[feature.owner_id]
+        if not isinstance(bundle, feature.bundle_type):
+            raise TypeError(f"{feature.owner_id} must be {feature.bundle_type.__name__}")
+        checked[feature.owner_id] = bundle
     return ProductFeatureBundles(
-        intake=cast(IntakeGraphs, typed["assurance.intake"]),
-        generation=cast(GenerationGraphs, typed["assurance.generation"]),
-        execution=cast(ExecutionGraphs, typed["assurance.execution"]),
-        quality=cast(QualityGraphs, typed["assurance.quality"]),
-        healing=cast(HealingGraphs, typed["assurance.healing"]),
-        improvement=cast(ImprovementGraphs, typed["assurance.improvement"]),
+        intake=cast(IntakeGraphs, checked["assurance.intake"]),
+        generation=cast(GenerationGraphs, checked["assurance.generation"]),
+        execution=cast(ExecutionGraphs, checked["assurance.execution"]),
+        quality=cast(QualityGraphs, checked["assurance.quality"]),
+        healing=cast(HealingGraphs, checked["assurance.healing"]),
+        improvement=cast(ImprovementGraphs, checked["assurance.improvement"]),
     )
 
 

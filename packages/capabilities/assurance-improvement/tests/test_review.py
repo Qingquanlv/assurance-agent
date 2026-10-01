@@ -5,11 +5,9 @@ from typing import cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest
-from graph_engine.canonical import canonical_json_bytes
 from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import ImprovementReviewResultV1
-from assurance_improvement.resource_loader import resource_bytes
 from graph_engine.plugin_api import TaskHandler
 
 from assurance_improvement.ops.improvement_review import (
@@ -165,9 +163,13 @@ def test_review_validator_rejects_src_path() -> None:
     assert result.accepted is False
 
 
-def test_review_result_contract_bytes_equal_typed_model() -> None:
-    assert resource_bytes("ops/improvement_review/result.schema.json") == canonical_json_bytes(
-        ImprovementReviewResultV1.model_json_schema()
+def test_review_result_contract_is_the_typed_model() -> None:
+    from assurance_improvement.ops import router
+
+    result = router.agent_ops()["improvement-review"].agent.result
+    assert (result.__module__, result.__qualname__) == (
+        ImprovementReviewResultV1.__module__,
+        ImprovementReviewResultV1.__qualname__,
     )
 
 

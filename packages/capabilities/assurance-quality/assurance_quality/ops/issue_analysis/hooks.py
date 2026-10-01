@@ -62,6 +62,8 @@ def after(
     )
     return FinalizedIssueAnalysisV1(
         agent_result=result,
-        candidate_digest=(candidate_document_digest(candidates_doc) if result.status == "completed" else None),
+        candidate_digest=(
+            candidate_document_digest(candidates_doc) if result.status == "completed" else None
+        ),
         issue_analysis_ref=issue_analysis_ref,
     )

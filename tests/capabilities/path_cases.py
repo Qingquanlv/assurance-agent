@@ -23,8 +23,9 @@ from assurance_healing.validators.test_tree import TestTreeValidator
 from assurance_improvement.operations.agent import _workspace_file as improvement_workspace_file
 from assurance_improvement.validators.delivery import DeliveryValidator
 from assurance_improvement.validators.paths import canonical_relative as improvement_canonical
+from agent_runtime_contracts.ops import ArtifactListResultV1
+from assurance_intake.domain.artifacts import allowed_by_lock
 from assurance_intake.domain.artifacts import workspace_file as intake_workspace_file
-from assurance_intake.validators.cases import CaseCandidateValidator
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.operations.assessment import _read_ref as quality_workspace_file
 from assurance_quality.validators.paths import canonical_relative as quality_canonical
@@ -58,6 +59,7 @@ _STRING_PATHS = {
     "windows-drive": "C:/capabilities-secret",
     "undeclared-write-root": "src/app.py",
 }
+_INTAKE_LOCK = ("qa/.qa.yaml", "qa/cases", "qa/proposal.md", "qa/requirement.md", "qa/results")
 
 
 @dataclass
@@ -120,7 +122,11 @@ def _file_snapshot(root: Path) -> frozenset[str]:
 
 def _string_rejected(wheel: str, path: str, hook: PathProceedHook) -> bool:
     if wheel == "intake":
-        accepted = CaseCandidateValidator().validate(_candidate(path), _context()).accepted
+        try:
+            ArtifactListResultV1(output_files=(path,))
+        except ValueError:
+            return True
+        accepted = allowed_by_lock(path, _INTAKE_LOCK)
     elif wheel == "generation":
         try:
             canonical_relative_path(path)

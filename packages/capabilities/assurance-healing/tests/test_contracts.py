@@ -627,7 +627,7 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
         "apply-test-repair": (
             "aa-apply-test-repair",
             "assurance-v1-test-author",
-            (),
+            ("qa/tests",),
         ),
         "coverage-repair": (
             "aa-coverage-repair",

@@ -61,29 +61,20 @@ When `ui_exploration` or `api_discovery` is present, it is the live surface for 
 
 Do not rely on prior conversation context.
 
-### Validation repair fast path
+### Validation error retry
 
-When graph input contains `validation_attempt: 1`, enter **repair-only mode** before
-the normal procedure below. Read the existing graph-declared outputs and the frozen
-plan, then repair every semicolon-separated validation error in `validation_error` in
-one pass. Do not repeat source discovery, risk analysis, proposal design, or initial
-case authoring. You must apply at least one narrow patch and read the changed files
-back; returning the unchanged receipt is a failure. For a missing selected-family
-error, activate the existing required cases for every named family. For an E2E journey
-mapping error, follow the exact authenticated-key rule in Step 8. Return the locked
-receipt only after all reported errors are satisfied and the complete self-review
-passes.
+When graph input contains `validation_error`, the previous attempt's output failed
+deterministic validation. Address every semicolon-separated error in that field
+before returning. The write root for this attempt starts empty; rewrite the locked
+outputs so they satisfy those errors and the complete self-review. Do not treat the
+error text as permission to widen scope, derive a new capability key, or change a
+valid trace entry.
 
-Build the repair mutation set directly from the reported errors before editing:
-
-- If the only error is `case design is missing required automated cases`, the repair
-  is status-only: change one existing required case per named family from `draft` to
-  `active`. Every other byte remains the baseline, including every MRC row.
+- If the only error is `case design is missing required automated cases`, activate
+  one required case per named family. Do not invent extra cases.
 - If an error is `E2E cases have no valid journey mapping`, add or repair only the
   reported E2E MRC mapping as specified in Step 8. A key in the authenticated project
   journey set is a valid MRC key even when the advisory MRC did not list it.
-- For semicolon-separated errors, take the union of those exact mutations. The final
-  self-review verifies the result; it does not authorize edits outside that union.
 
 **Before doing any work:**
 
@@ -140,17 +131,13 @@ Build the repair mutation set directly from the reported errors before editing:
    After applying the fixes, re-run the complete self-review against the resulting files,
    including MRC closed-key discipline and every matrix-to-case mapping; do not return
    immediately after satisfying only the first finding.
-8. **Deterministic validation repair:** If graph input contains
-   `validation_attempt: 1`, read `validation_error` and repair exactly that rejected
-   field. This is the only validation repair attempt. Use `apply_patch` only for every
-   existing output, never replace an existing `case.yaml` as a whole, and preserve all
-   fields not named by the error. Re-read every output and run the complete self-review
-   before returning the locked receipt. Do not reinterpret the error as permission to
-   widen scope, derive a new capability key, or change a valid trace entry.
-   If the error says `E2E cases have no valid journey mapping`, add or repair an E2E
-   matrix row whose key is copied exactly from the reported `authenticated journey keys`
-   and whose `covered_by_cases` contains the reported E2E case IDs. Never invent a
-   journey key or modify `.aa/data-knowledge.yaml`.
+8. **Deterministic validation retry:** If graph input contains `validation_error`,
+   repair every reported error in the new draft. Re-read every output and run the
+   complete self-review before returning the locked receipt. If the error says
+   `E2E cases have no valid journey mapping`, add or repair an E2E matrix row whose
+   key is copied exactly from the reported `authenticated journey keys` and whose
+   `covered_by_cases` contains the reported E2E case IDs. Never invent a journey key
+   or modify `.aa/data-knowledge.yaml`.
 9. **Coverage rework:** When `case_rework_context` is provided, read its authenticated
    `gaps_ref` and the report's `minimum_coverage` gaps under the same frozen
    `plan_digest` / `plan_ref`. Add or modify cases and their matrix mappings to supply
@@ -515,8 +502,6 @@ digraph brainstorming_for_qa {
     "Ask clarifying questions\n(one at a time)" [shape=box];
     "All 8 categories covered?" [shape=diamond];
     "Internal risk analysis" [shape=box];
-    "Visual companion useful?" [shape=diamond];
-    "Offer Visual Companion\n(own message, no other content)" [shape=box];
     "Propose 2-3 coverage approaches" [shape=box];
     "User approves approach?" [shape=diamond];
     "Write proposal.md" [shape=box];
@@ -533,10 +518,7 @@ digraph brainstorming_for_qa {
     "Ask clarifying questions\n(one at a time)" -> "All 8 categories covered?";
     "All 8 categories covered?" -> "Ask clarifying questions\n(one at a time)" [label="no, keep asking"];
     "All 8 categories covered?" -> "Internal risk analysis" [label="yes"];
-    "Internal risk analysis" -> "Visual companion useful?";
-    "Visual companion useful?" -> "Offer Visual Companion\n(own message, no other content)" [label="yes"];
-    "Visual companion useful?" -> "Propose 2-3 coverage approaches" [label="no"];
-    "Offer Visual Companion\n(own message, no other content)" -> "Propose 2-3 coverage approaches";
+    "Internal risk analysis" -> "Propose 2-3 coverage approaches";
     "Propose 2-3 coverage approaches" -> "User approves approach?";
     "User approves approach?" -> "Propose 2-3 coverage approaches" [label="no, revise"];
     "User approves approach?" -> "Write proposal.md" [label="yes"];
@@ -710,38 +692,7 @@ After clarifying questions, analyze risks internally. Do NOT dump this full anal
 
 ---
 
-### Step 6: Optional Visual Companion
-
-Consider offering the visual companion **only** when the upcoming question involves genuinely visual content.
-
-**Use the browser for:**
-
-- UI flow comparison (multiple E2E paths side by side)
-- E2E path diagram (step-by-step user flow visualization)
-- Test coverage matrix (module × test type grid)
-- Data flow diagram (how data moves between API, DB, and UI)
-- Page interaction mockup (which elements are under test)
-
-**Use the terminal for:**
-
-- Module confirmation
-- Change type confirmation (ADDED / MODIFIED / REMOVED)
-- Data needs clarification
-- Success assertion text
-- Exception scope decisions
-- Automation target yes/no
-
-**Offering the companion** (this offer MUST be its own message):
-
-> "Some of what we're working on might be easier to explain if I can show it in a browser — for example, an E2E path diagram or a coverage matrix. Want to try it? (Requires opening a local URL)"
-
-If they agree, read: `skills/aa-case-design/visual-companion.md`
-
-**Visual companion is optional and must never block case design.** If the browser, local URL, or companion tooling is unavailable, continue with text-only coverage approaches. Do not wait for visual setup before writing `proposal.md` or case YAML.
-
----
-
-### Step 7: Propose 2–3 QA Coverage Approaches (`interactive` only)
+### Step 6: Propose 2–3 QA Coverage Approaches (`interactive` only)
 
 Present 2–3 options with trade-offs and your recommendation. Lead with your recommendation. Wait for explicit approval before writing any file.
 
@@ -775,7 +726,7 @@ The option list MUST include an explicit Fuzz/Performance opt-in option even if 
 
 ---
 
-### Step 8: Write proposal.md
+### Step 7: Write proposal.md
 
 After the user approves the coverage approach, write:
 
@@ -930,7 +881,7 @@ Approved exception cases, or explicitly excluded ones.
 
 ---
 
-### Step 9: Write Case Delta YAML
+### Step 8: Write Case Delta YAML
 
 After writing `proposal.md`, generate and write the semantic case delta YAML.
 
@@ -955,7 +906,7 @@ Follow the **Case YAML Output Contract** section exactly. Apply **Delta Operatio
 
 ---
 
-### Step 10: Case Delta Self-Review
+### Step 9: Case Delta Self-Review
 
 After writing the YAML, self-review it using the **Case Delta Readiness Check** below.
 
@@ -982,7 +933,7 @@ Then report:
 
 ---
 
-### Step 11: Hand off to orchestrator
+### Step 10: Hand off to orchestrator
 
 After the case YAML is written and self-reviewed, **do not invoke `aa-case-reviewer` directly**. Instead, report completion to the caller (orchestrator or user) and indicate that `aa-case-reviewer` should be run next.
 

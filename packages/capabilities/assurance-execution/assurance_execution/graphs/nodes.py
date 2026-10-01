@@ -11,7 +11,7 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
-from assurance_execution.graphs.state import ExecutionPublicOutput, ExecutionState
+from assurance_execution.graphs.state import ExecutionPublicOutput
 from graph_engine.attempts.resolutions import ReceiptRef
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from graph_engine.attempts.keys import BusinessActivation
@@ -131,29 +131,10 @@ def publish_execution(
     return published
 
 
-def route_execution(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return "failed"
-    return "committed"
-
-
-def terminal_committed(state: ExecutionState) -> dict[str, object]:
-    del state
-    return {}
-
-
-def terminal_failed(state: ExecutionState) -> dict[str, object]:
-    del state
-    return {}
-
-
 __all__ = [
     "activation_execute",
     "activation_rerun",
     "publish_execution",
-    "route_execution",
     "select_execute",
     "select_rerun",
-    "terminal_committed",
-    "terminal_failed",
 ]

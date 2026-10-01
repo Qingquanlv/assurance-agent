@@ -3,19 +3,20 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END, START
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.boot.boot import CapabilityBuildContext
-from graph_engine.stategraph import add_attempt_node
+from graph_engine.stategraph import AttemptGraph
 
 from assurance_quality.contracts.surface import SurfaceProbeInputV1, SurfaceProbeResultV1
+from assurance_quality.graphs.issues import route_attempt
 from assurance_quality.graphs.nodes import terminal_done
-from assurance_quality.graphs.routes import route_attempt
 from assurance_quality.graphs.state import QualityState
 
 _SURFACE_BASELINE_ID = "assurance.quality.surface-baseline"
+_ATTEMPT_TARGETS = ("done", "failed")
 
 
 def select_surface_baseline(state: Mapping[str, object]) -> SurfaceProbeInputV1:
@@ -50,28 +51,31 @@ def publish_surface_baseline(
     }
 
 
+def _node(fn: object) -> Callable[..., Any]:
+    return cast(Callable[..., Any], fn)
+
+
 def build_surface_baseline_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
-    builder: StateGraph[QualityState] = StateGraph(QualityState)
-    add_attempt_node(
-        builder,
-        context,
+    builder: AttemptGraph[QualityState] = AttemptGraph(QualityState, context, namespace="quality")
+    builder.add_attempt(
         "quality.surface-baseline",
-        contract_id=_SURFACE_BASELINE_ID,
-        activation=activation_surface_baseline,
+        _SURFACE_BASELINE_ID,
         select=select_surface_baseline,
         publish=publish_surface_baseline,
+        activation=activation_surface_baseline,
+        semantic_node_id="quality.surface-baseline",
     )
-    builder.add_node("done", cast(Callable[..., Any], terminal_done))
-    builder.add_node("failed", cast(Callable[..., Any], terminal_done))
+    builder.add_node("done", _node(terminal_done))
+    builder.add_node("failed", _node(terminal_done))
     builder.add_edge(START, "quality.surface-baseline")
-    builder.add_conditional_edges(
+    builder.add_route(
         "quality.surface-baseline",
-        cast(Callable[..., Any], route_attempt),
-        {"ready": "done", "failed": "failed"},
+        route_attempt("done"),
+        targets=_ATTEMPT_TARGETS,
     )
     builder.add_edge("done", END)
     builder.add_edge("failed", END)
-    return context.compile_subgraph(builder)
+    return builder.compile_subgraph()
 
 
 __all__ = ["build_surface_baseline_graph"]

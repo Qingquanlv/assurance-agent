@@ -8,9 +8,9 @@ from pydantic import Field, field_validator, model_validator
 
 from graph_engine.plugin_api import FrozenModel
 
+from assurance_intake.contracts.common import SHA256_PATTERN
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
-_SHA256 = r"^[0-9a-f]{64}$"
 ALLOWED_SELECTION_ROOTS = ("qa/cases/",)
 
 
@@ -35,7 +35,7 @@ class CaseSelectionV1(FrozenModel):
     schema_version: Literal["1"]
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
-    plan_digest: str = Field(pattern=_SHA256)
+    plan_digest: str = Field(pattern=SHA256_PATTERN)
     inventory_ref: EvidenceArtifactRefV1
     cases: tuple[SelectedCaseV1, ...] = Field(min_length=1)
 

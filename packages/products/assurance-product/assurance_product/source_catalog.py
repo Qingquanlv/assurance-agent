@@ -10,61 +10,19 @@ from urllib.parse import unquote, urlparse
 from graph_engine.composition import EditableWheelPluginSource, WheelPluginSource
 from graph_engine.plugin_api import ProviderSource
 
-_SIX_CAPABILITY_SOURCES: tuple[ProviderSource, ...] = (
+from assurance_product.feature_set import CAPABILITIES
+
+_SIX_CAPABILITY_SOURCES: tuple[ProviderSource, ...] = tuple(
     ProviderSource(
-        distribution="assurance-intake",
-        version="0.3.0",
+        distribution=pin.distribution,
+        version=pin.version,
         entrypoint_group="graph_engine.plugins",
-        entrypoint_name="intake",
-        entrypoint_value="assurance_intake.plugin:IntakePlugin",
-        declaration_path="assurance_intake/plugin-declaration.json",
+        entrypoint_name=pin.entrypoint_name,
+        entrypoint_value=pin.plugin,
+        declaration_path=f"{pin.package}/plugin-declaration.json",
         import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-generation",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="generation",
-        entrypoint_value="assurance_generation.plugin:GenerationPlugin",
-        declaration_path="assurance_generation/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-execution",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="execution",
-        entrypoint_value="assurance_execution.plugin:ExecutionPlugin",
-        declaration_path="assurance_execution/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-healing",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="healing",
-        entrypoint_value="assurance_healing.plugin:HealingPlugin",
-        declaration_path="assurance_healing/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-quality",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="quality",
-        entrypoint_value="assurance_quality.plugin:QualityPlugin",
-        declaration_path="assurance_quality/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-improvement",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="improvement",
-        entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",
-        declaration_path="assurance_improvement/plugin-declaration.json",
-        import_roots=("",),
-    ),
+    )
+    for pin in CAPABILITIES
 )
 
 _OPENCODE_RUNTIME_SOURCE = ProviderSource(

@@ -7,7 +7,7 @@ EXPECTED_LOOP_SCC_ANCHORS = (
     ("assurance.generation.workflow.graph.generation-e2e", "codegen-round-join"),
     ("assurance.generation.workflow.graph.generation-fuzz", "codegen-round-join"),
     ("assurance.generation.workflow.graph.generation-performance", "codegen-round-join"),
-    ("assurance.intake.workflow.graph.entry", "advance-join"),
+    ("assurance.intake.workflow.graph.entry", "review-round-advance"),
     ("assurance.product.workflow.graph.product-execute", "fix-proposal"),
     ("assurance.product.workflow.graph.product-full", "advance-coverage"),
 )
@@ -28,8 +28,6 @@ class LoopSccRow:
 def _target_test(graph_id: str, anchor_node_id: str) -> str:
     if graph_id.startswith("assurance.generation."):
         path = "packages/capabilities/assurance-generation/tests/test_graph_join_any.py"
-    elif graph_id.startswith("assurance.intake."):
-        path = "packages/capabilities/assurance-intake/tests/test_graph_join_any.py"
     else:
         path = "tests/product/test_product_stategraph_flow.py"
     return f"{path}::test_full_uses_internal_execute_tail_while_public_execute_wraps_it"
@@ -90,16 +88,18 @@ LOOP_SCC_INVENTORY: tuple[LoopSccRow, ...] = (
     ),
     LoopSccRow(
         "assurance.intake.workflow.graph.entry",
-        "advance-join",
+        "review-round-advance",
         (
-            "advance-join",
-            "case-design-retry",
-            "case-review-retry",
-            "review-round-advance-retry",
-            "human-review-retry",
-            "review-round-advance-rework-retry",
+            "review-round-advance",
+            "case-design",
+            "case-repair",
+            "case-review",
+            "human-review",
         ),
-        _target_test("assurance.intake.workflow.graph.entry", "advance-join"),
+        (
+            "packages/capabilities/assurance-intake/tests/test_graph_join_any.py"
+            "::test_case_loop_reenters_through_review_round_advance"
+        ),
     ),
     LoopSccRow(
         "assurance.product.workflow.graph.product-execute",

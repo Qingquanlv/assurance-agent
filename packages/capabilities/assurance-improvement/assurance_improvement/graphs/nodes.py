@@ -619,18 +619,6 @@ def terminal_failed(state: Mapping[str, object]) -> dict[str, object]:
     return _public_terminal(state, "failed")
 
 
-def terminal_rejected(state: Mapping[str, object]) -> dict[str, object]:
-    return _public_terminal(state, "rejected")
-
-
-def terminal_rework(state: Mapping[str, object]) -> dict[str, object]:
-    return _public_terminal(state, "rework")
-
-
-def terminal_superseded(state: Mapping[str, object]) -> dict[str, object]:
-    return _public_terminal(state, "superseded")
-
-
 __all__ = [
     "APPLY_HUMAN_ACTIONS",
     "ApplyHumanDecision",
@@ -668,7 +656,4 @@ __all__ = [
     "select_workflow_analysis",
     "terminal_done",
     "terminal_failed",
-    "terminal_rejected",
-    "terminal_rework",
-    "terminal_superseded",
 ]

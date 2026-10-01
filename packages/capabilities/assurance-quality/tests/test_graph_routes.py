@@ -10,13 +10,9 @@ import pytest
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.assessment import InspectionDisposition
 from assurance_quality.contracts.decisions import FailureClassification
+from assurance_quality.graphs.assessment import coverage_named_matches, route_coverage
 from assurance_quality.graphs.factory import build_quality_graphs
-from assurance_quality.graphs.routes import (
-    coverage_named_matches,
-    failure_named_matches,
-    route_coverage,
-    route_failure,
-)
+from assurance_quality.graphs.issues import failure_named_matches, route_failure
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
 from graph_engine.testing import GraphHarness
@@ -31,7 +27,12 @@ def quality_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
 
 
 _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_quality" / "graphs"
-_ROUTES_PATH = _GRAPHS_ROOT / "routes.py"
+_ROUTE_FILES = {
+    "assessment.py": ("coverage_named_matches", "route_coverage"),
+    "issues.py": ("route_attempt", "failure_named_matches", "route_failure"),
+    "report.py": ("route_report_attempt",),
+}
+_EXCLUSIVE_ROUTES = frozenset({"route_coverage", "route_failure", "route_report_attempt"})
 _FORBIDDEN_IMPLEMENTATION = (
     "operations",
     "validators",
@@ -84,14 +85,51 @@ def _imported_names(path: Path, *, module_name: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _assert_no_priority_if(node: ast.AST) -> None:
+    for child in ast.walk(node):
+        if isinstance(child, ast.If) and child.orelse:
+            for branch in child.orelse:
+                assert not isinstance(branch, ast.If), "exclusive routes must not use priority if/elif"
+
+
 def test_routes_use_select_exclusive_route_without_priority_if_elif() -> None:
-    source = _ROUTES_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(_ROUTES_PATH))
-    assert "select_exclusive_route" in source
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If) and node.orelse:
-            for child in node.orelse:
-                assert not isinstance(child, ast.If), "exclusive routes must not use priority if/elif"
+    for filename, names in _ROUTE_FILES.items():
+        path = _GRAPHS_ROOT / filename
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        functions = {
+            node.name: node for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        inspected = [functions[name] for name in names]
+        assert [name for name in functions if name.startswith("route_")] == [
+            name for name in names if name.startswith("route_")
+        ]
+        for node in inspected:
+            if node.name in _EXCLUSIVE_ROUTES:
+                assert any(
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Name)
+                    and child.func.id == "select_exclusive_route"
+                    for child in ast.walk(node)
+                ), node.name
+            _assert_no_priority_if(node)
+        for node in tree.body:
+            table: ast.AST | None = None
+            if (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id.endswith("_TABLE")
+            ):
+                table = node.value
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id.endswith("_TABLE")
+            ):
+                table = node.value
+            if table is not None:
+                _assert_no_priority_if(table)
 
 
 @pytest.mark.parametrize(

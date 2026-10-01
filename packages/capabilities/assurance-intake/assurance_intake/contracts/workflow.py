@@ -10,25 +10,18 @@ from pydantic import Field, field_validator, model_validator
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
-_SHA256 = r"^[0-9a-f]{64}$"
+from assurance_intake.contracts.common import SHA256_PATTERN, is_canonical_relative
 
 
 def _canonical_relative(path: str) -> str:
-    posix = PurePosixPath(path)
-    if (
-        posix.is_absolute()
-        or "\\" in path
-        or (len(path) >= 2 and path[1] == ":")
-        or posix.as_posix() != path
-        or any(part in {"", ".", ".."} for part in posix.parts)
-    ):
+    if not is_canonical_relative(path):
         raise ValueError("evidence path must be canonical and relative")
     return path
 
 
 class EvidenceArtifactRefV1(FrozenModel):
     path: str = Field(min_length=1)
-    digest: str = Field(pattern=_SHA256)
+    digest: str = Field(pattern=SHA256_PATTERN)
 
     @field_validator("path")
     @classmethod
@@ -70,7 +63,7 @@ def _case_path(change_id: str, path: str) -> bool:
 class ReviewedCaseV1(FrozenModel):
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
-    plan_digest: str = Field(pattern=_SHA256)
+    plan_digest: str = Field(pattern=SHA256_PATTERN)
     plan_ref: EvidenceArtifactRefV1
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     case_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)

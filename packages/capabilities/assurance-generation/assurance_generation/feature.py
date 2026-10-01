@@ -34,6 +34,7 @@ FEATURE = FeatureSpec(
     graph_factory=FeatureFactoryRef(
         "assurance.generation", "assurance_generation.graphs.factory:build_generation_graphs"
     ),
+    bundle_type=GenerationGraphs,
 )
 
 __all__ = ["FEATURE", "GenerationGraphs"]

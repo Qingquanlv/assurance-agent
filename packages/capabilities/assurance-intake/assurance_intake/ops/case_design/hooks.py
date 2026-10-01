@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-from agent_runtime_contracts.ops import FinalizeContext, OutputError, PrepareContext
+from agent_runtime_contracts.ops import ArtifactListResultV1, FinalizeContext, PrepareContext
 
-from assurance_intake.domain.artifacts import (
-    ArtifactDigestV1,
-    ArtifactListResultV1,
-    authenticate_files,
-    authenticate_review_repair_images,
-    validation_repair_images,
-)
+from assurance_intake.contracts.agent import ArtifactDigestV1
+from assurance_intake.domain.artifacts import authenticate_files
 from assurance_intake.domain.case_delta import (
     bind_case_delta_evidence,
     finalize_inventory,
@@ -51,17 +46,7 @@ def after(
     plan = finalize_plan(ctx.project_root, business)
     inventory = finalize_inventory(ctx.project_root, plan, business.change_id)
     require_receipt_paths(result, business, inventory)
-    if business.validation_attempt == 1:
-        images = validation_repair_images(
-            ctx.project_root,
-            ctx.write_root,
-            result.output_files,
-            business.artifact_paths,
-        )
-        artifacts = authenticate_review_repair_images(images, result.output_files, business.artifact_paths)
-    else:
-        images = None
-        artifacts = authenticate_files(ctx.write_root, result.output_files, business.artifact_paths)
+    artifacts = authenticate_files(ctx.write_root, result.output_files, business.artifact_paths)
     validate_case_delta(
         project_root=ctx.project_root,
         write_root=ctx.write_root,
@@ -70,25 +55,8 @@ def after(
         inventory=inventory,
         receipt=result,
         artifacts=artifacts,
-        images=images,
+        images=None,
     )
     return CaseDesignOutputV1(
-        validation_status="pass",
-        validation_attempt=business.validation_attempt,
         artifacts=tuple(ArtifactDigestV1.model_validate(item) for item in artifacts),
-    )
-
-
-def on_output_error(
-    ctx: FinalizeContext, business: CaseDesignInputV1, error: OutputError
-) -> CaseDesignOutputV1:
-    # A first attempt hands its validation error to the validation retry;
-    # the retry itself fails the attempt.
-    del ctx
-    if business.validation_attempt != 0:
-        raise error
-    return CaseDesignOutputV1(
-        validation_status="needs_fix",
-        validation_attempt=1,
-        validation_error=str(error)[:8192],
     )

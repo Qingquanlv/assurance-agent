@@ -1,190 +1,42 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, ValidationError
 
-from assurance_intake.domain.artifacts import ArtifactListResultV1
-from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_intake.graphs.calls import select_case_design_retry
-from assurance_intake.graphs.factory import build_intake_graphs
-from assurance_intake.graphs.state import (
-    CASE_REVIEW_PREDECESSORS,
-    CaseReviewArrival,
-    IntakeState,
-    consume_case_review_trigger,
-    empty_case_review_inbox,
-    make_case_review_arrival,
-    merge_case_review_inbox,
-    offer_case_review_arrival,
-)
-from assurance_intake.graphs.state import advance_join, apply_current_trigger
 from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.attempts.keys import BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.testing import GraphHarness, committed
+from graph_engine.testing import GraphHarness
 
-_PREDECESSORS = ("review-round-advance",)
-_CURRENT_TRIGGER_ROWS = (("assurance.intake.workflow.graph.entry", "advance-join"),)
-
-
-def _arrival(
-    predecessor: str,
-    *,
-    epoch: int = 0,
-    sequence: int = 1,
-    used: int = 1,
-    budget: int = 2,
-) -> CaseReviewArrival:
-    return make_case_review_arrival(
-        predecessor=predecessor,
-        business_epoch=epoch,
-        sequence=sequence,
-        value={"rounds_used": used, "rounds_budget": budget},
-        source_activation=f"{predecessor}-{epoch}-{sequence}",
-    )
-
-
-def test_join_predecessors_are_the_three_advance_sites() -> None:
-    assert CASE_REVIEW_PREDECESSORS == _PREDECESSORS
-    assert set(CASE_REVIEW_PREDECESSORS) == set(_PREDECESSORS)
-
-
-@pytest.mark.parametrize(
-    "row",
-    _CURRENT_TRIGGER_ROWS,
-    ids=lambda row: f"{row[0]}/{row[1]}",
+from assurance_intake.contracts.workflow import CaseReworkContextV1, EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_intake.graphs.calls import (
+    activation_review_round,
+    select_case_design,
+    select_case_repair,
+    select_case_review,
 )
-def test_current_trigger(row: tuple[str, str]) -> None:
-    graph_id, anchor = row
-    assert graph_id == "assurance.intake.workflow.graph.entry"
-    assert anchor == "advance-join"
-    arrival = _arrival("review-round-advance", used=1, budget=2)
-    inbox = offer_case_review_arrival(empty_case_review_inbox(), arrival)
-    applied = apply_current_trigger(
-        {
-            "change_id": "CH-DEMO-001",
-            "selected_test_families": ["api"],
-            "case_delta_paths": ["qa/cases/menus/case.yaml"],
-            "capability_leafs": ["entities.item.create"],
-            "allowed_artifact_paths": [
-                "qa/.qa.yaml",
-                "qa/cases",
-                "qa/fixtures",
-                "qa/proposal.md",
-                "qa/requirement.md",
-                "qa/results",
-                "qa/tests",
-            ],
-            "rounds_used": 0,
-            "rounds_budget": 2,
-            "current_trigger": _arrival("review-round-advance", used=9, budget=9, sequence=9),
-            "predecessor_tokens": {"advance-join": {"tokens": [{"rounds_used": 9, "rounds_budget": 9}]}},
-            "case_review_inbox": inbox,
-        }
-    )
-    assert applied["current_trigger"] == arrival
-    assert applied["rounds_used"] == 1
-    assert applied["rounds_budget"] == 2
-    assert applied["current_trigger"] != applied.get("predecessor_tokens")
+from assurance_intake.graphs.factory import build_intake_graphs
+from assurance_intake.graphs.case import review_round_advance
+from tests.architecture.loop_scc_inventory import LOOP_SCC_INVENTORY
+
+_SHA = "a" * 64
 
 
-def test_first_arrival_becomes_exact_current_trigger() -> None:
-    arrival = _arrival("review-round-advance", used=1, budget=2)
-    inbox = offer_case_review_arrival(empty_case_review_inbox(), arrival)
-    current = inbox["current_trigger"]
-    assert current == arrival
-    assert inbox["arrivals"] == [arrival]
-    assert inbox["dispatched_ids"] == []
-    assert current is not None
-    assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
-    assert current["business_epoch"] == 0
-    assert current["predecessor"] == "review-round-advance"
-    assert current["arrival_id"] == arrival["arrival_id"]
+def _plan_ref() -> dict[str, str]:
+    return {
+        "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
+        "digest": _SHA,
+    }
 
 
-def test_late_second_arrival_in_same_epoch_is_retained_and_dispatched_once() -> None:
-    first = _arrival("review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("review-round-advance", epoch=0, sequence=2, used=1)
-    inbox = offer_case_review_arrival(empty_case_review_inbox(), first)
-    inbox = offer_case_review_arrival(inbox, late)
-    assert inbox["current_trigger"] == first
-    assert inbox["arrivals"] == [first, late]
-    first_dispatch = consume_case_review_trigger(inbox)
-    assert first_dispatch["current_trigger"] == late
-    assert first["arrival_id"] in first_dispatch["dispatched_ids"]
-    assert late["arrival_id"] not in first_dispatch["dispatched_ids"]
-    second_dispatch = consume_case_review_trigger(first_dispatch)
-    assert second_dispatch["current_trigger"] is None
-    assert set(second_dispatch["dispatched_ids"]) == {first["arrival_id"], late["arrival_id"]}
-    replay_late = offer_case_review_arrival(second_dispatch, late)
-    assert replay_late["current_trigger"] is None
-    assert replay_late["dispatched_ids"].count(late["arrival_id"]) == 1
-
-
-def test_replay_of_the_same_arrival_id_is_deduplicated() -> None:
-    arrival = _arrival("review-round-advance", sequence=4)
-    inbox = offer_case_review_arrival(empty_case_review_inbox(), arrival)
-    replayed = offer_case_review_arrival(inbox, arrival)
-    assert replayed["arrivals"] == [arrival]
-    assert replayed["current_trigger"] == arrival
-
-
-def test_two_reducer_merge_orders_produce_identical_inbox_state() -> None:
-    first = _arrival("review-round-advance", sequence=1, used=1)
-    second = _arrival("review-round-advance", sequence=2, used=1)
-    empty = empty_case_review_inbox()
-    left = merge_case_review_inbox(
-        offer_case_review_arrival(empty, first),
-        offer_case_review_arrival(empty, second),
-    )
-    right = merge_case_review_inbox(
-        offer_case_review_arrival(empty, second),
-        offer_case_review_arrival(empty, first),
-    )
-    assert left == right
-    assert left["arrivals"] == [first, second]
-    assert left["current_trigger"] == first
-    assert isinstance(left, dict)
-
-
-def test_repeated_business_epochs_preserve_exact_rounds_used_and_budget() -> None:
-    epoch_one = _arrival("review-round-advance", epoch=0, sequence=1, used=1, budget=2)
-    epoch_two = _arrival("review-round-advance", epoch=1, sequence=1, used=2, budget=2)
-    inbox = consume_case_review_trigger(offer_case_review_arrival(empty_case_review_inbox(), epoch_one))
-    inbox = offer_case_review_arrival(inbox, epoch_two)
-    current = inbox["current_trigger"]
-    assert current == epoch_two
-    assert current is not None
-    assert current["value"] == {"rounds_used": 2, "rounds_budget": 2}
-    assert current["value"] != {"rounds_used": 3, "rounds_budget": 2}
-    assert current["business_epoch"] == 1
-
-
-def test_dispatch_cursor_never_reclaims_a_consumed_arrival() -> None:
-    arrival = _arrival("review-round-advance", sequence=1)
-    inbox = consume_case_review_trigger(offer_case_review_arrival(empty_case_review_inbox(), arrival))
-    assert inbox["current_trigger"] is None
-    assert arrival["arrival_id"] in inbox["dispatched_ids"]
-    reclaimed = offer_case_review_arrival(inbox, arrival)
-    assert reclaimed["current_trigger"] is None
-    assert reclaimed["dispatched_ids"] == [arrival["arrival_id"]]
-    leftover = merge_case_review_inbox(reclaimed, empty_case_review_inbox())
-    assert leftover["current_trigger"] is None
-
-
-def test_downstream_case_design_retry_reads_current_trigger_value_only() -> None:
-    stale_rounds = {"rounds_used": 0, "rounds_budget": 2}
-    arrival = _arrival("review-round-advance", used=1, budget=2)
-    inbox = offer_case_review_arrival(empty_case_review_inbox(), arrival)
-    state: dict[str, Any] = {
+def _base_state(**extra: object) -> dict[str, object]:
+    state: dict[str, object] = {
         "change_id": "CH-DEMO-001",
         "plan_digest": _SHA,
-        "plan_ref": {
-            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
-            "digest": _SHA,
-        },
+        "plan_ref": _plan_ref(),
         "selected_test_families": ["api"],
         "case_delta_paths": ["qa/cases/menus/case.yaml"],
         "capability_leafs": ["entities.item.create"],
@@ -197,26 +49,117 @@ def test_downstream_case_design_retry_reads_current_trigger_value_only() -> None
             "qa/results",
             "qa/tests",
         ],
-        **stale_rounds,
-        "predecessor_tokens": {"advance-join": {"tokens": [{"rounds_used": 9, "rounds_budget": 9}]}},
-        "case_review_inbox": inbox,
+        "coverage_epoch": 0,
+        "preparation_refs": [
+            {"path": "qa/requirement.md", "digest": _SHA},
+            _plan_ref(),
+        ],
+        "rounds_used": 0,
+        "rounds_budget": 2,
     }
-    applied = apply_current_trigger(state)
-    assert applied["rounds_used"] == 1
-    assert applied["rounds_budget"] == 2
-    assert applied["current_trigger"] == arrival
-    selected = select_case_design_retry({**state, **applied})
-    assert selected.change_id == "CH-DEMO-001"
-    assert applied["rounds_used"] == arrival["value"]["rounds_used"]
-    assert applied["rounds_used"] != state["rounds_used"]
-    assert "tokens" not in applied
-    trigger = applied["current_trigger"]
-    assert isinstance(trigger, dict)
-    assert trigger["value"] == arrival["value"]
+    state.update(extra)
+    return state
 
 
-_SHA = "a" * 64
-_RECEIPT = ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA)
+def _reviewed(*, epoch: int = 0) -> ReviewedCaseV1:
+    plan = EvidenceArtifactRefV1.model_validate(_plan_ref())
+    return ReviewedCaseV1(
+        change_id="CH-DEMO-001",
+        coverage_epoch=epoch,
+        plan_digest=_SHA,
+        plan_ref=plan,
+        preparation_refs=(
+            EvidenceArtifactRefV1(path="qa/requirement.md", digest=_SHA),
+            plan,
+        ),
+        case_refs=(EvidenceArtifactRefV1(path="qa/cases/menus/case.yaml", digest=_SHA),),
+        review_ref=EvidenceArtifactRefV1(path="qa/results/review/case-review.json", digest=_SHA),
+        selection_ref=EvidenceArtifactRefV1(
+            path=f"qa/results/cases/epochs/{epoch}/selection.json",
+            digest=_SHA,
+        ),
+    )
+
+
+def _rework_state() -> dict[str, object]:
+    previous = _reviewed()
+    gap = EvidenceArtifactRefV1(path="qa/results/inspect/coverage-gaps.json", digest=_SHA)
+    context = CaseReworkContextV1(
+        previous_case=previous,
+        inspect_receipt=ReceiptRef(receipt_id="inspect", receipt_digest=_SHA),
+        assessment_refs=(gap,),
+        gaps_ref=gap,
+        target_case_paths=("qa/cases/menus/case.yaml",),
+    )
+    return _base_state(
+        coverage_epoch=previous.coverage_epoch + 1,
+        case_rework_context=context.model_dump(mode="json"),
+        preparation_refs=[item.model_dump(mode="json") for item in previous.preparation_refs],
+        ui_exploration_ref={"path": "qa/results/facts/ui-exploration.json", "digest": _SHA},
+        api_discovery_ref={"path": "qa/results/facts/api-discovery.json", "digest": _SHA},
+        rounds_used=1,
+    )
+
+
+def test_review_round_activation_follows_rounds_used() -> None:
+    state = {"rounds_used": 0, "rounds_budget": 2}
+    assert activation_review_round(state) == BusinessActivation.for_round(0)
+    advanced = review_round_advance(state)
+    assert advanced == {"rounds_used": 1, "rounds_budget": 2}
+    assert activation_review_round({**state, **advanced}) == BusinessActivation.for_round(1)
+    with pytest.raises(KeyError):
+        activation_review_round({})
+    with pytest.raises(TypeError, match="rounds_used"):
+        activation_review_round({"rounds_used": True})
+    with pytest.raises((ValidationError, ValueError)):
+        review_round_advance({"rounds_used": 2, "rounds_budget": 2})
+
+
+def _attempt_key(node: str, activation: BusinessActivation, validated: BaseModel) -> str:
+    return derive_attempt_key(
+        invocation_id="inv-1",
+        graph_revision=_SHA,
+        public_entrypoint="case",
+        semantic_node_id=node,
+        business_activation=activation,
+        contract_id="assurance.intake.agent.case-design.v1",
+        validated_input=validated,
+    ).digest
+
+
+def test_shared_round_activation_stays_unique_by_node_and_input() -> None:
+    state = _base_state()
+    design = select_case_design(state)
+    review = select_case_review(state)
+    repair = select_case_repair(state)
+    round_zero = activation_review_round(state)
+    round_one = activation_review_round(review_round_advance(state))
+    design_key = _attempt_key("intake.case-design", round_zero, design)
+    assert design_key != _attempt_key("intake.case-review", round_zero, review)
+    assert design_key != _attempt_key("intake.case-repair", round_zero, repair)
+    assert design_key != _attempt_key("intake.case-design", round_one, design)
+    later = select_case_design({**state, "coverage_epoch": 1})
+    assert design_key != _attempt_key("intake.case-design", round_zero, later)
+
+
+def test_case_design_select_preserves_rework_epoch() -> None:
+    state = _rework_state()
+    selected = select_case_design(state)
+    assert selected.coverage_epoch == 1
+    assert selected.validation_error is None
+    assert selected.case_rework_context is not None
+    assert selected.case_rework_context.previous_case.coverage_epoch == 0
+    assert [item.model_dump(mode="json") for item in selected.preparation_refs] == state["preparation_refs"]
+    assert selected.ui_exploration_ref is not None
+    assert selected.ui_exploration_ref.path == "qa/results/facts/ui-exploration.json"
+    assert selected.api_discovery_ref is not None
+    assert selected.api_discovery_ref.path == "qa/results/facts/api-discovery.json"
+    repair = select_case_repair(state)
+    assert repair.preparation_refs == selected.preparation_refs
+    assert repair.ui_exploration_ref == selected.ui_exploration_ref
+    assert "coverage_epoch" not in repair.model_dump()
+    with pytest.raises(ValidationError):
+        select_case_design({**state, "coverage_epoch": 0})
 
 
 def _contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
@@ -226,386 +169,48 @@ def _contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
     }
 
 
-def _prepare_input() -> dict[str, object]:
+def _cycle_members(edges: set[tuple[str, str]]) -> set[str]:
+    nodes = {node for edge in edges for node in edge if node not in {"__start__", "__end__"}}
+
+    def reachable(start: str) -> set[str]:
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            stack.extend(
+                target
+                for source, target in edges
+                if source == current and target not in seen and target not in {"__start__", "__end__"}
+            )
+        return seen
+
+    forward = {node: reachable(node) for node in nodes}
     return {
-        "change_id": "CH-DEMO-001",
-        "requirement": "Cover department CRUD.",
-        "plan_digest": _SHA,
-        "plan_ref": {
-            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
-            "digest": _SHA,
-        },
-        "selected_test_families": ["api"],
-        "case_delta_paths": ["qa/cases/menus/case.yaml"],
-        "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
-        "rounds_used": 0,
-        "rounds_budget": 2,
-        "coverage_epoch": 0,
-        "preparation_refs": [
-            {"path": "qa/requirement.md", "digest": _SHA},
-            {
-                "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
-                "digest": _SHA,
-            },
-        ],
+        node
+        for node in nodes
+        if any(other != node and node in forward[other] and other in forward[node] for other in nodes)
     }
 
 
-def _artifact() -> ArtifactListResultV1:
-    return ArtifactListResultV1(output_files=("qa/proposal.md",))
-
-
-def _design() -> dict[str, object]:
-    return {
-        "output_files": ["qa/proposal.md"],
-        "validation_status": "pass",
-        "artifacts": [
-            {
-                "path": "qa/cases/menus/case.yaml",
-                "digest": _SHA,
-            }
-        ],
-    }
-
-
-def _repair() -> dict[str, object]:
-    return {
-        "artifacts": [
-            {
-                "path": "qa/cases/menus/case.yaml",
-                "digest": _SHA,
-            }
-        ],
-    }
-
-
-def _review(
-    decision: str,
-    *,
-    auto_fix: bool = False,
-    used: int = 0,
-    budget: int = 2,
-) -> dict[str, object]:
-    return {
-        "decision": decision,
-        "auto_fix_allowed": auto_fix,
-        "human_review_required": False,
-        "artifacts": [
-            {
-                "path": "qa/results/review/case-review.json",
-                "digest": _SHA,
-            },
-            {
-                "path": "qa/results/cases/epochs/0/selection.json",
-                "digest": _SHA,
-            },
-        ],
-        "rounds_used": used,
-        "rounds_budget": budget,
-    }
-
-
-def _compile_join_graph() -> Any:
-    builder: StateGraph[IntakeState] = StateGraph(IntakeState)
-    builder.add_node("advance-join", cast(Callable[..., Any], advance_join))
-    builder.add_edge(START, "advance-join")
-    builder.add_edge("advance-join", END)
-    return builder.compile(checkpointer=None)
-
-
-def _offer_node(arrival: CaseReviewArrival, *, poison_lww: bool) -> Callable[..., dict[str, object]]:
-    def _offer(state: dict[str, Any]) -> dict[str, object]:
-        inbox = offer_case_review_arrival(
-            state.get("case_review_inbox") or empty_case_review_inbox(),
-            arrival,
-        )
-        update: dict[str, object] = {"case_review_inbox": inbox}
-        if poison_lww:
-            update["current_trigger"] = arrival
-        return update
-
-    return _offer
-
-
-def _compile_two_predecessor_join(*, late_writes_lww: bool, first_added_first: bool) -> Any:
-    first = _arrival("review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("review-round-advance", epoch=0, sequence=2, used=1)
-    nodes = [
-        ("review-round-advance", _offer_node(first, poison_lww=not late_writes_lww)),
-        ("late-advance", _offer_node(late, poison_lww=late_writes_lww)),
-    ]
-    ordered = nodes if first_added_first else list(reversed(nodes))
-    builder: StateGraph[IntakeState] = StateGraph(IntakeState)
-    for name, node in ordered:
-        builder.add_node(name, cast(Callable[..., Any], node))
-    builder.add_node("advance-join", cast(Callable[..., Any], advance_join))
-    builder.add_edge(START, "review-round-advance")
-    builder.add_edge(START, "late-advance")
-    builder.add_edge("review-round-advance", "advance-join")
-    builder.add_edge("late-advance", "advance-join")
-    builder.add_edge("advance-join", END)
-    return builder.compile(checkpointer=None)
-
-
-def _join_seed() -> dict[str, object]:
-    return {
-        "change_id": "CH-DEMO-001",
-        "requirement": "Cover department CRUD.",
-        "selected_test_families": ["api"],
-        "case_delta_paths": ["qa/cases/menus/case.yaml"],
-        "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
-        "rounds_used": 0,
-        "rounds_budget": 2,
-    }
-
-
-async def test_compiled_join_reads_inbox_cursor_not_lww_shadow() -> None:
-    first = _arrival("review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("review-round-advance", epoch=0, sequence=2, used=9, budget=9)
-    inbox = offer_case_review_arrival(empty_case_review_inbox(), first)
-    inbox = offer_case_review_arrival(inbox, late)
-    assert inbox["current_trigger"] == first
-    result = await _compile_join_graph().ainvoke(
-        {
-            **_join_seed(),
-            "current_trigger": late,
-            "case_review_inbox": inbox,
-            "rounds_used": 0,
-            "rounds_budget": 2,
-        }
-    )
-    assert result["current_trigger"] == first
-    assert result["case_review_inbox"]["current_trigger"] == first
-    assert result["case_review_inbox"]["arrivals"] == [first, late]
-    assert result["rounds_used"] == 1
-    assert result["rounds_budget"] == 2
-    assert result["rounds_used"] == first["value"]["rounds_used"]
-    assert result["current_trigger"] != late
-
-
-async def test_compiled_graph_same_epoch_arrivals_retained_first_current_then_late_dispatched() -> None:
-    first = _arrival("review-round-advance", epoch=0, sequence=1, used=1)
-    late = _arrival("review-round-advance", epoch=0, sequence=2, used=1)
-    result = await _compile_two_predecessor_join(late_writes_lww=True, first_added_first=True).ainvoke(
-        _join_seed()
-    )
-    inbox = result["case_review_inbox"]
-    assert [item["arrival_id"] for item in inbox["arrivals"]] == [first["arrival_id"], late["arrival_id"]]
-    assert inbox["current_trigger"] == first
-    assert result["current_trigger"] == first
-    assert result["rounds_used"] == first["value"]["rounds_used"]
-    consumed = consume_case_review_trigger(inbox)
-    assert consumed["current_trigger"] == late
-    late_result = await _compile_join_graph().ainvoke(
-        {
-            **result,
-            "current_trigger": first,
-            "case_review_inbox": consumed,
-        }
-    )
-    assert late_result["current_trigger"] == late
-    assert late_result["case_review_inbox"]["current_trigger"] == late
-    assert first["arrival_id"] in late_result["case_review_inbox"]["dispatched_ids"]
-    assert late["arrival_id"] not in late_result["case_review_inbox"]["dispatched_ids"]
-    finished = consume_case_review_trigger(late_result["case_review_inbox"])
-    assert finished["current_trigger"] is None
-    assert set(finished["dispatched_ids"]) == {first["arrival_id"], late["arrival_id"]}
-    replay = offer_case_review_arrival(finished, late)
-    assert replay["current_trigger"] is None
-    assert replay["dispatched_ids"].count(late["arrival_id"]) == 1
-
-
-async def test_compiled_graph_two_reducer_merge_orders_are_identical() -> None:
-    late_last = await _compile_two_predecessor_join(late_writes_lww=True, first_added_first=True).ainvoke(
-        _join_seed()
-    )
-    first_last = await _compile_two_predecessor_join(late_writes_lww=False, first_added_first=False).ainvoke(
-        _join_seed()
-    )
-    assert late_last["case_review_inbox"] == first_last["case_review_inbox"]
-    assert late_last["current_trigger"] == first_last["current_trigger"]
-    assert late_last["current_trigger"]["predecessor"] == "review-round-advance"
-    assert late_last["case_review_inbox"]["arrivals"] == first_last["case_review_inbox"]["arrivals"]
-
-
-async def test_compiled_graph_replay_of_same_arrival_id_is_deduplicated() -> None:
-    arrival = _arrival("review-round-advance", sequence=4)
-
-    def _offer(state: dict[str, Any]) -> dict[str, object]:
-        inbox = offer_case_review_arrival(
-            state.get("case_review_inbox") or empty_case_review_inbox(), arrival
-        )
-        return {"case_review_inbox": inbox, "current_trigger": arrival}
-
-    builder: StateGraph[IntakeState] = StateGraph(IntakeState)
-    builder.add_node("offer", cast(Callable[..., Any], _offer))
-    builder.add_node("advance-join", cast(Callable[..., Any], advance_join))
-    builder.add_edge(START, "offer")
-    builder.add_edge("offer", "advance-join")
-    builder.add_edge("advance-join", END)
-    graph = builder.compile(checkpointer=None)
-    first = await graph.ainvoke(cast(Any, _join_seed()))
-    replayed = await graph.ainvoke(cast(Any, first))
-    assert replayed["case_review_inbox"]["arrivals"] == [arrival]
-    assert replayed["current_trigger"] == arrival
-    assert replayed["case_review_inbox"]["current_trigger"] == arrival
-
-
-async def test_compiled_graph_dispatch_cursor_never_reclaims_consumed_arrival() -> None:
-    arrival = _arrival("review-round-advance", sequence=1)
-    consumed = consume_case_review_trigger(offer_case_review_arrival(empty_case_review_inbox(), arrival))
-    replayed = offer_case_review_arrival(consumed, arrival)
-    assert replayed["current_trigger"] is None
-    with pytest.raises((ValueError, Exception), match="current_trigger.value"):
-        await _compile_join_graph().ainvoke(
-            {
-                **_join_seed(),
-                "current_trigger": arrival,
-                "case_review_inbox": replayed,
-            }
-        )
-
-
-async def test_compiled_case_first_arrival_is_exact_current_trigger() -> None:
+def test_case_loop_reenters_through_review_round_advance() -> None:
     harness = GraphHarness()
     bundle = build_intake_graphs(
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
-    result = await harness.run(
-        bundle.case,
-        input=_prepare_input(),
-        script={
-            "intake.intake": [committed(_artifact(), _RECEIPT)],
-            "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [committed(_design(), _RECEIPT)],
-            "intake.case-repair": [committed(_repair(), _RECEIPT)],
-            "intake.case-review": [
-                committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
-                committed(_review("pass", used=1), _RECEIPT),
-            ],
-        },
+    assert "advance-join" not in bundle.case.nodes
+    edges = {(str(edge.source), str(edge.target)) for edge in bundle.case.get_graph().edges}
+    assert ("review-round-advance", "case-design") in edges
+    assert ("review-round-advance", "case-repair") in edges
+    assert ("case-review", "review-round-advance") in edges
+    assert ("human-review", "review-round-advance") in edges
+    assert ("case-design", "case-review") in edges
+    assert ("case-design", "failed") in edges
+    assert ("case-repair", "exhausted") in edges
+    row = next(
+        item for item in LOOP_SCC_INVENTORY if item.graph_id == "assurance.intake.workflow.graph.entry"
     )
-    terminal = result.terminal
-    assert isinstance(terminal, dict)
-    inbox = terminal["case_review_inbox"]
-    current = inbox["current_trigger"]
-    assert current is not None
-    assert current["predecessor"] == "review-round-advance"
-    assert current["business_epoch"] == 0
-    assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
-    assert terminal["current_trigger"] == current
-    assert terminal["rounds_used"] == current["value"]["rounds_used"]
-    calls = [call.semantic_node_id for call in result.semantic_calls]
-    assert calls.count("intake.case-design") == 1
-    assert calls.count("intake.case-repair") == 1
-
-
-async def test_compiled_case_repeated_epochs_preserve_exact_rounds() -> None:
-    harness = GraphHarness()
-    bundle = build_intake_graphs(
-        harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
-    )
-    result = await harness.run(
-        bundle.case,
-        input=_prepare_input(),
-        script={
-            "intake.intake": [committed(_artifact(), _RECEIPT)],
-            "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [committed(_design(), _RECEIPT)],
-            "intake.case-repair": [committed(_repair(), _RECEIPT), committed(_repair(), _RECEIPT)],
-            "intake.case-review": [
-                committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
-                committed(_review("needs_fix", auto_fix=True, used=1), _RECEIPT),
-                committed(_review("pass", used=2), _RECEIPT),
-            ],
-        },
-    )
-    terminal = result.terminal
-    assert isinstance(terminal, dict)
-    current = terminal["case_review_inbox"]["current_trigger"]
-    assert current is not None
-    assert current["value"] == {"rounds_used": 2, "rounds_budget": 2}
-    assert current["value"] != {"rounds_used": 3, "rounds_budget": 2}
-    assert current["business_epoch"] == 1
-    assert terminal["rounds_used"] == 2
-    edges = {(edge.source, edge.target) for edge in bundle.case.get_graph().edges}
-    assert ("advance-join", "case-design") in edges
-    assert ("advance-join", "case-repair") in edges
-    assert ("case-repair", "case-review") in edges
-    arrivals = terminal["case_review_inbox"]["arrivals"]
-    assert [item["predecessor"] for item in arrivals] == [
-        "review-round-advance",
-        "review-round-advance",
-    ]
-    assert arrivals[0]["arrival_id"] != arrivals[1]["arrival_id"]
-    calls = [call.semantic_node_id for call in result.semantic_calls]
-    assert calls.count("intake.case-design") == 1
-    assert calls.count("intake.case-repair") == 2
-
-
-async def test_compiled_case_keeps_review_budget_authoritative_when_agent_replays_round_zero() -> None:
-    harness = GraphHarness()
-    bundle = build_intake_graphs(
-        harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
-    )
-    result = await harness.run(
-        bundle.case,
-        input=_prepare_input(),
-        script={
-            "intake.intake": [committed(_artifact(), _RECEIPT)],
-            "intake.explore": [committed(_artifact(), _RECEIPT)],
-            "intake.case-design": [committed(_design(), _RECEIPT)],
-            "intake.case-repair": [committed(_repair(), _RECEIPT) for _index in range(3)],
-            "intake.case-review": [
-                committed(_review("needs_fix", auto_fix=True, used=0, budget=99), _RECEIPT),
-                committed(_review("needs_fix", auto_fix=True, used=0, budget=99), _RECEIPT),
-                committed(_review("needs_fix", auto_fix=True, used=0, budget=99), _RECEIPT),
-                committed(_review("pass", used=0, budget=99), _RECEIPT),
-            ],
-        },
-    )
-
-    terminal = result.terminal
-    assert isinstance(terminal, dict)
-    assert terminal["status"] == "exhausted"
-    assert terminal["decision"] == "exhausted"
-    assert terminal["rounds_used"] == 2
-    assert terminal["rounds_budget"] == 2
-    calls = [call.semantic_node_id for call in result.semantic_calls]
-    assert calls.count("intake.case-design") == 1
-    assert calls.count("intake.case-repair") == 2
-    assert calls.count("intake.case-review") == 3
-
-
-def test_arrival_contains_required_identity_fields() -> None:
-    arrival = _arrival("review-round-advance", epoch=2, sequence=3, used=1)
-    assert set(arrival) == {
-        "business_epoch",
-        "predecessor",
-        "source_activation",
-        "sequence",
-        "value",
-        "arrival_id",
-    }
-    assert arrival["source_activation"]
-    assert arrival["arrival_id"] == arrival["arrival_id"].strip()
-    inbox = empty_case_review_inbox()
-    assert set(inbox) == {"arrivals", "dispatched_ids", "current_trigger"}
+    assert row.anchor_node_id == "review-round-advance"
+    assert set(row.membership) == _cycle_members(edges)

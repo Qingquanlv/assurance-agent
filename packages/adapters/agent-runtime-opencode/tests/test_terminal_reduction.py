@@ -13,7 +13,6 @@ from agent_runtime_contracts.wire.schema import (
 )
 from assurance_quality.contracts.agent import FactBaselineResultV1
 from assurance_quality.operations.agent_skills import FACT_BASELINE_RESULT_ID
-from assurance_quality.resource_loader import resource_bytes
 from agent_runtime_opencode.observe.state import classify_provider_state, parse_closed_terminal_result
 from agent_runtime_opencode.result import reduce_terminal
 from agent_runtime_opencode.security import encoded_canary_forms
@@ -124,7 +123,7 @@ def _intake_messages(payload: object) -> list[dict[str, object]]:
 
 
 def _fact_baseline_request() -> AgentRunRequest:
-    schema = json.loads(resource_bytes("ops/fact_baseline/result.schema.json"))
+    schema = FactBaselineResultV1.model_json_schema()
     base = agent_run_request()
     return AgentRunRequest.model_validate(
         {

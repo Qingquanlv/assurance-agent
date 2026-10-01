@@ -7,73 +7,25 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import ProviderSource
 
-_SIX_CAPABILITY_DISTRIBUTIONS = frozenset(
-    {
-        "assurance-intake",
-        "assurance-generation",
-        "assurance-execution",
-        "assurance-healing",
-        "assurance-quality",
-        "assurance-improvement",
-    }
-)
+from assurance_product.feature_set import CAPABILITIES, CAPABILITY_OWNERS
+
+_SIX_CAPABILITY_DISTRIBUTIONS = frozenset(pin.distribution for pin in CAPABILITIES)
 _RUNTIME_DISTRIBUTIONS = frozenset({"agent-runtime-opencode"})
-_SIX_CAPABILITY_SOURCES = (
-    ProviderSource(
-        distribution="assurance-intake",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="intake",
-        entrypoint_value="assurance_intake.plugin:IntakePlugin",
-        declaration_path="assurance_intake/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-generation",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="generation",
-        entrypoint_value="assurance_generation.plugin:GenerationPlugin",
-        declaration_path="assurance_generation/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-execution",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="execution",
-        entrypoint_value="assurance_execution.plugin:ExecutionPlugin",
-        declaration_path="assurance_execution/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-healing",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="healing",
-        entrypoint_value="assurance_healing.plugin:HealingPlugin",
-        declaration_path="assurance_healing/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-quality",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="quality",
-        entrypoint_value="assurance_quality.plugin:QualityPlugin",
-        declaration_path="assurance_quality/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    ProviderSource(
-        distribution="assurance-improvement",
-        version="0.3.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="improvement",
-        entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",
-        declaration_path="assurance_improvement/plugin-declaration.json",
-        import_roots=("",),
-    ),
-)
+
+
+def _capability_sources() -> tuple[ProviderSource, ...]:
+    return tuple(
+        ProviderSource(
+            distribution=pin.distribution,
+            version=pin.version,
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name=pin.entrypoint_name,
+            entrypoint_value=pin.plugin,
+            declaration_path=f"{pin.package}/plugin-declaration.json",
+            import_roots=("",),
+        )
+        for pin in CAPABILITIES
+    )
 
 
 def test_product_exposes_only_opencode_provider() -> None:
@@ -101,8 +53,9 @@ def test_source_catalog_is_six_wheels_plus_opencode() -> None:
     from assurance_product.source_catalog import product_source_catalog
 
     catalog = product_source_catalog()
-    assert six_capability_coordinates(catalog) == _SIX_CAPABILITY_SOURCES
-    assert catalog == (*_SIX_CAPABILITY_SOURCES, _runtime_source())
+    capability_sources = _capability_sources()
+    assert six_capability_coordinates(catalog) == capability_sources
+    assert catalog == (*capability_sources, _runtime_source())
     assert runtime_coordinates(catalog) == {"agent-runtime-opencode==0.1.0"}
     assert {source.distribution for source in catalog} - _SIX_CAPABILITY_DISTRIBUTIONS == {
         "agent-runtime-opencode"
@@ -117,30 +70,21 @@ def test_provider_returns_one_minimal_opencode_manifest() -> None:
     assert PRODUCT_ID == "assurance"
     assert ENGINE_API == ENGINE_API_VERSION == "2.0"
     assert opencode.engine_api == ENGINE_API
-    assert tuple(requirement.plugin_id for requirement in opencode.plugins) == (
-        "assurance.execution",
-        "assurance.generation",
-        "assurance.healing",
-        "assurance.improvement",
-        "assurance.intake",
-        "assurance.product.agent",
-        "assurance.product.configuration",
-        "assurance.quality",
-        "runtime.opencode",
+    assert tuple(requirement.plugin_id for requirement in opencode.plugins) == tuple(
+        sorted(
+            (
+                *CAPABILITY_OWNERS,
+                "assurance.product.agent",
+                "assurance.product.configuration",
+                "runtime.opencode",
+            )
+        )
     )
-    capability_ids = {
-        "assurance.execution",
-        "assurance.generation",
-        "assurance.healing",
-        "assurance.improvement",
-        "assurance.intake",
-        "assurance.quality",
-    }
     assert {
         requirement.plugin_id: requirement.version_specifier
         for requirement in opencode.plugins
-        if requirement.plugin_id in capability_ids
-    } == {plugin_id: "==0.3.0" for plugin_id in capability_ids}
+        if requirement.plugin_id in set(CAPABILITY_OWNERS)
+    } == {pin.owner_id: f"=={pin.version}" for pin in CAPABILITIES}
     assert opencode.product_id == "assurance.product"
     assert opencode.source is not None
     assert opencode.source.declaration_path == "assurance_product/product-declaration-opencode.json"

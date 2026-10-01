@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_generation.graphs.api import terminal_done
 from assurance_generation.graphs.factory import GenerationGraphs, build_generation_graphs
 from assurance_generation.graphs.nodes import (
     activation_codegen,
@@ -18,7 +19,6 @@ from assurance_generation.graphs.nodes import (
     publish_codegen_review,
     select_codegen,
     select_codegen_review,
-    terminal_done,
 )
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef

@@ -33,7 +33,6 @@ _NON_CONTRACT_INTAKE = (
     "assurance_intake.plugin",
     "assurance_intake.ops",
     "assurance_intake.graphs",
-    "assurance_intake.validators",
 )
 _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.generation.schema.codegen-mapping.v1": (

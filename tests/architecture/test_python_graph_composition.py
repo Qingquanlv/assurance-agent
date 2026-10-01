@@ -22,24 +22,6 @@ FEATURE_SOURCE_TREES = (
     ("assurance_improvement", "packages/capabilities/assurance-improvement/assurance_improvement"),
 )
 
-EXPECTED_FEATURE_FACTORY_MODULES = (
-    "assurance_intake.graphs.factory",
-    "assurance_generation.graphs.factory",
-    "assurance_execution.graphs.factory",
-    "assurance_quality.graphs.factory",
-    "assurance_healing.graphs.factory",
-    "assurance_improvement.graphs.factory",
-)
-
-EXPECTED_FEATURE_FACTORY_SYMBOLS = (
-    "assurance_intake.graphs.factory:build_intake_graphs",
-    "assurance_generation.graphs.factory:build_generation_graphs",
-    "assurance_execution.graphs.factory:build_execution_graphs",
-    "assurance_quality.graphs.factory:build_quality_graphs",
-    "assurance_healing.graphs.factory:build_healing_graphs",
-    "assurance_improvement.graphs.factory:build_improvement_graphs",
-)
-
 FORBIDDEN_FEATURE_IMPLEMENTATION = (
     "operations",
     "validators",
@@ -179,23 +161,16 @@ def _graph_python_files() -> tuple[Path, ...]:
 
 
 def test_fixed_factory_modules_are_the_only_capability_public_graph_surface() -> None:
-    assert EXPECTED_FEATURE_FACTORY_MODULES == (
-        "assurance_intake.graphs.factory",
-        "assurance_generation.graphs.factory",
-        "assurance_execution.graphs.factory",
-        "assurance_quality.graphs.factory",
-        "assurance_healing.graphs.factory",
-        "assurance_improvement.graphs.factory",
-    )
-    assert EXPECTED_FEATURE_FACTORY_SYMBOLS == (
-        "assurance_intake.graphs.factory:build_intake_graphs",
-        "assurance_generation.graphs.factory:build_generation_graphs",
-        "assurance_execution.graphs.factory:build_execution_graphs",
-        "assurance_quality.graphs.factory:build_quality_graphs",
-        "assurance_healing.graphs.factory:build_healing_graphs",
-        "assurance_improvement.graphs.factory:build_improvement_graphs",
-    )
+    from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
+
     root = _repo_root()
+    packages = dict(FEATURE_SOURCE_TREES)
+    for ref in FEATURE_GRAPH_FACTORIES:
+        module_name, attribute = ref.symbol.split(":", 1)
+        package_name, _, remainder = module_name.partition(".")
+        assert remainder == "graphs.factory"
+        assert not attribute.startswith("_")
+        assert (root / packages[package_name] / "graphs" / "factory.py").is_file()
     public: list[str] = []
     for package_name, relative in FEATURE_SOURCE_TREES:
         package_root = root / relative
@@ -334,12 +309,9 @@ def test_authenticated_factory_symbols_exist_as_public_callables() -> None:
 
     from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
 
-    assert tuple(item.symbol for item in FEATURE_GRAPH_FACTORIES) == EXPECTED_FEATURE_FACTORY_SYMBOLS
-    for symbol, module_name in zip(
-        EXPECTED_FEATURE_FACTORY_SYMBOLS, EXPECTED_FEATURE_FACTORY_MODULES, strict=True
-    ):
-        module_from_symbol, attribute = symbol.split(":")
-        assert module_from_symbol == module_name
+    for ref in FEATURE_GRAPH_FACTORIES:
+        module_name, attribute = ref.symbol.split(":", 1)
+        assert module_name.endswith(".graphs.factory")
         assert not attribute.startswith("_")
         module = importlib.import_module(module_name)
         factory = getattr(module, attribute)

@@ -20,6 +20,7 @@ from assurance_quality.contracts.assessment import (
     ReportSkillInputV1,
 )
 from assurance_quality.contracts.issues import IssueEvidenceManifest, ObservationDocument
+
 FACT_BASELINE_RESULT_ID = "assurance.quality.result.fact-baseline.v1"
 
 TRIAGE_ACTIONS = frozenset(

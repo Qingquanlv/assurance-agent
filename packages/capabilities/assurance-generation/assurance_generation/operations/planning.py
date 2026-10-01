@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 import yaml
 
-from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
+from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract, result_schema_from_model
 from agent_runtime_contracts.ops import (
     AgentBindingDataV1,
     InputError,
@@ -53,9 +53,9 @@ PrepareKind = Literal["prepare", "finalize"]
 
 PLAN_RESULT_ID = "assurance.generation.result.plan.v1"
 PLAN_REVIEW_RESULT_ID = "assurance.generation.result.codegen-review.v1"
-_RESULT_FILES: Mapping[str, str] = {
-    PLAN_RESULT_ID: "result-contracts/plan.v1.schema.json",
-    PLAN_REVIEW_RESULT_ID: "ops/api_codegen_review/result.schema.json",
+_RESULT_SCHEMAS: Mapping[str, Callable[[], object]] = {
+    PLAN_RESULT_ID: lambda: json.loads(resource_bytes("result-contracts/plan.v1.schema.json")),
+    PLAN_REVIEW_RESULT_ID: lambda: result_schema_from_model(PlanReviewAuthoring),
 }
 _PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
     "api": (
@@ -147,7 +147,7 @@ def result_contract(
     *,
     capability_leafs: tuple[str, ...] | None = None,
 ) -> ResultContract:
-    payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
+    payload: Any = _RESULT_SCHEMAS[schema_id]()
     if capability_leafs is not None:
         closed_arrays = 0
 

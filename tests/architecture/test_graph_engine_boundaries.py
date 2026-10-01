@@ -60,7 +60,6 @@ FEATURE_IMPLEMENTATION_SUFFIXES = (
     "plugin",
     "feature",
     "ops",
-    "validators",
     "graphs",
 )
 

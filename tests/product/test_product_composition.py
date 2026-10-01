@@ -9,18 +9,12 @@ from graph_engine.composition.dependencies import DependencyConflict
 from graph_engine.composition.resolver import ResolutionError
 from graph_engine.composition.source_fs import SourceSnapshotError
 
+from assurance_product.feature_set import CAPABILITY_OWNERS
+
 from tests.product.composition_harness import request_for
 from tests.product.conformance import ALL_BINDING_IDS
 from tests.product.test_feature_graph_bundles import PUBLIC_BUNDLE_FIELDS
 
-_FEATURE_OWNERS = (
-    "assurance.execution",
-    "assurance.generation",
-    "assurance.healing",
-    "assurance.improvement",
-    "assurance.intake",
-    "assurance.quality",
-)
 _PRODUCT_FACTORY = "assurance_product.graphs.factory:build_product_graphs"
 
 
@@ -67,7 +61,7 @@ def test_composition_has_exact_opencode_identity_and_binding_closure(opencode_co
     assert getattr(product_manifest, "workflow_slot_bindings", ()) == ()
     assert set(product_manifest.entrypoints) == set(PRODUCT_ENTRYPOINTS)
     assert len(product_manifest.entrypoints) == 13
-    assert set(PUBLIC_BUNDLE_FIELDS) == set(_FEATURE_OWNERS)
+    assert set(PUBLIC_BUNDLE_FIELDS) == set(CAPABILITY_OWNERS)
 
 
 def test_wrong_runtime_deployment_fails_closed(installed_sources):

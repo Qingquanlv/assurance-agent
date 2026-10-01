@@ -252,9 +252,7 @@ class _ScriptedTaskHost:
                 )
             )
         if capability_id == _CASE_DESIGN_ID:
-            return TaskOutcome.succeeded(
-                self._public_fields({"change_id": change_id, "validation_status": "pass"})
-            )
+            return TaskOutcome.succeeded(self._public_fields({"artifacts": []}))
         if capability_id == _CASE_REVIEW_ID:
             fixable = self._review_decision in {"needs_fix", "changes_requested"}
             human = self._review_decision in {"needs_human_review", "reject"}

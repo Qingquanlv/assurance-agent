@@ -20,7 +20,6 @@ from assurance_intake.contracts.explore import (
     REQUIREMENT_PATH,
     RUN_SPEC_SNAPSHOT_PATH,
     ExploreAdvisoryV1,
-    ExploreContextV1,
     PreparedExploreV1,
 )
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
@@ -37,12 +36,11 @@ from assurance_intake.domain.obligations import (
     normalize_obligation_drafts,
     resolve_requirement_quote,
 )
-
-_EXPLORE_CONTEXT = "qa/results/explore/context.json"
+from assurance_intake.ops.explore.models import CONTEXT_PATH, ExploreContextV1
 
 
 def _load_explore_context(workspace: Path, *, change_id: str) -> ExploreContextV1:
-    path = workspace_file(workspace, _EXPLORE_CONTEXT)
+    path = workspace_file(workspace, CONTEXT_PATH)
     try:
         context = ExploreContextV1.model_validate_json(path.read_bytes())
     except (OSError, ValidationError, ValueError) as error:

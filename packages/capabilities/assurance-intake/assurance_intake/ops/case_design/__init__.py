@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from agent_runtime_contracts.ops import Agent, Dir, Finalize, Prepare
 
-from assurance_intake.domain.artifacts import ArtifactListResultV1
 from assurance_intake.domain.case_delta import MARKER_PATH, MATRIX_PATH, PROPOSAL_PATH
 from assurance_intake.domain.prepare_evidence import frozen_plan
 from assurance_intake.ops import router
@@ -18,7 +17,6 @@ op = router.agent(
     agent=Agent(
         profile="assurance-v1-doc-author",
         skill="aa-case-design",
-        result=ArtifactListResultV1,
         writes=(
             MARKER_PATH,
             PROPOSAL_PATH,
@@ -26,7 +24,7 @@ op = router.agent(
             Dir("qa/cases", files=lambda business: business.case_delta_paths),
         ),
     ),
-    finalize=Finalize(hook=hooks.after, on_output_error=hooks.on_output_error),
+    finalize=Finalize(hook=hooks.after),
     output=CaseDesignOutputV1,
 )
 

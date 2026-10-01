@@ -8,7 +8,7 @@ from assurance_generation.contracts.workflow import (
     GenerationCycleResultV1,
     ResolveGenerationInputV1,
 )
-from assurance_generation.graphs.routes import route_families
+from assurance_generation.graphs.factory import route_families
 
 
 def test_all_authored_sends_preserve_plan_binding() -> None:

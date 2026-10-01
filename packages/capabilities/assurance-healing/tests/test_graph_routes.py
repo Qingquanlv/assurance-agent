@@ -11,19 +11,21 @@ from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.contracts.proposal import FixProposalSummary
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_healing.contracts.coverage_repair import HEALING_REPAIR_OUTCOMES
-from assurance_healing.graphs.factory import build_healing_graphs
-from assurance_healing.graphs.nodes import publish_repair
-from assurance_healing.graphs.routes import (
+from assurance_healing.graphs.coverage import (
     admit_coverage_named_matches,
-    admit_failure_named_matches,
     coverage_status_named_matches,
-    failure_status_named_matches,
     route_admit_coverage,
-    route_admit_failure,
     route_coverage_status,
+)
+from assurance_healing.graphs.factory import build_healing_graphs
+from assurance_healing.graphs.failure import (
+    admit_failure_named_matches,
+    failure_status_named_matches,
+    route_admit_failure,
     route_failure_status,
     route_proposal_approval,
 )
+from assurance_healing.graphs.nodes import publish_repair
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
 from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
@@ -37,7 +39,16 @@ from test_healing_graph_factory import (  # type: ignore[import-not-found]
 )
 
 _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_healing" / "graphs"
-_ROUTES_PATH = _GRAPHS_ROOT / "routes.py"
+_ROUTE_PATHS = (_GRAPHS_ROOT / "failure.py", _GRAPHS_ROOT / "coverage.py")
+_ROUTE_FUNCTIONS = {
+    "failure.py": (
+        "route_admit_failure",
+        "route_proposal_status",
+        "route_proposal_approval",
+        "route_failure_status",
+    ),
+    "coverage.py": ("route_admit_coverage", "route_coverage_status"),
+}
 _FORBIDDEN_IMPLEMENTATION = (
     "operations",
     "validators",
@@ -84,14 +95,48 @@ def _imported_names(path: Path, *, module_name: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _assert_no_priority_if(node: ast.AST) -> None:
+    for child in ast.walk(node):
+        if isinstance(child, ast.If) and child.orelse:
+            for branch in child.orelse:
+                assert not isinstance(branch, ast.If), "exclusive routes must not use priority if/elif"
+
+
 def test_routes_use_select_exclusive_route_without_priority_if_elif() -> None:
-    source = _ROUTES_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(_ROUTES_PATH))
-    assert "select_exclusive_route" in source
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If) and node.orelse:
-            for child in node.orelse:
-                assert not isinstance(child, ast.If), "exclusive routes must not use priority if/elif"
+    for path in _ROUTE_PATHS:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        functions = {
+            node.name: node for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        expected = _ROUTE_FUNCTIONS[path.name]
+        assert tuple(name for name in functions if name.startswith("route_")) == expected
+        for name in expected:
+            node = functions[name]
+            assert any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "select_exclusive_route"
+                for child in ast.walk(node)
+            ), name
+            _assert_no_priority_if(node)
+        for node in tree.body:
+            table: ast.AST | None = None
+            if (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id.endswith("_TABLE")
+            ):
+                table = node.value
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id.endswith("_TABLE")
+            ):
+                table = node.value
+            if table is not None:
+                _assert_no_priority_if(table)
 
 
 @pytest.mark.parametrize(

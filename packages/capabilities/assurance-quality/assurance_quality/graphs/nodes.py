@@ -583,14 +583,6 @@ def clear_report_state(state: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def route_report_attempt(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return "failed"
-    if state.get("report_outcome") or state.get("report_purpose") == "diagnostic":
-        return "done"
-    return "failed"
-
-
 def terminal_done(state: QualityState) -> dict[str, object]:
     del state
     return {}
@@ -610,7 +602,6 @@ __all__ = [
     "publish_issue_analysis",
     "publish_issue_reconcile",
     "publish_report",
-    "route_report_attempt",
     "select_fact_baseline",
     "select_inspect",
     "select_quality",

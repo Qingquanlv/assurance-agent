@@ -10,7 +10,6 @@ module-level ``execute``.
 from __future__ import annotations
 
 import importlib
-import json
 import pkgutil
 import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -43,9 +42,15 @@ from agent_runtime_contracts.ops.errors import (
     validate_model,
     validate_output,
 )
+from agent_runtime_contracts.ops.receipt import ArtifactListResultV1
 from agent_runtime_contracts.ops.request import prepared_outcome, result_contract_from, skill_request
 from agent_runtime_contracts.wire.models import AgentRunRequest, AgentRunResult, JSONValue, ResultContract
-from agent_runtime_contracts.wire.schema import canonical_digest, freeze_json, thaw_json
+from agent_runtime_contracts.wire.schema import (
+    canonical_digest,
+    freeze_json,
+    result_schema_from_model,
+    thaw_json,
+)
 
 InputT = TypeVar("InputT", bound=BaseModel)
 ResultT = TypeVar("ResultT", bound=BaseModel)
@@ -54,7 +59,6 @@ DepT = TypeVar("DepT")
 
 _SKILL_FILE = "SKILL.md"
 _SKILL_SUFFIX = ".SKILL.md"
-_RESULT_FILE = "result.schema.json"
 
 
 class OpRequest(Protocol):
@@ -240,11 +244,14 @@ class Prepare(Generic[InputT]):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Agent(Generic[ResultT]):
-    """The Agent run: persona, skill, typed result, and the workspace paths it may write."""
+    """The Agent run: persona, skill, typed result, and the workspace paths it may write.
+
+    ``result`` defaults to ``ArtifactListResultV1``, the receipt of the files the run wrote.
+    """
 
     profile: str
     skill: str
-    result: type[ResultT]
+    result: type[ResultT] = cast(Any, ArtifactListResultV1)
     writes: tuple[str | Dir, ...]
 
     def __post_init__(self) -> None:
@@ -252,6 +259,10 @@ class Agent(Generic[ResultT]):
 
     def files(self) -> tuple[str, ...]:
         return tuple(sorted(entry for entry in self.writes if isinstance(entry, str)))
+
+    def routes(self) -> tuple[str, ...]:
+        """Exact files when the Agent declares any; otherwise the directories it edits."""
+        return self.files() or tuple(sorted(entry.root for entry in self.writes if isinstance(entry, Dir)))
 
     def claims(self) -> tuple[str, ...]:
         paths = tuple(entry if isinstance(entry, str) else entry.root for entry in self.writes)
@@ -350,10 +361,7 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         owner = self.router.owner
         skill = self.agent.skill
         base = f"ops/{self.directory}"
-        manifest = {
-            f"{owner}.skill.{skill}.v1": f"{base}/{_SKILL_FILE}",
-            self.result_schema_id: f"{base}/{_RESULT_FILE}",
-        }
+        manifest = {f"{owner}.skill.{skill}.v1": f"{base}/{_SKILL_FILE}"}
         for filename in self.router.list_files(base):
             if filename == _SKILL_FILE or not filename.endswith(".md"):
                 continue
@@ -365,8 +373,8 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         return manifest
 
     def result_contract(self) -> ResultContract:
-        path = f"ops/{self.directory}/{_RESULT_FILE}"
-        return result_contract_from(self.result_schema_id, json.loads(self.router.resource_bytes(path)))
+        schema = cast(JSONValue, result_schema_from_model(self.agent.result))
+        return result_contract_from(self.result_schema_id, schema)
 
     def handle_prepare(self, request: OpRequest, task: TaskContext) -> TaskOutcome:
         try:
@@ -614,7 +622,7 @@ class OpRouter:
         return MappingProxyType({name: op.contract() for name, op in self.task_ops().items()})
 
     def output_routes(self) -> Mapping[str, tuple[str, ...]]:
-        return MappingProxyType({name: op.agent.files() for name, op in self.agent_ops().items()})
+        return MappingProxyType({name: op.agent.routes() for name, op in self.agent_ops().items()})
 
     def attempt_contract_refs(self) -> tuple[AttemptContractRef, ...]:
         contracts = (*self.agent_contracts().values(), *self.task_contracts().values())

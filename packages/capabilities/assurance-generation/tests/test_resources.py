@@ -25,8 +25,6 @@ _REQUIRED = (
     "ops/performance_codegen/SKILL.md",
     "ops/performance_codegen_review/SKILL.md",
     "resources/result-contracts/plan.v1.schema.json",
-    "ops/api_codegen_review/result.schema.json",
-    "ops/api_codegen/result.schema.json",
 )
 _FORBIDDEN = (
     "assurance_agent",
@@ -67,12 +65,17 @@ def test_result_contracts_match_capability_schemas() -> None:
     assert resource_bytes("result-contracts/plan.v1.schema.json") == canonical_json_bytes(
         cast(JSONValue, PlanResultV1.model_json_schema())
     )
-    assert resource_bytes("ops/api_codegen_review/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, PlanReviewAuthoring.model_json_schema())
-    )
-    assert resource_bytes("ops/api_codegen/result.schema.json") == canonical_json_bytes(
-        cast(JSONValue, CodegenAuthoringV1.model_json_schema())
-    )
+    from assurance_generation.ops import router
+
+    def symbol(model: type) -> str:
+        return f"{model.__module__}.{model.__qualname__}"
+
+    results = {name: symbol(op.agent.result) for name, op in router.agent_ops().items()}
+    assert results == {
+        f"{family}.{kind}": symbol(model)
+        for family in ("api", "e2e", "fuzz", "performance")
+        for kind, model in (("codegen", CodegenAuthoringV1), ("codegen-review", PlanReviewAuthoring))
+    }
 
 
 @pytest.mark.parametrize(
