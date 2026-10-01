@@ -11,11 +11,15 @@ from agent_runtime_contracts.ops.errors import (
 )
 from agent_runtime_contracts.ops.op import run_finalize, run_prepare
 from agent_runtime_contracts.ops.router import (
+    Agent,
     AgentOp,
     AgentOpFinalizeInputV1,
+    Dir,
+    Finalize,
     FinalizeContext,
     OpRequest,
     OpRouter,
+    Prepare,
     PrepareContext,
     TaskOp,
     WriteScopeError,
@@ -32,15 +36,19 @@ from agent_runtime_contracts.ops.request import (
 )
 
 __all__ = [
+    "Agent",
     "AgentBindingDataV1",
     "AgentOp",
     "AgentOpFinalizeInputV1",
     "BOUNDED_PROFILES",
+    "Dir",
+    "Finalize",
     "FinalizeContext",
     "InputError",
     "OpRequest",
     "OpRouter",
     "OutputError",
+    "Prepare",
     "PrepareContext",
     "TaskOp",
     "WorkspaceRoots",

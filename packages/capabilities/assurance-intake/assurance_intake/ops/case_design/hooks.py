@@ -13,7 +13,6 @@ from assurance_intake.domain.artifacts import (
 )
 from assurance_intake.domain.case_delta import (
     bind_case_delta_evidence,
-    case_delta_outputs,
     finalize_inventory,
     finalize_plan,
     require_receipt_paths,
@@ -22,10 +21,6 @@ from assurance_intake.domain.case_delta import (
 from assurance_intake.domain.planning_facts import build_planning_facts
 from assurance_intake.domain.prepare_evidence import authenticate_evidence_refs, frozen_plan
 from assurance_intake.ops.case_design.models import CaseDesignInputV1, CaseDesignOutputV1
-
-
-def allowed_outputs(business: CaseDesignInputV1) -> tuple[str, ...]:
-    return case_delta_outputs(business.case_delta_paths)
 
 
 def before(ctx: PrepareContext, business: CaseDesignInputV1) -> CaseDesignInputV1:

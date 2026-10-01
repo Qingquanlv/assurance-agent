@@ -78,12 +78,11 @@ def test_case_review_seal_files_are_finalize_not_runtime() -> None:
 
 
 def test_review_history_identity_includes_epoch() -> None:
-    from assurance_intake.feature import OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.domain.case_review_seal import case_review_runtime_paths
 
-    pattern = "qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
-    assert pattern in OUTPUT_ROUTE_TEMPLATES["case-review"]
-    first = pattern.format(coverage_epoch=0, review_round=0)
-    second = pattern.format(coverage_epoch=1, review_round=0)
+    _, first, _ = case_review_runtime_paths(coverage_epoch=0, review_round=0)
+    _, second, _ = case_review_runtime_paths(coverage_epoch=1, review_round=0)
+    assert first == "qa/cases/reviews/epochs/0/rounds/0.json"
     assert first != second
 
 

@@ -19,7 +19,7 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
 )
 
-from agent_runtime_contracts.ops import OpRouter, WriteScopeError
+from agent_runtime_contracts.ops import Agent, Dir, OpRouter, WriteScopeError
 from agent_runtime_contracts.wire.models import AgentRunRequest, AgentRunResult
 
 _SHA = "a" * 64
@@ -46,12 +46,13 @@ async def execute(request, context):
 _ECHO_INIT = """
 from graph_engine.plugin_api import FrozenModel
 
-from agent_runtime_contracts.ops import OutputError
+from agent_runtime_contracts.ops import Agent, Dir, Finalize, OutputError, Prepare
 from PKG.ops import router
 
 
 class EchoInput(FrozenModel):
     change_id: str
+    notes: tuple[str, ...] = ()
 
 
 class EchoResult(FrozenModel):
@@ -91,18 +92,16 @@ def recover(ctx, business, error):
 
 op = router.agent(
     "echo",
-    profile="assurance-v1-reviewer",
-    skill="aa-echo",
     input=EchoInput,
-    result=EchoResult,
+    prepare=Prepare(hook=before, depends=(frozen_plan,), writes=("qa/seed.txt",)),
+    agent=Agent(
+        profile="assurance-v1-reviewer",
+        skill="aa-echo",
+        result=EchoResult,
+        writes=("qa/echo.json", Dir("qa/notes", files=lambda business: business.notes)),
+    ),
+    finalize=Finalize(hook=after, on_output_error=recover, writes=("qa/final.txt",)),
     output=EchoOutput,
-    writes=("qa/echo.json",),
-    prepare_writes=("qa/seed.txt",),
-    finalize_writes=("qa/final.txt",),
-    depends=(frozen_plan,),
-    before=before,
-    after=after,
-    on_output_error=recover,
 )
 """
 
@@ -266,10 +265,10 @@ def test_discovery_derives_handlers_contracts_and_routes(tmp_path: Path) -> None
     contract = router.agent_contracts()["echo"]
     assert contract.contract_id == "fixture.cap.agent.echo.v1"
     assert contract.skill_id == "aa-echo"
-    assert contract.resources.writes == ("qa/echo.json", "qa/final.txt", "qa/seed.txt")
+    assert contract.resources.writes == ("qa/echo.json", "qa/final.txt", "qa/notes", "qa/seed.txt")
     assert contract.phase_write_claims.as_projection() == {
         "prepare": ["qa/seed.txt"],
-        "runtime": ["qa/echo.json"],
+        "runtime": ["qa/echo.json", "qa/notes"],
         "finalize": ["qa/final.txt"],
     }
     task = router.task_contracts()["count"]
@@ -314,10 +313,40 @@ def test_prepare_runs_depends_and_before(tmp_path: Path) -> None:
     texts = [part.text_content for part in request.instructions if part.media_type == "text/plain"]
     assert texts == ["echo skill\n"]
     business = [part.json_content for part in request.instructions if part.media_type == "application/json"]
-    assert business == [{"change_id": "c1", "planning_facts": {"plan": "plan-for-c1"}}]
+    assert business == [{"change_id": "c1", "notes": (), "planning_facts": {"plan": "plan-for-c1"}}]
     assert request.workspace.scope_id == "c1"
     assert request.workspace.allowed_outputs == ("qa/echo.json",)
     assert (context.write_root / "qa" / "seed.txt").read_text() == "plan-for-c1"
+
+
+def test_dir_write_expands_to_the_exact_files_of_this_run(tmp_path: Path) -> None:
+    module = _capability(tmp_path)
+    business = {"change_id": "c1", "notes": ["qa/notes/b.md", "qa/notes/deep/a.md"]}
+
+    outcome = _run(module, _Request("fixture.cap.echo.prepare", business, _binding()), _context(tmp_path))
+
+    request = AgentRunRequest.model_validate(outcome.output)
+    assert request.workspace.allowed_outputs == ("qa/echo.json", "qa/notes/b.md", "qa/notes/deep/a.md")
+
+
+@pytest.mark.parametrize("path", ["qa/other.md", "qa/notes", "qa/notes/../escape.md", "/qa/notes/a.md"])
+def test_dir_file_outside_its_root_is_invalid_input(tmp_path: Path, path: str) -> None:
+    module = _capability(tmp_path)
+    business = {"change_id": "c1", "notes": [path]}
+
+    outcome = _run(module, _Request("fixture.cap.echo.prepare", business, _binding()), _context(tmp_path))
+
+    assert outcome.failure is not None and outcome.failure.kind == "invalid_input"
+
+
+def test_agent_writes_must_be_unique_across_files_and_dirs() -> None:
+    with pytest.raises(ValueError, match="agent writes must be unique"):
+        Agent(
+            profile="assurance-v1-reviewer",
+            skill="aa-echo",
+            result=AgentRunResult,
+            writes=("qa/notes", Dir("qa/notes", files=lambda business: ())),
+        )
 
 
 def test_override_replaces_a_dependency_for_tests(tmp_path: Path) -> None:
@@ -416,15 +445,7 @@ def test_duplicate_declaration_fails(tmp_path: Path) -> None:
     echo = router.agent_ops()["echo"]
 
     with pytest.raises(ValueError, match="duplicate op declaration"):
-        router.agent(
-            "echo",
-            profile=echo.profile,
-            skill=echo.skill,
-            input=echo.input,
-            result=echo.result,
-            output=echo.output,
-            writes=echo.writes,
-        )
+        router.agent("echo", input=echo.input, agent=echo.agent, output=echo.output)
 
 
 def test_op_package_without_declaration_fails_discovery(tmp_path: Path) -> None:

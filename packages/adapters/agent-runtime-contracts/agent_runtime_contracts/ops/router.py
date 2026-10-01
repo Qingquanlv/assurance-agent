@@ -13,7 +13,7 @@ import importlib
 import json
 import pkgutil
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.resources import files
@@ -139,7 +139,7 @@ class PrepareContext:
         return cast(DepT, self._deps[dependency])
 
     def write(self, relative: str, data: bytes) -> None:
-        _write_claimed(self.write_root, relative, data, self.op.prepare_writes, phase="prepare")
+        _write_claimed(self.write_root, relative, data, self.op.prepare.writes, phase="prepare")
 
     def extra(self, name: str, value: JSONValue) -> None:
         """Add a prompt-only field next to the business input."""
@@ -156,14 +156,13 @@ class FinalizeContext:
         self.agent_result = agent_result
 
     def write(self, relative: str, data: bytes) -> None:
-        _write_claimed(self.write_root, relative, data, self.op.finalize_writes, phase="finalize")
+        _write_claimed(self.write_root, relative, data, self.op.finalize.writes, phase="finalize")
 
 
 Dependency = Callable[[PrepareContext, InputT], object]
 Before = Callable[[PrepareContext, InputT], InputT]
 After = Callable[[FinalizeContext, InputT, ResultT], OutputT | Mapping[str, Any]]
 OnOutputError = Callable[[FinalizeContext, InputT, OutputError], OutputT]
-Outputs = Callable[[InputT], tuple[str, ...]]
 Run = Callable[[TaskContext, InputT], OutputT]
 
 
@@ -175,36 +174,89 @@ def _sorted_paths(paths: tuple[str, ...], *, kind: str) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
+@dataclass(frozen=True, slots=True)
+class Dir:
+    """A directory the Agent may write into; ``files`` names this run's exact files under it."""
+
+    root: str
+    files: Callable[[Any], Iterable[str]]
+
+    def __post_init__(self) -> None:
+        _canonical_relative(self.root)
+
+    def expand(self, business: BaseModel) -> tuple[str, ...]:
+        root = PurePosixPath(self.root)
+        expanded = tuple(self.files(business))
+        for path in expanded:
+            try:
+                inside = root in _canonical_relative(path).parents
+            except ValueError as error:
+                raise InputError(str(error)) from error
+            if not inside:
+                raise InputError(f"{path} is outside the declared directory {self.root}")
+        return expanded
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Prepare(Generic[InputT]):
+    """Kernel phase before the Agent: resolve dependencies, run the hook, write seed files."""
+
+    hook: Before[InputT] | None = None
+    depends: tuple[Dependency[InputT], ...] = ()
+    writes: tuple[str, ...] = ()
+    errors: tuple[type[Exception], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "writes", _sorted_paths(self.writes, kind="prepare writes"))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Agent(Generic[ResultT]):
+    """The Agent run: persona, skill, typed result, and the workspace paths it may write."""
+
+    profile: str
+    skill: str
+    result: type[ResultT]
+    writes: tuple[str | Dir, ...]
+
+    def __post_init__(self) -> None:
+        self.claims()
+
+    def files(self) -> tuple[str, ...]:
+        return tuple(sorted(entry for entry in self.writes if isinstance(entry, str)))
+
+    def claims(self) -> tuple[str, ...]:
+        paths = tuple(entry if isinstance(entry, str) else entry.root for entry in self.writes)
+        return _sorted_paths(paths, kind="agent writes")
+
+    def allowed_outputs(self, business: BaseModel) -> tuple[str, ...]:
+        directories = (entry for entry in self.writes if isinstance(entry, Dir))
+        return (*self.files(), *(path for entry in directories for path in entry.expand(business)))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Finalize(Generic[InputT, ResultT, OutputT]):
+    """Kernel phase after the Agent: check the result, run the hook, write sealed files."""
+
+    hook: After[InputT, ResultT, OutputT] | None = None
+    on_output_error: OnOutputError[InputT, OutputT] | None = None
+    writes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "writes", _sorted_paths(self.writes, kind="finalize writes"))
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AgentOp(Generic[InputT, ResultT, OutputT]):
     """One Agent operation: prepare builds the run request, finalize seals the result."""
 
     router: OpRouter
     name: str
-    profile: str
-    skill: str
     input: type[InputT]
-    result: type[ResultT]
+    prepare: Prepare[InputT]
+    agent: Agent[ResultT]
+    finalize: Finalize[InputT, ResultT, OutputT]
     output: type[OutputT]
-    writes: tuple[str, ...]
-    prepare_writes: tuple[str, ...] = ()
-    finalize_writes: tuple[str, ...] = ()
-    routes: tuple[str, ...] | None = None
-    outputs: Outputs[InputT] | None = None
-    depends: tuple[Dependency[InputT], ...] = ()
-    before: Before[InputT] | None = None
-    after: After[InputT, ResultT, OutputT] | None = None
-    on_output_error: OnOutputError[InputT, OutputT] | None = None
-    input_errors: tuple[type[Exception], ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "writes", _sorted_paths(self.writes, kind="writes"))
-        object.__setattr__(self, "prepare_writes", _sorted_paths(self.prepare_writes, kind="prepare_writes"))
-        object.__setattr__(
-            self, "finalize_writes", _sorted_paths(self.finalize_writes, kind="finalize_writes")
-        )
-        if self.routes is not None:
-            object.__setattr__(self, "routes", _sorted_paths(self.routes, kind="routes"))
 
     @property
     def directory(self) -> str:
@@ -227,22 +279,23 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         return f"{self.router.owner}.result.{self.name}.v1"
 
     def contract(self) -> AgentExecutionContract[InputT, ResultT, OutputT]:
-        prepare = self.prepare_writes
-        finalize = self.finalize_writes
-        runtime = tuple(path for path in self.writes if path not in prepare and path not in finalize)
+        prepare = self.prepare.writes
+        finalize = self.finalize.writes
+        claims = self.agent.claims()
+        runtime = tuple(path for path in claims if path not in prepare and path not in finalize)
         return AgentExecutionContract(
             contract_id=self.contract_id,
             owner_id=self.router.owner,
             prepare_handler_id=self.prepare_handler_id,
             finalize_handler_id=self.finalize_handler_id,
-            skill_id=self.skill,
-            agent_profile=self.profile,
+            skill_id=self.agent.skill,
+            agent_profile=self.agent.profile,
             input_model=self.input,
-            agent_result_model=self.result,
+            agent_result_model=self.agent.result,
             output_model=self.output,
             resources=ResourceClaims(
                 reads=self.router.reads,
-                writes=tuple(sorted({*self.writes, *prepare, *finalize})),
+                writes=tuple(sorted({*claims, *prepare, *finalize})),
             ),
             retry=self.router.agent_retry,
             timeout=self.router.timeout,
@@ -252,9 +305,10 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
 
     def resource_files(self) -> dict[str, str]:
         owner = self.router.owner
+        skill = self.agent.skill
         base = f"ops/{self.directory}"
         manifest = {
-            f"{owner}.skill.{self.skill}.v1": f"{base}/{_SKILL_FILE}",
+            f"{owner}.skill.{skill}.v1": f"{base}/{_SKILL_FILE}",
             self.result_schema_id: f"{base}/{_RESULT_FILE}",
         }
         for filename in self.router.list_files(base):
@@ -264,22 +318,22 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
                 raise ValueError(
                     f"{base}/{filename}: an op has one SKILL.md; declare another skill as its own op"
                 )
-            manifest[f"{owner}.skill.{self.skill}.{filename.removesuffix('.md')}.v1"] = f"{base}/{filename}"
+            manifest[f"{owner}.skill.{skill}.{filename.removesuffix('.md')}.v1"] = f"{base}/{filename}"
         return manifest
 
     def result_contract(self) -> ResultContract:
         path = f"ops/{self.directory}/{_RESULT_FILE}"
         return result_contract_from(self.result_schema_id, json.loads(self.router.resource_bytes(path)))
 
-    def prepare(self, request: OpRequest, task: TaskContext) -> TaskOutcome:
+    def handle_prepare(self, request: OpRequest, task: TaskContext) -> TaskOutcome:
         try:
             business = validate_model(self.input, request.input)
             binding = validate_binding(request.binding_data)
             ctx = PrepareContext(self, task)
-            for dependency in self.depends:
+            for dependency in self.prepare.depends:
                 ctx._deps[dependency] = self.router.resolve(dependency)(ctx, business)
-            if self.before is not None:
-                business = self.before(ctx, business)
+            if self.prepare.hook is not None:
+                business = self.prepare.hook(ctx, business)
             return prepared_outcome(
                 skill_request(
                     skill_text=self.router.resource_text(f"ops/{self.directory}/{_SKILL_FILE}"),
@@ -288,14 +342,14 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
                     binding=binding,
                     result=self.result_contract(),
                     roots=task,
-                    allowed_outputs=self.writes if self.outputs is None else self.outputs(business),
+                    allowed_outputs=self.agent.allowed_outputs(business),
                     scope_id=self.router.scope(business),
                 )
             )
-        except (InputError, ValidationError, *self.input_errors) as error:
+        except (InputError, ValidationError, *self.prepare.errors) as error:
             return failed_input(error)
 
-    def finalize(self, request: OpRequest, task: TaskContext) -> TaskOutcome:
+    def handle_finalize(self, request: OpRequest, task: TaskContext) -> TaskOutcome:
         try:
             envelope = validate_model(AgentOpFinalizeInputV1, request.input)
             prepared = thaw_json(envelope.prepare)
@@ -308,16 +362,17 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         except InputError as error:
             return failed_input(error)
         ctx = FinalizeContext(self, task, envelope.agent_result)
+        hook = self.finalize.hook
         try:
             try:
-                result = validate_output(self.result, thaw_json(envelope.agent_result.result_payload))
+                result = validate_output(self.agent.result, thaw_json(envelope.agent_result.result_payload))
                 produced: BaseModel | Mapping[str, Any] = (
-                    result if self.after is None else self.after(ctx, business, result)
+                    result if hook is None else hook(ctx, business, result)
                 )
             except OutputError as error:
-                if self.on_output_error is None:
+                if self.finalize.on_output_error is None:
                     raise
-                produced = self.on_output_error(ctx, business, error)
+                produced = self.finalize.on_output_error(ctx, business, error)
             data = produced.model_dump(mode="json") if isinstance(produced, BaseModel) else produced
             output = validate_output(self.output, data)
         except InputError as error:
@@ -421,40 +476,20 @@ class OpRouter:
         self,
         name: str,
         *,
-        profile: str,
-        skill: str,
         input: type[InputT],
-        result: type[ResultT],
+        prepare: Prepare[InputT] | None = None,
+        agent: Agent[ResultT],
+        finalize: Finalize[InputT, ResultT, OutputT] | None = None,
         output: type[OutputT],
-        writes: tuple[str, ...],
-        prepare_writes: tuple[str, ...] = (),
-        finalize_writes: tuple[str, ...] = (),
-        routes: tuple[str, ...] | None = None,
-        outputs: Outputs[InputT] | None = None,
-        depends: tuple[Dependency[InputT], ...] = (),
-        before: Before[InputT] | None = None,
-        after: After[InputT, ResultT, OutputT] | None = None,
-        on_output_error: OnOutputError[InputT, OutputT] | None = None,
-        input_errors: tuple[type[Exception], ...] = (),
     ) -> AgentOp[InputT, ResultT, OutputT]:
         op = AgentOp(
             router=self,
             name=name,
-            profile=profile,
-            skill=skill,
             input=input,
-            result=result,
+            prepare=Prepare() if prepare is None else prepare,
+            agent=agent,
+            finalize=Finalize() if finalize is None else finalize,
             output=output,
-            writes=writes,
-            prepare_writes=prepare_writes,
-            finalize_writes=finalize_writes,
-            routes=routes,
-            outputs=outputs,
-            depends=depends,
-            before=before,
-            after=after,
-            on_output_error=on_output_error,
-            input_errors=input_errors,
         )
         self._register(op)
         return op
@@ -519,9 +554,7 @@ class OpRouter:
         return MappingProxyType({name: op.contract() for name, op in self.task_ops().items()})
 
     def output_routes(self) -> Mapping[str, tuple[str, ...]]:
-        return MappingProxyType(
-            {name: op.writes if op.routes is None else op.routes for name, op in self.agent_ops().items()}
-        )
+        return MappingProxyType({name: op.agent.files() for name, op in self.agent_ops().items()})
 
     def attempt_contract_refs(self) -> tuple[AttemptContractRef, ...]:
         contracts = (*self.agent_contracts().values(), *self.task_contracts().values())
@@ -560,8 +593,8 @@ class OpRouter:
         table: dict[str, Route] = {}
         for op in self.ops().values():
             if isinstance(op, AgentOp):
-                table[op.prepare_handler_id] = op.prepare
-                table[op.finalize_handler_id] = op.finalize
+                table[op.prepare_handler_id] = op.handle_prepare
+                table[op.finalize_handler_id] = op.handle_finalize
             else:
                 table[op.handler_id] = op.execute
         return MappingProxyType(table)

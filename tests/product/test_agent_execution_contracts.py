@@ -390,7 +390,11 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
     extra_claims = {
         "assurance.intake.agent.case-design.v1": ("qa/cases",),
         "assurance.intake.agent.case-repair.v1": ("qa/cases",),
-        "assurance.intake.agent.case-review.v1": ("qa/results/cases/epochs",),
+        "assurance.intake.agent.case-review.v1": (
+            "qa/cases/reviewed-case.json",
+            "qa/cases/reviews",
+            "qa/results/cases/epochs",
+        ),
         "assurance.intake.agent.intake.v1": (
             "qa/requirement.md",
             "qa/results/intake/sources/run-spec.effective.yaml",
@@ -409,8 +413,6 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
             assert isinstance(contract.resources, ResourceClaims)
             resolved = contract.resources
         extra = extra_claims.get(contract_id, ())
-        if contract_id == "assurance.intake.agent.case-review.v1":
-            extra = (*extra, "qa/cases/reviews")
         body = contract_id.removeprefix("assurance.").removesuffix(".v1")
         feature, _, rest = body.partition(".agent.")
         family, _, job = rest.rpartition(".")

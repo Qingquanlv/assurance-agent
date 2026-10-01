@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agent_runtime_contracts.ops import Agent, Dir, Finalize, Prepare
+
 from assurance_intake.domain.artifacts import ArtifactListResultV1
 from assurance_intake.domain.case_delta import MARKER_PATH, MATRIX_PATH, PROPOSAL_PATH
 from assurance_intake.domain.prepare_evidence import frozen_plan
@@ -11,17 +13,21 @@ from assurance_intake.ops.case_repair.models import CaseRepairInputV1, CaseRepai
 
 op = router.agent(
     "case-repair",
-    profile="assurance-v1-doc-author",
-    skill="aa-case-repair",
     input=CaseRepairInputV1,
-    result=ArtifactListResultV1,
+    prepare=Prepare(hook=hooks.before, depends=(frozen_plan,)),
+    agent=Agent(
+        profile="assurance-v1-doc-author",
+        skill="aa-case-repair",
+        result=ArtifactListResultV1,
+        writes=(
+            MARKER_PATH,
+            PROPOSAL_PATH,
+            MATRIX_PATH,
+            Dir("qa/cases", files=lambda business: business.case_delta_paths),
+        ),
+    ),
+    finalize=Finalize(hook=hooks.after),
     output=CaseRepairOutputV1,
-    writes=(MARKER_PATH, "qa/cases", PROPOSAL_PATH, MATRIX_PATH),
-    routes=(MARKER_PATH, PROPOSAL_PATH, MATRIX_PATH),
-    outputs=hooks.allowed_outputs,
-    depends=(frozen_plan,),
-    before=hooks.before,
-    after=hooks.after,
 )
 
 __all__ = ["CaseRepairInputV1", "CaseRepairOutputV1", "op"]
