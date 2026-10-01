@@ -145,7 +145,7 @@ def _mutate_capability_catalog(workspace: Path, product_root: Path, fixtures: Pa
 
 def _mutate_plugin_code(workspace: Path, product_root: Path, fixtures: Path) -> None:
     del product_root, fixtures
-    path = workspace / "wheels" / "assurance-intake" / "assurance_intake" / "operations" / "finalize.py"
+    path = workspace / "wheels" / "assurance-intake" / "assurance_intake" / "ops" / "case_review" / "hooks.py"
     path.write_text(
         path.read_text(encoding="utf-8") + "\n# capabilities-drift-plugin-code\n", encoding="utf-8"
     )
@@ -175,7 +175,7 @@ def _mutate_schema_bytes(workspace: Path, product_root: Path, fixtures: Path) ->
         / "wheels"
         / "assurance-intake"
         / "assurance_intake"
-        / "resources"
+        / "contracts"
         / "schemas"
         / "case.v1.schema.json"
     )
@@ -184,16 +184,7 @@ def _mutate_schema_bytes(workspace: Path, product_root: Path, fixtures: Path) ->
 
 def _mutate_skill_bytes(workspace: Path, product_root: Path, fixtures: Path) -> None:
     del product_root, fixtures
-    path = (
-        workspace
-        / "wheels"
-        / "assurance-intake"
-        / "assurance_intake"
-        / "resources"
-        / "skills"
-        / "aa-case-reviewer"
-        / "SKILL.md"
-    )
+    path = workspace / "wheels" / "assurance-intake" / "assurance_intake" / "ops" / "case_review" / "SKILL.md"
     path.write_text(
         path.read_text(encoding="utf-8") + "\n<!-- capabilities-drift-skill -->\n", encoding="utf-8"
     )
@@ -206,9 +197,9 @@ def _mutate_result_contract_bytes(workspace: Path, product_root: Path, fixtures:
         / "wheels"
         / "assurance-intake"
         / "assurance_intake"
-        / "resources"
-        / "result-contracts"
-        / "case-review.v1.schema.json"
+        / "ops"
+        / "case_review"
+        / "result.schema.json"
     )
     path.write_bytes(path.read_bytes() + b"\n")
 

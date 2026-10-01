@@ -15,10 +15,8 @@ from assurance_intake.domain.obligations import (
     normalize_obligation_drafts,
     required_goal_families,
 )
-from assurance_intake.operations.plan_artifacts import (
-    ResolvePlanHandler,
-    prepare_quality_goal,
-)
+from assurance_intake.domain.plan_artifacts import prepare_quality_goal
+from tests.op_handlers import op_handler
 from tests.product.test_change_local_output_routing import execute_task
 
 
@@ -383,7 +381,7 @@ def test_prepare_quality_goal_authenticates_every_source(
     resolve_stage.mkdir()
     resolved = asyncio.run(
         execute_task(
-            ResolvePlanHandler(),
+            op_handler("assurance.intake.resolve-plan"),
             request.model_dump(mode="json"),
             workspace=project,
             write_root=resolve_stage,
@@ -521,7 +519,7 @@ def test_prepare_quality_goal_does_not_require_e2e_outside_the_candidate_set(
     resolve_stage.mkdir()
     resolved = asyncio.run(
         execute_task(
-            ResolvePlanHandler(),
+            op_handler("assurance.intake.resolve-plan"),
             request.model_dump(mode="json"),
             workspace=project,
             write_root=resolve_stage,
@@ -634,7 +632,7 @@ def test_resolve_plan_stages_bound_exploration_and_can_replay_before_promotion(t
     resolve_stage.mkdir()
     resolved = asyncio.run(
         execute_task(
-            ResolvePlanHandler(),
+            op_handler("assurance.intake.resolve-plan"),
             request.model_dump(mode="json"),
             workspace=project,
             write_root=resolve_stage,
@@ -645,7 +643,7 @@ def test_resolve_plan_stages_bound_exploration_and_can_replay_before_promotion(t
     assert explore_path.read_bytes() == explore_bytes
     replay = asyncio.run(
         execute_task(
-            ResolvePlanHandler(),
+            op_handler("assurance.intake.resolve-plan"),
             request.model_dump(mode="json"),
             workspace=project,
             write_root=resolve_stage,

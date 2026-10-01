@@ -5,14 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from langgraph.graph.state import CompiledStateGraph
+
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
-from assurance_intake.contracts.attempts import (
-    AGENT_JOB_CONTRACTS,
-    OUTPUT_ROUTE_TEMPLATES,
-    TASK_ATTEMPT_CONTRACTS,
-)
+from assurance_intake.ops import router
 from assurance_intake.plugin import IntakePlugin
+
+AGENT_JOB_CONTRACTS = router.agent_contracts()
+TASK_ATTEMPT_CONTRACTS = router.task_contracts()
+OUTPUT_ROUTE_TEMPLATES = router.output_routes()
+attempt_contract_refs = router.attempt_contract_refs
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,4 +33,11 @@ FEATURE = FeatureSpec(
     ),
 )
 
-__all__ = ["FEATURE", "IntakeGraphs"]
+__all__ = [
+    "AGENT_JOB_CONTRACTS",
+    "FEATURE",
+    "OUTPUT_ROUTE_TEMPLATES",
+    "TASK_ATTEMPT_CONTRACTS",
+    "IntakeGraphs",
+    "attempt_contract_refs",
+]

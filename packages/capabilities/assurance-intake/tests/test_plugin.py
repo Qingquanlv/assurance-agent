@@ -9,7 +9,7 @@ from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import PluginDescriptor, ProviderSource
 
 from assurance_intake.plugin import INTAKE_SOURCE, IntakePlugin
-from assurance_intake.resource_loader import resource_bytes
+from assurance_intake.ops import router
 from tests.capabilities.conformance import PluginExpectation, assert_plugin_conforms
 
 
@@ -63,9 +63,9 @@ def test_intake_does_not_publish_legacy_prompt_resources() -> None:
 
 def test_resource_bytes_rejects_non_canonical_path() -> None:
     with pytest.raises(ValueError, match="canonical and relative"):
-        resource_bytes("../secret")
+        router.resource_bytes("../secret")
     with pytest.raises(ValueError, match="canonical and relative"):
-        resource_bytes("/schemas/case.v1.schema.json")
+        router.resource_bytes("/contracts/schemas/case.v1.schema.json")
 
 
 def test_intake_plugin_does_not_discover_graph_factory() -> None:

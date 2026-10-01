@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_intake.contracts.impact import AffectedBehaviorV1, ChangeImpactInventoryV1, ImpactRowV1
-from assurance_intake.operations.case_modules import infer_case_delta_paths, module_from_behavior
+from assurance_intake.domain.case_modules import infer_case_delta_paths, module_from_behavior
 
 
 def _row(**overrides: object) -> dict[str, object]:

@@ -18,7 +18,7 @@ def test_shared_intake_domain_is_not_an_operation_exception() -> None:
     assert not is_declared_cross_wheel_import(
         root,
         root / "operations/codegen.py",
-        "assurance_intake.operations.plan_codec",
+        "assurance_intake.ops.case_design",
     )
     assert not is_declared_cross_wheel_import(
         root,
@@ -28,5 +28,5 @@ def test_shared_intake_domain_is_not_an_operation_exception() -> None:
     assert not is_declared_cross_wheel_import(
         root,
         root / "operations/codegen.py",
-        "assurance_intake.operations.finalize",
+        "assurance_intake.ops.case_review.hooks",
     )

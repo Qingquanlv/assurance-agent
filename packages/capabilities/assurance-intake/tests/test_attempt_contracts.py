@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, cast, get_type_hints
-from unittest.mock import MagicMock
+from typing import get_type_hints
 
 import pytest
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.attempts import TaskAttemptContract
-from graph_engine.plugin_api import AttemptContractRef, TaskContext
+from graph_engine.plugin_api import AttemptContractRef
 
 from agent_runtime_contracts import AgentExecutionContract
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_AGENT_JOBS
@@ -21,30 +20,21 @@ from assurance_healing.plugin import HealingPlugin
 from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPROVEMENT_AGENT_JOBS
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASKS
 from assurance_improvement.plugin import ImprovementPlugin
-from assurance_intake.contracts.agent import (
-    ArtifactListResultV1,
-    CaseDesignOutputV1,
-    CaseDesignInputV1,
-    CaseReviewInputV1,
-    ExploreInputV1,
-    FinalizedArtifactsV1,
-    IntakeInputV1,
-)
-from assurance_intake.contracts.attempts import (
-    AGENT_JOB_CONTRACTS,
-    TASK_ATTEMPT_CONTRACTS,
-    attempt_contract_refs,
-)
+from assurance_intake.domain.artifacts import ArtifactListResultV1, FinalizedArtifactsV1
+from assurance_intake.ops.case_design import CaseDesignOutputV1, CaseDesignInputV1
+from assurance_intake.ops.case_review import CaseReviewInputV1
+from assurance_intake.ops.explore import ExploreInputV1
+from assurance_intake.ops.intake import IntakeInputV1
+from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS, attempt_contract_refs
 from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceInput,
     ReviewRoundAdvanceOutput,
 )
 from assurance_intake.contracts.review import CaseReviewResultV1
-from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler, advance_review_round
+from assurance_intake.domain.review_rounds import advance_review_round
 from assurance_intake.plugin import IntakePlugin
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOBS
 from assurance_quality.plugin import QualityPlugin
-from tests.product.test_change_local_output_routing import execute_task
 
 EXPECTED_AGENT_COUNTS = {
     "assurance.intake": 4,
@@ -69,7 +59,6 @@ _PURE_IDS = frozenset(
         "assurance.generation.complete",
         "assurance.generation.review-round.advance",
         "assurance.healing.repair-round.advance",
-        "assurance.intake.review-round.advance",
     }
 )
 
@@ -88,7 +77,7 @@ def test_case_review_seal_files_are_finalize_not_runtime() -> None:
 
 
 def test_review_history_identity_includes_epoch() -> None:
-    from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.feature import OUTPUT_ROUTE_TEMPLATES
 
     pattern = "qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
     assert pattern in OUTPUT_ROUTE_TEMPLATES["case-review"]
@@ -271,21 +260,10 @@ def test_review_round_advance_is_not_a_task_contract() -> None:
 
 
 @pytest.mark.parametrize(("used", "budget", "expected"), [(0, 2, 1), (1, 2, 2)])
-async def test_advance_review_round_matches_legacy_handler_without_touching_context(
-    used: int, budget: int, expected: int
-) -> None:
-    payload = {"rounds_used": used, "rounds_budget": budget}
-    spy = MagicMock(spec=TaskContext)
-    executed = await execute_task(
-        ReviewRoundAdvanceHandler(),
-        cast(Any, payload),
-        capability_id="assurance.intake.review-round.advance",
-    )
-    output = advance_review_round(payload)
+def test_advance_review_round_is_pure_budget_arithmetic(used: int, budget: int, expected: int) -> None:
+    output = advance_review_round({"rounds_used": used, "rounds_budget": budget})
     assert isinstance(output, ReviewRoundAdvanceOutput)
-    assert output.model_dump(mode="json") == executed.outcome.output
     assert output.model_dump(mode="json") == {"rounds_used": expected, "rounds_budget": budget}
-    assert spy.mock_calls == []
 
 
 @pytest.mark.parametrize(

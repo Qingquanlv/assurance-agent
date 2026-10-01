@@ -5,6 +5,7 @@ import json
 from copy import deepcopy
 from collections.abc import Mapping
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 import pytest
@@ -19,22 +20,15 @@ from tests.capabilities.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 from tests.acg_plan_fixture import install_plan
 
-from assurance_intake.agent_ops.case_design import (
-    finalize as case_design_finalize,
-    prepare as case_design_prepare,
-)
-from assurance_intake.agent_ops.case_review import (
-    finalize as case_review_finalize,
-    prepare as case_review_prepare,
-)
-from assurance_intake.agent_ops.explore import finalize as explore_finalize, prepare as explore_prepare
-from assurance_intake.agent_ops.intake import finalize, prepare
-from assurance_intake.contracts.agent import ArtifactListResultV1
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
+from tests.op_handlers import op_handler
+
+from assurance_intake import ops as intake_ops
+from assurance_intake.domain.artifacts import ArtifactListResultV1
+from assurance_intake.feature import AGENT_JOB_CONTRACTS
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.prepare import case_review_outputs
-from assurance_intake.operations.case_review_seal import (
+from assurance_intake.ops.case_review.hooks import case_review_outputs
+from assurance_intake.domain.case_review_seal import (
     collect_selected_cases,
     expected_case_selection,
     expected_review_history,
@@ -46,24 +40,32 @@ from assurance_intake.contracts.explore import (
     PreparedExploreV1,
 )
 from assurance_intake.domain.obligations import normalize_obligation_drafts
-from assurance_intake.resource_loader import resource_text
+from assurance_intake.ops.case_design import hooks as case_design_hooks
+from assurance_intake.ops.intake import hooks as intake_hooks
+
+prepare = op_handler("assurance.intake.intake.prepare")
+finalize = op_handler("assurance.intake.intake.finalize")
+explore_prepare = op_handler("assurance.intake.explore.prepare")
+explore_finalize = op_handler("assurance.intake.explore.finalize")
+case_design_prepare = op_handler("assurance.intake.case-design.prepare")
+case_design_finalize = op_handler("assurance.intake.case-design.finalize")
+case_review_prepare = op_handler("assurance.intake.case-review.prepare")
+case_review_finalize = op_handler("assurance.intake.case-review.finalize")
 
 
-def test_prepare_handlers_are_defined_in_their_own_modules() -> None:
-    modules = (
-        prepare,
-        explore_prepare,
-        case_design_prepare,
-        case_review_prepare,
-        finalize,
-        explore_finalize,
-        case_design_finalize,
-        case_review_finalize,
-    )
-    for module in modules:
-        assert module.execute.__module__ == module.__name__
-        assert module.execute.__globals__ is module.__dict__
-        assert module.__name__.startswith("assurance_intake.agent_ops.")
+def _handler_id(handler: object) -> str:
+    return str(getattr(handler, "handler_id", ""))
+
+
+def test_every_op_handler_routes_through_the_ops_entry_module() -> None:
+    from assurance_intake.plugin import IntakePlugin
+
+    handlers = IntakePlugin.spec.task_handlers
+    assert set(handlers) == set(intake_ops.router.routes())
+    for handler in handlers.values():
+        assert isinstance(handler, ModuleType)
+        assert handler.__name__ == "assurance_intake.ops"
+        assert vars(handler)["execute"].__globals__ is vars(handler)
 
 
 _SHA = "a" * 64
@@ -121,8 +123,8 @@ async def run_prepare(
     write_root: Path | None = None,
     impact_rows: tuple[Mapping[str, object], ...] = (),
 ) -> Any:
-    handler_module = getattr(handler, "__name__", "")
-    if ".case_design." in handler_module or ".case_review." in handler_module:
+    handler_module = _handler_id(handler)
+    if ".case-design." in handler_module or ".case-review." in handler_module:
         exploration = workspace / "qa/results/explore/exploration.json"
         minimum_required_coverage = None
         mismatched_exploration: bytes | None = None
@@ -150,7 +152,7 @@ async def run_prepare(
             }
         if mismatched_exploration is not None:
             exploration.write_bytes(mismatched_exploration)
-    if ".case_review." in handler_module and isinstance(payload, dict):
+    if ".case-review." in handler_module and isinstance(payload, dict):
         payload = _with_case_refs(workspace, payload)
     if ".explore." in handler_module and isinstance(payload, dict):
         payload = {**payload, "candidate_test_families": ["api"]}
@@ -182,13 +184,11 @@ async def run_finalize(
     write_root: Path | None = None,
 ) -> TaskOutcome:
     business: dict[str, JSONValue] = {
-        "agent_result": result.model_dump(mode="json"),
+        "change_id": "CH-DEMO-001",
         "capability_leafs": list(VALID_LEAFS),
         "artifact_paths": [],
     }
-    if ".case_design." in getattr(handler, "__name__", "") or ".case_review." in getattr(
-        handler, "__name__", ""
-    ):
+    if ".case-design." in _handler_id(handler) or ".case-review." in _handler_id(handler):
         install_plan(
             workspace,
             "CH-DEMO-001",
@@ -197,7 +197,7 @@ async def run_finalize(
         business.update({"plan_digest": _PLAN_DIGEST, "plan_ref": _PLAN_REF})
     executed = await execute_task(
         handler,
-        business,
+        {"prepare": business, "agent_result": result.model_dump(mode="json")},
         workspace,
         write_root=write_root,
     )
@@ -215,9 +215,9 @@ def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
 
 
 def test_intake_skill_requires_direct_change_write() -> None:
-    skill = resource_text("skills/aa-intake/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/intake/SKILL.md")
     normalized = " ".join(skill.split())
-    persona = resource_text("personas/intake-host.md")
+    persona = intake_ops.router.resource_text("personas/intake-host.md")
     assert "`qa/` is allowed to be missing" in skill
     assert "must not ask" in skill.lower() or "do not ask" in skill.lower()
     assert "must not require" in skill.lower() or "do not require" in skill.lower()
@@ -231,7 +231,7 @@ def test_intake_skill_requires_direct_change_write() -> None:
 
 
 def test_explore_skill_returns_the_locked_result_contract() -> None:
-    skill = resource_text("skills/aa-explore/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/explore/SKILL.md")
     assert "return structured JSON only" in skill
     assert '`schema_version` must be exactly `"1"`' in skill
     assert "schemas/explore-advisory.schema.json" not in skill
@@ -244,7 +244,7 @@ def test_explore_skill_returns_the_locked_result_contract() -> None:
 
 
 def test_explore_skill_requires_a_complete_impact_inventory() -> None:
-    skill = resource_text("skills/aa-explore/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/explore/SKILL.md")
     assert "## Step 4b — Change impact inventory" in skill
     assert "qa/results/explore/impact-inventory.json" in skill
     assert (
@@ -261,7 +261,7 @@ def test_explore_skill_requires_a_complete_impact_inventory() -> None:
 
 
 def test_case_design_skill_covers_actionable_impact_rows() -> None:
-    skill = resource_text("skills/aa-case-design/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/case_design/SKILL.md")
     assert "`impact_inventory`" in skill
     assert "`impact_rows`" in skill
     assert "every row with disposition `add` or `modify` must be covered by at least one case" in skill
@@ -269,7 +269,7 @@ def test_case_design_skill_covers_actionable_impact_rows() -> None:
 
 
 def test_explore_skill_requires_evidence_ids_on_every_layer_recommendation() -> None:
-    skill = resource_text("skills/aa-explore/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/explore/SKILL.md")
 
     assert "Every layer recommendation entry MUST include `evidence_ids`" in skill
     assert "an empty list for an evidence-limited declined layer" in skill
@@ -278,7 +278,7 @@ def test_explore_skill_requires_evidence_ids_on_every_layer_recommendation() -> 
 
 
 def test_explore_skill_keeps_explicit_api_only_scope_out_of_e2e_obligations() -> None:
-    skill = resource_text("skills/aa-explore/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/explore/SKILL.md")
 
     assert "An explicit API-only requirement, or a candidate set that does not include `e2e`" in skill
     assert "makes E2E journeys inapplicable" in skill
@@ -289,7 +289,7 @@ def test_explore_skill_keeps_explicit_api_only_scope_out_of_e2e_obligations() ->
 
 
 def test_explore_skill_mrc_example_validates_as_obligation_drafts() -> None:
-    skill = resource_text("skills/aa-explore/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/explore/SKILL.md")
     start = skill.index("*Example (menu-management, only when these exact catalog leaves")
     fence = skill.index("```json", start)
     end = skill.index("```", fence + 7)
@@ -303,7 +303,7 @@ def test_explore_skill_mrc_example_validates_as_obligation_drafts() -> None:
 
 
 def test_case_design_skill_requires_cleanup_for_every_successful_persistent_create() -> None:
-    skill = resource_text("skills/aa-case-design/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/case_design/SKILL.md")
 
     assert "Every successful step that creates persistent test data" in skill
     assert "including valid boundary-value records" in skill
@@ -312,8 +312,8 @@ def test_case_design_skill_requires_cleanup_for_every_successful_persistent_crea
 
 def test_explore_resources_require_complete_output_even_when_evidence_is_degraded() -> None:
     resources = {
-        "skill": resource_text("skills/aa-explore/SKILL.md"),
-        "persona": resource_text("personas/explorer.md"),
+        "skill": intake_ops.router.resource_text("ops/explore/SKILL.md"),
+        "persona": intake_ops.router.resource_text("personas/explorer.md"),
     }
 
     for content in resources.values():
@@ -332,7 +332,7 @@ def test_explore_resources_require_complete_output_even_when_evidence_is_degrade
 
 
 def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
-    skill = resource_text("skills/aa-case-design/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/case_design/SKILL.md")
     assert "final assistant response" in " ".join(skill.split())
     assert '"output_files"' in skill
     assert "written files are the sole source of truth" in skill
@@ -355,7 +355,7 @@ def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
 
 
 def test_case_design_skill_spells_out_the_typed_trace_value_shape() -> None:
-    skill = resource_text("skills/aa-case-design/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/case_design/SKILL.md")
 
     assert "Every `trace` value is an object with the single field `covered: true`" in skill
     assert "<capability-leaf>: true" in skill
@@ -366,7 +366,7 @@ def test_case_design_skill_spells_out_the_typed_trace_value_shape() -> None:
 
 
 def test_case_design_review_reentry_preserves_unnamed_trace_keys() -> None:
-    skill = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
+    skill = " ".join(intake_ops.router.resource_text("ops/case_design/SKILL.md").split())
 
     assert (
         "If no auto-fix finding names a case trace field, preserve every existing trace key and value byte-for-byte"
@@ -382,7 +382,7 @@ def test_case_design_review_reentry_preserves_unnamed_trace_keys() -> None:
 
 
 def test_case_repair_skill_is_locator_bounded() -> None:
-    skill = " ".join(resource_text("skills/aa-case-repair/SKILL.md").split())
+    skill = " ".join(intake_ops.router.resource_text("ops/case_design/repair.SKILL.md").split())
 
     assert "review_repair" in skill
     assert "Only edit the exact artifact, case_id, and allowed_paths" in skill
@@ -399,13 +399,13 @@ def test_case_repair_skill_is_locator_bounded() -> None:
 
 
 def test_case_reviewer_treats_graph_invocation_as_phase_predecessor_proof() -> None:
-    skill = resource_text("skills/aa-case-reviewer/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/case_review/SKILL.md")
     assert "authenticated predecessor proof" in skill
     assert "do not search `.qa.yaml`" in skill.lower()
 
 
 def test_case_reviewer_required_fields_match_typed_case_contract() -> None:
-    skill = resource_text("skills/aa-case-reviewer/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/case_review/SKILL.md")
 
     assert "CaseYamlAuthoring is the sole required-field source" in skill
     assert "\ntags:" not in skill
@@ -414,7 +414,7 @@ def test_case_reviewer_required_fields_match_typed_case_contract() -> None:
 
 
 def test_case_reviewer_returns_complete_structured_result() -> None:
-    skill = resource_text("skills/aa-case-reviewer/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/case_review/SKILL.md")
 
     assert "Return the complete parsed JSON object" in skill
     assert "exactly the same object written to `case-review.json`" in skill
@@ -428,7 +428,7 @@ def test_case_reviewer_returns_complete_structured_result() -> None:
 
 
 def test_case_reviewer_encodes_whole_case_changes_as_section_scope() -> None:
-    skill = " ".join(resource_text("skills/aa-case-reviewer/SKILL.md").split())
+    skill = " ".join(intake_ops.router.resource_text("ops/case_review/SKILL.md").split())
 
     assert "add an entire missing current-change case" in skill
     assert "remove an entire current-change case" in skill
@@ -438,7 +438,7 @@ def test_case_reviewer_encodes_whole_case_changes_as_section_scope() -> None:
 
 
 def test_case_reviewer_routes_source_proven_case_defects_to_agent_fix_loop() -> None:
-    skill = resource_text("skills/aa-case-reviewer/SKILL.md")
+    skill = intake_ops.router.resource_text("ops/case_review/SKILL.md")
 
     assert "Severity alone does not require human review" in skill
     assert "A high-severity finding may still be mechanically fixable" in skill
@@ -451,8 +451,8 @@ def test_case_reviewer_routes_source_proven_case_defects_to_agent_fix_loop() -> 
 
 def test_case_reviewer_uses_locked_requirement_and_reports_findings_exhaustively() -> None:
     resources = {
-        "skill": resource_text("skills/aa-case-reviewer/SKILL.md"),
-        "persona": resource_text("personas/reviewer.md"),
+        "skill": intake_ops.router.resource_text("ops/case_review/SKILL.md"),
+        "persona": intake_ops.router.resource_text("personas/reviewer.md"),
     }
 
     for content in resources.values():
@@ -464,7 +464,7 @@ def test_case_reviewer_uses_locked_requirement_and_reports_findings_exhaustively
     assert "report all currently observable closed-key defects together" in persona.lower()
     assert "an absent stable target is not a finding" in persona.lower()
 
-    designer = resource_text("skills/aa-case-design/SKILL.md")
+    designer = intake_ops.router.resource_text("ops/case_design/SKILL.md")
     assert "Apply every listed auto-fix finding in one pass" in designer
     assert "re-run the complete self-review against the resulting files" in designer
 
@@ -476,8 +476,8 @@ def test_case_reviewer_uses_locked_requirement_and_reports_findings_exhaustively
 
 
 def test_case_skills_do_not_treat_ignore_aware_search_as_source_absence() -> None:
-    designer = resource_text("skills/aa-case-design/SKILL.md")
-    reviewer = resource_text("skills/aa-case-reviewer/SKILL.md")
+    designer = intake_ops.router.resource_text("ops/case_design/SKILL.md")
+    reviewer = intake_ops.router.resource_text("ops/case_review/SKILL.md")
 
     for skill in (designer, reviewer):
         assert "A glob result of `No files found` is not evidence that product source is absent" in skill
@@ -488,8 +488,8 @@ def test_case_skills_do_not_treat_ignore_aware_search_as_source_absence() -> Non
 
 
 def test_case_skills_resolve_e2e_entry_from_ignored_menu_source_before_human_review() -> None:
-    designer = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-case-reviewer/SKILL.md").split())
+    designer = " ".join(intake_ops.router.resource_text("ops/case_design/SKILL.md").split())
+    reviewer = " ".join(intake_ops.router.resource_text("ops/case_review/SKILL.md").split())
 
     for skill in (designer, reviewer):
         assert (
@@ -502,8 +502,8 @@ def test_case_skills_resolve_e2e_entry_from_ignored_menu_source_before_human_rev
 
 
 def test_case_skills_keep_advisory_mrc_complete_without_inventing_human_blockers() -> None:
-    designer = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-case-reviewer/SKILL.md").split())
+    designer = " ".join(intake_ops.router.resource_text("ops/case_design/SKILL.md").split())
+    reviewer = " ".join(intake_ops.router.resource_text("ops/case_review/SKILL.md").split())
 
     assert "every advisory MRC item still gets exactly one matrix row" in designer
     assert "advisory expansion lacks a frozen oracle" in designer
@@ -704,7 +704,7 @@ async def test_case_design_finalize_retries_unbound_covered_matrix(
 
 
 def test_case_reviewer_applies_frozen_explore_oracle_before_normal_review() -> None:
-    reviewer = resource_text("skills/aa-case-reviewer/SKILL.md")
+    reviewer = intake_ops.router.resource_text("ops/case_review/SKILL.md")
 
     marker = "### Frozen Explore oracle hard gate"
     assert reviewer.index(marker) < reviewer.index("**Before doing any work:**")
@@ -716,7 +716,7 @@ def test_case_reviewer_applies_frozen_explore_oracle_before_normal_review() -> N
 
 
 def test_case_design_repairs_e2e_journey_mapping_from_authenticated_keys() -> None:
-    designer = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
+    designer = " ".join(intake_ops.router.resource_text("ops/case_design/SKILL.md").split())
 
     assert "repair-only mode" in designer
     assert "every semicolon-separated validation error" in designer
@@ -728,8 +728,8 @@ def test_case_design_repairs_e2e_journey_mapping_from_authenticated_keys() -> No
 
 
 def test_case_reviewer_closed_key_repairs_stay_inside_case_design_write_set() -> None:
-    designer = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-case-reviewer/SKILL.md").split())
+    designer = " ".join(intake_ops.router.resource_text("ops/case_design/SKILL.md").split())
+    reviewer = " ".join(intake_ops.router.resource_text("ops/case_review/SKILL.md").split())
 
     assert "Do not create a data-knowledge proposal file; it is not an authorized output" in designer
     assert "Do not instruct `aa-case-design` to create a data-knowledge proposal" in reviewer
@@ -1304,7 +1304,9 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_finalize_rejects_malformed_input(tmp_path: Path) -> None:
-    executed = await execute_task(cast(TaskHandler, case_review_finalize), {"agent_result": {}}, tmp_path)
+    executed = await execute_task(
+        cast(TaskHandler, case_review_finalize), {"prepare": {}, "agent_result": {}}, tmp_path
+    )
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
@@ -1496,8 +1498,8 @@ async def _finalize_files(
     result = fake_agent_result(structured_result)
     plan = None
     plan_ref = None
-    handler_module = getattr(handler, "__name__", "")
-    if ".case_design." in handler_module or ".case_review." in handler_module:
+    handler_module = _handler_id(handler)
+    if ".case-design." in handler_module or ".case-review." in handler_module:
         selected = tuple(cast(Any, selected_test_families or ["api"]))
         plan, plan_ref = install_plan(
             workspace,
@@ -1511,18 +1513,21 @@ async def _finalize_files(
     if plan_ref is not None and plan_ref not in bound_preparation_refs:
         bound_preparation_refs.append(plan_ref)
         bound_preparation_refs.sort(key=lambda item: (item["path"], item["digest"]))
-    finalize_input: dict[str, object] = {
-        "agent_result": result.model_dump(mode="json"),
+    attempt = 1 if validation_attempt is None else validation_attempt
+    locked_input: dict[str, object] = {
+        "change_id": change_id or "CH-DEMO-001",
+        "requirement": "Cover department CRUD.",
+        "candidate_test_families": selected_test_families or ["api"],
         "capability_leafs": list(VALID_LEAFS),
         "artifact_paths": artifact_paths,
         "selected_test_families": selected_test_families or [],
         "case_delta_paths": (
             case_delta_paths
             if case_delta_paths is not None
-            else (["qa/cases/menus/case.yaml"] if handler_module.endswith("case_design.finalize") else [])
+            else (["qa/cases/menus/case.yaml"] if handler_module.endswith("case-design.finalize") else [])
         ),
-        **({"change_id": change_id} if change_id is not None else {}),
-        **({"validation_attempt": validation_attempt} if validation_attempt is not None else {}),
+        "validation_attempt": attempt,
+        **({"validation_error": "prior validation failed"} if attempt == 1 else {}),
         **({"review_repair": review_repair} if review_repair is not None else {}),
         "coverage_epoch": coverage_epoch,
         "review_round": review_round,
@@ -1536,7 +1541,7 @@ async def _finalize_files(
     }
     executed = await execute_task(
         handler,
-        cast(JSONValue, finalize_input),
+        cast(JSONValue, {"prepare": locked_input, "agent_result": result.model_dump(mode="json")}),
         workspace,
         write_root=write_root,
     )
@@ -1692,14 +1697,14 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
         authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
         outputs = _write_case_design_outputs(stage, authored)
         handler = cast(TaskHandler, case_design_finalize)
-        handler_globals = case_design_finalize.execute.__globals__
+        handler_globals = vars(case_design_hooks)
     else:
         (stage / "qa").mkdir(parents=True, exist_ok=True)
         (stage / "qa/.qa.yaml").write_text("change_id: CH-DEMO-001\n")
         (stage / "qa/requirement.md").write_text("# Requirement\n")
         outputs = ["qa/.qa.yaml"]
         handler = cast(TaskHandler, finalize)
-        handler_globals = finalize.execute.__globals__
+        handler_globals = vars(intake_hooks)
     read = handler_globals["read_regular_bytes"]
 
     def replace_before_validation(workspace: Path, relative: str, *, kind: str) -> bytes:
@@ -2045,18 +2050,21 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
     executed = await execute_task(
         cast(TaskHandler, explore_finalize),
         {
+            "prepare": {
+                "change_id": "CH-DEMO-001",
+                "capability_leafs": list(VALID_LEAFS),
+                "candidate_test_families": ["api"],
+                "artifact_paths": [
+                    "qa/.qa.yaml",
+                    "qa/cases",
+                    "qa/fixtures",
+                    "qa/proposal.md",
+                    "qa/requirement.md",
+                    "qa/results",
+                    "qa/tests",
+                ],
+            },
             "agent_result": result.model_dump(mode="json"),
-            "change_id": "CH-DEMO-001",
-            "capability_leafs": list(VALID_LEAFS),
-            "artifact_paths": [
-                "qa/.qa.yaml",
-                "qa/cases",
-                "qa/fixtures",
-                "qa/proposal.md",
-                "qa/requirement.md",
-                "qa/results",
-                "qa/tests",
-            ],
         },
         project,
         write_root=write_root,

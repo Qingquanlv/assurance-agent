@@ -22,8 +22,8 @@ from assurance_healing.graphs.factory import build_healing_graphs
 from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPROVEMENT_JOBS
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASKS
 from assurance_improvement.graphs.factory import build_improvement_graphs
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_JOBS
-from assurance_intake.contracts.attempts import TASK_ATTEMPT_CONTRACTS as INTAKE_TASKS
+from assurance_intake.feature import AGENT_JOB_CONTRACTS as INTAKE_JOBS
+from assurance_intake.feature import TASK_ATTEMPT_CONTRACTS as INTAKE_TASKS
 from assurance_intake.graphs.factory import build_intake_graphs
 from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_JOBS

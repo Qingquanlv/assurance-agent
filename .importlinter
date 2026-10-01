@@ -15,9 +15,8 @@ root_packages =
     assurance_product
 
 # Permanent boundary: cross-Feature implementation imports remain forbidden.
-# Shared intake planning logic is assurance_intake.domain and is not an
-# operations exception. Stale exceptions fail lint-imports via its default
-# unmatched-import alert.
+# Other wheels read only assurance_intake.contracts and assurance_intake.domain.
+# Stale exceptions fail lint-imports via its default unmatched-import alert.
 [importlinter:contract:generation-intake-contracts-only]
 name = generation may import only intake contracts
 type = forbidden
@@ -25,12 +24,9 @@ source_modules =
     assurance_generation
 forbidden_modules =
     assurance_intake.plugin
-    assurance_intake.operations
-    assurance_intake.agent_ops
+    assurance_intake.feature
+    assurance_intake.ops
     assurance_intake.validators
-    assurance_intake.effects
-    assurance_intake.resource_loader
-    assurance_intake.resources
     assurance_intake.graphs
 
 [importlinter:contract:execution-assurance-contracts-only]
@@ -40,12 +36,9 @@ source_modules =
     assurance_execution
 forbidden_modules =
     assurance_intake.plugin
-    assurance_intake.operations
-    assurance_intake.agent_ops
+    assurance_intake.feature
+    assurance_intake.ops
     assurance_intake.validators
-    assurance_intake.effects
-    assurance_intake.resource_loader
-    assurance_intake.resources
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -62,12 +55,9 @@ source_modules =
     assurance_healing
 forbidden_modules =
     assurance_intake.plugin
-    assurance_intake.operations
-    assurance_intake.agent_ops
+    assurance_intake.feature
+    assurance_intake.ops
     assurance_intake.validators
-    assurance_intake.effects
-    assurance_intake.resource_loader
-    assurance_intake.resources
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -99,12 +89,9 @@ source_modules =
     assurance_quality
 forbidden_modules =
     assurance_intake.plugin
-    assurance_intake.operations
-    assurance_intake.agent_ops
+    assurance_intake.feature
+    assurance_intake.ops
     assurance_intake.validators
-    assurance_intake.effects
-    assurance_intake.resource_loader
-    assurance_intake.resources
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -136,12 +123,9 @@ source_modules =
     assurance_improvement
 forbidden_modules =
     assurance_intake.plugin
-    assurance_intake.operations
-    assurance_intake.agent_ops
+    assurance_intake.feature
+    assurance_intake.ops
     assurance_intake.validators
-    assurance_intake.effects
-    assurance_intake.resource_loader
-    assurance_intake.resources
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -278,10 +262,39 @@ type = forbidden
 source_modules =
     assurance_intake.domain
 forbidden_modules =
-    assurance_intake.operations
-    assurance_intake.agent_ops
+    assurance_intake.ops
     assurance_intake.graphs
     assurance_intake.plugin
     assurance_intake.feature
     assurance_intake.validators
     assurance_intake.effects
+
+[importlinter:contract:intake-ops-below-graphs]
+name = Intake ops never import graphs, the plugin, or the feature bundle
+type = forbidden
+source_modules =
+    assurance_intake.ops
+forbidden_modules =
+    assurance_intake.graphs
+    assurance_intake.plugin
+    assurance_intake.feature
+
+[importlinter:contract:intake-ops-independent]
+name = Intake ops never import one another
+type = independence
+modules =
+    assurance_intake.ops.case_design
+    assurance_intake.ops.case_review
+    assurance_intake.ops.explore
+    assurance_intake.ops.intake
+    assurance_intake.ops.resolve_plan
+
+[importlinter:contract:intake-graphs-read-op-declarations]
+name = Intake graphs read op declarations, never op hooks or models
+type = forbidden
+source_modules =
+    assurance_intake.graphs
+forbidden_modules =
+    assurance_intake.ops.*.hooks
+    assurance_intake.ops.*.models
+allow_indirect_imports = True

@@ -69,7 +69,6 @@ PURE_HANDLER_IDS = frozenset(
     {
         "assurance.generation.complete",
         "assurance.generation.review-round.advance",
-        "assurance.intake.review-round.advance",
         "assurance.healing.repair-round.advance",
     }
 )

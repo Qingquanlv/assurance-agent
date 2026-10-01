@@ -15,14 +15,13 @@ from assurance_intake.graphs.calls import (
     select_case_design_repair,
 )
 from assurance_intake.graphs.case import build_case_graph
-from assurance_intake.graphs.preparation import build_prepare_graph
+from assurance_intake.graphs.prepare import build_prepare_graph
 from assurance_intake.graphs.routes import route_case_design, route_case_design_repair
-from assurance_intake.graphs.state import IntakeState
-from assurance_intake.graphs.steps import terminal_done, terminal_failed
+from assurance_intake.graphs.state import IntakeState, terminal_done, terminal_failed
+from assurance_intake.ops.case_design import op as case_design
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import add_attempt_node
 
-_CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _CASE_DESIGN_PATHS: dict[Hashable, str] = {
     "done": "done",
     "case-design-repair": "intake.case-design-repair",
@@ -44,7 +43,7 @@ def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
         context,
         "intake.case-design",
         semantic_node_id="intake.case-design",
-        contract_id=_CASE_DESIGN_ID,
+        contract_id=case_design.contract_id,
         activation=activation_case_design,
         select=select_case_design,
         publish=publish_case_design,
@@ -54,7 +53,7 @@ def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
         context,
         "intake.case-design-repair",
         semantic_node_id="intake.case-design-repair",
-        contract_id=_CASE_DESIGN_ID,
+        contract_id=case_design.contract_id,
         activation=activation_case_design_repair,
         select=select_case_design_repair,
         publish=publish_case_design,

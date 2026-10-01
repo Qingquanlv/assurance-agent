@@ -8,7 +8,7 @@ import yaml
 
 from typing import cast
 
-from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
+from assurance_intake.domain.obligations import TrustedIntakeSourcesV1
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.domain.explore_context import build_explore_context
 from assurance_intake.contracts.obligations import SourceRefV1

@@ -19,8 +19,8 @@ from assurance_intake.contracts.plan import (
 )
 from assurance_intake.domain.plan_codec import seal_plan
 from assurance_intake.domain.obligations import normalize_obligation_drafts
-from assurance_intake.operations.plan_artifacts import ResolvePlanHandler
 from assurance_product.change_workspace import ChangeWorkspace
+from tests.op_handlers import op_handler
 from assurance_product.runtime_bindings import DeterministicTaskExecutor
 from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
@@ -40,7 +40,7 @@ from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_b
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 
-from assurance_intake.contracts.attempts import TASK_ATTEMPT_CONTRACTS
+from assurance_intake.feature import TASK_ATTEMPT_CONTRACTS
 from tests.acg_plan_fixture import DEFAULT_POLICY, install_plan
 
 
@@ -115,7 +115,7 @@ def _plan_scenario(tmp_path: Path) -> _PlanScenario:
     contract = TASK_ATTEMPT_CONTRACTS["resolve-plan"]
     executor = DeterministicTaskExecutor(
         contract.handler_id,
-        ResolvePlanHandler(),
+        op_handler(contract.handler_id),
         contract.output_model,
     )
     resolved = resolve_contract(contract, executor=executor)

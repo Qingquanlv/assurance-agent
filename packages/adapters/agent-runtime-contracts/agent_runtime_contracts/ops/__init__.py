@@ -10,6 +10,16 @@ from agent_runtime_contracts.ops.errors import (
     validate_output,
 )
 from agent_runtime_contracts.ops.op import run_finalize, run_prepare
+from agent_runtime_contracts.ops.router import (
+    AgentOp,
+    AgentOpFinalizeInputV1,
+    FinalizeContext,
+    OpRequest,
+    OpRouter,
+    PrepareContext,
+    TaskOp,
+    WriteScopeError,
+)
 from agent_runtime_contracts.ops.request import (
     BOUNDED_PROFILES,
     WorkspaceRoots,
@@ -23,10 +33,18 @@ from agent_runtime_contracts.ops.request import (
 
 __all__ = [
     "AgentBindingDataV1",
+    "AgentOp",
+    "AgentOpFinalizeInputV1",
     "BOUNDED_PROFILES",
+    "FinalizeContext",
     "InputError",
+    "OpRequest",
+    "OpRouter",
     "OutputError",
+    "PrepareContext",
+    "TaskOp",
     "WorkspaceRoots",
+    "WriteScopeError",
     "agent_run_request",
     "agent_workspace",
     "failed_input",

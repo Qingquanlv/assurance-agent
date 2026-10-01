@@ -21,7 +21,6 @@ _PURE_FUNCTION_IDS = (
     "assurance.generation.complete",
     "assurance.generation.review-round.advance",
     "assurance.healing.repair-round.advance",
-    "assurance.intake.review-round.advance",
 )
 
 
@@ -516,8 +515,8 @@ def test_bound_case_design_runs_phases_through_installed_host(
 
     from agent_runtime_fixture.contracts import frozen_run_request
 
-    from assurance_intake.contracts.agent import CaseDesignInputV1
-    from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
+    from assurance_intake.ops.case_design import CaseDesignInputV1
+    from assurance_intake.feature import AGENT_JOB_CONTRACTS
     from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
     payload = {"output_files": ["qa/.qa.yaml"]}
@@ -630,18 +629,16 @@ def test_every_installed_agent_finalizer_declares_its_input_model(opencode_compo
         assert "agent_result" in input_model.model_fields, contract.finalize_handler_id
 
 
-def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_path: Path) -> None:
+def test_installed_finalize_wraps_the_bundle_in_the_op_envelope(tmp_path: Path) -> None:
     from agent_runtime_contracts import (
         AgentRunResult,
         RawFinalizeBundle,
         ReadOnlyRawWorkspace,
         canonical_digest,
     )
-    from assurance_intake.contracts.agent import (
-        AgentFinalizeInputV1,
-        ArtifactListResultV1,
-        IntakeInputV1,
-    )
+    from agent_runtime_contracts.ops import AgentOpFinalizeInputV1
+    from assurance_intake.domain.artifacts import ArtifactListResultV1
+    from assurance_intake.ops.intake import IntakeInputV1
     from assurance_product.runtime_bindings import InstalledFinalizePhase
 
     result_payload = {"output_files": ["qa/requirement.md"]}
@@ -658,7 +655,7 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
         change_id="CH-1",
         capability_leafs=("intake",),
         artifact_paths=("qa/requirement.md",),
-        requirement="must not leak into finalize",
+        requirement="travels in the locked prepare input",
     )
     raw = tmp_path / "raw-finalize"
     raw.mkdir()
@@ -669,7 +666,7 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
         run_evidence=run_evidence,
         raw_workspace=ReadOnlyRawWorkspace(raw),
     )
-    handler = _CapturingFinalizeHandler(AgentFinalizeInputV1)
+    handler = _CapturingFinalizeHandler(AgentOpFinalizeInputV1)
     phase = InstalledFinalizePhase(
         "assurance.intake.intake.finalize",
         handler,
@@ -679,15 +676,11 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
     result = asyncio.run(phase.execute(bundle, _phase_scope(tmp_path)))
 
     assert result == {"status": "ok"}
-    projected = AgentFinalizeInputV1.model_validate(handler.input)
+    projected = AgentOpFinalizeInputV1.model_validate(handler.input)
     assert projected.agent_result == run_evidence
-    assert projected.change_id == "CH-1"
-    assert projected.capability_leafs == ("intake",)
-    assert projected.artifact_paths == ("qa/requirement.md",)
+    assert projected.model_dump(mode="json")["prepare"] == validated_input.model_dump(mode="json")
     assert isinstance(handler.input, dict)
-    assert "prepared" not in handler.input
-    assert "validated_input" not in handler.input
-    assert "requirement" not in handler.input
+    assert set(handler.input) == {"prepare", "agent_result"}
 
 
 def test_installed_proposal_finalize_uses_current_input_without_approval_envelope(tmp_path: Path) -> None:

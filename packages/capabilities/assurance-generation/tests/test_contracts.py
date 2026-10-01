@@ -31,9 +31,9 @@ VALID_LEAFS = frozenset({"entities.item.create", "auth.session.create", "capabil
 _LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")
 _NON_CONTRACT_INTAKE = (
     "assurance_intake.plugin",
-    "assurance_intake.operations",
+    "assurance_intake.ops",
+    "assurance_intake.graphs",
     "assurance_intake.validators",
-    "assurance_intake.resource_loader",
 )
 _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.generation.schema.codegen-mapping.v1": (

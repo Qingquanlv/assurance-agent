@@ -7,7 +7,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
+from pydantic import Field, field_validator
+
+from graph_engine.plugin_api import FrozenModel
+
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.explore import ObligationDraftV1, SourceQuoteV1
 from assurance_intake.contracts.obligations import (
@@ -19,10 +22,23 @@ from assurance_intake.contracts.obligations import (
     VerificationRequirementV1,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.domain.inputs import SHA256_PATTERN, canonical_test_families
 
 
 class InputError(ValueError):
     """Raised for dangling or mistyped obligation references."""
+
+
+class TrustedIntakeSourcesV1(FrozenModel):
+    requirement_ref: EvidenceArtifactRefV1
+    run_spec_ref: EvidenceArtifactRefV1
+    accepted_input_digest: str = Field(pattern=SHA256_PATTERN)
+    candidate_test_families: tuple[TestFamily, ...]
+
+    @field_validator("candidate_test_families")
+    @classmethod
+    def _candidate_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
+        return canonical_test_families(value)
 
 
 _AUTH_PURPOSE = Literal["expected_basis", "scope_exclusion", "analysis"]

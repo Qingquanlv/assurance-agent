@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from assurance_intake.contracts.cases import CaseEntryAuthoring, CaseYamlAuthoring
-from assurance_intake.operations.surface_guard import SurfaceMismatch, assert_cases_match_surface
+from assurance_intake.domain.surface_guard import SurfaceMismatch, assert_cases_match_surface
 from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
 
 

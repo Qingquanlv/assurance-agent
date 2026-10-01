@@ -92,7 +92,6 @@ HISTORICAL_BINDING_IDS = tuple(
 PURE_DECISION_IDS = (
     "assurance.generation.complete",
     "assurance.generation.review-round.advance",
-    "assurance.intake.review-round.advance",
     "assurance.healing.repair-round.advance",
 )
 SEMANTIC_TRACE_IGNORED_FIELDS = frozenset(

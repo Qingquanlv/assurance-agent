@@ -23,7 +23,7 @@ from assurance_healing.validators.test_tree import TestTreeValidator
 from assurance_improvement.operations.agent import _workspace_file as improvement_workspace_file
 from assurance_improvement.validators.delivery import DeliveryValidator
 from assurance_improvement.validators.paths import canonical_relative as improvement_canonical
-from assurance_intake.operations.finalize import workspace_file as intake_workspace_file
+from assurance_intake.domain.artifacts import workspace_file as intake_workspace_file
 from assurance_intake.validators.cases import CaseCandidateValidator
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.operations.assessment import _read_ref as quality_workspace_file

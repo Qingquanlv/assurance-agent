@@ -58,11 +58,9 @@ FEATURE_DOWNWARD_FORBIDDEN = frozenset(
 
 FEATURE_IMPLEMENTATION_SUFFIXES = (
     "plugin",
-    "operations",
+    "feature",
+    "ops",
     "validators",
-    "effects",
-    "resource_loader",
-    "resources",
     "graphs",
 )
 
@@ -264,6 +262,7 @@ def test_import_linter_encodes_four_role_matrix(repo_root: Path) -> None:
     for suffix in FEATURE_IMPLEMENTATION_SUFFIXES:
         assert f"assurance_intake.{suffix}" in generation_forbidden
     assert "assurance_intake.contracts" not in generation_forbidden
+    assert "assurance_intake.domain" not in generation_forbidden
 
     composition_sources = _importlinter_names(
         parser, "importlinter:contract:product-composition-layer", "source_modules"

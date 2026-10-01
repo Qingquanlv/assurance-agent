@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, cast
+from collections.abc import Callable, Mapping
+from typing import Any, Literal, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+
+from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.plugin_api import FrozenModel
+from graph_engine.stategraph import add_attempt_node, add_route, human_gate
 
 from assurance_intake.graphs.calls import (
     activation_case_review,
@@ -16,21 +20,37 @@ from assurance_intake.graphs.routes import (
     route_case_review,
     route_human_review,
 )
-from assurance_intake.graphs.state import IntakeState
-from assurance_intake.graphs.steps import (
+from assurance_intake.graphs.state import (
+    IntakeState,
     advance_join,
-    human_review,
     review_round_advance,
     terminal_exhausted,
     terminal_rejected,
     terminal_reviewed,
 )
-from graph_engine.boot.boot import CapabilityBuildContext
-from graph_engine.stategraph import add_attempt_node, add_route
+from assurance_intake.ops.case_review import op as case_review
 
-CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
 _CASE_REVIEW_TARGETS = ("done", "review-round-advance", "rejected", "human-review", "exhausted")
 _HUMAN_TARGETS = ("done", "rejected", "review-round-advance", "exhausted")
+
+
+HUMAN_REVIEW_ACTIONS = ("approve", "reject", "request_rework")
+
+
+class HumanReviewDecision(FrozenModel):
+    action: Literal["approve", "reject", "request_rework"]
+
+
+def _human_review_payload(state: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "reason": "needs_human_review",
+        "actions": list(HUMAN_REVIEW_ACTIONS),
+        "rounds_used": state.get("rounds_used", 0),
+        "rounds_budget": state.get("rounds_budget", 2),
+    }
+
+
+human_review = human_gate(_human_review_payload, decision=HumanReviewDecision)
 
 
 def _node(fn: object) -> Callable[..., Any]:
@@ -49,7 +69,7 @@ def build_case_graph(
         context,
         "case-review",
         semantic_node_id="intake.case-review",
-        contract_id=CASE_REVIEW_ID,
+        contract_id=case_review.contract_id,
         activation=activation_case_review,
         select=select_case_review,
         publish=publish_case_review,
@@ -71,4 +91,4 @@ def build_case_graph(
     return context.compile_subgraph(builder)
 
 
-__all__ = ["build_case_graph"]
+__all__ = ["HUMAN_REVIEW_ACTIONS", "HumanReviewDecision", "build_case_graph", "human_review"]

@@ -27,8 +27,8 @@ from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPR
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASKS
 from assurance_improvement.graphs.factory import ImprovementGraphs, build_improvement_graphs
 from assurance_improvement.graphs.state import ImprovementState
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_JOBS
-from assurance_intake.contracts.attempts import TASK_ATTEMPT_CONTRACTS as INTAKE_TASKS
+from assurance_intake.feature import AGENT_JOB_CONTRACTS as INTAKE_JOBS
+from assurance_intake.feature import TASK_ATTEMPT_CONTRACTS as INTAKE_TASKS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
 from assurance_intake.graphs.state import IntakeState
 from assurance_product.graphs.entrypoints import publish_public_output

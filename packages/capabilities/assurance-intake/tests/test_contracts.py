@@ -540,7 +540,7 @@ def test_intake_imports_no_legacy_package() -> None:
 def test_intake_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.feature import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "case-design": (
@@ -616,7 +616,7 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
 
 
 def test_output_routes_are_flat_qa_paths() -> None:
-    from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.feature import OUTPUT_ROUTE_TEMPLATES
 
     rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
     assert "qa/" + "changes" not in rendered

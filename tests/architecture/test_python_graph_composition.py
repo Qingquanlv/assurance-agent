@@ -57,10 +57,7 @@ FORBIDDEN_ADAPTERS = frozenset(
 )
 
 CROSS_FEATURE_FORBIDDEN_SUFFIXES = ("graphs",)
-ALLOWED_GRAPH_OPERATION_IMPORTS = {
-    ("assurance_intake.graphs.steps", "assurance_intake.operations.workflow_state"),
-    ("assurance_intake.graphs.steps", "assurance_intake.operations.workflow_state.advance_review_round"),
-}
+OP_IMPLEMENTATION_MODULES = frozenset({"hooks", "models"})
 
 
 def _repo_root() -> Path:
@@ -143,9 +140,13 @@ def _imported_modules(path: Path, *, module_name: str | None = None) -> tuple[tu
     )
 
 
+def _is_op_package(owner: str, name: str) -> bool:
+    trees = dict(FEATURE_SOURCE_TREES)
+    return (_repo_root() / trees[owner] / "ops" / name / "__init__.py").is_file()
+
+
 def _is_forbidden_graph_import(imported: str, owner: str, *, graph_module: str | None = None) -> bool:
-    if (graph_module, imported) in ALLOWED_GRAPH_OPERATION_IMPORTS:
-        return False
+    del graph_module
     parts = imported.split(".")
     root_name = parts[0]
     if root_name in FORBIDDEN_ADAPTERS:
@@ -153,6 +154,10 @@ def _is_forbidden_graph_import(imported: str, owner: str, *, graph_module: str |
     if root_name not in FEATURE_PACKAGES:
         return False
     rest = parts[1:]
+    if rest and rest[0] == "ops":
+        if root_name != owner or len(rest) == 1 or not _is_op_package(owner, rest[1]):
+            return True
+        return len(rest) > 3 or (len(rest) == 3 and rest[2] in OP_IMPLEMENTATION_MODULES)
     if any(part in FORBIDDEN_FEATURE_IMPLEMENTATION for part in rest):
         return True
     return root_name != owner and "graphs" in rest
@@ -228,9 +233,13 @@ def test_fixed_factory_modules_are_the_only_capability_public_graph_surface() ->
 
 def test_architecture_scan_rejects_relative_and_from_import_forms() -> None:
     owner = "assurance_intake"
-    module_name = "assurance_intake.graphs.steps"
+    module_name = "assurance_intake.graphs.state"
     cases = (
         ("from ..operations import prepare", "assurance_intake.operations"),
+        ("from ..ops import router", "assurance_intake.ops.router"),
+        ("from ..ops.case_design import hooks", "assurance_intake.ops.case_design.hooks"),
+        ("from ..ops.case_design.models import CaseDesignInputV1", "assurance_intake.ops.case_design.models"),
+        ("from assurance_generation.ops.plan import op", "assurance_generation.ops.plan.op"),
         ("from ..validators import check", "assurance_intake.validators"),
         ("from ..effects import apply", "assurance_intake.effects"),
         ("from . import operations", "assurance_intake.graphs.operations"),
@@ -257,26 +266,18 @@ def test_feature_graph_modules_reject_foreign_and_implementation_imports() -> No
     assert violations == []
 
 
-def test_graph_operation_exceptions_are_exact_to_caller_and_symbol() -> None:
-    assert _is_forbidden_graph_import(
-        "assurance_intake.operations.workflow_state.ReviewRoundAdvanceHandler",
-        "assurance_intake",
-        graph_module="assurance_intake.graphs.steps",
+def test_graphs_read_only_their_own_op_declarations() -> None:
+    assert not _is_forbidden_graph_import("assurance_intake.ops.case_design.op", "assurance_intake")
+    assert not _is_forbidden_graph_import(
+        "assurance_intake.ops.case_design.CaseDesignInputV1", "assurance_intake"
     )
-    assert _is_forbidden_graph_import(
-        "assurance_intake.operations.history_refs.merge_history_refs",
-        "assurance_intake",
-        graph_module="assurance_intake.graphs.state",
-    )
-    assert _is_forbidden_graph_import(
-        "assurance_intake.operations.history_refs.merge_history_refs",
-        "assurance_generation",
-        graph_module="assurance_generation.graphs.state",
-    )
+    assert _is_forbidden_graph_import("assurance_intake.ops.case_design.hooks", "assurance_intake")
+    assert _is_forbidden_graph_import("assurance_intake.ops.case_design.models.X", "assurance_intake")
+    assert _is_forbidden_graph_import("assurance_intake.ops.router", "assurance_intake")
+    assert _is_forbidden_graph_import("assurance_intake.ops.case_design.op", "assurance_generation")
     assert not _is_forbidden_graph_import(
         "assurance_intake.domain.history_refs.merge_history_refs",
         "assurance_generation",
-        graph_module="assurance_generation.graphs.state",
     )
 
 

@@ -5,14 +5,13 @@ from typing import cast
 
 from pydantic import BaseModel
 
-from assurance_intake.contracts.agent import (
-    CaseDesignInputV1,
-    CaseReviewInputV1,
-    ExploreInputV1,
-    IntakeInputV1,
-)
+from assurance_intake.ops.case_design import CaseDesignInputV1
+from assurance_intake.ops.case_review import CaseReviewInputV1
+from assurance_intake.ops.explore import ExploreInputV1
+from assurance_intake.ops.intake import IntakeInputV1
 from assurance_intake.contracts.plan import ResolvePlanInputV1, ResolvePlanOutputV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.graphs.state import as_int, current_trigger
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest
@@ -203,17 +202,8 @@ def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
     )
 
 
-def _trigger(state: Mapping[str, object]) -> Mapping[str, object] | None:
-    inbox = state.get("case_review_inbox")
-    if isinstance(inbox, Mapping):
-        nested = inbox.get("current_trigger")
-        if isinstance(nested, Mapping):
-            return nested
-    return None
-
-
 def activation_case_design(state: Mapping[str, object]) -> BusinessActivation:
-    trigger = _trigger(state)
+    trigger = current_trigger(state)
     arrival_id = trigger.get("arrival_id") if trigger is not None else None
     if isinstance(arrival_id, str) and arrival_id:
         return BusinessActivation.for_trigger(arrival_id)
@@ -221,7 +211,7 @@ def activation_case_design(state: Mapping[str, object]) -> BusinessActivation:
 
 
 def activation_case_design_repair(state: Mapping[str, object]) -> BusinessActivation:
-    trigger = _trigger(state)
+    trigger = current_trigger(state)
     arrival_id = trigger.get("arrival_id") if trigger is not None else None
     if isinstance(arrival_id, str) and arrival_id:
         return BusinessActivation.for_trigger(f"{arrival_id}.repair")
@@ -229,7 +219,7 @@ def activation_case_design_repair(state: Mapping[str, object]) -> BusinessActiva
 
 
 def activation_case_review(state: Mapping[str, object]) -> BusinessActivation:
-    trigger = _trigger(state)
+    trigger = current_trigger(state)
     arrival_id = trigger.get("arrival_id") if trigger is not None else None
     if isinstance(arrival_id, str) and arrival_id:
         return BusinessActivation.for_trigger(f"{arrival_id}.review")
@@ -336,8 +326,8 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
         "auto_fix_allowed": bool(payload.get("auto_fix_allowed", False)),
         "human_review_required": bool(payload.get("human_review_required", False)),
         "artifacts": payload.get("artifacts") or [],
-        "rounds_used": _as_int(state["rounds_used"], name="rounds_used"),
-        "rounds_budget": _as_int(state["rounds_budget"], name="rounds_budget"),
+        "rounds_used": as_int(state["rounds_used"], name="rounds_used"),
+        "rounds_budget": as_int(state["rounds_budget"], name="rounds_budget"),
     }
     if payload.get("history_ref") is not None:
         update["history_refs"] = [
@@ -378,12 +368,6 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
         update["reviewed_case"] = reviewed.model_dump(mode="json")
         update["case_receipt"] = receipt_ref.model_dump(mode="json")
     return update
-
-
-def _as_int(value: object, *, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an int")
-    return value
 
 
 __all__ = [

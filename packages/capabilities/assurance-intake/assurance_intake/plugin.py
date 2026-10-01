@@ -13,19 +13,7 @@ from graph_engine.plugin_api import (
 )
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
-from assurance_intake.agent_ops.case_design import (
-    finalize as case_design_finalize,
-    prepare as case_design_prepare,
-)
-from assurance_intake.agent_ops.case_review import (
-    finalize as case_review_finalize,
-    prepare as case_review_prepare,
-)
-from assurance_intake.agent_ops.explore import finalize as explore_finalize, prepare as explore_prepare
-from assurance_intake.agent_ops.intake import finalize as intake_finalize, prepare as intake_prepare
-from assurance_intake.contracts.attempts import attempt_contract_refs
-from assurance_intake.operations import ResolvePlanHandler, ReviewRoundAdvanceHandler
-from assurance_intake.resource_loader import resource_bytes
+from assurance_intake import ops
 from assurance_intake.validators import CaseCandidateValidator, CaseReferenceValidator
 
 INTAKE_SOURCE = ProviderSource(
@@ -38,52 +26,21 @@ INTAKE_SOURCE = ProviderSource(
     import_roots=("",),
 )
 
-INTAKE_RESOURCE_FILES: dict[str, str] = {
-    "assurance.intake.persona.doc-author.v1": "personas/doc-author.md",
-    "assurance.intake.persona.explorer.v1": "personas/explorer.md",
-    "assurance.intake.persona.intake-host.v1": "personas/intake-host.md",
-    "assurance.intake.persona.reviewer.v1": "personas/reviewer.md",
-    "assurance.intake.result.case-design.v1": "result-contracts/case-design.v1.schema.json",
-    "assurance.intake.result.case-review.v1": "result-contracts/case-review.v1.schema.json",
-    "assurance.intake.result.explore.v1": "result-contracts/explore.v1.schema.json",
-    "assurance.intake.result.intake.v1": "result-contracts/intake.v1.schema.json",
-    "assurance.intake.skill.aa-case-design.case-delta-reviewer-prompt.v1": (
-        "skills/aa-case-design/case-delta-reviewer-prompt.md"
-    ),
-    "assurance.intake.skill.aa-case-design.v1": "skills/aa-case-design/SKILL.md",
-    "assurance.intake.skill.aa-case-design.visual-companion.v1": (
-        "skills/aa-case-design/visual-companion.md"
-    ),
-    "assurance.intake.skill.aa-case-repair.v1": "skills/aa-case-repair/SKILL.md",
-    "assurance.intake.skill.aa-case-reviewer.v1": "skills/aa-case-reviewer/SKILL.md",
-    "assurance.intake.skill.aa-explore.v1": "skills/aa-explore/SKILL.md",
-    "assurance.intake.skill.aa-intake.v1": "skills/aa-intake/SKILL.md",
-}
-
 _SCHEMA_FILES: dict[str, str] = {
-    "assurance.intake.schema.resolved-assurance-plan.v1": ("schemas/resolved-assurance-plan.v1.schema.json"),
-    "assurance.intake.schema.case-authoring.v1": "schemas/case-authoring.v1.schema.json",
-    "assurance.intake.schema.case-review.v1": "schemas/case-review.v1.schema.json",
-    "assurance.intake.schema.case.v1": "schemas/case.v1.schema.json",
-    "assurance.intake.schema.case-selection.v1": "schemas/case-selection.v1.schema.json",
-    "assurance.intake.schema.qa-change.v1": "schemas/qa-change.v1.schema.json",
-    "assurance.intake.workflow.case.input.v1": "schemas/workflow/case-input.v1.schema.json",
-    "assurance.intake.workflow.case.output.v1": "schemas/workflow/case-output.v1.schema.json",
-    "assurance.intake.workflow.prepare.input.v1": "schemas/workflow/prepare-input.v1.schema.json",
-    "assurance.intake.workflow.prepare.output.v1": "schemas/workflow/prepare-output.v1.schema.json",
-}
-
-_HANDLERS = {
-    "assurance.intake.case-design.finalize": cast(TaskHandler, case_design_finalize),
-    "assurance.intake.case-design.prepare": cast(TaskHandler, case_design_prepare),
-    "assurance.intake.case-review.finalize": cast(TaskHandler, case_review_finalize),
-    "assurance.intake.case-review.prepare": cast(TaskHandler, case_review_prepare),
-    "assurance.intake.explore.finalize": cast(TaskHandler, explore_finalize),
-    "assurance.intake.explore.prepare": cast(TaskHandler, explore_prepare),
-    "assurance.intake.intake.finalize": cast(TaskHandler, intake_finalize),
-    "assurance.intake.intake.prepare": cast(TaskHandler, intake_prepare),
-    "assurance.intake.review-round.advance": ReviewRoundAdvanceHandler(),
-    "assurance.intake.resolve-plan": ResolvePlanHandler(),
+    "assurance.intake.schema.resolved-assurance-plan.v1": (
+        "contracts/schemas/resolved-assurance-plan.v1.schema.json"
+    ),
+    "assurance.intake.schema.case-authoring.v1": "contracts/schemas/case-authoring.v1.schema.json",
+    "assurance.intake.schema.case-review.v1": "contracts/schemas/case-review.v1.schema.json",
+    "assurance.intake.schema.case.v1": "contracts/schemas/case.v1.schema.json",
+    "assurance.intake.schema.case-selection.v1": "contracts/schemas/case-selection.v1.schema.json",
+    "assurance.intake.schema.qa-change.v1": "contracts/schemas/qa-change.v1.schema.json",
+    "assurance.intake.workflow.case.input.v1": "contracts/schemas/workflow/case-input.v1.schema.json",
+    "assurance.intake.workflow.case.output.v1": "contracts/schemas/workflow/case-output.v1.schema.json",
+    "assurance.intake.workflow.prepare.input.v1": "contracts/schemas/workflow/prepare-input.v1.schema.json",
+    "assurance.intake.workflow.prepare.output.v1": (
+        "contracts/schemas/workflow/prepare-output.v1.schema.json"
+    ),
 }
 
 _VALIDATORS = {
@@ -98,17 +55,19 @@ class IntakePlugin(CapabilityPlugin):
         version="0.3.0",
         engine_api=ENGINE_API_VERSION,
         source=INTAKE_SOURCE,
-        resource_bytes=resource_bytes,
+        resource_bytes=ops.router.resource_bytes,
         schema_files=_SCHEMA_FILES,
-        resource_files=INTAKE_RESOURCE_FILES,
-        task_handlers=_HANDLERS,
+        resource_files=dict(ops.router.resource_files()),
+        task_handlers=dict(ops.router.handlers(cast(TaskHandler, ops))),
         commit_validators=_VALIDATORS,
     )
 
     @classmethod
     def descriptor(cls) -> PluginDescriptor:
-        return cls.spec.descriptor().model_copy(update={"attempt_contracts": attempt_contract_refs()})
+        return cls.spec.descriptor().model_copy(
+            update={"attempt_contracts": ops.router.attempt_contract_refs()}
+        )
 
     @classmethod
     def contribute(cls, ports: RegistryPorts) -> PluginContribution:
-        return replace(cls.spec.contribution(ports), attempt_contracts=attempt_contract_refs())
+        return replace(cls.spec.contribution(ports), attempt_contracts=ops.router.attempt_contract_refs())

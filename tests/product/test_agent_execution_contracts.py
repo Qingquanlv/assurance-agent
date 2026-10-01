@@ -476,8 +476,8 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     tmp_path: Path,
     installed_sources,
 ) -> None:
-    from assurance_intake.agent_ops.explore import prepare as explore_prepare
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+    from tests.op_handlers import op_handler
 
     project = tmp_path / "project"
     current_id = "CH-CURRENT-001"
@@ -546,7 +546,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
             },
         )
         outcome = asyncio.run(
-            explore_prepare.execute(
+            op_handler("assurance.intake.explore.prepare").execute(
                 request,
                 TaskContext(
                     project_root=project,

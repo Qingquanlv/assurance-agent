@@ -18,13 +18,9 @@ from agent_runtime_contracts import (
     canonical_digest,
 )
 from agent_runtime_contracts.wire.models import AgentRunResult
-from assurance_intake.contracts.agent import (
-    ArtifactDigestV1,
-    ArtifactListResultV1,
-    CaseDesignInputV1,
-    CaseDesignOutputV1,
-)
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_intake.domain.artifacts import ArtifactDigestV1, ArtifactListResultV1
+from assurance_intake.ops.case_design import CaseDesignInputV1, CaseDesignOutputV1
+from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult, TaskAttemptContract

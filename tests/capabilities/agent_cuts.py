@@ -21,11 +21,11 @@ from tests.capabilities.six_wheel_harness import (
     resolve_fixture,
 )
 from tests.acg_plan_fixture import install_plan
+from tests.op_handlers import op_handler
 
 from assurance_generation.operations.planning import PlanFinalizeHandler
 from assurance_healing.agent_ops.fix_proposal import finalize as fix_proposal_finalize
 from assurance_improvement.agent_ops.retro import finalize as retro_finalize
-from assurance_intake.agent_ops.case_review import finalize as case_review_finalize
 from assurance_quality.agent_ops.inspect import finalize as inspect_finalize
 
 AGENT_CUTS = (
@@ -36,7 +36,7 @@ AGENT_CUTS = (
     "terminal-observed",
 )
 WHEEL_FINALIZERS = {
-    "intake": case_review_finalize,
+    "intake": lambda: op_handler("assurance.intake.case-review.finalize"),
     "generation": lambda: PlanFinalizeHandler("api"),
     "healing": fix_proposal_finalize,
     "quality": inspect_finalize,
@@ -307,10 +307,16 @@ async def run_finalize_cut(wheel: str, cut: str) -> IndeterminateObservation:
                 "CH-DEMO-001",
                 capability_leafs=("auth.session.create", "entities.item.create"),
             )
-            payload = cast(
-                JSONValue,
-                {**cast(dict[str, Any], payload), "plan_digest": plan.plan_digest, "plan_ref": plan_ref},
-            )
+            prepare = {
+                **cast(dict[str, Any], payload),
+                "change_id": "CH-DEMO-001",
+                "plan_digest": plan.plan_digest,
+                "plan_ref": plan_ref,
+            }
+            envelope = {"prepare": prepare}
+            if "agent_result" in prepare:
+                envelope["agent_result"] = prepare.pop("agent_result")
+            payload = cast(JSONValue, envelope)
         executed = await execute_task(cast(Any, handler), payload, workspace)
         return _from_executed(executed, workspace, marker.exists())
 

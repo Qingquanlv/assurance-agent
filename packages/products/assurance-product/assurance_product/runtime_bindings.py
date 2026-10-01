@@ -21,6 +21,7 @@ from agent_runtime_contracts import (
     ResolvedRawAgentExecutor,
 )
 from agent_runtime_contracts.executor.phases import phase_task_id
+from agent_runtime_contracts.ops import AgentOpFinalizeInputV1
 from graph_engine.attempts import (
     AuthorizedAttemptScope,
     ExecutedAttemptResult,
@@ -576,12 +577,13 @@ class InstalledFinalizePhase(_HostBackedInstalledPhase, Generic[_FinalOutputT]):
             )
         locked_input = bundle.validated_input.model_dump(mode="json")
         prepared_business: dict[str, object] = {}
+        whole_business = issubclass(input_model, AgentOpFinalizeInputV1)
         if isinstance(bundle.prepared, AgentRunRequest):
             for instruction in bundle.prepared.instructions:
                 raw = thaw_frozen(instruction.json_content)
                 if not isinstance(raw, Mapping):
                     continue
-                for name in input_model.model_fields:
+                for name in tuple(raw) if whole_business else tuple(input_model.model_fields):
                     if name in {"agent_result", "prepare"} or name not in raw:
                         continue
                     value = raw[name]
@@ -596,7 +598,8 @@ class InstalledFinalizePhase(_HostBackedInstalledPhase, Generic[_FinalOutputT]):
             for name, value in locked_input.items()
             if name in input_model.model_fields and name != "agent_result"
         }
-        projected.update(prepared_business)
+        if not whole_business:
+            projected.update(prepared_business)
         projected["agent_result"] = bundle.run_evidence.model_dump(mode="json")
         if "prepare" in input_model.model_fields:
             projected["prepare"] = {**locked_input, **prepared_business}

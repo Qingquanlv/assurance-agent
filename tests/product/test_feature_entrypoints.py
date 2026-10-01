@@ -124,7 +124,7 @@ def test_intake_feature_module_imports_with_plugin() -> None:
 
 
 def test_intake_plugin_contract_refs_match_task_catalog() -> None:
-    from assurance_intake.contracts.attempts import attempt_contract_refs
+    from assurance_intake.feature import attempt_contract_refs
     from assurance_intake.feature import FEATURE
     from assurance_intake.plugin import IntakePlugin
 
