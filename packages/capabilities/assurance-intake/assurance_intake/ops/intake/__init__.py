@@ -12,7 +12,6 @@ op = router.agent(
     "intake",
     profile="assurance-v1-doc-author",
     skill="aa-intake",
-    persona="intake-host",
     input=IntakeInputV1,
     result=ArtifactListResultV1,
     output=FinalizedArtifactsV1,

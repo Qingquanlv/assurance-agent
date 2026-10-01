@@ -12,7 +12,6 @@ op = router.agent(
     "case-review",
     profile="assurance-v1-reviewer",
     skill="aa-case-reviewer",
-    persona="reviewer",
     input=CaseReviewInputV1,
     result=CaseReviewResultV1,
     output=CaseReviewResultV1,

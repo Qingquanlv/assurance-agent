@@ -147,7 +147,7 @@ Intake declares every operation, like a FastAPI route, in its own directory unde
 
 - `__init__.py` calls `router.agent(...)` (or `router.task(...)` for a deterministic
   op such as `resolve_plan`) with the op's input, result and output models, skill,
-  persona, write claims per phase, `depends` and hooks;
+  write claims per phase, `depends` and hooks;
 - `hooks.py` holds the op's own `before(ctx, business)` and `after(ctx, business, result)`
   steps; `ctx.write` enforces the phase's declared claims and `ctx.use_skill` picks an
   alternative `<key>.SKILL.md`;

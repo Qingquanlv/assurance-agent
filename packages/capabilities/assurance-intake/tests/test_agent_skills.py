@@ -217,7 +217,6 @@ def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
 def test_intake_skill_requires_direct_change_write() -> None:
     skill = intake_ops.router.resource_text("ops/intake/SKILL.md")
     normalized = " ".join(skill.split())
-    persona = intake_ops.router.resource_text("personas/intake-host.md")
     assert "`qa/` is allowed to be missing" in skill
     assert "must not ask" in skill.lower() or "do not ask" in skill.lower()
     assert "must not require" in skill.lower() or "do not require" in skill.lower()
@@ -226,8 +225,7 @@ def test_intake_skill_requires_direct_change_write() -> None:
     assert "Call the native `write` tool exactly once" in skill
     assert "read" in skill and "back" in skill
     assert "A final JSON response without those successful tool calls is invalid" in normalized
-    assert "interactive" not in persona.lower()
-    assert "do not ask" in persona.lower()
+    assert "interactive" not in skill.lower()
 
 
 def test_explore_skill_returns_the_locked_result_contract() -> None:
@@ -310,25 +308,19 @@ def test_case_design_skill_requires_cleanup_for_every_successful_persistent_crea
     assert "matching cleanup action in `postconditions`" in skill
 
 
-def test_explore_resources_require_complete_output_even_when_evidence_is_degraded() -> None:
-    resources = {
-        "skill": intake_ops.router.resource_text("ops/explore/SKILL.md"),
-        "persona": intake_ops.router.resource_text("personas/explorer.md"),
-    }
+def test_explore_skill_requires_complete_output_even_when_evidence_is_degraded() -> None:
+    skill = intake_ops.router.resource_text("ops/explore/SKILL.md")
 
-    for content in resources.values():
-        assert "advisory.json" not in content
-        assert "exploration.json" in content
-        assert "degraded" in content.lower()
-        assert "no-source" in content.lower()
-        assert "must still" in content.lower()
-        assert "Do not use glob to check either Explore path" in content
-
-    skill = resources["skill"]
+    assert "advisory.json" not in skill
+    assert "exploration.json" in skill
+    assert "degraded" in skill.lower()
+    assert "no-source" in skill.lower()
+    assert "must still" in skill.lower()
+    assert "Do not use glob to check either Explore path" in skill
     assert "do not return structured success" in skill.lower()
     assert 'never return `{"output_files":[]}`' in skill.lower()
     assert "must not synthesize such a state as successful" in skill.lower()
-    assert "return only the non-empty structured" in resources["persona"].lower()
+    assert "every successful run returns exactly the non-empty receipt" in skill.lower()
 
 
 def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
@@ -450,25 +442,20 @@ def test_case_reviewer_routes_source_proven_case_defects_to_agent_fix_loop() -> 
 
 
 def test_case_reviewer_uses_locked_requirement_and_reports_findings_exhaustively() -> None:
-    resources = {
-        "skill": intake_ops.router.resource_text("ops/case_review/SKILL.md"),
-        "persona": intake_ops.router.resource_text("personas/reviewer.md"),
-    }
+    skill = intake_ops.router.resource_text("ops/case_review/SKILL.md")
+    normalized = " ".join(skill.split()).lower()
 
-    for content in resources.values():
-        assert "requirement.md" in content
-        assert "explicit numerical thresholds and load values" in content
-        assert "complete all review criteria before writing the verdict" in content
-
-    persona = " ".join(resources["persona"].split())
-    assert "report all currently observable closed-key defects together" in persona.lower()
-    assert "an absent stable target is not a finding" in persona.lower()
+    assert "requirement.md" in skill
+    assert "explicit numerical thresholds and load values" in skill
+    assert "complete all review criteria before writing the verdict" in skill
+    assert "report all currently observable closed-key defects together" in normalized
+    assert "an absent stable target is not a finding" in normalized
 
     designer = intake_ops.router.resource_text("ops/case_design/SKILL.md")
     assert "Apply every listed auto-fix finding in one pass" in designer
     assert "re-run the complete self-review against the resulting files" in designer
 
-    reviewer = " ".join(resources["skill"].split())
+    reviewer = " ".join(skill.split())
     assert "cross-check every assertion" in reviewer
     assert "cross-check every trace key" in reviewer
     assert "On review re-entry, re-review every case in full" in reviewer
@@ -645,7 +632,7 @@ async def test_case_design_prepare_allows_covered_repair_for_bound_api_key(tmp_p
 
     assert prepared.status == "succeeded", prepared.failure
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     repair = cast(Mapping[str, object], business["review_repair"])
     action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
     assert action["allowed_paths"] == ("MRC-API-001",)
@@ -754,11 +741,10 @@ async def test_intake_prepare_embeds_locked_requirement_and_write_rules(tmp_path
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
     assert request.workspace.allowed_outputs == ("qa/.qa.yaml",)
-    skill, persona, business = request.instructions
+    skill, business = request.instructions
     assert "Capability-owned intake" in (skill.text_content or "")
     assert "Do not ask" in (skill.text_content or "")
     assert "`qa/` is allowed to be missing" in (skill.text_content or "")
-    assert "Do not ask" in (persona.text_content or "")
     payload = cast(Mapping[str, object], business.json_content)
     assert payload["change_id"] == "RET-dept-management"
     assert payload["requirement"] == "Cover department CRUD and the department tree page."
@@ -831,8 +817,8 @@ async def test_case_design_prepare_includes_deterministic_validation_feedback(tm
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    notice = request.instructions[2].text_content or ""
-    business = cast(Mapping[str, object], request.instructions[3].json_content)
+    notice = request.instructions[1].text_content or ""
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
     assert "capability key is not a declared typed leaf" in notice
     assert business["validation_attempt"] == 1
     assert business["validation_error"] == (
@@ -854,7 +840,7 @@ async def test_case_design_prepare_builds_a_deterministic_review_repair_contract
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
     assert "Locator-bounded case repair" in (request.instructions[0].text_content or "")
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     repair = cast(Mapping[str, object], business["review_repair"])
     actions = cast(tuple[object, ...], repair["actions"])
     action = cast(Mapping[str, object], actions[0])
@@ -910,7 +896,7 @@ async def test_case_design_prepare_accepts_exact_document_section_repair_locator
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     repair = cast(Mapping[str, object], business["review_repair"])
     action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
     assert action["allowed_paths"] == ("## Test Conditions",)
@@ -994,7 +980,7 @@ async def test_case_design_prepare_preserves_mrc_locator_baseline_order(tmp_path
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     repair = cast(Mapping[str, object], business["review_repair"])
     action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
     assert action["allowed_paths"] == ("MRC-Z", "MRC-A")
@@ -1012,7 +998,7 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     exploration = cast(Mapping[str, object], business["exploration"])
     assert exploration["change_id"] == "CH-DEMO-001"
     coverage = tuple(
@@ -1035,7 +1021,7 @@ async def test_case_design_prepare_consumes_sealed_prepared_exploration(tmp_path
 
     assert prepared.status == "succeeded", prepared.failure
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     exploration = cast(Mapping[str, object], business["exploration"])
     coverage = tuple(
         cast(Mapping[str, object], item)
@@ -1053,7 +1039,7 @@ async def test_case_design_prepare_reads_plan_bound_exploration_for_standalone_c
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert isinstance(business["exploration"], Mapping)
 
 
@@ -1095,7 +1081,7 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert business["case_delta_paths"] == ("qa/cases/menus/case.yaml",)
     assert business["review_input_paths"] == (
         "qa/.qa.yaml",
@@ -1226,16 +1212,14 @@ async def test_case_review_finalize_accepts_mrc_key_that_is_not_a_capability_lea
 
 
 @pytest.mark.asyncio
-async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Path) -> None:
+async def test_prepare_instruction_order_is_skill_then_business(tmp_path: Path) -> None:
     prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
     request = AgentRunRequest.model_validate(prepared.output)
-    assert len(request.instructions) == 3
-    skill, persona, business = request.instructions
+    assert len(request.instructions) == 2
+    skill, business = request.instructions
     assert skill.media_type == "text/plain"
-    assert persona.media_type == "text/plain"
     assert business.media_type == "application/json"
     assert "Capability-owned case-design skill" in (skill.text_content or "")
-    assert "Document-author persona" in (persona.text_content or "")
     payload = cast(Mapping[str, object], business.json_content)
     leafs = payload["capability_leafs"]
     facts = cast(Mapping[str, object], payload["planning_facts"])
@@ -1274,10 +1258,10 @@ async def test_case_author_and_reviewer_observe_same_source_snapshot(tmp_path: P
     reviewer = await run_prepare(cast(TaskHandler, case_review_prepare), CASE_REVIEW_INPUT, BINDING, tmp_path)
     assert author.status == reviewer.status == "succeeded"
     author_input = cast(
-        Mapping[str, Any], AgentRunRequest.model_validate(author.output).instructions[2].json_content
+        Mapping[str, Any], AgentRunRequest.model_validate(author.output).instructions[1].json_content
     )
     review_input = cast(
-        Mapping[str, Any], AgentRunRequest.model_validate(reviewer.output).instructions[2].json_content
+        Mapping[str, Any], AgentRunRequest.model_validate(reviewer.output).instructions[1].json_content
     )
     assert author_input["planning_facts"] == review_input["planning_facts"]
     assert any(
@@ -1815,7 +1799,7 @@ async def _prepared_review_repair(workspace: Path) -> Mapping[str, object]:
     request = AgentRunRequest.model_validate(prepared.output)
     dumped = request.model_dump(mode="json")
     instructions = cast(list[dict[str, object]], dumped["instructions"])
-    business = cast(dict[str, object], instructions[2]["json_content"])
+    business = cast(dict[str, object], instructions[1]["json_content"])
     return cast(Mapping[str, object], business["review_repair"])
 
 
@@ -4104,7 +4088,7 @@ async def test_case_design_prepare_embeds_the_frozen_inventory(tmp_path: Path) -
     )
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     inventory = cast(Mapping[str, object], business["impact_inventory"])
     rows = cast(list[Mapping[str, object]], inventory["rows"])
     assert rows[0]["row_id"] == "IR-001"
@@ -4123,7 +4107,7 @@ async def test_case_design_prepare_infers_case_paths_from_inventory(tmp_path: Pa
     )
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert business["case_delta_paths"] == ("qa/cases/system/dept/case.yaml",)
     assert request.workspace.allowed_outputs == (
         "qa/.qa.yaml",
@@ -4148,7 +4132,7 @@ async def test_case_design_prepare_locks_every_inferred_module(tmp_path: Path) -
     )
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert business["case_delta_paths"] == (
         "qa/cases/system/dept/case.yaml",
         "qa/cases/system/user/case.yaml",

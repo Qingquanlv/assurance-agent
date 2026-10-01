@@ -12,7 +12,6 @@ op = router.agent(
     "case-design",
     profile="assurance-v1-doc-author",
     skill="aa-case-design",
-    persona="doc-author",
     input=CaseDesignInputV1,
     result=ArtifactListResultV1,
     output=CaseDesignOutputV1,

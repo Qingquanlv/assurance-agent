@@ -96,7 +96,6 @@ op = router.agent(
     "echo",
     profile="assurance-v1-reviewer",
     skill="aa-echo",
-    persona="helper",
     input=EchoInput,
     result=EchoResult,
     output=EchoOutput,
@@ -162,7 +161,6 @@ def _capability(tmp_path: Path, *, extra: dict[str, str] | None = None) -> Modul
     root = tmp_path / name
     files = {
         "__init__.py": "",
-        "personas/helper.md": "persona text\n",
         "ops/__init__.py": _OPS_INIT,
         "ops/echo/__init__.py": _ECHO_INIT.replace("PKG", name),
         "ops/echo/SKILL.md": "echo skill\n",
@@ -292,7 +290,6 @@ def test_resource_manifest_comes_from_op_directories(tmp_path: Path) -> None:
     router = _router(_capability(tmp_path))
 
     assert router.resource_files() == {
-        "fixture.cap.persona.helper.v1": "personas/helper.md",
         "fixture.cap.result.echo.v1": "ops/echo/result.schema.json",
         "fixture.cap.skill.aa-echo-repair.v1": "ops/echo/repair.SKILL.md",
         "fixture.cap.skill.aa-echo.notes.v1": "ops/echo/notes.md",
@@ -326,7 +323,7 @@ def test_prepare_runs_depends_before_and_selects_skill(tmp_path: Path) -> None:
     assert plain.status == "succeeded"
     request = AgentRunRequest.model_validate(plain.output)
     texts = [part.text_content for part in request.instructions if part.media_type == "text/plain"]
-    assert texts == ["echo skill\n", "persona text\n"]
+    assert texts == ["echo skill\n"]
     business = [part.json_content for part in request.instructions if part.media_type == "application/json"]
     assert business == [{"change_id": "c1", "repair": False, "planning_facts": {"plan": "plan-for-c1"}}]
     assert request.workspace.scope_id == "c1"
@@ -436,7 +433,6 @@ def test_duplicate_declaration_fails(tmp_path: Path) -> None:
             "echo",
             profile=echo.profile,
             skill=echo.skill,
-            persona=echo.persona,
             input=echo.input,
             result=echo.result,
             output=echo.output,

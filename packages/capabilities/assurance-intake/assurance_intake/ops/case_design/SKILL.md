@@ -3,6 +3,20 @@
 Capability-owned case-design skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 
+## Operating rules
+
+- Author case-design outputs only. Generation, healing, and retro authoring belong
+  to other capabilities.
+- Read the relevant product source directly and record files and verified claims
+  under `## Product Source Verification`. Explore findings are context, not a substitute.
+- If `exploration` is present in the business input, consume that typed object
+  directly; never infer Explore state from `.qa.yaml` phase fields.
+- Prefer a complete artifact write for new or replacement files, and read each file
+  back immediately.
+- Write only the exact graph-declared case-delta paths plus the declared proposal,
+  `.qa.yaml`, and MRC matrix paths.
+- Do not write a runtime ledger or orchestration state file.
+
 ## Per-Skill Memory
 
 Before producing output, check whether `.aa/memory/aa-case-design.md` exists in the project root. If it exists, read it before producing output and apply only entries that are not marked `deprecated:`. Treat the file as read-only runtime guidance; do not create, edit, or delete `.aa/memory/**`.

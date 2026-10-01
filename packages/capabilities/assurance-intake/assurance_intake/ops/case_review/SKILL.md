@@ -2,7 +2,18 @@
 
 Capability-owned case-review skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
-Do not claim the generation-owned reviewer persona.
+
+## Operating rules
+
+- Audit every MRC row before writing. Report all currently observable closed-key
+  defects together; product source is verification evidence, not a frozen business oracle.
+- For a declared added-only delta that creates a new case module, an absent stable
+  target is not a finding; the later apply step initializes that target after review passes.
+- Capability keys in the review must be exact declared typed leaves. Prefix matches are invalid.
+- Never invent a pass. If product source cannot be read, write `needs_human_review`
+  with the missing evidence.
+- Do not edit product code or tests, and do not run generation, execution, healing,
+  or archive work. Do not write a runtime ledger or orchestration state file.
 
 ## Prepared source observations
 

@@ -115,16 +115,14 @@ def skill_request(
     roots: WorkspaceRoots,
     allowed_outputs: Sequence[str],
     scope_id: str,
-    persona_text: str | None = None,
     business_extra: Mapping[str, Any] | None = None,
 ) -> AgentRunRequest:
     business_input = prompt_model_json(business)
     if business_extra is not None:
         business_input.update(business_extra)
-    texts = (skill_text,) if persona_text is None else (skill_text, persona_text)
     return agent_run_request(
         instructions=(
-            *(InstructionPart.text("text/plain", text) for text in texts),
+            InstructionPart.text("text/plain", skill_text),
             InstructionPart.from_json(business_input),
         ),
         validation_error=getattr(business, "validation_error", None),

@@ -23,11 +23,10 @@ def test_every_op_directory_declares_exactly_one_op() -> None:
     assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-plan",)
 
 
-def test_every_op_and_persona_resource_is_published() -> None:
+def test_every_op_resource_is_published() -> None:
     on_disk = {
         path.relative_to(_PACKAGE).as_posix()
-        for root in ("ops", "personas")
-        for path in (_PACKAGE / root).rglob("*")
+        for path in (_PACKAGE / "ops").rglob("*")
         if path.suffix in {".md", ".json"}
     }
     assert set(IntakePlugin.spec.resource_files.values()) == on_disk

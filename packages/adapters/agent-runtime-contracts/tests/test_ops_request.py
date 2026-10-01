@@ -75,7 +75,6 @@ def test_validate_binding_maps_validation_error_to_input_error() -> None:
 def test_skill_request_orders_instructions(tmp_path: Path) -> None:
     request = skill_request(
         skill_text="SKILL",
-        persona_text="PERSONA",
         business=_Business(change_id="chg-1", validation_error="fix it"),
         business_extra={"planning_facts": {"k": 1}},
         binding=_binding(),
@@ -85,9 +84,9 @@ def test_skill_request_orders_instructions(tmp_path: Path) -> None:
         scope_id="chg-1",
     )
     kinds = [part.media_type for part in request.instructions]
-    assert kinds == ["text/plain", "text/plain", "text/plain", "application/json"]
-    assert request.instructions[2].text_content is not None
-    assert request.instructions[2].text_content.endswith("fix it")
+    assert kinds == ["text/plain", "text/plain", "application/json"]
+    assert request.instructions[1].text_content is not None
+    assert request.instructions[1].text_content.endswith("fix it")
     assert request.workspace.scope_id == "chg-1"
     assert request.result_contract.schema_id == "r.v1"
 

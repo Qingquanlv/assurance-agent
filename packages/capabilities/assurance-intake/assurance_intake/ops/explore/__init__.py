@@ -12,7 +12,6 @@ op = router.agent(
     "explore",
     profile="assurance-v1-explorer",
     skill="aa-explore",
-    persona="explorer",
     input=ExploreInputV1,
     result=ArtifactListResultV1,
     output=FinalizedArtifactsV1,

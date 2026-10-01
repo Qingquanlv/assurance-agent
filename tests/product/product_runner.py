@@ -121,7 +121,6 @@ class _ScriptedTaskHost:
                             {
                                 "instructions": [
                                     {"text_content": "skill"},
-                                    {"text_content": "persona"},
                                     {"json_content": {"review_repair": None}},
                                 ]
                             }

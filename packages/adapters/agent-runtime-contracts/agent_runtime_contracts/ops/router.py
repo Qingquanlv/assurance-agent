@@ -190,7 +190,6 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
     name: str
     profile: str
     skill: str
-    persona: str
     input: type[InputT]
     result: type[ResultT]
     output: type[OutputT]
@@ -266,7 +265,6 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         manifest = {
             f"{owner}.skill.{self.skill}.v1": f"{base}/{_SKILL_FILE}",
             self.result_schema_id: f"{base}/{_RESULT_FILE}",
-            f"{owner}.persona.{self.persona}.v1": f"personas/{self.persona}.md",
         }
         for filename in self.router.list_files(base):
             if filename == _SKILL_FILE or not filename.endswith(".md"):
@@ -307,7 +305,6 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
             return prepared_outcome(
                 skill_request(
                     skill_text=self.router.resource_text(skill_path),
-                    persona_text=self.router.resource_text(f"personas/{self.persona}.md"),
                     business=cast(FrozenModel, business),
                     business_extra=ctx._extra or None,
                     binding=binding,
@@ -448,7 +445,6 @@ class OpRouter:
         *,
         profile: str,
         skill: str,
-        persona: str,
         input: type[InputT],
         result: type[ResultT],
         output: type[OutputT],
@@ -469,7 +465,6 @@ class OpRouter:
             name=name,
             profile=profile,
             skill=skill,
-            persona=persona,
             input=input,
             result=result,
             output=output,
