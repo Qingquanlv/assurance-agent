@@ -74,11 +74,38 @@ improvement_wheel="$(wheel_for 'assurance_improvement-*.whl')"
 
 echo "CAPABILITY_WHEEL_FILES=$(basename "$engine_wheel") $(basename "$contracts_wheel") $(basename "$intake_wheel") $(basename "$generation_wheel") $(basename "$execution_wheel") $(basename "$healing_wheel") $(basename "$quality_wheel") $(basename "$improvement_wheel")"
 
+# Contributed files come from the live plugin specs in the archived source tree;
+# each path is relative to the import root and checked against its reader, which
+# may trim a trailing newline.
+uv run --offline --all-packages --no-dev python - "$smoke_root/contributed.json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from importlib import import_module
+from pathlib import Path
+
+manifest: dict[str, list[str]] = {}
+for declaration in sorted(Path("packages/capabilities").glob("*/assurance_*/plugin-declaration.json")):
+    source = json.loads(declaration.read_text(encoding="utf-8"))["source"]
+    module_name, attr = source["entrypoint_value"].split(":")
+    spec = getattr(import_module(module_name), attr).spec
+    reader = spec.resource_bytes
+    base = "resources/" if str(getattr(reader, "__module__", "")).endswith(".resource_loader") else ""
+    paths: list[str] = []
+    for relative in sorted({*spec.resource_files.values(), *spec.schema_files.values()}):
+        raw = (declaration.parent / f"{base}{relative}").read_bytes()
+        if raw.rstrip(b"\n") != reader(relative).rstrip(b"\n"):
+            raise SystemExit(f"{source['distribution']} reader disagrees with {base}{relative}")
+        paths.append(f"{base}{relative}")
+    manifest[source["distribution"]] = paths
+Path(sys.argv[1]).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
 cat >"$smoke_root/check.py" <<'PY'
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import sys
 import zipfile
@@ -149,25 +176,8 @@ def canonicalize_name(name: str) -> str:
     return name.lower().replace("_", "-")
 
 
-def parse_file_maps(plugin_py: Path) -> dict[str, str]:
-    tree = ast.parse(plugin_py.read_text(encoding="utf-8"))
-    maps: dict[str, str] = {}
-    for node in tree.body:
-        names: list[str] = []
-        value = None
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names = [node.target.id]
-            value = node.value
-        elif isinstance(node, ast.Assign):
-            names = [target.id for target in node.targets if isinstance(target, ast.Name)]
-            value = node.value
-        if value is None:
-            continue
-        if any(name.endswith("RESOURCE_FILES") or name.endswith("SCHEMA_FILES") for name in names):
-            maps.update(ast.literal_eval(value))
-    if not maps:
-        raise SystemExit(f"no resource/schema maps in {plugin_py}")
-    return maps
+def load_contributed(path: Path) -> dict[str, list[str]]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def find_wheel(dist_root: Path, pattern: str) -> Path:
@@ -177,14 +187,14 @@ def find_wheel(dist_root: Path, pattern: str) -> Path:
     return matches[0]
 
 
-def contributed_paths(spec: dict[str, object], maps: dict[str, str]) -> tuple[str, tuple[str, ...]]:
+def contributed_paths(spec: dict[str, object], relatives: list[str]) -> tuple[str, tuple[str, ...]]:
     import_root = str(spec["import_root"])
     declaration = f"{import_root}/plugin-declaration.json"
-    resources = tuple(f"{import_root}/resources/{relative}" for relative in maps.values())
+    resources = tuple(f"{import_root}/{relative}" for relative in relatives)
     return declaration, resources
 
 
-def check_archives(source_root: Path, dist_root: Path) -> None:
+def check_archives(source_root: Path, dist_root: Path, contributed: dict[str, list[str]]) -> None:
     wheels = sorted(path for path in dist_root.glob("*.whl") if path.is_file())
     if len(wheels) != len(CLOSED_NAMES):
         raise SystemExit(f"expected {len(CLOSED_NAMES)} wheels, found {[path.name for path in wheels]}")
@@ -212,8 +222,7 @@ def check_archives(source_root: Path, dist_root: Path) -> None:
             continue
         spec = ASSURANCE_SPECS[distribution]
         package_root = source_root / str(spec["package_root"])
-        maps = parse_file_maps(package_root / "plugin.py")
-        declaration, resources = contributed_paths(spec, maps)
+        declaration, resources = contributed_paths(spec, contributed[distribution])
         allowed = {declaration, *resources}
         with zipfile.ZipFile(wheel) as archive:
             names = set(archive.namelist())
@@ -225,8 +234,7 @@ def check_archives(source_root: Path, dist_root: Path) -> None:
             for resource in resources:
                 if resource not in names:
                     raise SystemExit(f"missing contributed path in {wheel.name}: {resource}")
-                relative = resource.split("/resources/", 1)[1]
-                source = package_root / "resources" / relative
+                source = package_root / resource.split("/", 1)[1]
                 if archive.read(resource) != source.read_bytes():
                     raise SystemExit(f"wheel/source byte mismatch in {wheel.name}: {resource}")
             for member in names:
@@ -247,7 +255,13 @@ def check_archives(source_root: Path, dist_root: Path) -> None:
     print("WHEEL_ARCHIVES_OK")
 
 
-def probe_prefix(source_root: Path, prefix: str, expected_names: str, expected_entry_points: str) -> None:
+def probe_prefix(
+    source_root: Path,
+    prefix: str,
+    expected_names: str,
+    expected_entry_points: str,
+    contributed: dict[str, list[str]],
+) -> None:
     expected = [canonicalize_name(name) for name in expected_names.split(",") if name]
     expected_eps = sorted(name for name in expected_entry_points.split(",") if name)
     for module_name in ("assurance_agent", "assurance_kernel"):
@@ -315,10 +329,9 @@ def probe_prefix(source_root: Path, prefix: str, expected_names: str, expected_e
         imported = getattr(__import__(module_name, fromlist=[attr]), attr)
         if imported is None:
             raise SystemExit(f"{distribution} public contract missing: {module_name}.{attr}")
-        maps = parse_file_maps(source_root / str(spec["package_root"]) / "plugin.py")
-        for relative in maps.values():
-            installed = Path(str(dist.locate_file(f"{spec['import_root']}/resources/{relative}")))
-            source = source_root / str(spec["package_root"]) / "resources" / relative
+        for relative in contributed[distribution]:
+            installed = Path(str(dist.locate_file(f"{spec['import_root']}/{relative}")))
+            source = source_root / str(spec["package_root"]) / relative
             if installed.read_bytes() != source.read_bytes():
                 raise SystemExit(f"installed/source byte mismatch {distribution} {relative}")
     print(f"PREFIX={prefix} ENTRY_POINTS={','.join(expected_eps)}")
@@ -330,16 +343,24 @@ def main(argv: list[str]) -> int:
     archives = sub.add_parser("archives")
     archives.add_argument("--source", required=True)
     archives.add_argument("--dist", required=True)
+    archives.add_argument("--contributed", required=True)
     prefix = sub.add_parser("prefix")
     prefix.add_argument("--source", required=True)
     prefix.add_argument("--prefix", required=True)
     prefix.add_argument("--expected-names", required=True)
     prefix.add_argument("--expected-entry-points", default="")
+    prefix.add_argument("--contributed", required=True)
     args = parser.parse_args(argv)
     if args.command == "archives":
-        check_archives(Path(args.source), Path(args.dist))
+        check_archives(Path(args.source), Path(args.dist), load_contributed(Path(args.contributed)))
         return 0
-    probe_prefix(Path(args.source), args.prefix, args.expected_names, args.expected_entry_points)
+    probe_prefix(
+        Path(args.source),
+        args.prefix,
+        args.expected_names,
+        args.expected_entry_points,
+        load_contributed(Path(args.contributed)),
+    )
     return 0
 
 
@@ -355,7 +376,8 @@ uv run \
   --python 3.11 \
   --managed-python \
   --no-python-downloads \
-  python "$smoke_root/check.py" archives --source "$source_root" --dist "$dist_root"
+  python "$smoke_root/check.py" archives --source "$source_root" --dist "$dist_root" \
+  --contributed "$smoke_root/contributed.json"
 
 run_prefix() {
   local name="$1"
@@ -379,7 +401,8 @@ run_prefix() {
       --source "$source_root" \
       --prefix "$name" \
       --expected-names "$expected_names" \
-      --expected-entry-points "$expected_eps"
+      --expected-entry-points "$expected_eps" \
+      --contributed "$smoke_root/contributed.json"
   )
 }
 
