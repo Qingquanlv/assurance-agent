@@ -22,20 +22,20 @@ from assurance_quality.contracts.agent import (
     IssueTriageResultV1,
     ReportResultV1,
 )
-from assurance_quality.agent_ops.fact_baseline import (
+from assurance_quality.ops.fact_baseline import (
     finalize as fact_baseline_finalize,
     prepare as fact_baseline_prepare,
 )
-from assurance_quality.agent_ops.inspect import finalize as inspect_finalize
-from assurance_quality.agent_ops.issue_analysis import (
+from assurance_quality.ops.inspect import finalize as inspect_finalize
+from assurance_quality.ops.issue_analysis import (
     finalize as issue_analysis_finalize,
     prepare as issue_analysis_prepare,
 )
-from assurance_quality.agent_ops.issue_triage import (
+from assurance_quality.ops.issue_triage import (
     finalize as issue_triage_finalize,
     prepare as issue_triage_prepare,
 )
-from assurance_quality.agent_ops.report import finalize as report_finalize
+from assurance_quality.ops.report import finalize as report_finalize
 from assurance_quality.resource_loader import resource_bytes
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     BATCH_ID,
@@ -47,7 +47,8 @@ from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     as_object,
 )
 
-_RESOURCES = Path(__file__).resolve().parent.parent / "assurance_quality" / "resources"
+_PACKAGE = Path(__file__).resolve().parent.parent / "assurance_quality"
+_RESOURCES = _PACKAGE / "resources"
 _SHA = HEX_A
 _OWNED = "OBS-owned"
 _FORBIDDEN = (
@@ -221,9 +222,11 @@ def authenticated_issue_input(root: Path) -> JSONValue:
 
 
 def _resource_files() -> Iterator[Path]:
-    for path in sorted(_RESOURCES.rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts:
-            yield path
+    roots = (_RESOURCES, _PACKAGE / "ops")
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".py":
+                yield path
 
 
 @pytest.mark.asyncio
@@ -606,26 +609,26 @@ async def test_report_finalize_rejects_unreferenced_projection(tmp_path: Path) -
 
 def test_quality_resources_forbid_legacy_and_provider_names() -> None:
     required = (
-        "skills/aa-fact-baseline/SKILL.md",
-        "skills/aa-inspect/SKILL.md",
-        "skills/aa-issue-analyzer/SKILL.md",
-        "skills/aa-issue-triage-advisor/SKILL.md",
-        "skills/aa-report-generator/SKILL.md",
-        "skills/aa-dashboard/SKILL.md",
-        "result-contracts/fact-baseline.v1.schema.json",
-        "result-contracts/inspection.v1.schema.json",
-        "result-contracts/issue-analysis.v1.schema.json",
-        "result-contracts/issue-triage.v1.schema.json",
-        "result-contracts/report.v1.schema.json",
+        _PACKAGE / "ops/fact_baseline/SKILL.md",
+        _PACKAGE / "ops/inspect/SKILL.md",
+        _PACKAGE / "ops/issue_analysis/SKILL.md",
+        _PACKAGE / "ops/issue_triage/SKILL.md",
+        _PACKAGE / "ops/report/SKILL.md",
+        _RESOURCES / "skills/aa-dashboard/SKILL.md",
+        _PACKAGE / "ops/fact_baseline/result.schema.json",
+        _PACKAGE / "ops/inspect/result.schema.json",
+        _PACKAGE / "ops/issue_analysis/result.schema.json",
+        _PACKAGE / "ops/issue_triage/result.schema.json",
+        _PACKAGE / "ops/report/result.schema.json",
     )
-    missing = [item for item in required if not (_RESOURCES / item).is_file()]
+    missing = [item for item in required if not item.is_file()]
     assert missing == [], f"missing quality resources: {missing}"
     hits: list[str] = []
     for path in _resource_files():
         if path.suffix == ".json":
             continue
         if _TOKEN.search(path.read_text(encoding="utf-8")):
-            hits.append(path.relative_to(_RESOURCES).as_posix())
+            hits.append(path.relative_to(_PACKAGE).as_posix())
     assert hits == [], f"forbidden provider/legacy tokens in resources: {hits}"
     lowered = "\n".join(
         path.read_text(encoding="utf-8").lower() for path in _resource_files() if path.suffix != ".json"
@@ -633,12 +636,12 @@ def test_quality_resources_forbid_legacy_and_provider_names() -> None:
     for token in _FORBIDDEN:
         assert token not in lowered
     assert "Do not claim a lifecycle transition" in (
-        _RESOURCES / "skills/aa-issue-triage-advisor/SKILL.md"
+        _PACKAGE / "ops/issue_triage/SKILL.md"
     ).read_text(encoding="utf-8")
 
 
 def test_fact_baseline_records_only_source_proven_initial_admin_credentials() -> None:
-    skill = " ".join((_RESOURCES / "skills/aa-fact-baseline/SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join((_PACKAGE / "ops/fact_baseline/SKILL.md").read_text(encoding="utf-8").split())
 
     assert "startup initialization or seed source" in skill
     assert "`admin_username` and `admin_password`" in skill
@@ -648,25 +651,25 @@ def test_fact_baseline_records_only_source_proven_initial_admin_credentials() ->
 
 
 def test_result_contracts_match_capability_schemas() -> None:
-    assert resource_bytes("result-contracts/fact-baseline.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/fact_baseline/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, FactBaselineResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/inspection.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/inspect/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, InspectionResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/issue-analysis.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/issue_analysis/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, IssueAnalysisResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/issue-triage.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/issue_triage/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, IssueTriageResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/report.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/report/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, ReportResultV1.model_json_schema())
     )
 
 
 def test_inspect_skill_distinguishes_execution_failure_from_inspection_failure() -> None:
-    skill = " ".join((_RESOURCES / "skills/aa-inspect/SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join((_PACKAGE / "ops/inspect/SKILL.md").read_text(encoding="utf-8").split())
 
     assert "Execution test failures do not make the Inspect operation itself failed" in skill
     assert "When the authenticated execution evidence contains failures" in skill

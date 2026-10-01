@@ -44,7 +44,7 @@ from agent_runtime_contracts.ops.errors import (
     validate_output,
 )
 from agent_runtime_contracts.ops.request import prepared_outcome, result_contract_from, skill_request
-from agent_runtime_contracts.wire.models import AgentRunResult, JSONValue, ResultContract
+from agent_runtime_contracts.wire.models import AgentRunRequest, AgentRunResult, JSONValue, ResultContract
 from agent_runtime_contracts.wire.schema import canonical_digest, freeze_json, thaw_json
 
 InputT = TypeVar("InputT", bound=BaseModel)
@@ -103,6 +103,14 @@ def _canonical_relative(relative: str) -> PurePosixPath:
     return path
 
 
+def _plain_json(raw: object) -> object:
+    """Thaw frozen wire JSON so prepare and finalize see ordinary dicts and lists."""
+
+    if isinstance(raw, Mapping):
+        return thaw_json(raw)
+    return raw
+
+
 def _claimed(relative: str, claims: tuple[str, ...]) -> bool:
     return any(relative == claim or relative.startswith(f"{claim}/") for claim in claims)
 
@@ -131,6 +139,7 @@ class PrepareContext:
         self.write_root = task.write_root
         self._deps: dict[Callable[..., object], object] = {}
         self._extra: dict[str, JSONValue] = {}
+        self._bound: dict[str, tuple[str, ...]] = {}
 
     def dep(self, dependency: Callable[..., DepT]) -> DepT:
         """Resolved value of one of the op's declared ``depends``."""
@@ -145,15 +154,28 @@ class PrepareContext:
         """Add a prompt-only field next to the business input."""
         self._extra[name] = value
 
+    def bind(self, root: str, paths: Iterable[str]) -> None:
+        """Name this run's exact files under a ``Dir`` whose ``files`` needs the workspace."""
+        if root in self._bound:
+            raise ValueError(f"directory is already bound: {root}")
+        self._bound[root] = tuple(paths)
+
 
 class FinalizeContext:
     """Finalize-phase view: workspace roots, run evidence, and finalize write claims."""
 
-    def __init__(self, op: AgentOp[Any, Any, Any], task: TaskContext, agent_result: AgentRunResult) -> None:
+    def __init__(
+        self,
+        op: AgentOp[Any, Any, Any],
+        task: TaskContext,
+        agent_result: AgentRunResult,
+        prepared: Mapping[str, Any],
+    ) -> None:
         self.op = op
         self.project_root = task.project_root
         self.write_root = task.write_root
         self.agent_result = agent_result
+        self.prepared = prepared
 
     def write(self, relative: str, data: bytes) -> None:
         _write_claimed(self.write_root, relative, data, self.op.finalize.writes, phase="finalize")
@@ -164,6 +186,7 @@ Before = Callable[[PrepareContext, InputT], InputT]
 After = Callable[[FinalizeContext, InputT, ResultT], OutputT | Mapping[str, Any]]
 OnOutputError = Callable[[FinalizeContext, InputT, OutputError], OutputT]
 Run = Callable[[TaskContext, InputT], OutputT]
+RequestBuild = Callable[..., AgentRunRequest]
 
 
 def _sorted_paths(paths: tuple[str, ...], *, kind: str) -> tuple[str, ...]:
@@ -176,17 +199,21 @@ def _sorted_paths(paths: tuple[str, ...], *, kind: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class Dir:
-    """A directory the Agent may write into; ``files`` names this run's exact files under it."""
+    """A directory the Agent may write into; ``files`` names this run's exact files under it.
+
+    Leave ``files`` empty when the exact files are only known once prepare can see the
+    workspace. The prepare hook then calls ``PrepareContext.bind``.
+    """
 
     root: str
-    files: Callable[[Any], Iterable[str]]
+    files: Callable[[Any], Iterable[str]] | None = None
 
     def __post_init__(self) -> None:
         _canonical_relative(self.root)
 
-    def expand(self, business: BaseModel) -> tuple[str, ...]:
+    def expand(self, paths: Iterable[str]) -> tuple[str, ...]:
         root = PurePosixPath(self.root)
-        expanded = tuple(self.files(business))
+        expanded = tuple(paths)
         for path in expanded:
             try:
                 inside = root in _canonical_relative(path).parents
@@ -205,6 +232,7 @@ class Prepare(Generic[InputT]):
     depends: tuple[Dependency[InputT], ...] = ()
     writes: tuple[str, ...] = ()
     errors: tuple[type[Exception], ...] = ()
+    request: RequestBuild | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "writes", _sorted_paths(self.writes, kind="prepare writes"))
@@ -229,9 +257,22 @@ class Agent(Generic[ResultT]):
         paths = tuple(entry if isinstance(entry, str) else entry.root for entry in self.writes)
         return _sorted_paths(paths, kind="agent writes")
 
-    def allowed_outputs(self, business: BaseModel) -> tuple[str, ...]:
-        directories = (entry for entry in self.writes if isinstance(entry, Dir))
-        return (*self.files(), *(path for entry in directories for path in entry.expand(business)))
+    def allowed_outputs(
+        self, business: BaseModel, bound: Mapping[str, tuple[str, ...]] | None = None
+    ) -> tuple[str, ...]:
+        bound = {} if bound is None else bound
+        expanded: list[str] = []
+        for entry in self.writes:
+            if not isinstance(entry, Dir):
+                continue
+            if entry.root in bound:
+                paths: Iterable[str] = bound[entry.root]
+            elif entry.files is not None:
+                paths = entry.files(business)
+            else:
+                raise InputError(f"{entry.root} has no files for this run")
+            expanded.extend(entry.expand(paths))
+        return (*self.files(), *expanded)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -260,7 +301,7 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
 
     @property
     def directory(self) -> str:
-        return self.name.replace("-", "_")
+        return self.name.replace("-", "_").replace(".", "_")
 
     @property
     def contract_id(self) -> str:
@@ -282,7 +323,9 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         prepare = self.prepare.writes
         finalize = self.finalize.writes
         claims = self.agent.claims()
-        runtime = tuple(path for path in claims if path not in prepare and path not in finalize)
+        # Prepare may seed a directory the Agent then edits, so a shared path stays
+        # in both phases. Finalize-owned paths stay out of the runtime claim.
+        runtime = tuple(path for path in claims if path not in finalize)
         return AgentExecutionContract(
             contract_id=self.contract_id,
             owner_id=self.router.owner,
@@ -327,45 +370,62 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
 
     def handle_prepare(self, request: OpRequest, task: TaskContext) -> TaskOutcome:
         try:
-            business = validate_model(self.input, request.input)
+            business = validate_model(self.input, _plain_json(request.input))
             binding = validate_binding(request.binding_data)
             ctx = PrepareContext(self, task)
             for dependency in self.prepare.depends:
                 ctx._deps[dependency] = self.router.resolve(dependency)(ctx, business)
             if self.prepare.hook is not None:
                 business = self.prepare.hook(ctx, business)
-            return prepared_outcome(
-                skill_request(
-                    skill_text=self.router.resource_text(f"ops/{self.directory}/{_SKILL_FILE}"),
+            allowed = self.agent.allowed_outputs(business, ctx._bound)
+            skill_text = self.router.resource_text(f"ops/{self.directory}/{_SKILL_FILE}")
+            result = self.result_contract()
+            if self.prepare.request is None:
+                run = skill_request(
+                    skill_text=skill_text,
                     business=cast(FrozenModel, business),
                     business_extra=ctx._extra or None,
                     binding=binding,
-                    result=self.result_contract(),
+                    result=result,
                     roots=task,
-                    allowed_outputs=self.agent.allowed_outputs(business),
+                    allowed_outputs=allowed,
                     scope_id=self.router.scope(business),
                 )
-            )
+            else:
+                run = self.prepare.request(ctx, business, binding, allowed, result, skill_text)
+            return prepared_outcome(run)
         except (InputError, ValidationError, *self.prepare.errors) as error:
             return failed_input(error)
 
-    def handle_finalize(self, request: OpRequest, task: TaskContext) -> TaskOutcome:
-        try:
-            envelope = validate_model(AgentOpFinalizeInputV1, request.input)
+    def _finalize_parts(self, raw: object) -> tuple[dict[str, Any], AgentRunResult]:
+        if not isinstance(raw, Mapping):
+            raise InputError("finalize input must be an object")
+        payload = dict(raw)
+        if "prepare" in payload and set(payload) <= {"prepare", "agent_result"}:
+            envelope = validate_model(AgentOpFinalizeInputV1, payload)
             prepared = thaw_json(envelope.prepare)
             if not isinstance(prepared, dict):
                 raise InputError("prepared business input must be an object")
+            return dict(prepared), envelope.agent_result
+        if "agent_result" not in payload:
+            raise InputError("finalize input requires agent_result")
+        result = validate_model(AgentRunResult, payload.pop("agent_result"))
+        return payload, result
+
+    def handle_finalize(self, request: OpRequest, task: TaskContext) -> TaskOutcome:
+        try:
+            prepared, agent_result = self._finalize_parts(_plain_json(request.input))
             fields = self.input.model_fields
             business = validate_model(
                 self.input, {key: value for key, value in prepared.items() if key in fields}
             )
         except InputError as error:
             return failed_input(error)
-        ctx = FinalizeContext(self, task, envelope.agent_result)
+        ctx = FinalizeContext(self, task, agent_result, prepared)
         hook = self.finalize.hook
         try:
             try:
-                result = validate_output(self.agent.result, thaw_json(envelope.agent_result.result_payload))
+                result = validate_output(self.agent.result, thaw_json(agent_result.result_payload))
                 produced: BaseModel | Mapping[str, Any] = (
                     result if hook is None else hook(ctx, business, result)
                 )
@@ -401,7 +461,7 @@ class TaskOp(Generic[InputT, OutputT]):
 
     @property
     def directory(self) -> str:
-        return self.name.replace("-", "_")
+        return self.name.replace("-", "_").replace(".", "_")
 
     @property
     def contract_id(self) -> str:

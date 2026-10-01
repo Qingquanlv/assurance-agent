@@ -21,13 +21,13 @@ from assurance_improvement.contracts.retro import (
     IssueEvidenceSlice,
     WorkflowEvidenceSlice,
 )
-from assurance_improvement.agent_ops.retro import finalize as retro_finalize, prepare as retro_prepare
-from assurance_improvement.agent_ops.retro_eval_analysis import prepare as retro_eval_prepare
-from assurance_improvement.agent_ops.retro_issue_analysis import (
+from assurance_improvement.ops.retro import finalize as retro_finalize, prepare as retro_prepare
+from assurance_improvement.ops.retro_eval_analysis import prepare as retro_eval_prepare
+from assurance_improvement.ops.retro_issue_analysis import (
     finalize as retro_issue_finalize,
     prepare as retro_issue_prepare,
 )
-from assurance_improvement.agent_ops.retro_workflow_analysis import prepare as retro_workflow_prepare
+from assurance_improvement.ops.retro_workflow_analysis import prepare as retro_workflow_prepare
 from assurance_improvement.operations.retro import (
     AssembleRetroContextHandler,
     ReconcileInput,
@@ -50,7 +50,8 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     issue_signal,
 )
 
-_RESOURCES = Path(__file__).resolve().parent.parent / "assurance_improvement" / "resources"
+_PACKAGE = Path(__file__).resolve().parent.parent / "assurance_improvement"
+_RESOURCES = _PACKAGE / "resources"
 _FORBIDDEN = (
     "assurance_agent",
     "opencode",
@@ -67,9 +68,10 @@ _TOKEN = re.compile(
 
 
 def _resource_files() -> Iterator[Path]:
-    for path in sorted(_RESOURCES.rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts:
-            yield path
+    for root in (_RESOURCES, _PACKAGE / "ops"):
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".py":
+                yield path
 
 
 def _retro_input(domain=None):
@@ -246,7 +248,7 @@ def test_resources_have_no_forbidden_provider_tokens() -> None:
 
 
 def test_result_contract_bytes_equal_typed_models() -> None:
-    assert resource_bytes("result-contracts/retro-analysis.v3.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/retro/result.schema.json") == canonical_json_bytes(
         RetroAnalysisResultV3.model_json_schema()
     )
 

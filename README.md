@@ -26,9 +26,10 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 ### Python plugin registration and generated declarations
 
 Each wheel's `plugin.py` publishes handlers, schemas, resources, and validators.
-In intake, op code lives in `ops/<op>/` and `plugin.py` derives its handler map and
-resource manifest from the ops router; the other wheels still keep op code in
-`agent_ops/<op>/` with hand-written handler maps. The Feature bundle lives in
+Each wheel's agent ops live in `ops/<op>/`, and `plugin.py` derives its handler map
+and resource manifest from the ops router. Execution has no agent phase; its two
+task contracts stay hand-written because their ids and shared handler do not match
+the router's task shape. The Feature bundle lives in
 `feature.py` and topology in `graphs/`. Do not hand-edit `plugin-declaration.json`:
 it is generated from the provider's `descriptor()`, including its attempt-contract
 digests.
@@ -174,17 +175,17 @@ Every handler id dispatches through the single module-level `ops.execute`, and a
 `ops/<op>` declaration packages; ops never import graphs or one another; other wheels
 read only intake `contracts/` and `domain/`.
 
-Quality, healing and improvement still use modules under `agent_ops/<op>/` that
-delegate to `run_prepare` or `run_finalize` from
-[`agent_runtime_contracts.ops`](packages/adapters/agent-runtime-contracts/agent_runtime_contracts/ops/op.py),
-and generation keeps family-parametrized handler classes in `operations/`. In both
-styles `InputError` and `OutputError` become `invalid_input` and `invalid_output`.
-Product injects installed, authenticated phases; op code does not create a client
-or own retries.
+Quality, healing, improvement, and generation declare the same shape. Generation's
+eight family jobs are `ops/<family>_codegen` and `ops/<family>_codegen_review`;
+the family handler classes in `operations/` remain for direct callers. Execution's
+task contracts stay in `contracts/attempts.py`. `InputError` and `OutputError`
+become `invalid_input` and `invalid_output`. Product injects installed,
+authenticated phases; op code does not create a client or own retries.
 
-Adding an intake op takes one `ops/<op>/` directory and a graph call site. In the
-other wheels it still takes a contract row in `contracts/attempts.py`, the
-`agent_ops/<op>/` modules and a handler-map entry in `operations/__init__.py`.
+Adding an agent op takes one `ops/<op>/` directory. The router publishes the
+contract, routes, handler ids, and skill resources. A deterministic task whose
+contract id or handler id does not match `router.task` stays hand-written in
+`contracts/attempts.py`.
 
 [`add_attempt_node`](packages/framework/graph-engine/graph_engine/stategraph/registration.py)
 registers a normal Attempt node in a native LangGraph `StateGraph`, including

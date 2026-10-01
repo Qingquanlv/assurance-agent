@@ -23,11 +23,11 @@ from assurance_quality.contracts.assessment import FailureClassificationFactsV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.graphs.nodes import publish_inspect
 from assurance_quality.graphs.routes import route_coverage
-from assurance_quality.agent_ops.fact_baseline import (
+from assurance_quality.ops.fact_baseline import (
     finalize as fact_baseline_finalize,
     prepare as fact_baseline_prepare,
 )
-from assurance_quality.agent_ops.inspect import finalize as inspect_finalize, prepare as inspect_prepare
+from assurance_quality.ops.inspect import finalize as inspect_finalize, prepare as inspect_prepare
 from assurance_quality.operations.assessment import (
     classify_inspection_disposition,
     materialize_assessment_inputs,

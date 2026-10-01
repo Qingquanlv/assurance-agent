@@ -453,3 +453,114 @@ def test_op_package_without_declaration_fails_discovery(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="disagree with declarations"):
         _router(module).discover()
+
+
+def test_finalize_accepts_a_flat_business_payload(tmp_path: Path) -> None:
+    module = _capability(tmp_path)
+    request = _Request(
+        "fixture.cap.echo.finalize",
+        {
+            "change_id": "c1",
+            "notes": (),
+            "planning_facts": {"plan": "x"},
+            "agent_result": _agent_result({"message": "hi"}),
+        },
+    )
+
+    outcome = _run(module, request, _context(tmp_path))
+
+    assert outcome.output == {"message": "hi", "plan": "c1", "recovered": False}
+
+
+_DOTTED_INIT = """
+from graph_engine.plugin_api import FrozenModel
+
+from agent_runtime_contracts.ops import Agent, Dir, Prepare
+from PKG.ops import router
+
+
+class CodegenInput(FrozenModel):
+    change_id: str
+    files: tuple[str, ...] = ()
+
+
+class CodegenResult(FrozenModel):
+    message: str
+
+
+def before(ctx, business):
+    if business.files:
+        ctx.bind("qa/tests", business.files)
+    ctx.write("qa/tests/seed.txt", b"seed")
+    return business
+
+
+op = router.agent(
+    "api.codegen",
+    input=CodegenInput,
+    prepare=Prepare(hook=before, writes=("qa/tests",)),
+    agent=Agent(
+        profile="assurance-v1-test-author",
+        skill="aa-api-codegen",
+        result=CodegenResult,
+        writes=("qa/results/codegen/api-codegen-summary.md", Dir("qa/tests")),
+    ),
+    output=CodegenResult,
+)
+"""
+
+
+def test_dotted_op_keeps_a_directory_shared_by_prepare_and_runtime(tmp_path: Path) -> None:
+    module = _capability(
+        tmp_path,
+        extra={
+            "ops/api_codegen/__init__.py": _DOTTED_INIT,
+            "ops/api_codegen/SKILL.md": "codegen skill\n",
+            "ops/api_codegen/result.schema.json": json.dumps({"type": "object"}),
+        },
+    )
+    router = _router(module)
+    contract = router.agent_contracts()["api.codegen"]
+
+    assert contract.contract_id == "fixture.cap.agent.api.codegen.v1"
+    assert contract.prepare_handler_id == "fixture.cap.api.codegen.prepare"
+    assert contract.phase_write_claims.as_projection() == {
+        "prepare": ["qa/tests"],
+        "runtime": ["qa/results/codegen/api-codegen-summary.md", "qa/tests"],
+        "finalize": [],
+    }
+    assert router.output_routes()["api.codegen"] == ("qa/results/codegen/api-codegen-summary.md",)
+
+    outcome = _run(
+        module,
+        _Request(
+            "fixture.cap.api.codegen.prepare",
+            {"change_id": "c1", "files": ["qa/tests/api/test_dept.py"]},
+            _binding(),
+        ),
+        _context(tmp_path),
+    )
+    request = AgentRunRequest.model_validate(outcome.output)
+    assert request.workspace.allowed_outputs == (
+        "qa/results/codegen/api-codegen-summary.md",
+        "qa/tests/api/test_dept.py",
+    )
+
+
+def test_unbound_directory_is_invalid_input(tmp_path: Path) -> None:
+    module = _capability(
+        tmp_path,
+        extra={
+            "ops/api_codegen/__init__.py": _DOTTED_INIT,
+            "ops/api_codegen/SKILL.md": "codegen skill\n",
+            "ops/api_codegen/result.schema.json": json.dumps({"type": "object"}),
+        },
+    )
+
+    outcome = _run(
+        module,
+        _Request("fixture.cap.api.codegen.prepare", {"change_id": "c1"}, _binding()),
+        _context(tmp_path),
+    )
+
+    assert outcome.failure is not None and outcome.failure.kind == "invalid_input"

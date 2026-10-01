@@ -40,12 +40,16 @@ _PLAN_PROFILE = "assurance-v1-doc-author"
 _CODEGEN_PROFILE = "assurance-v1-test-author"
 
 
-def test_generation_round_history_routes_include_epoch_and_local_round() -> None:
-    from assurance_generation.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+def test_generation_round_history_sits_under_the_review_claim() -> None:
+    from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
-    plan_pattern = "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
-    assert plan_pattern in OUTPUT_ROUTE_TEMPLATES["api.codegen-review"]
-    assert plan_pattern.format(coverage_epoch=0, review_round=0) != plan_pattern.format(
+    claim = "qa/results/codegen/api/reviews"
+    contract = AGENT_JOB_CONTRACTS["api.codegen-review"]
+    assert claim in contract.phase_write_claims.finalize
+    assert claim in contract.resources.writes
+    assert all("{" not in path for path in OUTPUT_ROUTE_TEMPLATES["api.codegen-review"])
+    history = f"{claim}/epochs/{{coverage_epoch}}/rounds/{{review_round}}.json"
+    assert history.format(coverage_epoch=0, review_round=0) != history.format(
         coverage_epoch=1, review_round=0
     )
 

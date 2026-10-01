@@ -1,1 +1,0 @@
-"""Fact-baseline Agent operation."""

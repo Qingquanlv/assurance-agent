@@ -624,6 +624,11 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
     from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
+        "apply-test-repair": (
+            "aa-apply-test-repair",
+            "assurance-v1-test-author",
+            (),
+        ),
         "coverage-repair": (
             "aa-coverage-repair",
             "assurance-v1-test-author",
@@ -633,14 +638,6 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
             "aa-fix-proposal",
             "assurance-v1-doc-author",
             ("qa/results/healing/fix-proposal.json",),
-        ),
-        "apply-test-repair": (
-            "aa-apply-test-repair",
-            "assurance-v1-test-author",
-            (
-                "qa/results/healing/epochs/{coverage_epoch}/rounds/{repair_round}",
-                "qa/tests",
-            ),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)

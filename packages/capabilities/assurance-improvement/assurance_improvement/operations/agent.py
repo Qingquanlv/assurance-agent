@@ -1,90 +1,26 @@
-"""Provider-neutral improvement Agent request and retro commit helpers."""
+"""Retro commit checks shared by the improvement agent finalize hooks."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal, Protocol
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, ResultContract
-from agent_runtime_contracts.ops import (
-    AgentBindingDataV1,
-    InputError,
-    OutputError,
-    result_contract_from,
-    skill_request,
-    validate_output,
-)
-from graph_engine.canonical import JSONValue
-from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext, TaskOutcome
+from agent_runtime_contracts.ops import InputError, OutputError
 
 from assurance_improvement.contracts.agent import (
-    AgentFinalizeInputV1,
-    RetroAnalysisFinalizeInputV1,
+    RetroAnalysisInputV1,
     RetroAnalysisResultV3,
-    RetroSynthesisFinalizeInputV1,
+    RetroSynthesisInputV1,
 )
-from assurance_improvement.resource_loader import resource_bytes, resource_text
 from assurance_improvement.validators.paths import canonical_relative
 
-RETRO_SKILL = "skills/aa-retro/SKILL.md"
-RETRO_EVAL_SKILL = "skills/aa-retro-eval-analysis/SKILL.md"
-RETRO_ISSUE_SKILL = "skills/aa-retro-issue-analysis/SKILL.md"
-RETRO_WORKFLOW_SKILL = "skills/aa-retro-workflow-analysis/SKILL.md"
-REVIEW_SKILL = "skills/aa-improvement-reviewer/SKILL.md"
-ARCHIVE_SKILL = "skills/aa-archive/SKILL.md"
-
-RETRO_RESULT_ID = "assurance.improvement.result.retro-analysis.v3"
-REVIEW_RESULT_ID = "assurance.improvement.result.improvement-review.v1"
-ARCHIVE_RESULT_ID = "assurance.improvement.result.archive.v1"
-
-_RESULT_FILES: dict[str, str] = {
-    RETRO_RESULT_ID: "result-contracts/retro-analysis.v3.schema.json",
-    REVIEW_RESULT_ID: "result-contracts/improvement-review.v1.schema.json",
-    ARCHIVE_RESULT_ID: "result-contracts/archive.v1.schema.json",
-}
-
 DomainName = Literal["issue", "workflow", "eval", "discovery", "coverage_gap"]
-_IMPROVEMENT_OUTPUTS = {
-    RETRO_SKILL: lambda change_id: ("qa/results/retro/retro.json",),
-    RETRO_EVAL_SKILL: lambda change_id: ("qa/results/retro/retro-eval-analysis.json",),
-    RETRO_ISSUE_SKILL: lambda change_id: ("qa/results/retro/retro-issue-analysis.json",),
-    RETRO_WORKFLOW_SKILL: lambda change_id: ("qa/results/retro/retro-workflow-analysis.json",),
-    REVIEW_SKILL: lambda change_id: ("qa/results/review/improvement-review.json",),
-    ARCHIVE_SKILL: lambda change_id: ("qa/results/archive/archive-receipt.json",),
-}
 
 
-def result_contract(schema_id: str) -> ResultContract:
-    return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
-
-
-def prepare_request(
-    *,
-    skill_path: str,
-    business: Any,
-    binding: AgentBindingDataV1,
-    result_schema_id: str,
-    context: TaskContext,
-) -> AgentRunRequest:
-    return skill_request(
-        skill_text=resource_text(skill_path),
-        business=business,
-        binding=binding,
-        result=result_contract(result_schema_id),
-        roots=context,
-        allowed_outputs=_IMPROVEMENT_OUTPUTS[skill_path](business.change_id),
-        scope_id=business.change_id,
-    )
-
-
-def structured(
-    payload: AgentFinalizeInputV1 | RetroAnalysisFinalizeInputV1 | RetroSynthesisFinalizeInputV1,
-) -> object:
-    return thaw_json(payload.agent_result.result_payload)
+class _WriteRoot(Protocol):
+    write_root: Path
 
 
 def _source_ids(result: RetroAnalysisResultV3) -> tuple[str, ...]:
@@ -112,14 +48,17 @@ def _workspace_file(workspace: Path, relative: str) -> Path:
 
 
 def commit_retro(
-    payload: RetroSynthesisFinalizeInputV1 | RetroAnalysisFinalizeInputV1,
-    context: TaskContext,
+    business: RetroSynthesisInputV1 | RetroAnalysisInputV1,
+    result: RetroAnalysisResultV3,
+    context: _WriteRoot,
     *,
     expected_domain: DomainName | None,
-) -> TaskOutcome:
-    document = validate_output(RetroAnalysisResultV3, structured(payload))
+) -> RetroAnalysisResultV3:
+    document = result
     if expected_domain is None:
-        context_lock = cast(RetroSynthesisFinalizeInputV1, payload).context
+        if not isinstance(business, RetroSynthesisInputV1):
+            raise InputError("retro synthesis requires the locked context")
+        context_lock = business.context
         if document.retro_id != context_lock.retro_id:
             raise OutputError("retro analysis identity does not match the locked retro")
         if document.domain != expected_domain:
@@ -134,7 +73,9 @@ def commit_retro(
         except (InputError, ValidationError) as error:
             raise OutputError(str(error)) from error
     else:
-        slice_lock = cast(RetroAnalysisFinalizeInputV1, payload).evidence_slice
+        if not isinstance(business, RetroAnalysisInputV1):
+            raise InputError("retro analysis requires the locked evidence slice")
+        slice_lock = business.evidence_slice
         if document.retro_id != slice_lock.retro_id:
             raise OutputError("retro analysis identity does not match the locked retro")
         if document.domain != expected_domain:
@@ -159,4 +100,7 @@ def commit_retro(
         raise OutputError(f"required Retro result artifact is invalid: {suffix}.json") from error
     if written != document:
         raise OutputError("written Retro result differs from the assistant result")
-    return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
+    return document
+
+
+__all__ = ["commit_retro"]

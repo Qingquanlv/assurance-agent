@@ -24,7 +24,7 @@ from assurance_quality.contracts.assessment import (
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_quality.graphs.factory import build_quality_graphs
 from assurance_quality.graphs.nodes import publish_report, select_report
-from assurance_quality.agent_ops.report import finalize as report_finalize, prepare as report_prepare
+from assurance_quality.ops.report import finalize as report_finalize, prepare as report_prepare
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
 _CHANGE = "CH-REPORT-1"

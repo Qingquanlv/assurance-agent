@@ -21,6 +21,7 @@ from agent_runtime_contracts.ops import (
     failed_output,
     result_contract_from,
 )
+from agent_runtime_contracts.ops.request import WorkspaceRoots
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
@@ -54,7 +55,7 @@ PLAN_RESULT_ID = "assurance.generation.result.plan.v1"
 PLAN_REVIEW_RESULT_ID = "assurance.generation.result.codegen-review.v1"
 _RESULT_FILES: Mapping[str, str] = {
     PLAN_RESULT_ID: "result-contracts/plan.v1.schema.json",
-    PLAN_REVIEW_RESULT_ID: "result-contracts/plan-review.v1.schema.json",
+    PLAN_REVIEW_RESULT_ID: "ops/api_codegen_review/result.schema.json",
 }
 _PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
     "api": (
@@ -573,13 +574,14 @@ def prepare_plan_request(
     cases: CaseYamlAuthoring,
     binding: AgentBindingDataV1,
     result_schema_id: str,
-    context: TaskContext,
+    context: WorkspaceRoots,
     allowed_outputs: tuple[str, ...],
     close_result_capabilities: bool = False,
     review_input_paths: tuple[str, ...] = (),
     repair_review: Mapping[str, object] | None = None,
     extra_json: Mapping[str, object] | None = None,
     validation_error: str | None = None,
+    skill_text: str | None = None,
 ) -> AgentRunRequest:
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
@@ -590,7 +592,7 @@ def prepare_plan_request(
         family=family,
     )
     instructions = (
-        InstructionPart.text("text/plain", resource_text(skill_path)),
+        InstructionPart.text("text/plain", resource_text(skill_path) if skill_text is None else skill_text),
         InstructionPart.from_json(cases.model_dump(mode="json")),
         InstructionPart.from_json(
             {

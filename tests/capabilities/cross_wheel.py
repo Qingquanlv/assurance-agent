@@ -22,7 +22,7 @@ from assurance_generation.contracts.reviews import PlanReviewAuthoring
 from assurance_generation.operations.planning import validate_plan_input
 from assurance_healing.contracts.agent import FixProposalInputV1
 from assurance_healing.contracts.status import HealingStatusV1
-from assurance_healing.agent_ops.fix_proposal import (
+from assurance_healing.ops.fix_proposal import (
     finalize as fix_proposal_finalize,
     prepare as fix_proposal_prepare,
 )

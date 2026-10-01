@@ -12,7 +12,7 @@ from tests.product.test_change_local_output_routing import execute_task, task_re
 
 from assurance_improvement.contracts.agent import ArchiveResultV1
 from assurance_improvement.contracts.improvements import ImprovementProjection
-from assurance_improvement.agent_ops.archive import finalize as archive_finalize, prepare as archive_prepare
+from assurance_improvement.ops.archive import finalize as archive_finalize, prepare as archive_prepare
 from assurance_improvement.operations.archive import ProjectArchiveHandler
 from assurance_improvement.operations.delivery import (
     ApplyMemoryImprovementHandler,
@@ -432,7 +432,7 @@ async def test_archive_finalize_normalizes_frozen_wire_input(tmp_path: Path) -> 
 
 
 def test_archive_result_contract_bytes_equal_typed_model() -> None:
-    assert resource_bytes("result-contracts/archive.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/archive/result.schema.json") == canonical_json_bytes(
         ArchiveResultV1.model_json_schema()
     )
 

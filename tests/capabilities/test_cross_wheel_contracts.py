@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
-from assurance_healing.agent_ops.fix_proposal import finalize as fix_proposal_finalize
+from assurance_healing.ops.fix_proposal import finalize as fix_proposal_finalize
 from assurance_healing.contracts.agent import FixProposalInputV1
 from assurance_healing.contracts.coverage_repair import CoverageRepairBrief
 from assurance_quality.operations.coverage import coverage_gap_to_repair_brief

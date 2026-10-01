@@ -21,11 +21,11 @@ from assurance_healing.contracts.application import (
 from assurance_healing.contracts.agent import FixProposalResultV1
 from graph_engine.plugin_api import TaskHandler
 
-from assurance_healing.agent_ops.apply_test_repair import (
+from assurance_healing.ops.apply_test_repair import (
     finalize as apply_test_repair_finalize,
     prepare as apply_test_repair_prepare,
 )
-from assurance_healing.agent_ops.fix_proposal import finalize as fix_proposal_finalize
+from assurance_healing.ops.fix_proposal import finalize as fix_proposal_finalize
 from assurance_healing.operations.application import expected_repair_history, repair_history_path
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1

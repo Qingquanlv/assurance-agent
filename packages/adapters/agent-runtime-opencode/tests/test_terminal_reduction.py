@@ -124,7 +124,7 @@ def _intake_messages(payload: object) -> list[dict[str, object]]:
 
 
 def _fact_baseline_request() -> AgentRunRequest:
-    schema = json.loads(resource_bytes("result-contracts/fact-baseline.v1.schema.json"))
+    schema = json.loads(resource_bytes("ops/fact_baseline/result.schema.json"))
     base = agent_run_request()
     return AgentRunRequest.model_validate(
         {

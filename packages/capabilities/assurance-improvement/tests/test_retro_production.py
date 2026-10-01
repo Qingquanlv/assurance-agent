@@ -21,12 +21,12 @@ from assurance_improvement.graphs.nodes import (
 )
 from graph_engine.plugin_api import TaskHandler
 
-from assurance_improvement.agent_ops.retro_eval_analysis import prepare as retro_eval_prepare
-from assurance_improvement.agent_ops.retro_issue_analysis import (
+from assurance_improvement.ops.retro_eval_analysis import prepare as retro_eval_prepare
+from assurance_improvement.ops.retro_issue_analysis import (
     finalize as retro_issue_finalize,
     prepare as retro_issue_prepare,
 )
-from assurance_improvement.agent_ops.retro_workflow_analysis import prepare as retro_workflow_prepare
+from assurance_improvement.ops.retro_workflow_analysis import prepare as retro_workflow_prepare
 from tests.product.test_change_local_output_routing import execute_task
 from improvement_fixtures import BINDING, RETRO_ID, issue_signal, candidate_payload  # pyright: ignore[reportMissingImports]
 from test_graph_retro import complete_collect_payload  # pyright: ignore[reportMissingImports]
@@ -129,7 +129,7 @@ def synthesized_candidate():
 @pytest.mark.parametrize("fault", [None, "unknown_signal", "empty_lock", "cross_signal_source"])
 async def test_synthesis_consumes_locked_context_without_reconciled_ledger(tmp_path: Path, fault) -> None:
     from assurance_improvement.graphs.nodes import select_retro
-    from assurance_improvement.agent_ops.retro import finalize as retro_finalize
+    from assurance_improvement.ops.retro import finalize as retro_finalize
     from graph_engine.plugin_api import TaskHandler
 
     state = synthesis_state()
@@ -253,6 +253,7 @@ async def test_public_retro_runs_real_contracts_and_handlers_with_only_agent_tra
                         input_value.model_dump(mode="json"),
                         tmp_path,
                         binding_data=BINDING,
+                        capability_id=prepare_handler_id,
                     )
                     assert prepared.status == "succeeded", prepared.failure
                     return AgentRunRequest.model_validate(prepared.output)
@@ -281,6 +282,7 @@ async def test_public_retro_runs_real_contracts_and_handlers_with_only_agent_tra
                         handlers[finalize_handler_id],
                         {**locked, "agent_result": bundle.agent_result},
                         tmp_path,
+                        capability_id=finalize_handler_id,
                     )
                     assert finalized.status == "succeeded", finalized.failure
                     return contract.output_model.model_validate(finalized.output)

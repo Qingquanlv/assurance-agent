@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.ops import OutputError
@@ -28,9 +28,10 @@ from assurance_intake.contracts import LoopRoundHistoryV1
 from assurance_intake.domain.loop_history import build_loop_round_history
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
-APPLICATION_SKILL = "skills/aa-apply-test-repair/SKILL.md"
-APPLICATION_RESULT_ID = "assurance.healing.result.applied-test-repair.v1"
-APPLICATION_RESULT_FILE = "result-contracts/applied-test-repair.v1.schema.json"
+
+class _Workspace(Protocol):
+    project_root: Path
+    write_root: Path
 
 
 def repair_history_path(*, coverage_epoch: int, repair_round: int) -> str:
@@ -236,7 +237,7 @@ def approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, 
 def verify_application(
     business: ApplyTestRepairInputV1,
     result: TestRepairResultV1,
-    context: TaskContext,
+    context: _Workspace,
 ) -> VerifiedTestRepairV1:
     if result.change_id != business.change_id:
         raise OutputError("repair result change_id does not match the locked change")

@@ -66,8 +66,13 @@ def test_generation_rejects_unsupported_engine_api() -> None:
 
 
 def test_generation_handlers_are_reconstructible_by_the_production_worker() -> None:
+    import types
+
     for handler in generation_handlers().values():
-        assert type(handler)() is not None
+        if isinstance(handler, types.ModuleType):
+            assert callable(handler.execute)
+        else:
+            assert type(handler)() is not None
 
 
 def test_resource_bytes_rejects_non_canonical_path() -> None:

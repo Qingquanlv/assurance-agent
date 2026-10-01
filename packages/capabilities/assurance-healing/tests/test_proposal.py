@@ -14,11 +14,11 @@ from tests.product.test_change_local_output_routing import dual_roots, execute_t
 from assurance_healing.contracts.agent import FixProposalResultV1
 from graph_engine.plugin_api import TaskHandler
 
-from assurance_healing.agent_ops.coverage_repair import (
+from assurance_healing.ops.coverage_repair import (
     finalize as coverage_repair_finalize,
     prepare as coverage_repair_prepare,
 )
-from assurance_healing.agent_ops.fix_proposal import (
+from assurance_healing.ops.fix_proposal import (
     finalize as fix_proposal_finalize,
     prepare as fix_proposal_prepare,
 )
@@ -30,7 +30,8 @@ from assurance_healing.operations.proposal import (
 from assurance_healing.resource_loader import resource_bytes
 from healing_fixtures import as_object  # pyright: ignore[reportMissingImports]
 
-_RESOURCES = Path(__file__).resolve().parent.parent / "assurance_healing" / "resources"
+_PACKAGE = Path(__file__).resolve().parent.parent / "assurance_healing"
+_RESOURCES = _PACKAGE / "resources"
 _FORBIDDEN = (
     "assurance_agent",
     "opencode",
@@ -59,9 +60,10 @@ BINDING: dict[str, Any] = {
 
 
 def _resource_files() -> Iterator[Path]:
-    for path in sorted(_RESOURCES.rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts:
-            yield path
+    for root in (_RESOURCES, _PACKAGE / "ops"):
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".py":
+                yield path
 
 
 def proposal_input() -> dict[str, Any]:
@@ -505,17 +507,17 @@ async def test_failed_proposal_validation_leaves_canonical_outputs_unchanged(tmp
 
 def test_healing_resources_forbid_legacy_and_provider_names() -> None:
     required = (
-        "skills/aa-fix-proposal/SKILL.md",
-        "skills/aa-coverage-repair/SKILL.md",
-        "skills/aa-apply-test-repair/SKILL.md",
-        "result-contracts/fix-proposal.v1.schema.json",
-        "result-contracts/coverage-repair.v1.schema.json",
-        "result-contracts/applied-test-repair.v1.schema.json",
+        _PACKAGE / "ops/fix_proposal/SKILL.md",
+        _PACKAGE / "ops/coverage_repair/SKILL.md",
+        _PACKAGE / "ops/apply_test_repair/SKILL.md",
+        _PACKAGE / "ops/fix_proposal/result.schema.json",
+        _PACKAGE / "ops/coverage_repair/result.schema.json",
+        _PACKAGE / "ops/apply_test_repair/result.schema.json",
     )
-    missing = [item for item in required if not (_RESOURCES / item).is_file()]
+    missing = [item for item in required if not item.is_file()]
     assert missing == []
     hits = [
-        path.relative_to(_RESOURCES).as_posix()
+        path.relative_to(_PACKAGE).as_posix()
         for path in _resource_files()
         if path.suffix in {".md", ".json", ".txt"} and _TOKEN.search(path.read_text(encoding="utf-8"))
     ]
@@ -533,12 +535,12 @@ def test_result_contracts_match_typed_models() -> None:
     from assurance_healing.contracts import CoverageRepairApplySummary
     from assurance_healing.contracts.application import TestRepairResultV1
 
-    assert resource_bytes("result-contracts/fix-proposal.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/fix_proposal/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, FixProposalResultV1.model_json_schema())
     )
-    assert resource_bytes("result-contracts/coverage-repair.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/coverage_repair/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, CoverageRepairApplySummary.model_json_schema())
     )
-    assert resource_bytes("result-contracts/applied-test-repair.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/apply_test_repair/result.schema.json") == canonical_json_bytes(
         cast(JSONValue, TestRepairResultV1.model_json_schema())
     )

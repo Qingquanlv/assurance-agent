@@ -1,58 +1,14 @@
-"""Provider-neutral fix-proposal and coverage-repair request helpers."""
+"""Workspace checks shared by healing agent finalize hooks."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path, PurePosixPath
-from typing import Any
 
-from agent_runtime_contracts import AgentRunRequest, ResultContract
-from agent_runtime_contracts.ops import (
-    AgentBindingDataV1,
-    InputError,
-    OutputError,
-    result_contract_from,
-    skill_request,
-)
+from agent_runtime_contracts.ops import InputError, OutputError
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
-from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext
 
-from assurance_healing.contracts.agent import FixProposalFinalizeInputV1, FixProposalInputV1
+from assurance_healing.contracts.agent import FixProposalInputV1
 from assurance_healing.contracts.coverage_repair import CoverageRepairBrief
-from assurance_healing.resource_loader import resource_bytes, resource_text
-
-FIX_PROPOSAL_SKILL = "skills/aa-fix-proposal/SKILL.md"
-COVERAGE_REPAIR_SKILL = "skills/aa-coverage-repair/SKILL.md"
-FIX_PROPOSAL_RESULT_ID = "assurance.healing.result.fix-proposal.v1"
-COVERAGE_REPAIR_RESULT_ID = "assurance.healing.result.coverage-repair.v1"
-FIX_RESULT_FILE = "result-contracts/fix-proposal.v1.schema.json"
-REPAIR_RESULT_FILE = "result-contracts/coverage-repair.v1.schema.json"
-
-
-def result_contract(schema_id: str, relative: str) -> ResultContract:
-    return result_contract_from(schema_id, json.loads(resource_bytes(relative)))
-
-
-def prepare_request(
-    *,
-    skill_path: str,
-    business: Any,
-    binding: AgentBindingDataV1,
-    result_id: str,
-    result_file: str,
-    context: TaskContext,
-    allowed_outputs: tuple[str, ...],
-) -> AgentRunRequest:
-    return skill_request(
-        skill_text=resource_text(skill_path),
-        business=business,
-        binding=binding,
-        result=result_contract(result_id, result_file),
-        roots=context,
-        allowed_outputs=allowed_outputs,
-        scope_id=business.change_id,
-    )
 
 
 def _canonical_relative(path: str) -> bool:
@@ -92,11 +48,7 @@ def workspace_file(workspace: Path, relative: str) -> Path:
     return path
 
 
-def structured(result: object) -> object:
-    return thaw_json(result)
-
-
-def _prepare_lock_fields(payload: FixProposalFinalizeInputV1 | FixProposalInputV1) -> JSONValue:
+def _prepare_lock_fields(payload: FixProposalInputV1) -> JSONValue:
     return {
         "baseline_digest": payload.baseline_digest,
         "candidate_digest": payload.candidate_digest,
@@ -112,8 +64,8 @@ def _prepare_lock_fields(payload: FixProposalFinalizeInputV1 | FixProposalInputV
     }
 
 
-def require_prepare_lock(payload: FixProposalFinalizeInputV1) -> None:
-    if engine_digest(_prepare_lock_fields(payload)) != engine_digest(_prepare_lock_fields(payload.prepare)):
+def require_prepare_lock(current: FixProposalInputV1, locked: FixProposalInputV1) -> None:
+    if engine_digest(_prepare_lock_fields(current)) != engine_digest(_prepare_lock_fields(locked)):
         raise InputError("finalize digests do not match the locked prepare payload")
 
 

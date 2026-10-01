@@ -15,6 +15,7 @@ from graph_engine.plugin_api import (
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
 from assurance_improvement.contracts.attempts import attempt_contract_refs
+from assurance_improvement.ops import router
 
 from assurance_improvement.effects.archive import (
     ARCHIVE_INTENT_SCHEMA,
@@ -64,20 +65,8 @@ PROMOTION_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=60.0, backoff_se
 ARCHIVE_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=60.0, backoff_seconds=2.0)
 
 IMPROVEMENT_RESOURCE_FILES: dict[str, str] = {
+    **router.resource_files(),
     "assurance.improvement.prompt.archive-summary.v1": "skills/aa-archive/archive-summary-template.md",
-    "assurance.improvement.result.archive.v1": "result-contracts/archive.v1.schema.json",
-    "assurance.improvement.result.improvement-review.v1": (
-        "result-contracts/improvement-review.v1.schema.json"
-    ),
-    "assurance.improvement.result.retro-analysis.v3": "result-contracts/retro-analysis.v3.schema.json",
-    "assurance.improvement.skill.aa-archive.v1": "skills/aa-archive/SKILL.md",
-    "assurance.improvement.skill.aa-improvement-reviewer.v1": "skills/aa-improvement-reviewer/SKILL.md",
-    "assurance.improvement.skill.aa-retro-eval-analysis.v1": "skills/aa-retro-eval-analysis/SKILL.md",
-    "assurance.improvement.skill.aa-retro-issue-analysis.v1": "skills/aa-retro-issue-analysis/SKILL.md",
-    "assurance.improvement.skill.aa-retro-workflow-analysis.v1": (
-        "skills/aa-retro-workflow-analysis/SKILL.md"
-    ),
-    "assurance.improvement.skill.aa-retro.v1": "skills/aa-retro/SKILL.md",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

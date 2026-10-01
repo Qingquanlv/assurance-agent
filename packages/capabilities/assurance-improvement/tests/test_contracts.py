@@ -366,6 +366,11 @@ def test_improvement_agent_job_catalog_is_feature_owned() -> None:
             "assurance-v1-reviewer",
             ("qa/results/review/improvement-review.json",),
         ),
+        "retro": (
+            "aa-retro",
+            "assurance-v1-doc-author",
+            ("qa/results/retro/retro.json",),
+        ),
         "retro-eval-analysis": (
             "aa-retro-eval-analysis",
             "assurance-v1-doc-author",
@@ -380,11 +385,6 @@ def test_improvement_agent_job_catalog_is_feature_owned() -> None:
             "aa-retro-workflow-analysis",
             "assurance-v1-doc-author",
             ("qa/results/retro/retro-workflow-analysis.json",),
-        ),
-        "retro": (
-            "aa-retro",
-            "assurance-v1-doc-author",
-            ("qa/results/retro/retro.json",),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)

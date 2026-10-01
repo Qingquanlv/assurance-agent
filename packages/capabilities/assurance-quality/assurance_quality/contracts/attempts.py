@@ -4,38 +4,15 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, cast
 
-from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
 from agent_runtime_contracts.qa_paths import qa_route
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
 
-from assurance_quality.contracts.agent import (
-    FactBaselineResultV1,
-    FinalizedIssueAnalysisV1,
-    InspectionResultV1,
-    IssueAnalysisResultV1,
-    IssueTriageResultV1,
-    QualitySkillInputV1,
-    ReportResultV1,
-)
-from assurance_quality.contracts.assessment import (
-    AssessmentInputsV1,
-    AssessmentSkillInputV1,
-    FactBaselineSkillInputV1,
-    FinalizedFactBaselineV1,
-    FinalizedInspectionV1,
-    FinalizedReportV1,
-    MaterializeAssessmentInputV1,
-    ReportSkillInputV1,
-)
+from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
 from assurance_quality.contracts.issues import ReconcileIssuesInputV1, ReconcileIssuesResultV1
 from assurance_quality.contracts.surface import SurfaceProbeInputV1, SurfaceProbeResultV1
 
-_DOC_AUTHOR = "assurance-v1-doc-author"
-_REPORTER = "assurance-v1-reporter"
-_REVIEWER = "assurance-v1-reviewer"
-_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
 _TASK_RETRY = AttemptRetryPolicy(max_attempts=1)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
@@ -44,102 +21,16 @@ def _paths(*suffixes: str) -> tuple[str, ...]:
     return qa_route(*suffixes)
 
 
-def _job(
-    base: str,
-    skill_id: str,
-    agent_profile: str,
-    result_model: type[Any],
-    outputs: tuple[str, ...],
-    *,
-    input_model: type[Any] = QualitySkillInputV1,
-    output_model: type[Any] | None = None,
-) -> AgentExecutionContract[Any, Any, Any]:
-    return AgentExecutionContract(
-        contract_id=f"assurance.quality.agent.{base}.v1",
-        owner_id="assurance.quality",
-        prepare_handler_id=f"assurance.quality.{base}.prepare",
-        finalize_handler_id=f"assurance.quality.{base}.finalize",
-        skill_id=skill_id,
-        agent_profile=agent_profile,
-        input_model=input_model,
-        agent_result_model=result_model,
-        output_model=output_model or result_model,
-        resources=ResourceClaims(
-            reads=("qa",),
-            writes=_paths(*outputs),
-        ),
-        retry=_AGENT_RETRY,
-        timeout=_TIMEOUT,
-        validators=(),
-        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=_paths(*outputs), finalize=()),
-    )
+def _agent_catalog() -> tuple[
+    Mapping[str, Any],
+    Mapping[str, tuple[str, ...]],
+]:
+    from assurance_quality.ops import router
+
+    return router.agent_contracts(), router.output_routes()
 
 
-_JOBS: tuple[tuple[str, str, str, type[Any], tuple[str, ...], type[Any], type[Any] | None], ...] = (
-    (
-        "fact-baseline",
-        "aa-fact-baseline",
-        _DOC_AUTHOR,
-        FactBaselineResultV1,
-        ("facts/fact-baseline.json",),
-        FactBaselineSkillInputV1,
-        FinalizedFactBaselineV1,
-    ),
-    (
-        "inspect",
-        "aa-inspect",
-        _REVIEWER,
-        InspectionResultV1,
-        ("inspect/inspection.json",),
-        AssessmentSkillInputV1,
-        FinalizedInspectionV1,
-    ),
-    (
-        "issue-analysis",
-        "aa-issue-analyzer",
-        _REPORTER,
-        IssueAnalysisResultV1,
-        ("inspect/issue-analysis.json",),
-        QualitySkillInputV1,
-        FinalizedIssueAnalysisV1,
-    ),
-    (
-        "issue-triage",
-        "aa-issue-triage-advisor",
-        _REPORTER,
-        IssueTriageResultV1,
-        ("inspect/issue-triage.json",),
-        QualitySkillInputV1,
-        None,
-    ),
-    (
-        "report",
-        "aa-report-generator",
-        _REPORTER,
-        ReportResultV1,
-        ("report/report.md",),
-        ReportSkillInputV1,
-        FinalizedReportV1,
-    ),
-)
-
-AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(
-    {
-        base: _job(
-            base,
-            skill_id,
-            profile,
-            result_model,
-            outputs,
-            input_model=input_model,
-            output_model=output_model,
-        )
-        for base, skill_id, profile, result_model, outputs, input_model, output_model in _JOBS
-    }
-)
-OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {base: _paths(*outputs) for base, _skill, _profile, _result, outputs, _input, _output in _JOBS}
-)
+AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES = _agent_catalog()
 _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
     contract_id="assurance.quality.materialize-assessment-inputs",
     owner_id="assurance.quality",

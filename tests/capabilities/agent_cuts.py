@@ -24,9 +24,9 @@ from tests.acg_plan_fixture import install_plan
 from tests.op_handlers import op_handler
 
 from assurance_generation.operations.planning import PlanFinalizeHandler
-from assurance_healing.agent_ops.fix_proposal import finalize as fix_proposal_finalize
-from assurance_improvement.agent_ops.retro import finalize as retro_finalize
-from assurance_quality.agent_ops.inspect import finalize as inspect_finalize
+from assurance_healing.ops.fix_proposal import finalize as fix_proposal_finalize
+from assurance_improvement.ops.retro import finalize as retro_finalize
+from assurance_quality.ops.inspect import finalize as inspect_finalize
 
 AGENT_CUTS = (
     "prepare-complete",

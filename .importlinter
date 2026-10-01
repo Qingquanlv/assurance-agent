@@ -109,7 +109,6 @@ forbidden_modules =
     assurance_execution.graphs
     assurance_healing.plugin
     assurance_healing.operations
-    assurance_healing.agent_ops
     assurance_healing.validators
     assurance_healing.effects
     assurance_healing.resource_loader
@@ -143,7 +142,6 @@ forbidden_modules =
     assurance_execution.graphs
     assurance_healing.plugin
     assurance_healing.operations
-    assurance_healing.agent_ops
     assurance_healing.validators
     assurance_healing.effects
     assurance_healing.resource_loader
@@ -151,7 +149,6 @@ forbidden_modules =
     assurance_healing.graphs
     assurance_quality.plugin
     assurance_quality.operations
-    assurance_quality.agent_ops
     assurance_quality.validators
     assurance_quality.effects
     assurance_quality.resource_loader
@@ -298,4 +295,122 @@ source_modules =
 forbidden_modules =
     assurance_intake.ops.*.hooks
     assurance_intake.ops.*.models
+allow_indirect_imports = True
+
+[importlinter:contract:quality-ops-below-graphs]
+name = Quality ops never import graphs, the plugin, or the feature bundle
+type = forbidden
+source_modules =
+    assurance_quality.ops
+forbidden_modules =
+    assurance_quality.graphs
+    assurance_quality.plugin
+    assurance_quality.feature
+
+[importlinter:contract:quality-ops-independent]
+name = Quality ops never import one another
+type = independence
+modules =
+    assurance_quality.ops.fact_baseline
+    assurance_quality.ops.inspect
+    assurance_quality.ops.issue_analysis
+    assurance_quality.ops.issue_triage
+    assurance_quality.ops.report
+
+[importlinter:contract:quality-graphs-read-op-declarations]
+name = Quality graphs read op declarations, never op hooks
+type = forbidden
+source_modules =
+    assurance_quality.graphs
+forbidden_modules =
+    assurance_quality.ops.*.hooks
+allow_indirect_imports = True
+
+[importlinter:contract:healing-ops-below-graphs]
+name = Healing ops never import graphs, the plugin, or the feature bundle
+type = forbidden
+source_modules =
+    assurance_healing.ops
+forbidden_modules =
+    assurance_healing.graphs
+    assurance_healing.plugin
+    assurance_healing.feature
+
+[importlinter:contract:healing-ops-independent]
+name = Healing ops never import one another
+type = independence
+modules =
+    assurance_healing.ops.apply_test_repair
+    assurance_healing.ops.coverage_repair
+    assurance_healing.ops.fix_proposal
+
+[importlinter:contract:healing-graphs-read-op-declarations]
+name = Healing graphs read op declarations, never op hooks
+type = forbidden
+source_modules =
+    assurance_healing.graphs
+forbidden_modules =
+    assurance_healing.ops.*.hooks
+allow_indirect_imports = True
+
+[importlinter:contract:improvement-ops-below-graphs]
+name = Improvement ops never import graphs, the plugin, or the feature bundle
+type = forbidden
+source_modules =
+    assurance_improvement.ops
+forbidden_modules =
+    assurance_improvement.graphs
+    assurance_improvement.plugin
+    assurance_improvement.feature
+
+[importlinter:contract:improvement-ops-independent]
+name = Improvement ops never import one another
+type = independence
+modules =
+    assurance_improvement.ops.archive
+    assurance_improvement.ops.improvement_review
+    assurance_improvement.ops.retro
+    assurance_improvement.ops.retro_eval_analysis
+    assurance_improvement.ops.retro_issue_analysis
+    assurance_improvement.ops.retro_workflow_analysis
+
+[importlinter:contract:improvement-graphs-read-op-declarations]
+name = Improvement graphs read op declarations, never op hooks
+type = forbidden
+source_modules =
+    assurance_improvement.graphs
+forbidden_modules =
+    assurance_improvement.ops.*.hooks
+allow_indirect_imports = True
+
+[importlinter:contract:generation-ops-below-graphs]
+name = Generation ops never import graphs, the plugin, or the feature bundle
+type = forbidden
+source_modules =
+    assurance_generation.ops
+forbidden_modules =
+    assurance_generation.graphs
+    assurance_generation.plugin
+    assurance_generation.feature
+
+[importlinter:contract:generation-ops-independent]
+name = Generation ops never import one another
+type = independence
+modules =
+    assurance_generation.ops.api_codegen
+    assurance_generation.ops.api_codegen_review
+    assurance_generation.ops.e2e_codegen
+    assurance_generation.ops.e2e_codegen_review
+    assurance_generation.ops.fuzz_codegen
+    assurance_generation.ops.fuzz_codegen_review
+    assurance_generation.ops.performance_codegen
+    assurance_generation.ops.performance_codegen_review
+
+[importlinter:contract:generation-graphs-read-op-declarations]
+name = Generation graphs read op declarations, never op hooks
+type = forbidden
+source_modules =
+    assurance_generation.graphs
+forbidden_modules =
+    assurance_generation.ops.*.hooks
 allow_indirect_imports = True

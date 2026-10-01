@@ -8,7 +8,7 @@ from planning_fixtures import FAMILIES  # pyright: ignore[reportMissingImports]
 
 
 def test_e2e_codegen_skill_reentry_reads_family_prefixed_review() -> None:
-    skill = resource_text("skills/aa-e2e-codegen-reviewer/SKILL.md")
+    skill = resource_text("ops/e2e_codegen_review/SKILL.md")
     assert "review/e2e-codegen-review.json" in skill
     assert "review/plan-review.json" not in skill
 

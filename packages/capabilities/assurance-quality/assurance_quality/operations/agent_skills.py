@@ -1,64 +1,26 @@
-"""Provider-neutral quality Agent request and finalize helpers."""
+"""Provider-neutral quality Agent finalize helpers."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, ResultContract
-from agent_runtime_contracts.ops import (
-    AgentBindingDataV1,
-    OutputError,
-    result_contract_from,
-    skill_request,
-)
+from agent_runtime_contracts.ops import OutputError
 from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
-from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext
 
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_quality.contracts.agent import AgentFinalizeInputV1, QualitySkillInputV1
+from assurance_quality.contracts.agent import QualitySkillInputV1
 from assurance_quality.contracts.assessment import (
     AssessmentSkillInputV1,
     FactBaselineSkillInputV1,
     ReportSkillInputV1,
 )
 from assurance_quality.contracts.issues import IssueEvidenceManifest, ObservationDocument
-from assurance_quality.resource_loader import resource_bytes, resource_text
-
-FACT_BASELINE_SKILL = "skills/aa-fact-baseline/SKILL.md"
-INSPECT_SKILL = "skills/aa-inspect/SKILL.md"
-ISSUE_ANALYSIS_SKILL = "skills/aa-issue-analyzer/SKILL.md"
-ISSUE_TRIAGE_SKILL = "skills/aa-issue-triage-advisor/SKILL.md"
-REPORT_SKILL = "skills/aa-report-generator/SKILL.md"
-
 FACT_BASELINE_RESULT_ID = "assurance.quality.result.fact-baseline.v1"
-INSPECTION_RESULT_ID = "assurance.quality.result.inspection.v1"
-ISSUE_ANALYSIS_RESULT_ID = "assurance.quality.result.issue-analysis.v1"
-ISSUE_TRIAGE_RESULT_ID = "assurance.quality.result.issue-triage.v1"
-REPORT_RESULT_ID = "assurance.quality.result.report.v1"
-
-_RESULT_FILES: dict[str, str] = {
-    FACT_BASELINE_RESULT_ID: "result-contracts/fact-baseline.v1.schema.json",
-    INSPECTION_RESULT_ID: "result-contracts/inspection.v1.schema.json",
-    ISSUE_ANALYSIS_RESULT_ID: "result-contracts/issue-analysis.v1.schema.json",
-    ISSUE_TRIAGE_RESULT_ID: "result-contracts/issue-triage.v1.schema.json",
-    REPORT_RESULT_ID: "result-contracts/report.v1.schema.json",
-}
-
-QUALITY_OUTPUTS = {
-    FACT_BASELINE_RESULT_ID: lambda change_id: ("qa/results/facts/fact-baseline.json",),
-    INSPECTION_RESULT_ID: lambda change_id: ("qa/results/inspect/inspection.json",),
-    ISSUE_ANALYSIS_RESULT_ID: lambda change_id: ("qa/results/inspect/issue-analysis.json",),
-    ISSUE_TRIAGE_RESULT_ID: lambda change_id: ("qa/results/inspect/issue-triage.json",),
-    REPORT_RESULT_ID: lambda change_id: ("qa/results/report/report.md",),
-}
-
 
 TRIAGE_ACTIONS = frozenset(
     {
@@ -71,33 +33,6 @@ TRIAGE_ACTIONS = frozenset(
         "stop",
     }
 )
-
-
-def result_contract(schema_id: str) -> ResultContract:
-    return result_contract_from(schema_id, json.loads(resource_bytes(_RESULT_FILES[schema_id])))
-
-
-def prepare_request(
-    *,
-    skill_path: str,
-    business: Any,
-    binding: AgentBindingDataV1,
-    result_schema_id: str,
-    context: TaskContext,
-) -> AgentRunRequest:
-    return skill_request(
-        skill_text=resource_text(skill_path),
-        business=business,
-        binding=binding,
-        result=result_contract(result_schema_id),
-        roots=context,
-        allowed_outputs=QUALITY_OUTPUTS[result_schema_id](business.change_id),
-        scope_id=business.change_id,
-    )
-
-
-def structured(payload: AgentFinalizeInputV1) -> object:
-    return thaw_json(payload.agent_result.result_payload)
 
 
 def canonical_file(root: Path, relative: str) -> Path:
@@ -241,9 +176,13 @@ def load_json_ref(root: Path, ref: object, model: type[Any]) -> Any:
         raise OutputError(str(error)) from error
 
 
+class _WriteRoot(Protocol):
+    write_root: Path
+
+
 def staged_agent_document(
     *,
-    context: TaskContext,
+    context: _WriteRoot,
     relative: str,
     result: object,
     model: type[Any],

@@ -12,7 +12,7 @@ from assurance_improvement.contracts.agent import ImprovementReviewResultV1
 from assurance_improvement.resource_loader import resource_bytes
 from graph_engine.plugin_api import TaskHandler
 
-from assurance_improvement.agent_ops.improvement_review import (
+from assurance_improvement.ops.improvement_review import (
     finalize as improvement_review_finalize,
     prepare as improvement_review_prepare,
 )
@@ -166,7 +166,7 @@ def test_review_validator_rejects_src_path() -> None:
 
 
 def test_review_result_contract_bytes_equal_typed_model() -> None:
-    assert resource_bytes("result-contracts/improvement-review.v1.schema.json") == canonical_json_bytes(
+    assert resource_bytes("ops/improvement_review/result.schema.json") == canonical_json_bytes(
         ImprovementReviewResultV1.model_json_schema()
     )
 

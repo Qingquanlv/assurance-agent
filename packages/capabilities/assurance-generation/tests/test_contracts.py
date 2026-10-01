@@ -238,8 +238,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-api-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/finding-scope.json",
-                "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/api-codegen-review-summary.md",
                 "qa/results/review/api-codegen-review.json",
             ),
@@ -256,8 +254,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-e2e-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/codegen/e2e/reviews/epochs/{coverage_epoch}/finding-scope.json",
-                "qa/results/codegen/e2e/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/e2e-codegen-review-summary.md",
                 "qa/results/review/e2e-codegen-review.json",
             ),
@@ -274,8 +270,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-fuzz-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/codegen/fuzz/reviews/epochs/{coverage_epoch}/finding-scope.json",
-                "qa/results/codegen/fuzz/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/fuzz-codegen-review-summary.md",
                 "qa/results/review/fuzz-codegen-review.json",
             ),
@@ -292,8 +286,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-performance-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/codegen/performance/reviews/epochs/{coverage_epoch}/finding-scope.json",
-                "qa/results/codegen/performance/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/performance-codegen-review-summary.md",
                 "qa/results/review/performance-codegen-review.json",
             ),
