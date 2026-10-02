@@ -546,6 +546,8 @@ async def test_case_design_reports_family_and_journey_errors_in_one_repair_attem
     error = outcome.failure.message
     assert "missing required automated cases" in error
     assert "api, e2e" in error
+    assert "only status: active counts" in error
+    assert "(draft)" in error
     assert "TC_MENU_002" in error
     assert "manage_menu" in error
 

@@ -23,7 +23,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -32,7 +32,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -41,7 +41,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -50,7 +50,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -59,7 +59,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -68,7 +68,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -77,7 +77,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -86,7 +86,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -95,7 +95,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -104,7 +104,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -113,7 +113,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -122,7 +122,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -131,7 +131,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -140,7 +140,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -149,7 +149,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -158,7 +158,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -167,7 +167,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -176,7 +176,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -185,7 +185,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -194,7 +194,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -203,7 +203,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -212,7 +212,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -221,7 +221,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -230,7 +230,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -239,7 +239,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -248,7 +248,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -257,7 +257,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 }
@@ -285,7 +285,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -294,7 +294,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -303,7 +303,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -312,7 +312,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -321,7 +321,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -330,7 +330,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -339,7 +339,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -348,7 +348,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -357,7 +357,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -366,7 +366,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -375,7 +375,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -384,7 +384,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -393,7 +393,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -402,7 +402,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -411,7 +411,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -420,7 +420,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -429,7 +429,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -438,7 +438,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -447,7 +447,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -456,7 +456,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -465,7 +465,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -474,7 +474,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -483,7 +483,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -492,7 +492,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -501,7 +501,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -510,7 +510,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -519,7 +519,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 }
@@ -568,7 +568,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -577,7 +577,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -586,7 +586,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -595,7 +595,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -604,7 +604,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -613,7 +613,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -622,7 +622,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -631,7 +631,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -640,7 +640,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -649,7 +649,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -658,7 +658,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -667,7 +667,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -676,7 +676,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -685,7 +685,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -694,7 +694,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -703,7 +703,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -712,7 +712,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -721,7 +721,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -730,7 +730,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -739,7 +739,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -748,7 +748,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -757,7 +757,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -766,7 +766,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -775,7 +775,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -784,7 +784,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -793,7 +793,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -802,7 +802,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 }
@@ -830,7 +830,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -839,7 +839,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -848,7 +848,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -857,7 +857,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -866,7 +866,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -875,7 +875,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -884,7 +884,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -893,7 +893,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -902,7 +902,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -911,7 +911,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -920,7 +920,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -929,7 +929,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -938,7 +938,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -947,7 +947,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -956,7 +956,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -965,7 +965,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -974,7 +974,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -983,7 +983,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -992,7 +992,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1001,7 +1001,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1010,7 +1010,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1019,7 +1019,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1028,7 +1028,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1037,7 +1037,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1046,7 +1046,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1055,7 +1055,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1064,7 +1064,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 }
@@ -1113,7 +1113,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1122,7 +1122,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1131,7 +1131,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1140,7 +1140,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1149,7 +1149,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1158,7 +1158,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1167,7 +1167,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1176,7 +1176,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1185,7 +1185,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1194,7 +1194,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1203,7 +1203,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1212,7 +1212,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1221,7 +1221,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1230,7 +1230,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1239,7 +1239,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1248,7 +1248,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1257,7 +1257,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1266,7 +1266,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1275,7 +1275,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1284,7 +1284,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1293,7 +1293,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1302,7 +1302,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1311,7 +1311,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1320,7 +1320,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1329,7 +1329,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1338,7 +1338,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1347,7 +1347,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 }
@@ -1375,7 +1375,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1384,7 +1384,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1393,7 +1393,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1402,7 +1402,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1411,7 +1411,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1420,7 +1420,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1429,7 +1429,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1438,7 +1438,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1447,7 +1447,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1456,7 +1456,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1465,7 +1465,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1474,7 +1474,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1483,7 +1483,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1492,7 +1492,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1501,7 +1501,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1510,7 +1510,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1519,7 +1519,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1528,7 +1528,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1537,7 +1537,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1546,7 +1546,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1555,7 +1555,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1564,7 +1564,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1573,7 +1573,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1582,7 +1582,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1591,7 +1591,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1600,7 +1600,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
@@ -1609,7 +1609,7 @@
                         "max_seconds": 3600
                     },
                     "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": "deepseek/deepseek-flash",
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 }

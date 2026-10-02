@@ -53,7 +53,7 @@ _SECRET_PATTERNS = (
     re.compile(r"""(?i)\bauthorization["']?\s*[:=](?!=)[^\r\n]+"""),
     re.compile(rf"(?i)\bbearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
-    re.compile(r"sk-[A-Za-z0-9-]+"),
+    re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9-]+"),
     re.compile(r"(?i)api[_-]?key\s*[=:](?!=)\s*\S+"),
 )
 MAX_DIAGNOSTIC_COUNT = 16

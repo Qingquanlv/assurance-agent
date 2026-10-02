@@ -135,7 +135,6 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
         "selected_test_families": list(resolved.plan.selected_test_families),
         "plan_digest": resolved.plan.plan_digest,
         "plan_ref": resolved.plan_ref.model_dump(mode="json"),
-        "policy_digest": resolved.plan.policy_digest,
         "preparation_refs": [by_path[path] for path in sorted(by_path)],
     }
     # Plan resolution rewrites exploration.json with bound obligation keys.

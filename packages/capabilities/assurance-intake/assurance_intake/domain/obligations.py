@@ -87,6 +87,14 @@ def _resolved_refs(
     return tuple(refs)
 
 
+def draft_mrc_id(draft: ObligationDraftV1, sequence: int) -> str:
+    """MRC id assigned to a draft before scope exclusion."""
+
+    if draft.draft_id.startswith("MRC-"):
+        return draft.draft_id
+    return f"MRC-{_MRC_PREFIX[draft.category]}-{sequence:03d}"
+
+
 def normalize_obligation_drafts(
     drafts: tuple[ObligationDraftV1, ...],
     *,
@@ -94,11 +102,7 @@ def normalize_obligation_drafts(
 ) -> tuple[PreparedObligationV1, ...]:
     rows: list[PreparedObligationV1] = []
     for sequence, draft in enumerate(drafts, start=1):
-        mrc_id = (
-            draft.draft_id
-            if draft.draft_id.startswith("MRC-")
-            else f"MRC-{_MRC_PREFIX[draft.category]}-{sequence:03d}"
-        )
+        mrc_id = draft_mrc_id(draft, sequence)
         observations = tuple(
             RequiredObservationV1(
                 observation_key=goal.key,
@@ -397,6 +401,7 @@ __all__ = [
     "apply_scope_exclusions",
     "authenticate_source",
     "build_source_index",
+    "draft_mrc_id",
     "journey_keys_from_document",
     "normalize_goal_obligations",
     "normalize_obligation_drafts",

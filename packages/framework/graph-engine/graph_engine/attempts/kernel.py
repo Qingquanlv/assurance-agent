@@ -217,7 +217,7 @@ class AssuranceAttemptKernel:
         if isinstance(authorization, PendingTaskResult):
             return authorization
 
-        binding = await self.workspace.open_or_create(attempt_key, claims)
+        binding = await self.workspace.open_or_create(attempt_key, claims, seed_from=context.seed_attempt_key)
         trace.append("begin_workspace")
         scope = AuthorizedAttemptScope(execution=context, workspace=binding)
 

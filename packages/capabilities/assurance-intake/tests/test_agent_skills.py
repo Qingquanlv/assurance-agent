@@ -303,7 +303,14 @@ def test_explore_skill_mrc_example_validates_as_obligation_drafts() -> None:
     assert isinstance(drafts, list) and drafts
     for item in drafts:
         ObligationDraftV1.model_validate(item)
+        goals = item["observation_goals"]
+        assert isinstance(goals, list) and goals
+        assert all(goal["proposed_expected_status"] is not None for goal in goals)
+        assert all(goal["key"] and goal["condition"] and goal["basis_quotes"] for goal in goals)
     assert {item["category"] for item in drafts} <= {"api", "e2e", "negative", "data_integrity"}
+    assert "status_code_eq" in skill
+    assert "empty `observation_goals`" in skill
+    assert "as `invalid_output`" in skill
 
 
 def test_case_design_skill_requires_cleanup_for_every_successful_persistent_create() -> None:
@@ -716,6 +723,18 @@ def test_case_design_repairs_e2e_journey_mapping_from_authenticated_keys() -> No
     assert "authenticated journey keys" in designer
     assert "covered_by_cases" in designer
     assert "never invent a journey key" in designer.lower()
+
+
+def test_case_skills_agree_on_structured_api_step_and_active_status() -> None:
+    designer = " ".join(intake_ops.router.resource_text("ops/case_design/SKILL.md").split())
+    reviewer = " ".join(intake_ops.router.resource_text("ops/case_review/SKILL.md").split())
+
+    assert "`{method: <METHOD>, path: /absolute/path}`" in designer
+    assert "contains no `method/path/headers/Authorization` mappings" not in designer
+    assert "`status: active`, and `automation.required: true`" in designer
+    assert "A `draft` case does not count" in designer
+    assert "never suggest deleting the structured API step" in reviewer
+    assert "just because it omits method/path" not in reviewer
 
 
 def test_case_reviewer_closed_key_repairs_stay_inside_case_design_write_set() -> None:
@@ -1902,7 +1921,14 @@ def _valid_explore_advisory() -> dict[str, Any]:
                 "impact_row_ids": [],
                 "proposed_profile_id": None,
                 "prerequisites": [],
-                "observation_goals": [],
+                "observation_goals": [
+                    {
+                        "key": "create_item_created",
+                        "condition": "POST a valid item",
+                        "proposed_expected_status": 201,
+                        "basis_quotes": [],
+                    }
+                ],
                 "basis_quotes": [],
                 "open_questions": [],
             }
@@ -2109,6 +2135,133 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
     contract = AGENT_JOB_CONTRACTS["explore"]
     assert contract.agent_result_model is ArtifactListResultV1
     contract.output_model.model_validate(executed.output)
+
+
+def _e2e_draft(*, goals: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "draft_id": "D-E2E-001",
+        "proposed_key": "admin_can_enter_menu_management",
+        "category": "e2e",
+        "layer": "e2e",
+        "statement": "An admin can open the menu-management page.",
+        "applicability_conditions": [],
+        "impact_row_ids": [],
+        "proposed_profile_id": None,
+        "prerequisites": ["admin_session"],
+        "observation_goals": goals,
+        "basis_quotes": [],
+        "open_questions": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_included_required_draft_without_observation_goals(
+    tmp_path: Path,
+) -> None:
+    project, write_root = dual_roots(tmp_path)
+    advisory = _advisory_with_source_evidence()
+    advisory["minimum_required_coverage"][0]["observation_goals"] = []
+    advisory["minimum_required_coverage"].append(_e2e_draft(goals=[]))
+    _stage_explore_outputs(write_root, advisory=advisory)
+
+    executed = await _finalize_explore(project, write_root)
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert executed.failure.retryable is True
+    message = executed.failure.message
+    assert "D-API-001" in message and "create_item" in message
+    assert "D-E2E-001" in message and "admin_can_enter_menu_management" in message
+    assert "empty observation_goals" in message
+    assert "proposed_expected_status" in message
+    assert not (write_root / _EXPLORATION).exists()
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_null_proposed_expected_status(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    advisory = _advisory_with_source_evidence()
+    advisory["minimum_required_coverage"][0]["observation_goals"] = [
+        {
+            "key": "create_item_created",
+            "condition": "POST a valid item",
+            "proposed_expected_status": None,
+            "basis_quotes": [],
+        }
+    ]
+    _stage_explore_outputs(write_root, advisory=advisory)
+
+    executed = await _finalize_explore(project, write_root)
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert executed.failure.retryable is True
+    message = executed.failure.message
+    assert "D-API-001" in message and "create_item" in message
+    assert "create_item_created" in message
+    assert "null proposed_expected_status" in message
+    assert not (write_root / _EXPLORATION).exists()
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_accepts_observation_goals_with_status(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    advisory = _advisory_with_source_evidence()
+    advisory["minimum_required_coverage"].append(
+        _e2e_draft(
+            goals=[
+                {
+                    "key": "menu_page_loaded",
+                    "condition": "Authenticated admin requests the menu-management page data",
+                    "proposed_expected_status": 200,
+                    "basis_quotes": [],
+                }
+            ]
+        )
+    )
+    _stage_explore_outputs(write_root, advisory=advisory)
+
+    executed = await _finalize_explore(project, write_root)
+
+    assert executed.status == "succeeded", executed.failure
+    sealed = json.loads((write_root / _EXPLORATION).read_text(encoding="utf-8"))
+    rows = {row["proposed_key"]: row for row in sealed["minimum_required_coverage"]}
+    api = rows["create_item"]
+    e2e = rows["admin_can_enter_menu_management"]
+    assert api["required"] is True and api["scope_disposition"] == "included"
+    assert e2e["required"] is True and e2e["scope_disposition"] == "included"
+    for row, expected in ((api, 201), (e2e, 200)):
+        requirement = row["verification_requirements"][0]
+        assert requirement["profile_id"] == "method_unspecified"
+        observation = requirement["observations"][0]
+        assert observation["predicate"] == "status_code_eq"
+        assert observation["expected"] == expected
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_allows_empty_goals_on_an_excluded_draft(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    advisory = _advisory_with_source_evidence()
+    advisory["minimum_required_coverage"].append(_e2e_draft(goals=[]))
+    _stage_explore_outputs(write_root, advisory=advisory)
+    requirement = write_root / "qa/requirement.md"
+    requirement.write_text("# Requirement\n", encoding="utf-8")
+    snapshot = write_root / "qa/results/intake/sources/run-spec.effective.yaml"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text("candidate_test_families:\n- api\n", encoding="utf-8")
+
+    executed = await _finalize_explore(project, write_root)
+
+    assert executed.status == "succeeded", executed.failure
+    sealed = json.loads((write_root / _EXPLORATION).read_text(encoding="utf-8"))
+    rows = {row["proposed_key"]: row for row in sealed["minimum_required_coverage"]}
+    assert rows["create_item"]["scope_disposition"] == "included"
+    assert rows["create_item"]["verification_requirements"][0]["observations"][0]["expected"] == 201
+    assert rows["admin_can_enter_menu_management"]["required"] is False
+    assert rows["admin_can_enter_menu_management"]["scope_disposition"] == "excluded"
+    assert rows["admin_can_enter_menu_management"]["verification_requirements"] == []
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 """Generic dual-root task staging and authenticated promotion.
 
-The task actor receives an empty ``write_root``.  The project root is never
+The task actor receives an empty ``write_root``, or one seeded from an earlier
+attempt's authenticated write root of the same claims.  The project root is never
 copied into that directory: only declared project outputs are fingerprinted and
 later checked immediately before their explicitly enumerated replacements.
 """
@@ -28,10 +29,12 @@ from graph_engine.plugin_api import (
     ResourceClaims,
     SealedFile,
     SealedWriteSet,
+    SeededFile,
     StagedFile,
     StagedWriteSet,
     TaskWorkspaceBinding,
     TaskWorkspaceIdentity,
+    TaskWorkspaceSeed,
 )
 
 _COPY_BUFFER_SIZE = 1024 * 1024
@@ -774,7 +777,14 @@ class TaskWorkspaceStore:
         task_id: str,
         attempt: int,
         output_paths: Sequence[str],
+        seed_task_id: str | None = None,
     ) -> TaskWorkspaceBinding:
+        """Open the recorded write root, or create it, seeded from ``seed_task_id`` when given.
+
+        Seeding happens only when the root is created; a recovered root keeps the
+        files it already has. A seed task that never opened a workspace yields an
+        empty root; a seed whose recorded identity does not authenticate fails closed.
+        """
         self._authenticate_roots_current()
         claims = _normalise_output_paths(output_paths)
         safe_task_id = _safe_task_id(task_id)
@@ -830,6 +840,13 @@ class TaskWorkspaceStore:
             write_fd = _open_directory_at(task_fd, attempt_id, "attempt write root")
             try:
                 write_identity = DirectoryIdentity.capture(write_root, descriptor=write_fd)
+                seed = (
+                    None
+                    if seed_task_id is None
+                    else self._seed_write_root(
+                        seed_task_id, task_id=task_id, claims=claims, write_fd=write_fd
+                    )
+                )
             finally:
                 os.close(write_fd)
             payload: dict[str, Any] = {
@@ -842,6 +859,8 @@ class TaskWorkspaceStore:
                 "write_root_digest": write_identity.identity_digest,
                 "layout_schema_version": "1",
             }
+            if seed is not None:
+                payload["seed"] = seed.model_dump(mode="json")
             identity = TaskWorkspaceIdentity(identity_digest=canonical_digest(payload), **payload)
             _atomic_write_at(task_fd, identity_name, canonical_json_bytes(identity.model_dump(mode="json")))
             return TaskWorkspaceBinding(
@@ -853,6 +872,54 @@ class TaskWorkspaceStore:
             )
         finally:
             os.close(task_fd)
+
+    def _seed_write_root(
+        self,
+        seed_task_id: str,
+        *,
+        task_id: str,
+        claims: tuple[str, ...],
+        write_fd: int,
+    ) -> TaskWorkspaceSeed | None:
+        if seed_task_id == task_id:
+            raise TaskWorkspaceViolation("a write root cannot be seeded from itself")
+        safe_seed_id = _safe_task_id(seed_task_id)
+        try:
+            seed_task_fd = _open_directory_at(self._attempts_fd, safe_seed_id, "seed task root")
+        except FileNotFoundError:
+            return None
+        try:
+            seed_attempt_id = _attempt_id(1)
+            try:
+                source = self._read_identity_at(seed_task_fd, f".{seed_attempt_id}.identity.json")
+            except FileNotFoundError:
+                return None
+            self._authenticate_identity(source)
+            if source.task_id != seed_task_id or source.attempt_id != seed_attempt_id:
+                raise TaskWorkspaceViolation("seed identity belongs to another task workspace")
+            source_fd = _open_directory_at(seed_task_fd, seed_attempt_id, "seed write root")
+            try:
+                captured = DirectoryIdentity.capture(
+                    self.attempts_root / safe_seed_id / seed_attempt_id, descriptor=source_fd
+                )
+                if captured.identity_digest != source.write_root_digest:
+                    raise TaskWorkspaceViolation("seed write-root identity was replaced")
+                manifest = _scan_directory_fd_complete(source_fd, "")
+            finally:
+                os.close(source_fd)
+        finally:
+            os.close(seed_task_fd)
+        seeded: list[SeededFile] = []
+        for path, (content, digest, mode) in sorted(manifest.items()):
+            if not _is_covered(path, claims):
+                continue
+            parent_fd, name = _open_parent_at(write_fd, path, create=True, label="seeded file parent")
+            try:
+                _write_named_file_at(parent_fd, name, content, mode)
+            finally:
+                os.close(parent_fd)
+            seeded.append(SeededFile(path=path, sha256=digest, mode=mode))
+        return TaskWorkspaceSeed(source_identity_digest=source.identity_digest, files=tuple(seeded))
 
     def seal(self, identity: TaskWorkspaceIdentity) -> StagedWriteSet:
         self._binding_paths(identity)
@@ -1745,11 +1812,14 @@ class TaskWorkspaceProvider:
     def __init__(self, store: TaskWorkspaceStore) -> None:
         self.store = store
 
-    async def open_or_create(self, attempt_key: AttemptKey, claims: ResourceClaims) -> TaskWorkspaceBinding:
+    async def open_or_create(
+        self, attempt_key: AttemptKey, claims: ResourceClaims, *, seed_from: AttemptKey | None = None
+    ) -> TaskWorkspaceBinding:
         return self.store.begin(
             task_id=attempt_key.digest,
             attempt=1,
             output_paths=claims.writes,
+            seed_task_id=None if seed_from is None else seed_from.digest,
         )
 
     async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet:

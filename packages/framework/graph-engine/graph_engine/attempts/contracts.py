@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Generic, Protocol, TypeAlias, TypeVar
+from typing import Any, Generic, Protocol, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.resolutions import (
@@ -27,6 +27,15 @@ _InputT_contra = TypeVar("_InputT_contra", bound=BaseModel, contravariant=True)
 class AttemptRetryPolicy(FrozenModel):
     max_attempts: int = Field(ge=1)
     interval_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
+    # An invalid_output retry starts from a copy of the rejected attempt's write root.
+    carry_invalid_output: bool = False
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> Any:
+        serialized = handler(self)
+        if not self.carry_invalid_output:
+            serialized.pop("carry_invalid_output", None)
+        return serialized
 
 
 class AttemptTimeoutPolicy(FrozenModel):

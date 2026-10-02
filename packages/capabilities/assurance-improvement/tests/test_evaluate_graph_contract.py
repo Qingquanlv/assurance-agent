@@ -168,8 +168,10 @@ class _RecordingWorkspace:
         self.inner = inner
         self.promotions = 0
 
-    async def open_or_create(self, attempt_key: object, claims: ResourceClaims) -> object:
-        return await self.inner.open_or_create(attempt_key, claims)  # type: ignore[arg-type]
+    async def open_or_create(
+        self, attempt_key: object, claims: ResourceClaims, *, seed_from: object | None = None
+    ) -> object:
+        return await self.inner.open_or_create(attempt_key, claims, seed_from=seed_from)  # type: ignore[arg-type]
 
     async def seal(self, binding: object) -> object:
         return await self.inner.seal(binding)  # type: ignore[arg-type]
