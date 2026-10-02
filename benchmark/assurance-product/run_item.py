@@ -37,7 +37,7 @@ _AMBIENT_OVERRIDE_VARS = frozenset(
     }
 )
 _CREDENTIAL_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|authorization|bearer|token|secret)\s*[:=](?!=)\s*\S+|sk-[A-Za-z0-9-]+"
+    r"(?i)(api[_-]?key|authorization|bearer|token|secret)\s*[:=](?!=)\s*\S+|(?<![A-Za-z0-9])sk-[A-Za-z0-9-]+"
 )
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "interrupted"})
 _OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS = 300
@@ -118,7 +118,7 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
         raise SystemExit("routing_assignments must equal deployment_binding_routes")
     models = {assignment.get("provider_model") for assignment in routes.values()}
     workers = {assignment.get("worker_profile") for assignment in routes.values()}
-    if models != {"deepseek/deepseek-v4-flash"}:
+    if models != {"deepseek/deepseek-flash"}:
         raise SystemExit(f"OpenCode model mismatch: {sorted(models)}")
     if workers != {"max"}:
         raise SystemExit(f"OpenCode worker mismatch: {sorted(workers)}")
@@ -290,6 +290,8 @@ def _write_bootstrap_spec(
             "readiness_url": f"{_BACKEND_URL}/openapi.json",
             "env": {"BASE_URL": _BACKEND_URL},
             "env_from_node": ["QA_ADMIN_PASSWORD"],
+            "api_base_url": _BACKEND_URL,
+            "ui_base_url": _FRONTEND_URL,
         },
         "routes": {
             "provider_model": first["provider_model"],
@@ -1064,7 +1066,7 @@ def _write_evidence_markdown(path: Path, payload: Mapping[str, Any]) -> None:
         "",
         "## Routing",
         "",
-        "Every prepare ID is locked to `deepseek/deepseek-v4-flash` / `max`.",
+        "Every prepare ID is locked to `deepseek/deepseek-flash` / `max`.",
         "",
         "## Status",
         "",

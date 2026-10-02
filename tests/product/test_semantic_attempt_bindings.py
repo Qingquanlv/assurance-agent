@@ -725,7 +725,7 @@ def test_installed_proposal_finalize_uses_current_input_without_approval_envelop
     assert not {"validated_input", "prepared", "approval", "mapping", "artifact_paths"} & handler.input.keys()
 
 
-def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: Path) -> None:
+def _prepared_finalize_bundle(tmp_path: Path, *documents: dict[str, object]) -> Any:
     from agent_runtime_contracts import (
         AgentRunRequest,
         AgentRunResult,
@@ -738,7 +738,6 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
         canonical_digest,
     )
     from agent_runtime_contracts.wire.models import ExecutionLimits
-    from assurance_product.runtime_bindings import InstalledFinalizePhase
 
     result_payload = {"status": "ok"}
     run_evidence = AgentRunResult.model_validate(
@@ -764,13 +763,7 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
     prepared = AgentRunRequest(
         instructions=(
             InstructionPart.text("text/plain", "execute"),
-            InstructionPart.from_json(
-                {
-                    "change_id": "CH-1",
-                    "batch_id": "batch-1",
-                    "execution_view_root": ("qa/.staging/task/attempt-1/qa/.staging/execution/batch-1"),
-                }
-            ),
+            *(InstructionPart.from_json(document) for document in documents),
         ),
         result_contract=ResultContract(
             schema_id="test.result.v1",
@@ -790,12 +783,25 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
     )
     raw = tmp_path / "prepared-raw"
     raw.mkdir()
-    bundle = RawFinalizeBundle(
+    return RawFinalizeBundle(
         validated_input=_PhaseInput(change_id="CH-1"),
         prepared=prepared,
         agent_result=_PhaseOutput(),
         run_evidence=run_evidence,
         raw_workspace=ReadOnlyRawWorkspace(raw),
+    )
+
+
+def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: Path) -> None:
+    from assurance_product.runtime_bindings import InstalledFinalizePhase
+
+    bundle = _prepared_finalize_bundle(
+        tmp_path,
+        {
+            "change_id": "CH-1",
+            "batch_id": "batch-1",
+            "execution_view_root": "qa/.staging/task/attempt-1/qa/.staging/execution/batch-1",
+        },
     )
     handler = _CapturingFinalizeHandler(_PreparedBusinessFinalizeInput)
     phase = InstalledFinalizePhase("assurance.execution.execute.finalize", handler, _PhaseOutput)
@@ -806,3 +812,43 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
     projected = _PreparedBusinessFinalizeInput.model_validate(handler.input)
     assert projected.batch_id == "batch-1"
     assert projected.execution_view_root.endswith("/.staging/execution/batch-1")
+
+
+def test_whole_business_finalize_merges_documents_with_distinct_version_tags(tmp_path: Path) -> None:
+    from agent_runtime_contracts.ops import AgentOpFinalizeInputV1
+    from assurance_product.runtime_bindings import InstalledFinalizePhase
+
+    bundle = _prepared_finalize_bundle(
+        tmp_path,
+        {"schema_version": "1", "change_id": "CH-1", "required_capabilities": ["api.dept"]},
+        {"schema_version": "1.0", "added": [], "modified": [], "removed": []},
+    )
+    handler = _CapturingFinalizeHandler(AgentOpFinalizeInputV1)
+    phase = InstalledFinalizePhase("assurance.generation.api.codegen.finalize", handler, _PhaseOutput)
+
+    result = asyncio.run(phase.execute(bundle, _phase_scope(tmp_path)))
+
+    assert result == {"status": "ok"}
+    prepare = AgentOpFinalizeInputV1.model_validate(handler.input).model_dump(mode="json")["prepare"]
+    assert prepare["required_capabilities"] == ["api.dept"]
+    assert prepare["added"] == []
+    assert "schema_version" not in prepare
+
+
+def test_whole_business_finalize_rejects_conflicting_business_fields(tmp_path: Path) -> None:
+    from agent_runtime_contracts.ops import AgentOpFinalizeInputV1
+    from assurance_product.runtime_bindings import InstalledFinalizePhase
+    from graph_engine.attempts import PermanentTaskFailure
+
+    bundle = _prepared_finalize_bundle(tmp_path, {"change_id": "CH-1"}, {"change_id": "CH-2"})
+    handler = _CapturingFinalizeHandler(AgentOpFinalizeInputV1)
+    phase = InstalledFinalizePhase("assurance.generation.api.codegen.finalize", handler, _PhaseOutput)
+
+    result = asyncio.run(phase.execute(bundle, _phase_scope(tmp_path)))
+
+    assert isinstance(result, PermanentTaskFailure)
+    assert (result.kind, result.message) == (
+        "invalid_input",
+        "prepared business field is ambiguous: change_id",
+    )
+    assert handler.input is None

@@ -39,10 +39,6 @@ _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
         "1",
         "5a32812996fb37f038ebe172f840c9412c917c2f90cc3eb1a1d0b32338c2406d",
     ),
-    "assurance.intake.schema.case.v1": (
-        "1",
-        "44a0bb1d4c31a2b9b18453823532f07c5c15102bb07263b625462a4cea2b3e8b",
-    ),
     "assurance.intake.schema.qa-change.v1": (
         "1",
         "c0053b53d8d5358e7818694c5313e7632a62e379113c161c959f2ed46e2ea1f5",
@@ -50,22 +46,6 @@ _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.intake.schema.resolved-assurance-plan.v1": (
         "1",
         "e71dd18ebfbce8afa8559a62cb89e0eaf40a6b60d0964d35db2d2579f3b5887f",
-    ),
-    "assurance.intake.workflow.case.input.v1": (
-        "1",
-        "2eba0cec702a8417a5d8ad5f95713c2d6f2721a308a621cd81cd862d9d9f1d93",
-    ),
-    "assurance.intake.workflow.case.output.v1": (
-        "1",
-        "7f52fd1fd1c53ceb8704c05ea7ce059d27302d5b3a994b852f470dd1a64253a7",
-    ),
-    "assurance.intake.workflow.prepare.input.v1": (
-        "1",
-        "94c01c29cf5e7ddab08f73f3adef4fec2206a64fa56938e4b52b5e7380f10e08",
-    ),
-    "assurance.intake.workflow.prepare.output.v1": (
-        "1",
-        "9f78ed3908421163bfffc2579e083300914bbb9cc9a02c8bf54fc7a3bf97e6eb",
     ),
 }
 
@@ -421,9 +401,6 @@ def test_explore_rejects_wrong_schema_version() -> None:
 def test_intake_schema_bytes_equal_model_schema() -> None:
     assert schema_bytes("assurance.intake.schema.case-authoring.v1") == canonical_json_bytes(
         cast(JSONValue, CaseYamlAuthoring.model_json_schema())
-    )
-    assert schema_bytes("assurance.intake.schema.case.v1") == canonical_json_bytes(
-        cast(JSONValue, CaseYaml.model_json_schema())
     )
     assert schema_bytes("assurance.intake.schema.qa-change.v1") == canonical_json_bytes(
         cast(JSONValue, QaYaml.model_json_schema())

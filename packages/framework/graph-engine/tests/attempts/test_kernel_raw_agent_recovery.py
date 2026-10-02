@@ -128,8 +128,10 @@ class _RecordingWorkspace:
         self.binding: TaskWorkspaceBinding | None = None
         self.promotions = 0
 
-    async def open_or_create(self, attempt_key: AttemptKey, claims: ResourceClaims) -> TaskWorkspaceBinding:
-        self.binding = await self.inner.open_or_create(attempt_key, claims)
+    async def open_or_create(
+        self, attempt_key: AttemptKey, claims: ResourceClaims, *, seed_from: AttemptKey | None = None
+    ) -> TaskWorkspaceBinding:
+        self.binding = await self.inner.open_or_create(attempt_key, claims, seed_from=seed_from)
         return self.binding
 
     async def seal(self, binding: TaskWorkspaceBinding):

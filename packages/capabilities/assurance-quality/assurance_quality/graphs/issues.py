@@ -8,8 +8,10 @@ from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import AttemptGraph
+from graph_engine.stategraph.attempt_graph import HasContractId
 from graph_engine.stategraph.routing import select_exclusive_route
 
+from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.decisions import FIX_ELIGIBLE_CLASSIFICATIONS
 from assurance_quality.graphs.nodes import (
     activation_issue_analysis,
@@ -23,18 +25,18 @@ from assurance_quality.graphs.nodes import (
     terminal_done,
 )
 from assurance_quality.graphs.state import QualityState
+from assurance_quality.ops.issue_analysis import op as issue_analysis
+from assurance_quality.ops.issue_triage import op as issue_triage
 
-_ISSUE_TRIAGE_ID = "assurance.quality.agent.issue-triage.v1"
-_ISSUE_ANALYSIS_ID = "assurance.quality.agent.issue-analysis.v1"
-_ISSUE_RECONCILE_ID = "assurance.quality.reconcile-issues"
+_ISSUE_RECONCILE = TASK_ATTEMPT_CONTRACTS["reconcile-issues"]
 _FAILURE_OTHERWISE = "failed"
 _FAILURE_TARGETS = ("fix-eligible", "report-issue", _FAILURE_OTHERWISE)
 _RECONCILE_PATHS: dict[Hashable, str] = {"ready": END, "failed": "failed"}
 IssueExport = Literal["issue-review", "issue-analyze", "issue-reconcile"]
-_CONTRACT_BY_EXPORT: dict[IssueExport, str] = {
-    "issue-review": _ISSUE_TRIAGE_ID,
-    "issue-analyze": _ISSUE_ANALYSIS_ID,
-    "issue-reconcile": _ISSUE_RECONCILE_ID,
+_CONTRACT_BY_EXPORT: dict[IssueExport, str | HasContractId] = {
+    "issue-review": issue_triage,
+    "issue-analyze": issue_analysis,
+    "issue-reconcile": _ISSUE_RECONCILE,
 }
 
 
@@ -75,7 +77,7 @@ def build_issue_graph(context: CapabilityBuildContext, *, export: IssueExport) -
     if export == "issue-reconcile":
         builder.add_attempt(
             semantic_node_id,
-            _ISSUE_RECONCILE_ID,
+            _ISSUE_RECONCILE,
             select=select_reconcile_issues,
             publish=publish_issue_reconcile,
             activation=activation_issue_reconcile,

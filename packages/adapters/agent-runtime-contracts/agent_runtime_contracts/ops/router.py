@@ -309,6 +309,7 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
     agent: Agent[ResultT]
     finalize: Finalize[InputT, ResultT, OutputT]
     output: type[OutputT]
+    retry: AttemptRetryPolicy | None = None
 
     @property
     def directory(self) -> str:
@@ -351,7 +352,7 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
                 reads=self.router.reads,
                 writes=tuple(sorted({*claims, *prepare, *finalize})),
             ),
-            retry=self.router.agent_retry,
+            retry=self.router.agent_retry if self.retry is None else self.retry,
             timeout=self.router.timeout,
             validators=(),
             phase_write_claims=AgentPhaseWriteClaims(prepare=prepare, runtime=runtime, finalize=finalize),
@@ -549,7 +550,9 @@ class OpRouter:
         agent: Agent[ResultT],
         finalize: Finalize[InputT, ResultT, OutputT] | None = None,
         output: type[OutputT],
+        retry: AttemptRetryPolicy | None = None,
     ) -> AgentOp[InputT, ResultT, OutputT]:
+        """Declare one Agent op; ``retry`` overrides the router's ``agent_retry`` for it."""
         op = AgentOp(
             router=self,
             name=name,
@@ -558,6 +561,7 @@ class OpRouter:
             agent=agent,
             finalize=Finalize() if finalize is None else finalize,
             output=output,
+            retry=retry,
         )
         self._register(op)
         return op

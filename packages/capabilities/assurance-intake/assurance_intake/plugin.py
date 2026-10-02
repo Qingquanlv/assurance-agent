@@ -31,19 +31,23 @@ _SCHEMA_FILES: dict[str, str] = {
     ),
     "assurance.intake.schema.case-authoring.v1": "contracts/schemas/case-authoring.v1.schema.json",
     "assurance.intake.schema.case-review.v1": "contracts/schemas/case-review.v1.schema.json",
-    "assurance.intake.schema.case.v1": "contracts/schemas/case.v1.schema.json",
     "assurance.intake.schema.case-selection.v1": "contracts/schemas/case-selection.v1.schema.json",
     "assurance.intake.schema.qa-change.v1": "contracts/schemas/qa-change.v1.schema.json",
-    "assurance.intake.workflow.case.input.v1": "contracts/schemas/workflow/case-input.v1.schema.json",
-    "assurance.intake.workflow.case.output.v1": "contracts/schemas/workflow/case-output.v1.schema.json",
-    "assurance.intake.workflow.prepare.input.v1": "contracts/schemas/workflow/prepare-input.v1.schema.json",
-    "assurance.intake.workflow.prepare.output.v1": (
-        "contracts/schemas/workflow/prepare-output.v1.schema.json"
+}
+
+_GENERATED_SCHEMAS: dict[str, str] = {
+    "assurance.intake.schema.case-authoring.v1": "assurance_intake.contracts.cases:CaseYamlAuthoring",
+    "assurance.intake.schema.case-review.v1": "assurance_intake.contracts.review:CaseReviewResultV1",
+    "assurance.intake.schema.case-selection.v1": "assurance_intake.contracts.case_selection:CaseSelectionV1",
+    "assurance.intake.schema.qa-change.v1": "assurance_intake.contracts.cases:QaYaml",
+    "assurance.intake.schema.resolved-assurance-plan.v1": (
+        "assurance_intake.contracts.plan:ResolvedAssurancePlan"
     ),
 }
 
 
 class IntakePlugin(CapabilityPlugin):
+    generated_schemas = _GENERATED_SCHEMAS
     spec = CapabilitySpec(
         plugin_id="assurance.intake",
         version="0.3.0",

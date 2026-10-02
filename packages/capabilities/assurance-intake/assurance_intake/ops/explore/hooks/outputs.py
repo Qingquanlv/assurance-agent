@@ -20,10 +20,11 @@ from assurance_intake.contracts.explore import (
     REQUIREMENT_PATH,
     RUN_SPEC_SNAPSHOT_PATH,
     ExploreAdvisoryV1,
+    ObligationDraftV1,
     PreparedExploreV1,
 )
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
-from assurance_intake.contracts.obligations import ExpectedBasisV1, SourceRefV1
+from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObligationV1, SourceRefV1
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
 )
@@ -33,6 +34,7 @@ from assurance_intake.domain.obligations import (
     TrustedIntakeSourcesV1,
     apply_scope_exclusions,
     authenticate_source,
+    draft_mrc_id,
     normalize_obligation_drafts,
     resolve_requirement_quote,
 )
@@ -153,6 +155,39 @@ def _trusted_sources(workspace: Path) -> TrustedIntakeSourcesV1 | None:
     )
 
 
+def _reject_unobservable_included_drafts(
+    drafts: tuple[ObligationDraftV1, ...],
+    sealed: tuple[PreparedObligationV1, ...],
+) -> None:
+    """Fail closed before an included required obligation is sealed without a status observation."""
+
+    by_id = {row.mrc_id: row for row in sealed}
+    problems: list[str] = []
+    for sequence, draft in enumerate(drafts, start=1):
+        row = by_id.get(draft_mrc_id(draft, sequence))
+        if row is None or not row.required or row.scope_disposition != "included":
+            continue
+        label = f"{draft.draft_id} (proposed_key={draft.proposed_key or 'null'})"
+        if not draft.observation_goals:
+            problems.append(
+                f"{label} has empty observation_goals; add at least one entry with key, "
+                "condition, proposed_expected_status, and basis_quotes"
+            )
+            continue
+        missing = [goal.key for goal in draft.observation_goals if goal.proposed_expected_status is None]
+        if missing:
+            listed = ", ".join(missing)
+            problems.append(
+                f"{label} has null proposed_expected_status on observation_goals ({listed}); "
+                "set each proposed_expected_status to an HTTP status code"
+            )
+    if problems:
+        raise OutputError(
+            "included required obligations must seal non-empty verification_requirements: "
+            + "; ".join(problems)
+        )
+
+
 def seal_official_exploration(
     workspace: Path,
     advisory: ExploreAdvisoryV1,
@@ -221,6 +256,8 @@ def seal_official_exploration(
                 ),
             )
         )
+    sealed_rows = cast(tuple[PreparedObligationV1, ...], tuple(sealed))
+    _reject_unobservable_included_drafts(advisory.minimum_required_coverage, sealed_rows)
     official = PreparedExploreV1(
         schema_version="1",
         change_id=advisory.change_id,
@@ -231,7 +268,7 @@ def seal_official_exploration(
         evidence_inventory=advisory.evidence_inventory,
         source_code_evidence=tuple(advisory.source_code_evidence),
         case_design_guidance=advisory.case_design_guidance,
-        minimum_required_coverage=tuple(sealed),  # type: ignore[arg-type]
+        minimum_required_coverage=sealed_rows,
         open_questions_for_case_design=tuple(advisory.open_questions_for_case_design),
         test_strategy=advisory.test_strategy,
     )

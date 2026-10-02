@@ -99,6 +99,7 @@ class AttemptNodeFactory:
         if kernel is None:
             raise TypeError("attempt kernel is required")
         completions: list[tuple[AttemptKey, ActiveSystemInterrupt]] = []
+        seed_from: AttemptKey | None = None
         for technical_attempt in range(1, task.retry.max_attempts + 1):
             key = derive_attempt_key(
                 invocation_id=invocation_id,
@@ -123,6 +124,7 @@ class AttemptNodeFactory:
                 semantic_node_id=semantic_node_id,
                 attempt_key=key,
                 fencing_token=fencing_token,
+                seed_attempt_key=seed_from,
             )
             resolution = await kernel.execute_or_recover(key, contract, validated, context)
             completions.extend((key, item) for item in issued)
@@ -140,6 +142,8 @@ class AttemptNodeFactory:
             ):
                 if resolution.kind == "invalid_output":
                     validated = _with_latest_validation_error(validated, resolution.message)
+                    if task.retry.carry_invalid_output:
+                        seed_from = key
                 self.trace.append(f"retry:{technical_attempt + 1}/{task.retry.max_attempts}")
                 if task.retry.interval_seconds:
                     await asyncio.sleep(task.retry.interval_seconds)

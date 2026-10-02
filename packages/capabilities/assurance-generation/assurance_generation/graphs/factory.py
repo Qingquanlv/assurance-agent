@@ -7,6 +7,7 @@ from langgraph.graph import END, START
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
+from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
 from assurance_generation.feature import GenerationGraphs
 from assurance_generation.graphs.api import compile_family_pair
@@ -87,7 +88,7 @@ def _build_resolve_inputs_graph(context: CapabilityBuildContext) -> CompiledStat
     )
     builder.add_attempt(
         "generation.resolve-inputs",
-        "assurance.generation.resolve-inputs",
+        TASK_ATTEMPT_CONTRACTS["resolve-inputs"],
         select=select_generation_inputs,
         publish=publish_generation_inputs,
         activation=activation_generation_inputs,
@@ -118,7 +119,7 @@ def _build_root_graph(
     )
     builder.add_attempt(
         "generation.resolve-inputs",
-        "assurance.generation.resolve-inputs",
+        TASK_ATTEMPT_CONTRACTS["resolve-inputs"],
         select=select_generation_inputs,
         publish=publish_generation_inputs,
         activation=activation_generation_inputs,
@@ -133,7 +134,7 @@ def _build_root_graph(
     builder.add_node("complete", _node(complete_generation_node))
     builder.add_attempt(
         "generation.publish-cycle",
-        "assurance.generation.publish-cycle",
+        TASK_ATTEMPT_CONTRACTS["publish-cycle"],
         select=select_generation_cycle,
         publish=publish_generation_cycle,
         activation=activation_generation_cycle,

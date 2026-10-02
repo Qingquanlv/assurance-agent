@@ -85,20 +85,30 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.improvement.schema.promotion.v1": "schemas/promotion.v1.schema.json",
     "assurance.improvement.schema.retro-context.v3": "schemas/retro-context.v3.schema.json",
     "assurance.improvement.schema.retro-signals.v3": "schemas/retro-signals.v3.schema.json",
-    "assurance.improvement.workflow.apply.input.v1": "schemas/workflow/apply-input.v1.schema.json",
-    "assurance.improvement.workflow.apply.output.v1": "schemas/workflow/apply-output.v1.schema.json",
-    "assurance.improvement.workflow.archive.input.v1": "schemas/workflow/archive-input.v1.schema.json",
-    "assurance.improvement.workflow.archive.output.v1": "schemas/workflow/archive-output.v1.schema.json",
-    "assurance.improvement.workflow.evaluate.input.v1": "schemas/workflow/evaluate-input.v1.schema.json",
-    "assurance.improvement.workflow.evaluate.output.v1": ("schemas/workflow/evaluate-output.v1.schema.json"),
-    "assurance.improvement.workflow.export.input.v1": "schemas/workflow/export-input.v1.schema.json",
-    "assurance.improvement.workflow.export.output.v1": "schemas/workflow/export-output.v1.schema.json",
-    "assurance.improvement.workflow.retro.input.v1": "schemas/workflow/retro-input.v1.schema.json",
-    "assurance.improvement.workflow.retro.output.v1": "schemas/workflow/retro-output.v1.schema.json",
-    "assurance.improvement.workflow.review.input.v1": "schemas/workflow/review-input.v1.schema.json",
-    "assurance.improvement.workflow.review.output.v1": "schemas/workflow/review-output.v1.schema.json",
-    "assurance.improvement.workflow.rollback.input.v1": "schemas/workflow/rollback-input.v1.schema.json",
-    "assurance.improvement.workflow.rollback.output.v1": ("schemas/workflow/rollback-output.v1.schema.json"),
+}
+
+_GENERATED_SCHEMAS: dict[str, str] = {
+    "assurance.improvement.schema.declaration-proposal.v1": (
+        "assurance_improvement.contracts:DeclarationProposal"
+    ),
+    "assurance.improvement.schema.improvement-candidates.v3": (
+        "assurance_improvement.contracts:ImprovementCandidateDocumentV3"
+    ),
+    "assurance.improvement.schema.improvement-delivery.v1": (
+        "assurance_improvement.contracts:ImprovementDeliveryDocument"
+    ),
+    "assurance.improvement.schema.improvement-effect-intent.v1": (
+        "assurance_improvement.contracts:ImprovementEffectIntentV1"
+    ),
+    "assurance.improvement.schema.improvement-effect-receipt.v1": (
+        "assurance_improvement.contracts:ImprovementEffectReceiptV1"
+    ),
+    "assurance.improvement.schema.improvement-review.v1": (
+        "assurance_improvement.contracts:ImprovementReviewSubject"
+    ),
+    "assurance.improvement.schema.promotion.v1": "assurance_improvement.contracts:TestPromotionManifest",
+    "assurance.improvement.schema.retro-context.v3": "assurance_improvement.contracts:RetroContextV3",
+    "assurance.improvement.schema.retro-signals.v3": "assurance_improvement.contracts:SignalDocumentV3",
 }
 
 _VALIDATORS = {
@@ -139,6 +149,7 @@ _HANDLERS = improvement_handlers()
 
 
 class ImprovementPlugin(CapabilityPlugin):
+    generated_schemas = _GENERATED_SCHEMAS
     spec = CapabilitySpec(
         plugin_id="assurance.improvement",
         version="0.3.0",

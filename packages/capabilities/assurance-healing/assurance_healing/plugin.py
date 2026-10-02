@@ -81,17 +81,24 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.healing.schema.proposal-approved-receipt.v1": (
         "schemas/proposal-approved-receipt.v1.schema.json"
     ),
-    "assurance.healing.workflow.repair-coverage.input.v1": (
-        "schemas/workflow/repair-coverage-input.v1.schema.json"
+}
+
+_GENERATED_SCHEMAS: dict[str, str] = {
+    "assurance.healing.schema.allocation-intent.v2": "assurance_healing.contracts:HealingAllocationIntentV2",
+    "assurance.healing.schema.allocation-receipt.v2": (
+        "assurance_healing.contracts:HealingAllocationReceiptV2"
     ),
-    "assurance.healing.workflow.repair-coverage.output.v1": (
-        "schemas/workflow/repair-coverage-output.v1.schema.json"
+    "assurance.healing.schema.coverage-repair.v1": "assurance_healing.contracts:CoverageRepairBrief",
+    "assurance.healing.schema.fix-proposal.v1": "assurance_healing.contracts:FixProposal",
+    "assurance.healing.schema.heal-apply-intent.v2": "assurance_healing.contracts:HealApplyIntentV2",
+    "assurance.healing.schema.heal-apply-receipt.v2": "assurance_healing.contracts:HealApplyReceiptV2",
+    "assurance.healing.schema.healing-safety.v1": "assurance_healing.contracts:SafetyCheck",
+    "assurance.healing.schema.healing-status.v1": "assurance_healing.contracts:HealingStatusV1",
+    "assurance.healing.schema.proposal-approved-intent.v1": (
+        "assurance_healing.contracts:ProposalApprovedIntentV1"
     ),
-    "assurance.healing.workflow.repair-failure.input.v1": (
-        "schemas/workflow/repair-failure-input.v1.schema.json"
-    ),
-    "assurance.healing.workflow.repair-failure.output.v1": (
-        "schemas/workflow/repair-failure-output.v1.schema.json"
+    "assurance.healing.schema.proposal-approved-receipt.v1": (
+        "assurance_healing.contracts:ProposalApprovedReceiptV1"
     ),
 }
 
@@ -132,6 +139,7 @@ _HANDLERS = healing_task_handlers()
 
 
 class HealingPlugin(CapabilityPlugin):
+    generated_schemas = _GENERATED_SCHEMAS
     spec = CapabilitySpec(
         plugin_id="assurance.healing",
         version="0.3.0",

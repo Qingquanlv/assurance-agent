@@ -1756,13 +1756,6 @@ items:
   status: verified
   verification: packages/features/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
 - kind: schema
-  legacy_id: assurance.intake.schema.case.v1
-  disposition: migrate
-  owner: assurance.intake
-  new_id: assurance.intake.schema.case.v1
-  status: verified
-  verification: packages/features/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
-- kind: schema
   legacy_id: assurance.intake.schema.qa-change.v1
   disposition: migrate
   owner: assurance.intake

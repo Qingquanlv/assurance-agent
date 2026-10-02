@@ -439,6 +439,17 @@ def test_review_prose_is_not_a_digest_credential() -> None:
     )
 
 
+def test_task_optimize_path_is_not_a_digest_credential() -> None:
+    reject_credentials_in_digest_input(
+        {
+            "project_scope": (
+                "/Users/example/.codex/worktrees/task-optimize/assurance-agent/"
+                ".worktrees/vue-fastapi-admin/BENCH-item"
+            )
+        }
+    )
+
+
 def test_bearer_header_is_still_a_digest_credential() -> None:
     with pytest.raises(ValueError, match="credential"):
         reject_credentials_in_digest_input("Authorization: Bearer sk-secret-canary")

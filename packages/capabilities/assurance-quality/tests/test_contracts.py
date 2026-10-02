@@ -134,46 +134,6 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
         "1",
         "f1c5b0b1a3fcce64abaade2c2f90acadd03adda6fd7de231639e2d3365590e45",
     ),
-    "assurance.quality.workflow.assess.input.v1": (
-        "1",
-        "1082fea0fd50a41ccf4ecfa10d51b07bf13d8817af26e90aef0e4df927c95028",
-    ),
-    "assurance.quality.workflow.assess.output.v1": (
-        "1",
-        "b454175dbb5cd1f283affabfd4f238692cf3c98d76af8cc856ee4cecd3edbfa3",
-    ),
-    "assurance.quality.workflow.issue-analyze.input.v1": (
-        "1",
-        "7ca56fec95bf59f2996692db50878334fd4f3f22049e675b29bf1530b05b4b00",
-    ),
-    "assurance.quality.workflow.issue-analyze.output.v1": (
-        "1",
-        "c294931c8f49f34abb6ae7c5f2cd2db0b2167accaf3eaf6cd0f1646048a59d53",
-    ),
-    "assurance.quality.workflow.issue-reconcile.input.v1": (
-        "1",
-        "7ca56fec95bf59f2996692db50878334fd4f3f22049e675b29bf1530b05b4b00",
-    ),
-    "assurance.quality.workflow.issue-reconcile.output.v1": (
-        "1",
-        "c294931c8f49f34abb6ae7c5f2cd2db0b2167accaf3eaf6cd0f1646048a59d53",
-    ),
-    "assurance.quality.workflow.issue-review.input.v1": (
-        "1",
-        "7ca56fec95bf59f2996692db50878334fd4f3f22049e675b29bf1530b05b4b00",
-    ),
-    "assurance.quality.workflow.issue-review.output.v1": (
-        "1",
-        "c294931c8f49f34abb6ae7c5f2cd2db0b2167accaf3eaf6cd0f1646048a59d53",
-    ),
-    "assurance.quality.workflow.report.input.v1": (
-        "1",
-        "7d0088873d1a5935243f3cfb071a58b9df8bb868927f3fd4027e3678cb46df95",
-    ),
-    "assurance.quality.workflow.report.output.v1": (
-        "1",
-        "878092885436e105a48e0478983f4d6799a350e29a8b1452aea1fa72acca2706",
-    ),
 }
 
 _TESTS_ROOT = Path(__file__).resolve().parent

@@ -69,22 +69,6 @@ _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
         "1",
         "01872edb626924409496458706af1258add2b7f6bb6095e3c1df9e974e24ecf1",
     ),
-    "assurance.healing.workflow.repair-coverage.input.v1": (
-        "1",
-        "590d0fd34463cb229d10571ff2ed4d37dbc2bf2526d9a22926ce5bf47e95990d",
-    ),
-    "assurance.healing.workflow.repair-coverage.output.v1": (
-        "1",
-        "274c1aecb03147846bc6dba1ff42a6fddcdd80fbc62073a944badfd93d1b2765",
-    ),
-    "assurance.healing.workflow.repair-failure.input.v1": (
-        "1",
-        "b2600357ef9c414b01d6d4661bbf76d6e1994e98422f8085d97e383da51cda5b",
-    ),
-    "assurance.healing.workflow.repair-failure.output.v1": (
-        "1",
-        "5ebdd6bb4ce22232a23c7a9a0fbe85eea971c2dd092393c331ddcb17af808079",
-    ),
 }
 
 _TESTS_ROOT = Path(__file__).resolve().parent

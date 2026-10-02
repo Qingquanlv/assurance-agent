@@ -19,8 +19,8 @@ from assurance_healing.graphs.nodes import (
     select_coverage,
 )
 from assurance_healing.graphs.state import HealingState
+from assurance_healing.ops.coverage_repair import op as coverage_repair
 
-_COVERAGE_ID = "assurance.healing.agent.coverage-repair.v1"
 _COVERAGE_NODE = "healing.coverage-repair"
 _ADMIT_OTHERWISE = "not-eligible"
 _ADMIT_ADVANCE = "repair-round-advance"
@@ -91,7 +91,7 @@ def build_repair_coverage_graph(context: CapabilityBuildContext) -> CompiledStat
     _add_shared_terminals(builder)
     builder.add_attempt(
         _COVERAGE_NODE,
-        _COVERAGE_ID,
+        coverage_repair,
         select=select_coverage,
         publish=publish_repair,
         activation=activation_repair,

@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 import graph_engine.attempts.workspace as task_workspace
-from graph_engine.plugin_api import TaskWorkspaceBinding
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.plugin_api import ResourceClaims, TaskWorkspaceBinding
 from graph_engine.attempts.workspace import (
     TaskWorkspaceProvider,
     TaskWorkspaceStore,
@@ -68,6 +69,84 @@ def test_begin_captures_only_declared_output_baselines(tmp_path: Path) -> None:
     assert [
         (file.path, file.before_sha256, file.after_sha256) for file in binding.identity.baseline_files
     ] == [("out/nested.txt", hashlib.sha256(b"before").hexdigest(), None)]
+
+
+def test_begin_seeds_a_new_root_from_the_rejected_attempt(tmp_path: Path) -> None:
+    store, _project, _attempts = _store(tmp_path)
+    rejected = store.begin(task_id="rejected", attempt=1, output_paths=("out",))
+    (rejected.write_root / "out" / "cases").mkdir(parents=True)
+    (rejected.write_root / "out" / "cases" / "case.yaml").write_bytes(b"draft")
+    (rejected.write_root / "out" / "cases" / "case.yaml").chmod(0o640)
+
+    retry = store.begin(task_id="retry", attempt=1, output_paths=("out",), seed_task_id="rejected")
+
+    assert (retry.write_root / "out" / "cases" / "case.yaml").read_bytes() == b"draft"
+    assert retry.identity.seed is not None
+    assert retry.identity.seed.source_identity_digest == rejected.identity.identity_digest
+    assert [(file.path, file.sha256, file.mode) for file in retry.identity.seed.files] == [
+        ("out/cases/case.yaml", hashlib.sha256(b"draft").hexdigest(), 0o640)
+    ]
+    assert [file.path for file in store.seal(retry.identity).files] == ["out/cases/case.yaml"]
+
+
+def test_seed_copies_only_files_inside_the_new_claims(tmp_path: Path) -> None:
+    store, _project, _attempts = _store(tmp_path)
+    rejected = store.begin(task_id="rejected", attempt=1, output_paths=("kept", "dropped"))
+    (rejected.write_root / "kept").write_bytes(b"kept")
+    (rejected.write_root / "dropped").write_bytes(b"dropped")
+
+    retry = store.begin(task_id="retry", attempt=1, output_paths=("kept",), seed_task_id="rejected")
+
+    assert sorted(path.name for path in retry.write_root.iterdir()) == ["kept"]
+    assert retry.identity.seed is not None
+    assert [file.path for file in retry.identity.seed.files] == ["kept"]
+
+
+def test_recovered_root_is_not_seeded_twice(tmp_path: Path) -> None:
+    store, _project, _attempts = _store(tmp_path)
+    rejected = store.begin(task_id="rejected", attempt=1, output_paths=("out.txt",))
+    (rejected.write_root / "out.txt").write_bytes(b"draft")
+    first = store.begin(task_id="retry", attempt=1, output_paths=("out.txt",), seed_task_id="rejected")
+    (first.write_root / "out.txt").write_bytes(b"patched")
+
+    recovered = store.begin(task_id="retry", attempt=1, output_paths=("out.txt",), seed_task_id="rejected")
+
+    assert recovered.identity == first.identity
+    assert (recovered.write_root / "out.txt").read_bytes() == b"patched"
+
+
+def test_missing_seed_task_starts_an_empty_root(tmp_path: Path) -> None:
+    store, _project, _attempts = _store(tmp_path)
+
+    binding = store.begin(task_id="retry", attempt=1, output_paths=("out",), seed_task_id="never-opened")
+
+    assert list(binding.write_root.iterdir()) == []
+    assert binding.identity.seed is None
+    assert "seed" not in binding.identity.model_dump(mode="json")
+
+
+def test_replaced_seed_write_root_fails_closed(tmp_path: Path) -> None:
+    store, _project, _attempts = _store(tmp_path)
+    rejected = store.begin(task_id="rejected", attempt=1, output_paths=("out.txt",))
+    shutil.rmtree(rejected.write_root)
+    rejected.write_root.mkdir()
+    (rejected.write_root / "out.txt").write_bytes(b"swapped")
+
+    with pytest.raises(TaskWorkspaceViolation, match="seed write-root identity"):
+        store.begin(task_id="retry", attempt=1, output_paths=("out.txt",), seed_task_id="rejected")
+
+
+async def test_provider_seeds_from_the_previous_attempt_key(tmp_path: Path) -> None:
+    store, _project, _attempts = _store(tmp_path)
+    provider = TaskWorkspaceProvider(store)
+    claims = ResourceClaims(writes=("out.txt",))
+    first_key = AttemptKey(digest="a" * 64)
+    rejected = await provider.open_or_create(first_key, claims)
+    (rejected.write_root / "out.txt").write_bytes(b"draft")
+
+    retry = await provider.open_or_create(AttemptKey(digest="b" * 64), claims, seed_from=first_key)
+
+    assert (retry.write_root / "out.txt").read_bytes() == b"draft"
 
 
 def test_seal_records_only_declared_regular_staged_files(tmp_path: Path) -> None:

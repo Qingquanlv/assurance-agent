@@ -8,8 +8,10 @@ from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import AttemptGraph
+from graph_engine.stategraph.attempt_graph import HasContractId
 from graph_engine.stategraph.routing import select_exclusive_route
 
+from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_improvement.graphs.nodes import (
     _public_terminal,
     activation_one_shot,
@@ -33,15 +35,15 @@ from assurance_improvement.graphs.nodes import (
     terminal_failed,
 )
 from assurance_improvement.graphs.state import ImprovementState
+from assurance_improvement.ops.archive import op as archive
+from assurance_improvement.ops.improvement_review import op as improvement_review
 
-_ARCHIVE_ID = "assurance.improvement.agent.archive.v1"
-_REVIEW_ID = "assurance.improvement.agent.improvement-review.v1"
-_AUTO_REVIEW_ID = "assurance.improvement.task.apply-improvement-auto-review"
-_HUMAN_REVIEW_ID = "assurance.improvement.task.apply-improvement-review"
-_EVALUATE_ID = "assurance.improvement.task.evaluate-memory-improvement"
-_EXPORT_ID = "assurance.improvement.task.export-change-improvement"
-_APPLY_ID = "assurance.improvement.task.apply-memory-improvement"
-_ROLLBACK_ID = "assurance.improvement.task.rollback-memory-improvement"
+_AUTO_REVIEW = TASK_ATTEMPT_CONTRACTS["assurance.improvement.apply-improvement-auto-review"]
+_HUMAN_REVIEW = TASK_ATTEMPT_CONTRACTS["assurance.improvement.apply-improvement-review"]
+_EVALUATE = TASK_ATTEMPT_CONTRACTS["assurance.improvement.evaluate-memory-improvement"]
+_EXPORT = TASK_ATTEMPT_CONTRACTS["assurance.improvement.export-change-improvement"]
+_APPLY = TASK_ATTEMPT_CONTRACTS["assurance.improvement.apply-memory-improvement"]
+_ROLLBACK = TASK_ATTEMPT_CONTRACTS["assurance.improvement.rollback-memory-improvement"]
 _FAILED = "failed"
 _COMMITTED_TARGETS = ("done", _FAILED)
 _HUMAN_ACTIONS = frozenset({"approve", "reject", "request_rework", "supersede"})
@@ -150,7 +152,7 @@ def _add_shared_terminals(builder: AttemptGraph[ImprovementState]) -> None:
 def _build_one_shot(
     context: CapabilityBuildContext,
     *,
-    contract_id: str,
+    contract_id: str | HasContractId,
     semantic_node_id: str,
     select: object,
     publish: object,
@@ -177,7 +179,7 @@ def _build_one_shot(
 def build_archive_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     return _build_one_shot(
         context,
-        contract_id=_ARCHIVE_ID,
+        contract_id=archive,
         semantic_node_id="improvement.archive",
         select=select_skill,
         publish=publish_archive,
@@ -187,7 +189,7 @@ def build_archive_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
 def build_review_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     return _build_one_shot(
         context,
-        contract_id=_REVIEW_ID,
+        contract_id=improvement_review,
         semantic_node_id="improvement.review",
         select=select_skill,
         publish=publish_review,
@@ -197,7 +199,7 @@ def build_review_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
 def build_evaluate_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     return _build_one_shot(
         context,
-        contract_id=_EVALUATE_ID,
+        contract_id=_EVALUATE,
         semantic_node_id="improvement.evaluate",
         select=select_evaluate,
         publish=publish_evaluate,
@@ -207,7 +209,7 @@ def build_evaluate_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
 def build_export_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     return _build_one_shot(
         context,
-        contract_id=_EXPORT_ID,
+        contract_id=_EXPORT,
         semantic_node_id="improvement.export",
         select=select_export,
         publish=publish_export,
@@ -217,7 +219,7 @@ def build_export_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
 def build_rollback_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     return _build_one_shot(
         context,
-        contract_id=_ROLLBACK_ID,
+        contract_id=_ROLLBACK,
         semantic_node_id="improvement.rollback",
         select=select_rollback,
         publish=publish_rollback,
@@ -233,7 +235,7 @@ def build_apply_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     )
     builder.add_attempt(
         "improvement.apply-auto-review",
-        _AUTO_REVIEW_ID,
+        _AUTO_REVIEW,
         select=select_auto_review,
         publish=publish_auto_review,
         semantic_node_id="improvement.apply-auto-review",
@@ -241,21 +243,21 @@ def build_apply_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder.add_node("human-review", _node(apply_human_interrupt))
     builder.add_attempt(
         "improvement.apply-human-review",
-        _HUMAN_REVIEW_ID,
+        _HUMAN_REVIEW,
         select=select_human_review,
         publish=publish_human_review,
         semantic_node_id="improvement.apply-human-review",
     )
     builder.add_attempt(
         "improvement.apply-evaluate",
-        _EVALUATE_ID,
+        _EVALUATE,
         select=select_evaluate,
         publish=publish_evaluate,
         semantic_node_id="improvement.apply-evaluate",
     )
     builder.add_attempt(
         "improvement.apply",
-        _APPLY_ID,
+        _APPLY,
         select=select_apply_memory,
         publish=publish_apply_memory,
         semantic_node_id="improvement.apply",

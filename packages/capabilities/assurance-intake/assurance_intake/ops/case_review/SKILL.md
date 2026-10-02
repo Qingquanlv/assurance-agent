@@ -519,11 +519,12 @@ itself define the test fixture.
 
 For API cases, check:
 
-- The case describes the scenario clearly (not necessarily the exact endpoint — endpoint detail belongs in the API plan, not the case)
+- The case describes the scenario clearly
+- The case carries at least one structured `{method, path}` step copied from the live API discovery; finalize enforces this, so treat that step as required identity, not forbidden content
 - Preconditions and auth requirements are stated at a conceptual level
 - Expected behaviour / response outcome is clear
 - Test data requirements are described
-- Do **not** flag a case as not automation-ready just because it omits method/path — that detail is added during API planning, not case design
+- Do **not** demand headers, payload schemas, or auth mechanics in the case — those are added during API planning
 
 ### 6. Data and Preconditions
 
@@ -571,15 +572,17 @@ Check whether the case links back to:
 
 Case YAML must NOT contain any of the following. Any occurrence blocks `pass`:
 
-Fuzz and Performance are the field-level exception to the general rule below:
+Fuzz, Performance, and the structured API step are the field-level exceptions to the general rule below:
 `automation.fuzz.endpoints[]` must contain concrete `method` + absolute `path`
 objects and `automation.fuzz.property` plus non-empty `expectations` are required.
 `automation.performance.scenario.endpoint` must identify the concrete HTTP
 operation as `METHOD /absolute/path`, together with an exact capability leaf,
-explicit positive load, and absolute thresholds. Do not flag those schema-owned
-fields as forbidden execution detail.
+explicit positive load, and absolute thresholds. An API case's structured step
+mapping `{method: <METHOD>, path: /absolute/path}` is required by finalize and is
+the third exception. Do not flag those fields as forbidden execution detail, and
+never suggest deleting the structured API step.
 
-- HTTP method or endpoint path outside the schema-owned Fuzz/Performance fields above
+- HTTP method or endpoint path outside the structured API step and the Fuzz/Performance fields above, including a joined string such as `POST /api/v1/dept/create`
 - `Authorization` header values (e.g. `Bearer ${token}`)
 - Concrete request URLs with environment host (e.g. `https://prod.example.com/...`)
 - Hard-coded auth tokens, real credentials, or secrets

@@ -52,7 +52,10 @@ source inspection, not permission to add cases or change the selected families.
 
 When `ui_exploration` or `api_discovery` is present, it is the live surface for this run.
 
-- An API step `method` and `path` must be copied from `api_discovery.families[].operations`.
+- Every API case needs at least one structured step mapping `{method: <METHOD>, path: /absolute/path}`
+  whose values are copied exactly from `api_discovery.families[].operations`. Keep the other
+  steps in natural language. Never join a method and path in one string such as
+  `POST /api/v1/dept/create`; finalize rejects that form in every natural-language field.
 - A fuzz endpoint and a performance `scenario.endpoint` must be copied from that same set.
 - An E2E step `path` must be copied from a feature whose `status` is `explored` or `partial`.
 - Do not invent a route or page that is absent from these documents.
@@ -65,13 +68,17 @@ Do not rely on prior conversation context.
 
 When graph input contains `validation_error`, the previous attempt's output failed
 deterministic validation. Address every semicolon-separated error in that field
-before returning. The write root for this attempt starts empty; rewrite the locked
-outputs so they satisfy those errors and the complete self-review. Do not treat the
+before returning. The write root for this attempt already holds the rejected
+attempt's outputs at their locked paths. Read every one of them first, then use
+`apply_patch` to change only the fields the errors name; keep every other case,
+trace entry, and matrix row byte-for-byte. Do not rewrite a file from scratch. If a
+locked output is missing from the write root, author it fresh. Do not treat the
 error text as permission to widen scope, derive a new capability key, or change a
 valid trace entry.
 
-- If the only error is `case design is missing required automated cases`, activate
-  one required case per named family. Do not invent extra cases.
+- If an error is `case design is missing required automated cases`, give at least one
+  case of each named family's `type` both `status: active` and `automation.required: true`.
+  A `draft` case does not count. Do not invent extra cases.
 - If an error is `E2E cases have no valid journey mapping`, add or repair only the
   reported E2E MRC mapping as specified in Step 8. A key in the authenticated project
   journey set is a valid MRC key even when the advisory MRC did not list it.
@@ -132,7 +139,8 @@ valid trace entry.
    including MRC closed-key discipline and every matrix-to-case mapping; do not return
    immediately after satisfying only the first finding.
 8. **Deterministic validation retry:** If graph input contains `validation_error`,
-   repair every reported error in the new draft. Re-read every output and run the
+   patch every reported error into the rejected draft already in the write root.
+   Re-read every output and run the
    complete self-review before returning the locked receipt. If the error says
    `E2E cases have no valid journey mapping`, add or repair an E2E matrix row whose
    key is copied exactly from the reported `authenticated journey keys` and whose
@@ -164,8 +172,9 @@ the next file. Never issue parallel `write`, `edit`, `artifact_write`, or
 per call; do not batch the four case-design outputs into one patch.
 
 `selected_test_families` is the automation scope frozen in the plan. For every
-selected family (`api`, `e2e`, `fuzz`, `performance`), author at least one active
-`added` or `modified` case with the matching `type` and `automation.required: true`.
+selected family (`api`, `e2e`, `fuzz`, `performance`), author at least one `added` or
+`modified` case with the matching `type`, `status: active`, and `automation.required: true`.
+Finalize counts only `status: active` cases; a `draft` case never satisfies a selected family.
 Every active required case must also have `type.lower()` in that frozen set.
 Report a `family scope conflict` if a required case or obligation needs an unselected
 family; do not reselect families, mutate the plan, or weaken its obligation or oracle.
@@ -1144,7 +1153,7 @@ One case has exactly one `type`. Fuzz and Performance are **independent cases** 
 modified:
   - case_id: TC_USER_AUTH_002
     title: 有效登录用户可以成功登出
-    status: draft
+    status: active
     priority: P0
     severity: blocker
     type: API
@@ -1268,7 +1277,7 @@ regression:
 **Where execution details belong:**
 
 ```
-plans/api-plan.md    → method / path / auth / API mapping / pytest commands
+plans/api-plan.md    → auth / headers / payload mapping / pytest commands (cases carry only the structured {method, path} step)
 plans/e2e-plan.md    → natural steps / environment / Playwright commands
 tests/api/           → actual pytest implementation
 tests/e2e/           → actual Playwright implementation
@@ -1494,7 +1503,7 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 9. `case_id` — exists and matches `TC_[A-Z0-9]+(_[A-Z0-9]+)*_[0-9]{3}` format (underscore-only; hyphens NOT allowed; e.g. `TC_USER_001`, `TC_API_V2_001`, `TC_M4_E2E_001`, `TC_3D_ASSET_001`).
 10. `case_id` — unique within this delta.
 11. `title` — exists and is not empty.
-12. `status` — one of draft, active, deprecated.
+12. `status` — one of draft, active, deprecated. Every case that must run in the selected automation scope is `active`; finalize ignores `draft` cases.
 13. `priority` — one of P0, P1, P2, P3.
 14. `severity` — one of blocker, critical, major, minor.
 15. `type` — exists and is one of `API`, `E2E`, `Fuzz`, `Performance`.
@@ -1528,7 +1537,7 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 **Natural language rules:**
 
 37. `steps` contains no CSS selectors, XPath, `page.locator()`, or `data-testid`.
-38. `steps` contains no `method/path/headers/Authorization` mappings.
+38. `steps` contains no `headers/Authorization` mappings. Every API case has at least one structured `{method, path}` step copied from `api_discovery`; no other step or natural-language field joins an HTTP method with a path.
 39. `steps` contains no pytest/httpx/requests/Playwright code.
 40. `assertions` contains no raw auth tokens or environment-specific URLs.
 41. No execution history is embedded in any case field.
@@ -1666,7 +1675,7 @@ Stop and address these before continuing:
 - Case YAML MUST be at `qa/cases/<module>/case.yaml` — never at `qa/cases/` directly.
 - case.yaml must NOT contain `change:` or `proposal:` top-level blocks.
 - Cases must be natural language — `objective`, `summary`, `preconditions`, `test_data`, `steps`, `assertions`, `postconditions`, `edge_cases`, `related_cases`.
-- NEVER write `method/path/headers` outside the required Fuzz/Performance endpoint fields, auth tokens, pytest code, Playwright code, locators, execution history, or secrets in case YAML.
+- NEVER write `method/path` outside the structured API step and the required Fuzz/Performance endpoint fields. NEVER write headers, auth tokens, pytest code, Playwright code, locators, execution history, or secrets in case YAML.
 - Apply Delta Operation Rules: read target case file before writing, classify each case correctly.
 - Self-review the YAML before invoking aa-case-reviewer.
 - Do NOT generate plans in this skill. Plans are generated by aa-api-plan and aa-e2e-plan.
@@ -1690,7 +1699,7 @@ Stop and address these before continuing:
 - **Transparent defaults (`autonomous`)** — Skip the user wait, but still write `.qa.yaml` `approval.mode: autonomous` (gate-required) and mark `proposal.md` with `generation_mode: autonomous` plus defaults / unresolved gaps
 - **Never strip `.qa.yaml` approval** — Rewriting `.qa.yaml` must keep or rewrite a complete `approval` block; omitting it makes `case-design-gate` STOP
 - **proposal.md first** — Write the proposal before writing cases
-- **Natural language cases** — Describe functional steps and assertions in plain language; leave general method/path/auth/code to aa-api-plan, while still providing the required concrete Fuzz/Performance endpoint fields; include objective, postconditions, edge_cases, related_cases, automation.status, regression
+- **Natural language cases** — Describe functional steps and assertions in plain language; leave auth/headers/code to aa-api-plan, while still providing the structured API `{method, path}` step and the required concrete Fuzz/Performance endpoint fields; include objective, postconditions, edge_cases, related_cases, automation.status, regression
 - **Delta operations are explicit** — Decide added/modified/removed at write time, not at archive time
 - **Validate before invoking** — Self-review the case YAML before handing off to aa-case-reviewer
-- **No general execution details in cases** — `method/path/headers` belong in `plans/api-plan.md`, except for the required schema-owned Fuzz/Performance endpoint identity
+- **No general execution details in cases** — headers, auth, and payload mapping belong in `plans/api-plan.md`; method/path appear only in the structured API step and the schema-owned Fuzz/Performance endpoint identity

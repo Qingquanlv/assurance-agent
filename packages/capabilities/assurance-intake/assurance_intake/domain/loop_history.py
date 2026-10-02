@@ -6,7 +6,7 @@ from assurance_intake.contracts.loop_history import (
     LoopFamily,
     LoopKind,
     LoopRoundHistoryV1,
-    _history_identity,
+    history_identity,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
@@ -24,7 +24,7 @@ def build_loop_round_history(
 ) -> LoopRoundHistoryV1:
     ordered = tuple(sorted(source_refs, key=lambda item: (item.path, item.digest)))
     return LoopRoundHistoryV1(
-        evidence_id=_history_identity(
+        evidence_id=history_identity(
             change_id=change_id,
             coverage_epoch=coverage_epoch,
             loop_kind=loop_kind,

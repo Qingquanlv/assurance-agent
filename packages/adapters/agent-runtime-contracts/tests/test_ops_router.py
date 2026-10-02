@@ -278,6 +278,20 @@ def test_discovery_derives_handlers_contracts_and_routes(tmp_path: Path) -> None
     ]
 
 
+def test_agent_op_may_override_the_router_retry_policy(tmp_path: Path) -> None:
+    override = _ECHO_INIT.replace(
+        'op = router.agent(\n    "echo",',
+        'op = router.agent(\n    "echo",\n    retry=router.agent_retry.model_copy(update={"carry_invalid_output": True}),',
+    )
+    assert override != _ECHO_INIT
+    default_router = _router(_capability(tmp_path / "default"))
+    override_router = _router(_capability(tmp_path / "override", extra={"ops/echo/__init__.py": override}))
+
+    assert default_router.agent_contracts()["echo"].retry.carry_invalid_output is False
+    retry = override_router.agent_contracts()["echo"].retry
+    assert (retry.max_attempts, retry.carry_invalid_output) == (2, True)
+
+
 def test_resource_manifest_comes_from_op_directories(tmp_path: Path) -> None:
     router = _router(_capability(tmp_path))
 

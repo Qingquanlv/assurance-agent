@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from assurance_intake.contracts.cases import CaseEntryAuthoring, CaseYamlAuthoring
+from assurance_intake.domain.case_checks import reject_endpoint_literals
 from assurance_intake.domain.surface_guard import SurfaceMismatch, assert_cases_match_surface
 from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
 
@@ -80,6 +81,21 @@ def test_api_step_must_match_a_discovered_operation() -> None:
         assert_cases_match_surface(
             _case_with_api_step("POST", "/api/v1/user/missing"), _api(), _ui(), {"api"}
         )
+
+
+def test_api_case_needs_a_structured_method_path_step() -> None:
+    entry = CaseEntryAuthoring.model_construct(case_id="TC_USER_001", type="API", steps=["调用用户创建接口"])
+    document = CaseYamlAuthoring.model_construct(added=[entry], modified=[])
+
+    with pytest.raises(SurfaceMismatch, match=r"TC_USER_001: .*structured step"):
+        assert_cases_match_surface(document, _api(), _ui(), {"api"})
+
+
+def test_structured_api_step_passes_surface_and_endpoint_literal_checks() -> None:
+    document = _case_with_api_step("POST", "/api/v1/user/create")
+
+    assert_cases_match_surface(document, _api(), _ui(), {"api"})
+    reject_endpoint_literals(document)
 
 
 def test_e2e_page_must_be_explored_or_partial() -> None:

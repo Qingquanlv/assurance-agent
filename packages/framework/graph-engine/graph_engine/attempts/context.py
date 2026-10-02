@@ -15,6 +15,7 @@ class AttemptExecutionContext(FrozenModel):
     attempt_key: AttemptKey
     fencing_token: int = Field(ge=1)
     authorization_id: str | None = Field(default=None, min_length=1)
+    seed_attempt_key: AttemptKey | None = None
 
 
 @dataclass(frozen=True, slots=True)

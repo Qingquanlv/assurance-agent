@@ -26,9 +26,9 @@ from assurance_healing.graphs.nodes import (
     terminal_not_eligible,
 )
 from assurance_healing.graphs.state import HealingState
+from assurance_healing.ops.apply_test_repair import op as apply_test_repair
+from assurance_healing.ops.fix_proposal import op as fix_proposal
 
-_FIX_PROPOSAL_ID = "assurance.healing.agent.fix-proposal.v1"
-_APPLICATION_ID = "assurance.healing.agent.apply-test-repair.v1"
 _FIX_PROPOSAL_NODE = "healing.fix-proposal"
 _APPLICATION_NODE = "healing.apply-test-repair"
 _ADMIT_OTHERWISE = "not-eligible"
@@ -183,7 +183,7 @@ def build_repair_failure_graph(context: CapabilityBuildContext) -> CompiledState
     builder.add_edge("needs-review", END)
     builder.add_attempt(
         _FIX_PROPOSAL_NODE,
-        _FIX_PROPOSAL_ID,
+        fix_proposal,
         select=select_failure,
         publish=publish_proposal,
         activation=activation_repair,
@@ -191,7 +191,7 @@ def build_repair_failure_graph(context: CapabilityBuildContext) -> CompiledState
     )
     builder.add_attempt(
         _APPLICATION_NODE,
-        _APPLICATION_ID,
+        apply_test_repair,
         select=select_application,
         publish=publish_applied_repair,
         activation=activation_repair,

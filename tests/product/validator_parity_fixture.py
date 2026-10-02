@@ -88,8 +88,10 @@ class _RecordingWorkspace:
         self.prepare_calls = 0
         self.promote_calls = 0
 
-    async def open_or_create(self, attempt_key: object, claims: ResourceClaims) -> TaskWorkspaceBinding:
-        self.binding = await self.inner.open_or_create(attempt_key, claims)  # type: ignore[arg-type]
+    async def open_or_create(
+        self, attempt_key: object, claims: ResourceClaims, *, seed_from: object | None = None
+    ) -> TaskWorkspaceBinding:
+        self.binding = await self.inner.open_or_create(attempt_key, claims, seed_from=seed_from)  # type: ignore[arg-type]
         return self.binding
 
     async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet:

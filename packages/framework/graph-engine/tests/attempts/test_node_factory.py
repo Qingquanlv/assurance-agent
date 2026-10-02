@@ -413,6 +413,85 @@ async def test_technical_retry_carries_validation_error_without_an_attempt_count
     assert seen[1].validation_error == "schema rejected the authored document"
 
 
+@pytest.mark.parametrize(
+    ("carry", "failures", "expected_seeds"),
+    [
+        (True, ("invalid_output", "transient"), (None, 0, 0)),
+        (True, ("invalid_output", "invalid_output"), (None, 0, 1)),
+        (True, ("transient", "invalid_output"), (None, None, 1)),
+        (False, ("invalid_output", "invalid_output"), (None, None, None)),
+    ],
+)
+async def test_retry_seeds_only_from_the_latest_invalid_output_when_opted_in(
+    carry: bool, failures: tuple[str, ...], expected_seeds: tuple[int | None, ...]
+) -> None:
+    kernel = ScriptedKernel()
+    for kind in failures:
+        kernel.push(PermanentTaskFailure(kind=kind, message=f"{kind} rejected", retryable=True))  # type: ignore[arg-type]
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    seeds: list[AttemptKey | None] = []
+
+    async def execute_or_recover(
+        attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        validated_input: BaseModel,
+        context: AttemptExecutionContext,
+    ) -> AttemptResolution:
+        seeds.append(context.seed_attempt_key)
+        return await ScriptedKernel.execute_or_recover(
+            kernel, attempt_key, contract, validated_input, context
+        )
+
+    kernel.execute_or_recover = execute_or_recover  # type: ignore[method-assign]
+
+    class _Executor:
+        async def execute(self, validated_input: AttemptFreeInput, scope: object) -> RunOutput:
+            del validated_input, scope
+            return OUTPUT
+
+    contract = resolve_contract(
+        TaskAttemptContract(
+            contract_id="assurance.intake.agent.case-design.v1",
+            owner_id="assurance.intake",
+            handler_id="assurance.intake.case-design.prepare",
+            input_model=AttemptFreeInput,
+            output_model=RunOutput,
+            resources=ResourceClaims(),
+            retry=AttemptRetryPolicy(max_attempts=3, interval_seconds=0, carry_invalid_output=carry),
+            timeout=AttemptTimeoutPolicy(seconds=60),
+            validators=(),
+        ),
+        executor=_Executor(),
+    )
+
+    def select_attempt_free(state: dict[str, object]) -> AttemptFreeInput:
+        del state
+        return AttemptFreeInput(change_id="chg-1")
+
+    node = _factory(kernel).attempt(
+        contract,
+        semantic_node_id="intake.case-design",
+        activation=select_activation,
+        select=select_attempt_free,
+        publish=publish_output,
+    )
+    await node(_state(), runtime=_runtime(kernel))
+
+    assert len(set(kernel.seen_keys)) == 3
+    assert seeds == [None if index is None else kernel.seen_keys[index] for index in expected_seeds]
+
+
+def test_carry_invalid_output_is_omitted_from_the_default_retry_projection() -> None:
+    default = AttemptRetryPolicy(max_attempts=2, interval_seconds=0)
+    carrying = default.model_copy(update={"carry_invalid_output": True})
+
+    assert default.model_dump(mode="json") == {"max_attempts": 2, "interval_seconds": 0}
+    assert carrying.model_dump(mode="json")["carry_invalid_output"] is True
+    assert canonical_digest(default.model_dump(mode="json")) != canonical_digest(
+        carrying.model_dump(mode="json")
+    )
+
+
 @pytest.mark.parametrize("failure_kind", ["invalid_output", "transient"])
 async def test_technical_retry_does_not_advance_business_repair_attempt(failure_kind) -> None:
     failure = PermanentTaskFailure(

@@ -350,7 +350,8 @@ omitted — do not emit placeholder drafts.
 | `data_integrity` | Consistency invariants such as hierarchy, ordering, or relationship constraints | exact capability-catalog leaf | `api` |
 
 Each draft MUST include every field below. Use `[]` / `null` when a list or optional
-id has no value; do not omit keys.
+id has no value; do not omit keys. `observation_goals` is the exception: do not
+write `[]` on a draft that remains required and included.
 
 | Field | Rule |
 |-------|------|
@@ -361,11 +362,21 @@ id has no value; do not omit keys.
 | `statement` | One sentence stating what must hold |
 | `applicability_conditions` | Resolved conditions, or `[]` |
 | `impact_row_ids` | Inventory row ids this draft covers, or `[]` |
-| `proposed_profile_id` | A known profile id, or `null` |
+| `proposed_profile_id` | A known profile id, or `null`. Leave `null` unless a real profile id is already known. Do not invent one. A null profile does not excuse empty `observation_goals`. |
 | `prerequisites` | Setup the later observation needs, or `[]` |
-| `observation_goals` | Later observation drafts, or `[]` |
-| `basis_quotes` | Quotes whose `source_id` is in the host source catalog, or `[]` |
+| `observation_goals` | At least one HTTP-status observation on every draft that stays required and included. Each entry needs `key`, `condition`, a non-null `proposed_expected_status`, and `basis_quotes`. |
+| `basis_quotes` | Quotes whose `source_id` is in the host source catalog, or `[]` on the draft itself. Each observation goal still carries its own `basis_quotes`. |
 | `open_questions` | Unresolved questions that block freezing, or `[]` |
+
+Finalize rejects an included required draft with empty `observation_goals`, or any
+goal whose `proposed_expected_status` is null, as `invalid_output`. The message
+names the `draft_id` and `proposed_key`. The only executable predicate is
+`status_code_eq`, so `proposed_expected_status` is the HTTP status later tests
+observe. This check applies to `api`, `negative`, `data_integrity`, `e2e`, and
+`both` drafts that remain included: an E2E journey is still the HTTP status of
+the request that journey performs, not an empty array. Omit an `e2e` draft when
+E2E is outside the candidate set. A draft the resolver later excludes from scope
+is not subject to this check.
 
 A `recommended: false` E2E layer row must not erase a required journey when `e2e`
 is still a candidate family and the requirement still needs that journey. An explicit API-only requirement, or a candidate set that does not include `e2e`, makes E2E journeys inapplicable: do not emit `category: "e2e"` drafts. Do not keep a catalog journey as required after declining E2E for API-only scope.
@@ -392,7 +403,20 @@ in `open_questions` instead of inventing a key or silently omitting it.
     "impact_row_ids": [],
     "proposed_profile_id": null,
     "prerequisites": [],
-    "observation_goals": [],
+    "observation_goals": [
+      {
+        "key": "create_menu_persisted",
+        "condition": "POST a menu under an authenticated parent",
+        "proposed_expected_status": 201,
+        "basis_quotes": [
+          {
+            "source_id": "requirement",
+            "quote": "创建菜单成功后持久化到父节点下",
+            "context_quote": null
+          }
+        ]
+      }
+    ],
     "basis_quotes": [],
     "open_questions": []
   },
@@ -405,8 +429,21 @@ in `open_questions` instead of inventing a key or silently omitting it.
     "applicability_conditions": [],
     "impact_row_ids": [],
     "proposed_profile_id": null,
-    "prerequisites": [],
-    "observation_goals": [],
+    "prerequisites": ["admin_session"],
+    "observation_goals": [
+      {
+        "key": "menu_page_loaded",
+        "condition": "Authenticated admin requests the menu-management page data",
+        "proposed_expected_status": 200,
+        "basis_quotes": [
+          {
+            "source_id": "requirement",
+            "quote": "管理员可以进入菜单管理",
+            "context_quote": null
+          }
+        ]
+      }
+    ],
     "basis_quotes": [],
     "open_questions": []
   },
@@ -420,7 +457,20 @@ in `open_questions` instead of inventing a key or silently omitting it.
     "impact_row_ids": [],
     "proposed_profile_id": null,
     "prerequisites": [],
-    "observation_goals": [],
+    "observation_goals": [
+      {
+        "key": "missing_name_rejected",
+        "condition": "Create or update a menu with no name",
+        "proposed_expected_status": 422,
+        "basis_quotes": [
+          {
+            "source_id": "requirement",
+            "quote": "菜单名称必填",
+            "context_quote": null
+          }
+        ]
+      }
+    ],
     "basis_quotes": [],
     "open_questions": []
   },
@@ -434,7 +484,20 @@ in `open_questions` instead of inventing a key or silently omitting it.
     "impact_row_ids": [],
     "proposed_profile_id": null,
     "prerequisites": [],
-    "observation_goals": [],
+    "observation_goals": [
+      {
+        "key": "cycle_rejected",
+        "condition": "Move a menu under its own descendant",
+        "proposed_expected_status": 409,
+        "basis_quotes": [
+          {
+            "source_id": "requirement",
+            "quote": "父子菜单必须保持树形",
+            "context_quote": null
+          }
+        ]
+      }
+    ],
     "basis_quotes": [],
     "open_questions": []
   }

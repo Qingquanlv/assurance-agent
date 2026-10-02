@@ -9,6 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import AttemptGraph
 
+from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_improvement.contracts.retro import RetroContextV3
 from assurance_improvement.graphs.delivery import route_committed
 from assurance_improvement.graphs.nodes import (
@@ -32,14 +33,14 @@ from assurance_improvement.graphs.nodes import (
     terminal_failed,
 )
 from assurance_improvement.graphs.state import ImprovementState
+from assurance_improvement.ops.retro import op as retro
+from assurance_improvement.ops.retro_eval_analysis import op as retro_eval_analysis
+from assurance_improvement.ops.retro_issue_analysis import op as retro_issue_analysis
+from assurance_improvement.ops.retro_workflow_analysis import op as retro_workflow_analysis
 
-_COLLECT_ID = "assurance.improvement.task.retro-collect-v3"
-_BUILD_SLICES_ID = "assurance.improvement.retro-build-slices"
-_RECONCILE_ID = "assurance.improvement.task.reconcile-improvements"
-_EVAL_ID = "assurance.improvement.agent.retro-eval-analysis.v1"
-_ISSUE_ID = "assurance.improvement.agent.retro-issue-analysis.v1"
-_WORKFLOW_ID = "assurance.improvement.agent.retro-workflow-analysis.v1"
-_RETRO_ID = "assurance.improvement.agent.retro.v1"
+_COLLECT = TASK_ATTEMPT_CONTRACTS["assurance.improvement.retro-collect-v3"]
+_BUILD_SLICES = TASK_ATTEMPT_CONTRACTS["assurance.improvement.retro-build-slices"]
+_RECONCILE = TASK_ATTEMPT_CONTRACTS["assurance.improvement.reconcile-improvements"]
 _FAILED = "failed"
 _COMMITTED_TARGETS = ("done", _FAILED)
 _RETRO_NODE = "improvement.retro"
@@ -72,35 +73,35 @@ def build_retro_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     )
     builder.add_attempt(
         "improvement.retro-build-slices",
-        _BUILD_SLICES_ID,
+        _BUILD_SLICES,
         select=select_build_slices,
         publish=publish_build_slices,
         semantic_node_id="improvement.retro-build-slices",
     )
     builder.add_attempt(
         "improvement.retro-collect",
-        _COLLECT_ID,
+        _COLLECT,
         select=select_collect,
         publish=publish_collect,
         semantic_node_id="improvement.retro-collect",
     )
     builder.add_attempt(
         "improvement.retro-eval-analysis",
-        _EVAL_ID,
+        retro_eval_analysis,
         select=select_eval_analysis,
         publish=publish_eval_analysis,
         semantic_node_id="improvement.retro-eval-analysis",
     )
     builder.add_attempt(
         "improvement.retro-issue-analysis",
-        _ISSUE_ID,
+        retro_issue_analysis,
         select=select_issue_analysis,
         publish=publish_issue_analysis,
         semantic_node_id="improvement.retro-issue-analysis",
     )
     builder.add_attempt(
         "improvement.retro-workflow-analysis",
-        _WORKFLOW_ID,
+        retro_workflow_analysis,
         select=select_workflow_analysis,
         publish=publish_workflow_analysis,
         semantic_node_id="improvement.retro-workflow-analysis",
@@ -108,14 +109,14 @@ def build_retro_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder.add_node("assemble", _node(assemble_analyses))
     builder.add_attempt(
         "improvement.retro-reconcile",
-        _RECONCILE_ID,
+        _RECONCILE,
         select=select_reconcile,
         publish=publish_reconcile,
         semantic_node_id="improvement.retro-reconcile",
     )
     builder.add_attempt(
         "improvement.retro",
-        _RETRO_ID,
+        retro,
         select=select_retro,
         publish=publish_retro,
         semantic_node_id="improvement.retro",

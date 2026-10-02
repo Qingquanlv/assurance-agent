@@ -28,7 +28,9 @@ class UnusedSecretResolver:
 
 
 class UnusedWorkspaceProvider:
-    async def open_or_create(self, attempt_key: AttemptKey, claims: ResourceClaims) -> TaskWorkspaceBinding:
+    async def open_or_create(
+        self, attempt_key: AttemptKey, claims: ResourceClaims, *, seed_from: AttemptKey | None = None
+    ) -> TaskWorkspaceBinding:
         raise RuntimeError("workspace provider is unused")
 
     async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet:

@@ -6,6 +6,7 @@ from typing import Any, cast
 from langgraph.graph import END, START
 from langgraph.graph.state import CompiledStateGraph
 
+from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_generation.graphs.nodes import (
     activation_init_runtime,
     publish_init_runtime,
@@ -14,8 +15,6 @@ from assurance_generation.graphs.nodes import (
 from assurance_generation.graphs.state import GenerationState
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import AttemptGraph
-
-_INIT_TEST_RUNTIME_ID = "assurance.generation.init-test-runtime"
 
 
 def _node(fn: object) -> Callable[..., Any]:
@@ -39,7 +38,7 @@ def build_init_runtime_graph(context: CapabilityBuildContext) -> CompiledStateGr
     )
     builder.add_attempt(
         "generation.init-test-runtime",
-        _INIT_TEST_RUNTIME_ID,
+        TASK_ATTEMPT_CONTRACTS["init-test-runtime"],
         select=select_init_runtime,
         publish=publish_init_runtime,
         activation=activation_init_runtime,

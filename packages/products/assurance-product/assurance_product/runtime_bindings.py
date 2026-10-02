@@ -62,6 +62,8 @@ _RUNTIME_HANDLER_ID = "runtime.opencode.execute"
 _PROVIDER = "opencode"
 _ACTIVITY_RECOVERY = "adopt-observe-reconcile-v1"
 _CAPABILITY_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
+# Each prepared JSON instruction is its own document; its version tag is not a business field.
+_UNMERGED_PREPARED_FIELDS = frozenset({"agent_result", "prepare", "schema_version"})
 _FinalOutputT = TypeVar("_FinalOutputT", bound=BaseModel)
 
 
@@ -584,7 +586,7 @@ class InstalledFinalizePhase(_HostBackedInstalledPhase, Generic[_FinalOutputT]):
                 if not isinstance(raw, Mapping):
                     continue
                 for name in tuple(raw) if whole_business else tuple(input_model.model_fields):
-                    if name in {"agent_result", "prepare"} or name not in raw:
+                    if name in _UNMERGED_PREPARED_FIELDS or name not in raw:
                         continue
                     value = raw[name]
                     if name in prepared_business and prepared_business[name] != value:

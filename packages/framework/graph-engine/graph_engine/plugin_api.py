@@ -696,11 +696,40 @@ class StagedFile(FrozenModel):
         return self
 
 
-class TaskWorkspaceIdentity(FrozenModel):
-    """Portable identity for one empty per-task staging root.
+class SeededFile(FrozenModel):
+    """One regular file copied into a new write root from an earlier attempt."""
 
-    Host paths are represented only by digests; ``TaskWorkspaceBinding`` keeps
-    the process-local paths needed to execute a task.
+    path: str
+    sha256: str = Field(pattern=_SHA256_PATTERN)
+    mode: int = Field(ge=0, le=0o7777)
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        return _validate_task_workspace_path(value)
+
+
+class TaskWorkspaceSeed(FrozenModel):
+    """The earlier attempt write root a new write root started from."""
+
+    source_identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    files: tuple[SeededFile, ...]
+
+    @model_validator(mode="after")
+    def _validate_files(self) -> TaskWorkspaceSeed:
+        paths = tuple(file.path for file in self.files)
+        if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+            raise ValueError("seeded files must have unique canonical order")
+        return self
+
+
+class TaskWorkspaceIdentity(FrozenModel):
+    """Portable identity for one per-task staging root.
+
+    The root starts empty unless ``seed`` records the files copied into it from
+    an earlier attempt of the same task. Host paths are represented only by
+    digests; ``TaskWorkspaceBinding`` keeps the process-local paths needed to
+    execute a task.
     """
 
     task_id: str = Field(min_length=1)
@@ -708,10 +737,18 @@ class TaskWorkspaceIdentity(FrozenModel):
     attempt_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
     output_paths: tuple[str, ...]
     baseline_files: tuple[StagedFile, ...] = ()
+    seed: TaskWorkspaceSeed | None = None
     project_digest: str = Field(pattern=_SHA256_PATTERN)
     write_root_digest: str = Field(pattern=_SHA256_PATTERN)
     identity_digest: str = Field(pattern=_SHA256_PATTERN)
     layout_schema_version: Literal["1"] = "1"
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> Any:
+        serialized = handler(self)
+        if self.seed is None:
+            serialized.pop("seed", None)
+        return serialized
 
     @field_validator("output_paths")
     @classmethod
@@ -746,6 +783,11 @@ class TaskWorkspaceIdentity(FrozenModel):
                 file.path == claim or file.path.startswith(f"{claim}/") for claim in self.output_paths
             ):
                 raise ValueError("baseline file is outside the declared output paths")
+        for seeded in self.seed.files if self.seed is not None else ():
+            if not any(
+                seeded.path == claim or seeded.path.startswith(f"{claim}/") for claim in self.output_paths
+            ):
+                raise ValueError("seeded file is outside the declared output paths")
         expected = canonical_digest(self.model_dump(mode="json", exclude={"identity_digest"}))
         if self.identity_digest != expected:
             raise ValueError("task workspace identity digest is not canonical")
@@ -984,7 +1026,7 @@ class PreparedWorkspaceRef:
 
 class WorkspaceProvider(Protocol):
     async def open_or_create(
-        self, attempt_key: AttemptKey, claims: ResourceClaims
+        self, attempt_key: AttemptKey, claims: ResourceClaims, *, seed_from: AttemptKey | None = None
     ) -> TaskWorkspaceBinding: ...
     async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet: ...
     async def prepare(
@@ -1531,6 +1573,7 @@ __all__ = [
     "SealedWriteSet",
     "SecretHandleUnauthorized",
     "SecretPort",
+    "SeededFile",
     "StagedFile",
     "StagedWriteSet",
     "TaskActivityCancelResult",
@@ -1545,6 +1588,7 @@ __all__ = [
     "TaskStatus",
     "TaskWorkspaceBinding",
     "TaskWorkspaceIdentity",
+    "TaskWorkspaceSeed",
     "ValidationContext",
     "ValidationResult",
     "WorkspaceProvider",

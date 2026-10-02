@@ -17,8 +17,8 @@ from assurance_quality.graphs.nodes import (
     terminal_done,
 )
 from assurance_quality.graphs.state import QualityState
+from assurance_quality.ops.fact_baseline import op as fact_baseline
 
-_FACT_BASELINE_ID = "assurance.quality.agent.fact-baseline.v1"
 _ATTEMPT_TARGETS = ("done", "failed")
 
 
@@ -30,7 +30,7 @@ def build_fact_baseline_graph(context: CapabilityBuildContext) -> CompiledStateG
     builder: AttemptGraph[QualityState] = AttemptGraph(QualityState, context, namespace="quality")
     builder.add_attempt(
         "quality.fact-baseline",
-        _FACT_BASELINE_ID,
+        fact_baseline,
         select=select_fact_baseline,
         publish=publish_fact_baseline,
         activation=activation_fact_baseline,
