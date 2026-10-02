@@ -4,6 +4,7 @@ from typing import Generic, Literal, TypeAlias, TypeVar
 
 from pydantic import Field
 
+from graph_engine.artifacts import ArtifactRef
 from graph_engine.plugin_api import FailureKind, FrozenModel
 
 
@@ -22,6 +23,8 @@ class SystemReference(FrozenModel):
 class CommittedTaskResult(FrozenModel, Generic[OutputT]):
     output: OutputT
     receipt: ReceiptRef
+    # Sealed write-set refs. Empty when a caller built the result without a kernel seal.
+    committed_artifacts: tuple[ArtifactRef, ...] = ()
 
 
 class RejectedTaskResult(FrozenModel):

@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Annotated
 
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
+from graph_engine.stategraph.ledger import AttemptLedgerState
 
 from assurance_intake.domain.history_refs import merge_history_refs
 
@@ -14,7 +15,7 @@ def as_int(value: object, *, name: str) -> int:
     return value
 
 
-class IntakeState(CheckpointBridgeState, total=False):
+class IntakeState(CheckpointBridgeState, AttemptLedgerState, total=False):
     change_id: str
     requirement: str
     candidate_test_families: list[str]
@@ -32,16 +33,15 @@ class IntakeState(CheckpointBridgeState, total=False):
     rounds_used: int
     rounds_budget: int
     decision: str
+    public_outcome: str
     auto_fix_allowed: bool
     human_review_required: bool
     human_action: str
     artifacts: list[dict[str, object]]
     history_refs: Annotated[list[dict[str, str]], merge_history_refs]
     status: str
-    attempt_failure: dict[str, object]
     coverage_epoch: int
     preparation_refs: list[dict[str, str]]
-    case_refs: list[dict[str, str]]
     case_rework_context: dict[str, object] | None
     reviewed_case: dict[str, object] | None
     case_receipt: dict[str, str] | None

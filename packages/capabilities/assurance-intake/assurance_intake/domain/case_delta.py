@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
@@ -11,6 +10,7 @@ import yaml
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from agent_runtime_contracts.ops import ArtifactListResultV1, InputError, OutputError
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 
 from assurance_intake.contracts.agent import SkillInputV1, canonical_relative_paths
@@ -23,8 +23,6 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.domain.artifacts import (
     file_digest,
     leafs,
-    read_regular_bytes,
-    workspace_file,
 )
 from assurance_intake.domain.case_checks import (
     authenticated_journey_keys,
@@ -38,7 +36,7 @@ from assurance_intake.domain.case_checks import (
 from assurance_intake.domain.case_modules import infer_case_delta_paths
 from assurance_intake.domain.explore_context import load_exploration_document
 from assurance_intake.domain.plan_codec import decode_plan
-from assurance_intake.domain.prepare_evidence import authenticate_evidence_refs
+from assurance_intake.domain.prepare_evidence import authenticate_evidence_refs, evidence_read_error
 
 MARKER_PATH = "qa/.qa.yaml"
 PROPOSAL_PATH = "qa/proposal.md"
@@ -95,11 +93,11 @@ CaseDeltaT = TypeVar("CaseDeltaT", bound=CaseDeltaInputV1)
 def _committed_inventory(
     project_root: Path, plan: ResolvedAssurancePlan, change_id: str
 ) -> ChangeImpactInventoryV1:
-    authenticate_evidence_refs(project_root, (plan.impact_inventory_ref,))
     try:
-        inventory = ChangeImpactInventoryV1.model_validate_json(
-            project_root.joinpath(*plan.impact_inventory_ref.path.split("/")).read_bytes()
-        )
+        raw = open_artifact(project_root, plan.impact_inventory_ref)
+        inventory = ChangeImpactInventoryV1.model_validate_json(raw)
+    except ArtifactReadError as error:
+        raise InputError(evidence_read_error(error)) from error
     except (OSError, ValidationError, ValueError) as error:
         raise InputError(f"invalid impact-inventory.json: {error}") from error
     if inventory.change_id != change_id:
@@ -131,22 +129,22 @@ def _surface_documents(project_root: Path, business: CaseDeltaInputV1) -> dict[s
 
     updates: dict[str, object] = {}
     if business.ui_exploration_ref is not None:
-        authenticate_evidence_refs(project_root, (business.ui_exploration_ref,))
         try:
-            ui_exploration = UiExplorationDocument.model_validate_json(
-                project_root.joinpath(*business.ui_exploration_ref.path.split("/")).read_bytes()
-            )
+            raw = open_artifact(project_root, business.ui_exploration_ref)
+            ui_exploration = UiExplorationDocument.model_validate_json(raw)
+        except ArtifactReadError as error:
+            raise InputError(evidence_read_error(error)) from error
         except (OSError, ValidationError, ValueError) as error:
             raise InputError(f"invalid ui-exploration.json: {error}") from error
         if ui_exploration.change_id != business.change_id:
             raise InputError("ui-exploration.json change_id does not match case-design change_id")
         updates["ui_exploration"] = ui_exploration.model_dump(mode="json")
     if business.api_discovery_ref is not None:
-        authenticate_evidence_refs(project_root, (business.api_discovery_ref,))
         try:
-            api_discovery = ApiDiscoveryDocument.model_validate_json(
-                project_root.joinpath(*business.api_discovery_ref.path.split("/")).read_bytes()
-            )
+            raw = open_artifact(project_root, business.api_discovery_ref)
+            api_discovery = ApiDiscoveryDocument.model_validate_json(raw)
+        except ArtifactReadError as error:
+            raise InputError(evidence_read_error(error)) from error
         except (OSError, ValidationError, ValueError) as error:
             raise InputError(f"invalid api-discovery.json: {error}") from error
         if api_discovery.change_id != business.change_id:
@@ -181,8 +179,9 @@ def bind_case_delta_evidence(
 
 def finalize_plan(project_root: Path, business: CaseDeltaInputV1) -> ResolvedAssurancePlan:
     try:
-        plan_path = workspace_file(project_root, business.plan_ref.path)
-        plan = decode_plan(plan_path.read_bytes(), business.plan_ref)
+        plan = decode_plan(open_artifact(project_root, business.plan_ref), business.plan_ref)
+    except ArtifactReadError as error:
+        raise InputError(evidence_read_error(error)) from error
     except (OSError, ValidationError, ValueError) as error:
         raise InputError(f"invalid frozen assurance plan: {error}") from error
     if plan.change_id != business.change_id or plan.plan_digest != business.plan_digest:
@@ -196,13 +195,12 @@ def finalize_inventory(
     project_root: Path, plan: ResolvedAssurancePlan, change_id: str
 ) -> ChangeImpactInventoryV1:
     try:
-        inventory_path = workspace_file(project_root, plan.impact_inventory_ref.path)
-        inventory_bytes = inventory_path.read_bytes()
-        if hashlib.sha256(inventory_bytes).hexdigest() != plan.impact_inventory_ref.digest:
-            raise InputError("impact inventory digest changed after it was committed")
+        inventory_bytes = open_artifact(project_root, plan.impact_inventory_ref)
         inventory = ChangeImpactInventoryV1.model_validate_json(inventory_bytes)
-    except InputError:
-        raise
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise InputError("impact inventory digest changed after it was committed") from error
+        raise InputError(f"invalid impact-inventory.json: {error}") from error
     except (OSError, ValidationError, ValueError) as error:
         raise InputError(f"invalid impact-inventory.json: {error}") from error
     if inventory.change_id != change_id:
@@ -258,15 +256,19 @@ def validate_case_delta(
 ) -> None:
     """Check the change marker, authored delta, surface, and coverage matrix the run produced."""
     try:
+        qa_digest = next(item["digest"] for item in artifacts if item["path"] == MARKER_PATH)
         qa_bytes = (
             images[MARKER_PATH]
             if images is not None
-            else read_regular_bytes(write_root, MARKER_PATH, kind="change document")
+            else open_artifact(write_root, {"path": MARKER_PATH, "digest": qa_digest})
         )
-        qa_digest = next(item["digest"] for item in artifacts if item["path"] == MARKER_PATH)
-        if file_digest(qa_bytes) != qa_digest:
+        if images is not None and file_digest(qa_bytes) != qa_digest:
             raise OutputError("qa/.qa.yaml changed during finalization")
         qa = QaYaml.model_validate(yaml.safe_load(qa_bytes))
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise OutputError("qa/.qa.yaml changed during finalization") from error
+        raise OutputError(f"invalid {MARKER_PATH}: {error}") from error
     except (yaml.YAMLError, UnicodeError, ValidationError) as error:
         raise OutputError(f"invalid {MARKER_PATH}: {error}") from error
     if qa.change.change_id != business.change_id:

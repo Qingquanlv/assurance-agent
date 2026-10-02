@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 import sys
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.resources import files
@@ -22,6 +22,7 @@ from typing import Any, Generic, Protocol, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError, field_serializer, field_validator
 
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.plugin_api import (
     AttemptContractRef,
@@ -31,6 +32,7 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
 )
+from graph_engine.stategraph.ledger import InputBinding, NamedWrite
 
 from agent_runtime_contracts.ops.binding import validate_binding
 from agent_runtime_contracts.ops.contract import AgentExecutionContract, AgentPhaseWriteClaims
@@ -141,18 +143,17 @@ class PrepareContext:
         self.op = op
         self.project_root = task.project_root
         self.write_root = task.write_root
-        self._deps: dict[Callable[..., object], object] = {}
+        self._business: BaseModel | None = None
+        self._deps: dict[object, object] = {}
         self._extra: dict[str, JSONValue] = {}
         self._bound: dict[str, tuple[str, ...]] = {}
 
-    def dep(self, dependency: Callable[..., DepT]) -> DepT:
+    def dep(self, dependency: Callable[..., DepT] | ArtifactHandle[DepT]) -> DepT:
         """Resolved value of one of the op's declared ``depends``."""
-        if dependency not in self._deps:
-            raise LookupError(f"{self.op.name} does not depend on {dependency.__qualname__}")
-        return cast(DepT, self._deps[dependency])
+        return _cached_dep(self, dependency)
 
     def write(self, relative: str, data: bytes) -> None:
-        _write_claimed(self.write_root, relative, data, self.op.prepare.writes, phase="prepare")
+        _write_claimed(self.write_root, relative, data, self.op.prepare.claim_paths(), phase="prepare")
 
     def extra(self, name: str, value: JSONValue) -> None:
         """Add a prompt-only field next to the business input."""
@@ -180,9 +181,15 @@ class FinalizeContext:
         self.write_root = task.write_root
         self.agent_result = agent_result
         self.prepared = prepared
+        self._business: BaseModel | None = None
+        self._deps: dict[object, object] = {}
+
+    def dep(self, dependency: ArtifactHandle[DepT]) -> DepT:
+        """Decoded artifact dependency, resolved from the same attempt input as prepare."""
+        return _cached_dep(self, dependency)
 
     def write(self, relative: str, data: bytes) -> None:
-        _write_claimed(self.write_root, relative, data, self.op.finalize.writes, phase="finalize")
+        _write_claimed(self.write_root, relative, data, self.op.finalize.claim_paths(), phase="finalize")
 
 
 Dependency = Callable[[PrepareContext, InputT], object]
@@ -201,19 +208,76 @@ def _sorted_paths(paths: tuple[str, ...], *, kind: str) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
+def _write_name(name: str) -> str:
+    if not name or name != name.strip() or "." in name or "/" in name:
+        raise ValueError(f"write name must be a single path segment, got {name!r}")
+    return name
+
+
+def _entry_name(entry: WriteEntry) -> str | None:
+    if isinstance(entry, Out):
+        return entry.name
+    if isinstance(entry, Dir):
+        return entry.name
+    return None
+
+
+def _claim_path(entry: WriteEntry) -> str:
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, Out):
+        return entry.path
+    return entry.root
+
+
+def _claim_paths(entries: tuple[WriteEntry, ...], *, kind: str) -> tuple[str, ...]:
+    return _sorted_paths(tuple(_claim_path(entry) for entry in entries), kind=kind)
+
+
+def _reject_duplicate_names(entries: tuple[WriteEntry, ...]) -> None:
+    names = [name for entry in entries if (name := _entry_name(entry)) is not None]
+    if len(names) != len(set(names)):
+        raise ValueError("write names must be unique")
+
+
+def _named_writes(entries: Iterable[WriteEntry]) -> tuple[NamedWrite, ...]:
+    return tuple(
+        NamedWrite(name=name, root=_claim_path(entry), many=isinstance(entry, Dir))
+        for entry in entries
+        if (name := _entry_name(entry)) is not None
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Out:
+    """One named file. The name is handed off; the path is the write claim."""
+
+    name: str
+    path: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _write_name(self.name))
+        _canonical_relative(self.path)
+
+
 @dataclass(frozen=True, slots=True)
 class Dir:
     """A directory the Agent may write into; ``files`` names this run's exact files under it.
 
     Leave ``files`` empty when the exact files are only known once prepare can see the
-    workspace. The prepare hook then calls ``PrepareContext.bind``.
+    workspace. The prepare hook then calls ``PrepareContext.bind``. ``name`` hands the
+    directory's committed files off. An unnamed directory is authorized and committed
+    only.
     """
 
     root: str
     files: Callable[[Any], Iterable[str]] | None = None
+    name: str | None = None
 
     def __post_init__(self) -> None:
         _canonical_relative(self.root)
+        if self.name is not None:
+            object.__setattr__(self, "name", _write_name(self.name))
 
     def expand(self, paths: Iterable[str]) -> tuple[str, ...]:
         root = PurePosixPath(self.root)
@@ -228,18 +292,117 @@ class Dir:
         return expanded
 
 
+WriteEntry = str | Out | Dir
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactHandle(Generic[DepT]):
+    """A named write another op reads. The ledger key is ``{owner-namespace}.{name}``."""
+
+    ledger_key: str
+    slot: str | None = None
+    many: bool = False
+    model: type[BaseModel] | None = None
+    loader: Callable[[Path, object], object] | None = None
+    check: Callable[[object, BaseModel], None] | None = None
+    read_error: Callable[[ArtifactReadError], str] | None = None
+
+    def load(self, root: Path, business: BaseModel) -> DepT:
+        if self.slot is None:
+            raise InputError(f"{self.ledger_key} has no attempt-input slot")
+        raw = getattr(business, self.slot, None)
+        if raw is None:
+            raise InputError(f"{self.ledger_key} is not on the attempt input")
+        try:
+            if self.many:
+                if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+                    raise InputError(f"{self.ledger_key} refs must be a list")
+                value: object = tuple(self._open(root, item) for item in raw)
+            else:
+                value = self._open(root, raw)
+        except ArtifactReadError as error:
+            message = self.read_error(error) if self.read_error is not None else str(error)
+            raise InputError(message) from error
+        if self.check is not None:
+            self.check(value, business)
+        return cast(DepT, value)
+
+    def _open(self, root: Path, ref: object) -> object:
+        if self.loader is not None:
+            return self.loader(root, ref)
+        if self.model is not None:
+            return open_artifact(root, cast(Any, ref), model=self.model)
+        return open_artifact(root, cast(Any, ref))
+
+
+def _dependency_key(dependency: object) -> object:
+    if isinstance(dependency, ArtifactHandle):
+        return ("artifact", dependency.ledger_key)
+    return dependency
+
+
+def _stored_dep(deps: Mapping[object, object], op_name: str, dependency: object) -> Any:
+    key = _dependency_key(dependency)
+    if key not in deps:
+        label = (
+            dependency.ledger_key
+            if isinstance(dependency, ArtifactHandle)
+            else getattr(dependency, "__qualname__", dependency)
+        )
+        raise LookupError(f"{op_name} does not depend on {label}")
+    return deps[key]
+
+
+def _cached_dep(ctx: PrepareContext | FinalizeContext, dependency: object) -> Any:
+    if isinstance(dependency, ArtifactHandle):
+        declared = any(
+            isinstance(item, ArtifactHandle) and item.ledger_key == dependency.ledger_key
+            for item in ctx.op.prepare.depends
+        )
+        if not declared:
+            raise LookupError(f"{ctx.op.name} does not depend on {dependency.ledger_key}")
+        key = _dependency_key(dependency)
+        if key not in ctx._deps:
+            if ctx._business is None:
+                raise LookupError(f"{ctx.op.name} has no attempt input for {dependency.ledger_key}")
+            ctx._deps[key] = dependency.load(ctx.project_root, ctx._business)
+        return ctx._deps[key]
+    return _stored_dep(ctx._deps, ctx.op.name, dependency)
+
+
+def _ledger_namespace(owner: str) -> str:
+    return owner.rsplit(".", 1)[-1]
+
+
+def _resolve_dependency(
+    router: OpRouter,
+    dependency: object,
+    ctx: PrepareContext,
+    business: BaseModel,
+) -> object:
+    if isinstance(dependency, ArtifactHandle):
+        return dependency.load(ctx.project_root, business)
+    if not callable(dependency):
+        raise TypeError("depends entries must be artifact handles or callables")
+    return router.resolve(dependency)(ctx, business)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Prepare(Generic[InputT]):
     """Kernel phase before the Agent: resolve dependencies, run the hook, write seed files."""
 
     hook: Before[InputT] | None = None
-    depends: tuple[Dependency[InputT], ...] = ()
-    writes: tuple[str, ...] = ()
+    depends: tuple[Dependency[InputT] | ArtifactHandle[Any], ...] = ()
+    writes: tuple[WriteEntry, ...] = ()
     errors: tuple[type[Exception], ...] = ()
     request: RequestBuild | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "writes", _sorted_paths(self.writes, kind="prepare writes"))
+        _claim_paths(self.writes, kind="prepare writes")
+        _reject_duplicate_names(self.writes)
+
+    def claim_paths(self) -> tuple[str, ...]:
+        return _claim_paths(self.writes, kind="prepare writes")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -252,21 +415,27 @@ class Agent(Generic[ResultT]):
     profile: str
     skill: str
     result: type[ResultT] = cast(Any, ArtifactListResultV1)
-    writes: tuple[str | Dir, ...]
+    writes: tuple[WriteEntry, ...]
 
     def __post_init__(self) -> None:
         self.claims()
+        _reject_duplicate_names(self.writes)
 
     def files(self) -> tuple[str, ...]:
-        return tuple(sorted(entry for entry in self.writes if isinstance(entry, str)))
+        return tuple(
+            sorted(
+                entry if isinstance(entry, str) else entry.path
+                for entry in self.writes
+                if not isinstance(entry, Dir)
+            )
+        )
 
     def routes(self) -> tuple[str, ...]:
         """Exact files when the Agent declares any; otherwise the directories it edits."""
         return self.files() or tuple(sorted(entry.root for entry in self.writes if isinstance(entry, Dir)))
 
     def claims(self) -> tuple[str, ...]:
-        paths = tuple(entry if isinstance(entry, str) else entry.root for entry in self.writes)
-        return _sorted_paths(paths, kind="agent writes")
+        return _claim_paths(self.writes, kind="agent writes")
 
     def allowed_outputs(
         self, business: BaseModel, bound: Mapping[str, tuple[str, ...]] | None = None
@@ -274,16 +443,33 @@ class Agent(Generic[ResultT]):
         bound = {} if bound is None else bound
         expanded: list[str] = []
         for entry in self.writes:
-            if not isinstance(entry, Dir):
-                continue
-            if entry.root in bound:
-                paths: Iterable[str] = bound[entry.root]
-            elif entry.files is not None:
-                paths = entry.files(business)
-            else:
-                raise InputError(f"{entry.root} has no files for this run")
-            expanded.extend(entry.expand(paths))
+            if isinstance(entry, Dir):
+                expanded.extend(self._expand_dir(entry, business, bound))
         return (*self.files(), *expanded)
+
+    def named_outputs(
+        self, business: BaseModel, bound: Mapping[str, tuple[str, ...]] | None = None
+    ) -> dict[str, str | list[str]]:
+        """Name to path for one file, or name to paths for a directory, for this run."""
+        bound = {} if bound is None else bound
+        named: dict[str, str | list[str]] = {}
+        for entry in self.writes:
+            if isinstance(entry, Out):
+                named[entry.name] = entry.path
+            elif isinstance(entry, Dir) and entry.name is not None:
+                named[entry.name] = list(self._expand_dir(entry, business, bound))
+        return named
+
+    def _expand_dir(
+        self, entry: Dir, business: BaseModel, bound: Mapping[str, tuple[str, ...]]
+    ) -> tuple[str, ...]:
+        if entry.root in bound:
+            paths: Iterable[str] = bound[entry.root]
+        elif entry.files is not None:
+            paths = entry.files(business)
+        else:
+            raise InputError(f"{entry.root} has no files for this run")
+        return entry.expand(paths)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -292,10 +478,14 @@ class Finalize(Generic[InputT, ResultT, OutputT]):
 
     hook: After[InputT, ResultT, OutputT] | None = None
     on_output_error: OnOutputError[InputT, OutputT] | None = None
-    writes: tuple[str, ...] = ()
+    writes: tuple[WriteEntry, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "writes", _sorted_paths(self.writes, kind="finalize writes"))
+        _claim_paths(self.writes, kind="finalize writes")
+        _reject_duplicate_names(self.writes)
+
+    def claim_paths(self) -> tuple[str, ...]:
+        return _claim_paths(self.writes, kind="finalize writes")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -331,9 +521,47 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
     def result_schema_id(self) -> str:
         return f"{self.router.owner}.result.{self.name}.v1"
 
+    def ledger_namespace(self) -> str:
+        return _ledger_namespace(self.router.owner)
+
+    def ledger_writes(self) -> tuple[NamedWrite, ...]:
+        return _named_writes((*self.prepare.writes, *self.agent.writes, *self.finalize.writes))
+
+    def input_bindings(self) -> tuple[InputBinding, ...]:
+        return tuple(
+            InputBinding(ledger_key=item.ledger_key, field=item.slot, many=item.many)
+            for item in self.prepare.depends
+            if isinstance(item, ArtifactHandle) and item.slot is not None
+        )
+
+    def artifact(
+        self,
+        name: str,
+        *,
+        model: type[BaseModel] | None = None,
+        loader: Callable[[Path, object], object] | None = None,
+        check: Callable[[object, BaseModel], None] | None = None,
+        slot: str | None = None,
+        many: bool | None = None,
+        read_error: Callable[[ArtifactReadError], str] | None = None,
+    ) -> ArtifactHandle[Any]:
+        """Handle for one named write. ``output`` is already the result model."""
+        spec = next((item for item in self.ledger_writes() if item.name == name), None)
+        if spec is None:
+            raise ValueError(f"{self.name} does not name a write {name!r}")
+        return ArtifactHandle(
+            ledger_key=f"{self.ledger_namespace()}.{name}",
+            slot=slot,
+            many=spec.many if many is None else many,
+            model=model,
+            loader=loader,
+            check=check,
+            read_error=read_error,
+        )
+
     def contract(self) -> AgentExecutionContract[InputT, ResultT, OutputT]:
-        prepare = self.prepare.writes
-        finalize = self.finalize.writes
+        prepare = self.prepare.claim_paths()
+        finalize = self.finalize.claim_paths()
         claims = self.agent.claims()
         # Prepare may seed a directory the Agent then edits, so a shared path stays
         # in both phases. Finalize-owned paths stay out of the runtime claim.
@@ -382,10 +610,19 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
             business = validate_model(self.input, _plain_json(request.input))
             binding = validate_binding(request.binding_data)
             ctx = PrepareContext(self, task)
+            ctx._business = business
             for dependency in self.prepare.depends:
-                ctx._deps[dependency] = self.router.resolve(dependency)(ctx, business)
+                if isinstance(dependency, ArtifactHandle):
+                    continue
+                ctx._deps[_dependency_key(dependency)] = _resolve_dependency(
+                    self.router, dependency, ctx, business
+                )
             if self.prepare.hook is not None:
                 business = self.prepare.hook(ctx, business)
+                ctx._business = business
+            named = self.agent.named_outputs(business, ctx._bound)
+            if named:
+                ctx._extra["outputs"] = cast(JSONValue, named)
             allowed = self.agent.allowed_outputs(business, ctx._bound)
             skill_text = self.router.resource_text(f"ops/{self.directory}/{_SKILL_FILE}")
             result = self.result_contract()
@@ -431,6 +668,7 @@ class AgentOp(Generic[InputT, ResultT, OutputT]):
         except InputError as error:
             return failed_input(error)
         ctx = FinalizeContext(self, task, agent_result, prepared)
+        ctx._business = business
         hook = self.finalize.hook
         try:
             try:
@@ -461,12 +699,46 @@ class TaskOp(Generic[InputT, OutputT]):
     output: type[OutputT]
     run: Run[InputT, OutputT]
     reads: tuple[str, ...]
-    writes: tuple[str, ...]
+    writes: tuple[WriteEntry, ...]
     errors: tuple[type[Exception], ...] = (InputError,)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reads", _sorted_paths(self.reads, kind="reads"))
-        object.__setattr__(self, "writes", _sorted_paths(self.writes, kind="writes"))
+        _claim_paths(self.writes, kind="writes")
+        _reject_duplicate_names(self.writes)
+
+    def claim_paths(self) -> tuple[str, ...]:
+        return _claim_paths(self.writes, kind="writes")
+
+    def ledger_namespace(self) -> str:
+        return _ledger_namespace(self.router.owner)
+
+    def ledger_writes(self) -> tuple[NamedWrite, ...]:
+        return _named_writes(self.writes)
+
+    def artifact(
+        self,
+        name: str,
+        *,
+        model: type[BaseModel] | None = None,
+        loader: Callable[[Path, object], object] | None = None,
+        check: Callable[[object, BaseModel], None] | None = None,
+        slot: str | None = None,
+        many: bool | None = None,
+        read_error: Callable[[ArtifactReadError], str] | None = None,
+    ) -> ArtifactHandle[Any]:
+        spec = next((item for item in self.ledger_writes() if item.name == name), None)
+        if spec is None:
+            raise ValueError(f"{self.name} does not name a write {name!r}")
+        return ArtifactHandle(
+            ledger_key=f"{self.ledger_namespace()}.{name}",
+            slot=slot,
+            many=spec.many if many is None else many,
+            model=model,
+            loader=loader,
+            check=check,
+            read_error=read_error,
+        )
 
     @property
     def directory(self) -> str:
@@ -487,7 +759,7 @@ class TaskOp(Generic[InputT, OutputT]):
             handler_id=self.handler_id,
             input_model=self.input,
             output_model=self.output,
-            resources=ResourceClaims(reads=self.reads, writes=self.writes),
+            resources=ResourceClaims(reads=self.reads, writes=self.claim_paths()),
             retry=self.router.task_retry,
             timeout=self.router.timeout,
             validators=(),
@@ -574,7 +846,7 @@ class OpRouter:
         output: type[OutputT],
         run: Run[InputT, OutputT],
         reads: tuple[str, ...],
-        writes: tuple[str, ...],
+        writes: tuple[WriteEntry, ...],
         errors: tuple[type[Exception], ...] = (InputError,),
     ) -> TaskOp[InputT, OutputT]:
         op = TaskOp(
@@ -706,9 +978,11 @@ class OpRouter:
 __all__ = [
     "AgentOp",
     "AgentOpFinalizeInputV1",
+    "ArtifactHandle",
     "FinalizeContext",
     "OpRequest",
     "OpRouter",
+    "Out",
     "PrepareContext",
     "TaskOp",
     "WriteScopeError",

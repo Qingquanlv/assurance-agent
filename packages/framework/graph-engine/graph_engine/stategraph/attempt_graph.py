@@ -8,6 +8,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.typing import StateT
 
 import graph_engine.stategraph.routing as routing
+from graph_engine.stategraph.ledger import InputBinding, NamedWrite, bind_input_slots
+from graph_engine.stategraph.publish import bind_produced_artifacts
 from graph_engine.stategraph.registration import add_attempt_node
 
 if TYPE_CHECKING:
@@ -48,6 +50,20 @@ class AttemptGraph(StateGraph[StateT]):
         activation: object | None = None,
         semantic_node_id: str | None = None,
     ) -> Self:
+        resolved_select = select
+        bindings = _input_bindings(contract)
+        if bindings:
+            resolved_select = bind_input_slots(select, bindings)
+        resolved_publish = publish
+        writes = _ledger_writes(contract)
+        if writes:
+            if not callable(publish):
+                raise TypeError("publish must be callable")
+            resolved_publish = bind_produced_artifacts(
+                publish,
+                namespace=_ledger_namespace(contract),
+                writes=writes,
+            )
         resolved_activation = self._activation if activation is None else activation
         if resolved_activation is None:
             raise ValueError(f"activation is required for attempt node {node_id!r}")
@@ -62,8 +78,8 @@ class AttemptGraph(StateGraph[StateT]):
             contract_id=contract_id,
             semantic_node_id=resolved_semantic_node_id,
             activation=resolved_activation,
-            select=select,
-            publish=publish,
+            select=resolved_select,
+            publish=resolved_publish,
         )
         return self
 
@@ -84,6 +100,42 @@ class AttemptGraph(StateGraph[StateT]):
 
     def compile_subgraph(self) -> CompiledStateGraph:
         return self._context.compile_subgraph(self)
+
+
+def _ledger_namespace(contract: object) -> str:
+    method = getattr(contract, "ledger_namespace", None)
+    if not callable(method):
+        raise TypeError("named writes require ledger_namespace()")
+    namespace = method()
+    if not isinstance(namespace, str) or not namespace:
+        raise TypeError("ledger_namespace() must return a nonempty string")
+    return namespace
+
+
+def _ledger_writes(contract: object) -> tuple[NamedWrite, ...]:
+    method = getattr(contract, "ledger_writes", None)
+    if not callable(method):
+        return ()
+    raw = method()
+    if not isinstance(raw, tuple):
+        raise TypeError("ledger_writes() must return a tuple")
+    writes = tuple(raw)
+    if not all(isinstance(item, NamedWrite) for item in writes):
+        raise TypeError("ledger_writes() must return NamedWrite values")
+    return writes
+
+
+def _input_bindings(contract: object) -> tuple[InputBinding, ...]:
+    method = getattr(contract, "input_bindings", None)
+    if not callable(method):
+        return ()
+    raw = method()
+    if not isinstance(raw, tuple):
+        raise TypeError("input_bindings() must return a tuple")
+    bindings = tuple(raw)
+    if not all(isinstance(item, InputBinding) for item in bindings):
+        raise TypeError("input_bindings() must return InputBinding values")
+    return bindings
 
 
 __all__ = ["AttemptGraph", "HasContractId"]

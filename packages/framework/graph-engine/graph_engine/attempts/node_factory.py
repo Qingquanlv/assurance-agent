@@ -27,6 +27,7 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.stategraph.publish import call_publish
 from graph_engine.stategraph.checkpoint_bridge import (
     CHECKPOINT_MARKERS_STATE_KEY,
     CheckpointBridgeMarker,
@@ -353,9 +354,13 @@ def _map_resolution(
     if isinstance(resolution, CommittedTaskResult):
         if not callable(publish):
             raise TypeError("publish must be callable")
-        published = publish(state, resolution.output, resolution.receipt)
-        if not isinstance(published, Mapping):
-            raise TypeError("publish must return a mapping")
+        published = call_publish(
+            publish,
+            state if isinstance(state, Mapping) else {},
+            resolution.output,
+            resolution.receipt,
+            resolution.committed_artifacts,
+        )
         update = {str(name): value for name, value in published.items()}
         return _with_completion(update, completions)
     if isinstance(resolution, RejectedTaskResult):

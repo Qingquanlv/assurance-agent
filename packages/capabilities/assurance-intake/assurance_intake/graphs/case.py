@@ -10,13 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph import AttemptGraph, human_gate
+from graph_engine.stategraph.publish import output_mapping, receipt_mapping
 from graph_engine.stategraph.routing import select_exclusive_route
 
-from assurance_intake.contracts.workflow import CaseFlowResultV1
+from assurance_intake.contracts.workflow import CaseFlowResultV1, EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_intake.graphs.calls import (
     activation_review_round,
+    case_refs_from_ledger,
     publish_case_design,
-    publish_case_review,
     select_case_design,
     select_case_repair,
     select_case_review,
@@ -52,10 +53,18 @@ def advance_review_round(data: object) -> ReviewRoundAdvanceOutput:
 
 
 def terminal_reviewed(state: Mapping[str, object]) -> dict[str, object]:
+    reviewed = state.get("reviewed_case")
+    if isinstance(reviewed, Mapping):
+        ledger_paths = [item["path"] for item in case_refs_from_ledger(state)]
+        reviewed_paths = [
+            str(item.get("path")) for item in reviewed.get("case_refs", ()) if isinstance(item, Mapping)
+        ]
+        if ledger_paths and sorted(reviewed_paths) != ledger_paths:
+            raise ValueError("reviewed case refs do not match the artifact ledger")
     result = CaseFlowResultV1.model_validate(
         {
             "status": "reviewed",
-            "reviewed_case": state.get("reviewed_case"),
+            "reviewed_case": reviewed,
             "receipt": state.get("case_receipt"),
         }
     )
@@ -125,6 +134,39 @@ def _named_matches(
     if blocked:
         return {target: None for target in table}
     return {target: target if predicate(state) else None for target, predicate in table.items()}
+
+
+REVIEW_EVIDENCE_DECISIONS = frozenset({"pass", "needs_human_review"})
+
+
+def review_keeps_committed_evidence(decision: object) -> bool:
+    return decision in REVIEW_EVIDENCE_DECISIONS
+
+
+def project_case_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
+    del state
+    payload = output_mapping(output)
+    decision = payload["decision"]
+    update: dict[str, object] = {
+        "decision": decision,
+        "auto_fix_allowed": bool(payload.get("auto_fix_allowed", False)),
+        "human_review_required": bool(payload.get("human_review_required", False)),
+        "artifacts": payload.get("artifacts") or [],
+    }
+    if payload.get("public_outcome") is not None:
+        update["public_outcome"] = payload["public_outcome"]
+    if payload.get("history_ref") is not None:
+        update["history_refs"] = [
+            EvidenceArtifactRefV1.model_validate(payload["history_ref"]).model_dump(mode="json")
+        ]
+    if review_keeps_committed_evidence(decision):
+        reviewed = ReviewedCaseV1.model_validate(payload["reviewed_case"])
+        update["reviewed_case"] = reviewed.model_dump(mode="json")
+        update["case_receipt"] = receipt_mapping(receipt)
+    else:
+        update["reviewed_case"] = None
+        update["case_receipt"] = None
+    return update
 
 
 _CASE_REVIEW_OTHERWISE = "exhausted"
@@ -201,7 +243,7 @@ def build_case_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
         "case-review",
         case_review,
         select=select_case_review,
-        publish=publish_case_review,
+        publish=project_case_review,
     )
     builder.add_attempt(
         "case-repair",
@@ -246,6 +288,8 @@ __all__ = [
     "advance_review_round",
     "build_case_graph",
     "case_review_named_matches",
+    "project_case_review",
+    "review_keeps_committed_evidence",
     "human_review",
     "human_review_named_matches",
     "review_round_advance",

@@ -346,17 +346,38 @@ def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
     assert "phases.explore.status == done" not in skill
     assert "Emit a knowledge proposal" not in skill
     assert "Never inspect `.qa.yaml` for Explore state" in skill
-    assert (
-        '{"output_files":["qa/.qa.yaml",'
-        '"qa/cases/<trusted-module>/case.yaml",'
-        '"qa/proposal.md",'
-        '"qa/results/trace/minimum-coverage-matrix.json"]}'
-    ) in skill
+    assert "outputs.marker" in skill
+    assert "outputs.proposal" in skill
+    assert "outputs.matrix" in skill
+    assert "outputs.case" in skill
     assert "every written `cases/**/case.yaml`" not in skill
-    assert '"qa/results/trace/minimum-coverage-matrix.json"' in skill
+    assert "outputs.matrix" in skill
     assert "The MRC matrix path is mandatory" in skill
     assert "deterministic finalize step" in skill
     assert "json.dumps(yaml.safe_load" not in skill
+
+
+def test_case_skills_do_not_spell_declared_write_paths() -> None:
+    from agent_runtime_contracts.ops import Dir, Out
+
+    from assurance_intake.ops.case_design import op as case_design
+    from assurance_intake.ops.case_repair import op as case_repair
+    from assurance_intake.ops.case_review import op as case_review
+
+    for op in (case_design, case_repair, case_review):
+        skill = intake_ops.router.resource_text(f"ops/{op.directory}/SKILL.md")
+        for entry in op.agent.writes:
+            if isinstance(entry, Out):
+                assert entry.path not in skill
+                assert f"outputs.{entry.name}" in skill
+            elif isinstance(entry, str):
+                assert entry not in skill
+            elif isinstance(entry, Dir) and entry.name is not None:
+                assert f"outputs.{entry.name}" in skill
+    projection = str(case_design.contract().canonical_projection())
+    assert "marker" not in projection
+    assert case_design.ledger_namespace() == "intake"
+    assert any(item.name == "case" and item.many for item in case_design.ledger_writes())
 
 
 def test_case_design_skill_spells_out_the_typed_trace_value_shape() -> None:
@@ -820,6 +841,13 @@ async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: P
     )
     assert not any("**" in path for path in request.workspace.allowed_outputs)
     assert request.workspace.allowed_outputs.count("qa/cases/menus/case.yaml") == 1
+    assert "outputs" not in type(request.workspace).model_fields
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
+    outputs = cast(Mapping[str, object], business["outputs"])
+    assert outputs["marker"] == "qa/.qa.yaml"
+    assert outputs["proposal"] == "qa/proposal.md"
+    assert outputs["matrix"] == "qa/results/trace/minimum-coverage-matrix.json"
+    assert list(cast(tuple[str, ...], outputs["case"])) == ["qa/cases/menus/case.yaml"]
 
 
 @pytest.mark.asyncio
@@ -1200,7 +1228,12 @@ async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
     # Case Design legitimately updates metadata inside its committed write set.
     (tmp_path / change / ".qa.yaml").write_text(content[".qa.yaml"] + "selected_test_families: [api]\n")
     committed_refs = [ref(relative) for relative in content if relative != "requirement.md"]
-    update = publish_case_design(state, {"artifacts": committed_refs}, object())
+    update = publish_case_design(
+        state,
+        {"artifacts": committed_refs},
+        object(),
+        committed=committed_refs,
+    )
     state.update(update)
     assert update["case_delta_paths"] == ["qa/cases/menus/case.yaml"]
     assert original_refs != [ref(".qa.yaml"), ref("requirement.md")]
@@ -1743,6 +1776,16 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
         outputs = _write_case_design_outputs(stage, authored)
         handler = cast(TaskHandler, case_design_finalize)
         handler_globals = vars(case_delta_domain)
+        original_open = handler_globals["open_artifact"]
+
+        def replace_before_open(workspace: Path, ref: object, **kwargs: object) -> object:
+            relative = ref.get("path") if isinstance(ref, Mapping) else getattr(ref, "path", None)
+            if workspace == stage and relative == "qa/.qa.yaml":
+                path = workspace / str(relative)
+                path.write_bytes(path.read_bytes() + b"# concurrent change\n")
+            return original_open(workspace, ref, **kwargs)
+
+        monkeypatch.setitem(handler_globals, "open_artifact", replace_before_open)
     else:
         (stage / "qa").mkdir(parents=True, exist_ok=True)
         (stage / "qa/.qa.yaml").write_text("change_id: CH-DEMO-001\n")
@@ -1750,15 +1793,15 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
         outputs = ["qa/.qa.yaml"]
         handler = cast(TaskHandler, finalize)
         handler_globals = vars(intake_hooks)
-    read = handler_globals["read_regular_bytes"]
+        read = handler_globals["read_regular_bytes"]
 
-    def replace_before_validation(workspace: Path, relative: str, *, kind: str) -> bytes:
-        if workspace == stage and relative == "qa/.qa.yaml":
-            path = workspace / relative
-            path.write_bytes(path.read_bytes() + b"# concurrent change\n")
-        return read(workspace, relative, kind=kind)
+        def replace_before_validation(workspace: Path, relative: str, *, kind: str) -> bytes:
+            if workspace == stage and relative == "qa/.qa.yaml":
+                path = workspace / relative
+                path.write_bytes(path.read_bytes() + b"# concurrent change\n")
+            return read(workspace, relative, kind=kind)
 
-    monkeypatch.setitem(handler_globals, "read_regular_bytes", replace_before_validation)
+        monkeypatch.setitem(handler_globals, "read_regular_bytes", replace_before_validation)
     result = await _finalize_files(
         handler,
         cast(JSONValue, {"output_files": outputs}),

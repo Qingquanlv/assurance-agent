@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from pydantic import ValidationError
 
 from agent_runtime_contracts.ops import InputError, PrepareContext
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.domain.plan_codec import decode_plan
@@ -31,15 +31,26 @@ def require_regular_project_input(project_root: Path, relative: str) -> None:
         raise InputError(f"case-review input must be a regular single-link file: {relative}")
 
 
+def evidence_read_error(error: ArtifactReadError) -> str:
+    path = error.path
+    if error.reason == "digest":
+        return f"evidence digest changed after it was committed: {path}"
+    if error.reason == "symlink":
+        return f"case-review input must not contain a symlink: {path}"
+    if error.reason == "missing":
+        return f"missing case-review input: {path}"
+    return f"case-review input must be a regular single-link file: {path}"
+
+
 def authenticate_evidence_refs(
     project_root: Path,
     refs: tuple[EvidenceArtifactRefV1, ...],
 ) -> None:
     for ref in refs:
-        require_regular_project_input(project_root, ref.path)
-        path = project_root.joinpath(*ref.path.split("/"))
-        if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
-            raise InputError(f"evidence digest changed after it was committed: {ref.path}")
+        try:
+            open_artifact(project_root, ref)
+        except ArtifactReadError as error:
+            raise InputError(evidence_read_error(error)) from error
 
 
 def authenticate_plan(
@@ -49,12 +60,10 @@ def authenticate_plan(
     plan_digest: str,
     plan_ref: EvidenceArtifactRefV1,
 ) -> ResolvedAssurancePlan:
-    authenticate_evidence_refs(project_root, (plan_ref,))
     try:
-        plan = decode_plan(
-            project_root.joinpath(*plan_ref.path.split("/")).read_bytes(),
-            plan_ref,
-        )
+        plan = decode_plan(open_artifact(project_root, plan_ref), plan_ref)
+    except ArtifactReadError as error:
+        raise InputError(evidence_read_error(error)) from error
     except (OSError, ValidationError, ValueError) as error:
         raise InputError(f"invalid frozen assurance plan: {error}") from error
     if plan.change_id != change_id or plan.plan_digest != plan_digest:

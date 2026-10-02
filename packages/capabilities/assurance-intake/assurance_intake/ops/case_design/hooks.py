@@ -9,17 +9,17 @@ from assurance_intake.domain.artifacts import authenticate_files
 from assurance_intake.domain.case_delta import (
     bind_case_delta_evidence,
     finalize_inventory,
-    finalize_plan,
     require_receipt_paths,
     validate_case_delta,
 )
 from assurance_intake.domain.planning_facts import build_planning_facts
-from assurance_intake.domain.prepare_evidence import authenticate_evidence_refs, frozen_plan
+from assurance_intake.domain.prepare_evidence import authenticate_evidence_refs
+from assurance_intake.handoff import PLAN
 from assurance_intake.ops.case_design.models import CaseDesignInputV1, CaseDesignOutputV1
 
 
 def before(ctx: PrepareContext, business: CaseDesignInputV1) -> CaseDesignInputV1:
-    plan = ctx.dep(frozen_plan)
+    plan = ctx.dep(PLAN)
     business = bind_case_delta_evidence(ctx.project_root, business, plan)
     if business.case_rework_context is not None:
         rework = business.case_rework_context
@@ -43,7 +43,7 @@ def before(ctx: PrepareContext, business: CaseDesignInputV1) -> CaseDesignInputV
 def after(
     ctx: FinalizeContext, business: CaseDesignInputV1, result: ArtifactListResultV1
 ) -> CaseDesignOutputV1:
-    plan = finalize_plan(ctx.project_root, business)
+    plan = ctx.dep(PLAN)
     inventory = finalize_inventory(ctx.project_root, plan, business.change_id)
     require_receipt_paths(result, business, inventory)
     artifacts = authenticate_files(ctx.write_root, result.output_files, business.artifact_paths)

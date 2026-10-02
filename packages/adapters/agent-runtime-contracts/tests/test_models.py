@@ -36,6 +36,8 @@ _ALLOWED_GRAPH_ENGINE_MODULES = (
     "graph_engine.attempts.context",
     "graph_engine.attempts.keys",
     "graph_engine.identifiers",
+    "graph_engine.artifacts",
+    "graph_engine.stategraph.ledger",
 )
 _FORBIDDEN_GRAPH_ENGINE_PREFIXES = (
     "graph_engine.runtime",

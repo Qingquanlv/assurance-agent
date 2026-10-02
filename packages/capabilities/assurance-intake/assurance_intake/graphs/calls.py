@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import cast
 
-from pydantic import BaseModel
-
+from graph_engine.artifacts import ArtifactRef, coerce_artifact_ref
 from graph_engine.attempts.keys import BusinessActivation
-from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.stategraph.ledger import NamedWrite, ledger_refs, matches_named_write
+from graph_engine.stategraph.publish import output_mapping
 
 from assurance_intake.contracts.explore import EXPLORATION_PATH
 from assurance_intake.contracts.impact import INVENTORY_PATH
 from assurance_intake.contracts.plan import ResolvePlanInputV1, ResolvePlanOutputV1
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.graphs.state import as_int
 from assurance_intake.ops.case_design import CaseDesignInputV1
 from assurance_intake.ops.case_repair import CaseRepairInputV1
@@ -21,6 +21,7 @@ from assurance_intake.ops.explore import ExploreInputV1
 from assurance_intake.ops.intake import IntakeInputV1
 
 activation_one_shot = BusinessActivation.one_shot()
+CASE_LEDGER_NAME = "intake.case"
 
 
 def _skill_payload(state: Mapping[str, object]) -> dict[str, object]:
@@ -146,13 +147,24 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
     return published
 
 
+def case_refs_from_ledger(state: Mapping[str, object]) -> list[dict[str, str]]:
+    return ledger_refs(state.get("artifact_ledger"), CASE_LEDGER_NAME)
+
+
+def _case_delta_paths(state: Mapping[str, object]) -> object:
+    refs = case_refs_from_ledger(state)
+    if refs:
+        return [item["path"] for item in refs]
+    return state["case_delta_paths"]
+
+
 def _case_delta_payload(state: Mapping[str, object]) -> dict[str, object]:
     payload: dict[str, object] = {
         **_skill_payload(state),
         "plan_digest": state["plan_digest"],
         "plan_ref": state["plan_ref"],
         "selected_test_families": state["selected_test_families"],
-        "case_delta_paths": state["case_delta_paths"],
+        "case_delta_paths": _case_delta_paths(state),
         "preparation_refs": state.get("preparation_refs", ()),
     }
     if state.get("ui_exploration_ref") is not None:
@@ -182,11 +194,11 @@ def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
             **_skill_payload(state),
             "plan_digest": state["plan_digest"],
             "plan_ref": state["plan_ref"],
-            "case_delta_paths": state["case_delta_paths"],
+            "case_delta_paths": _case_delta_paths(state),
             "coverage_epoch": state.get("coverage_epoch", 0),
             "review_round": state.get("rounds_used", 0),
             "preparation_refs": state.get("preparation_refs", ()),
-            "case_refs": state.get("case_refs", ()),
+            "case_refs": case_refs_from_ledger(state),
         }
     )
 
@@ -196,11 +208,13 @@ def activation_review_round(state: Mapping[str, object]) -> BusinessActivation:
 
 
 def _output_payload(output: object) -> dict[str, object]:
-    if isinstance(output, BaseModel):
-        return output.model_dump(mode="json")
-    if isinstance(output, Mapping):
-        return {str(name): value for name, value in output.items()}
-    raise TypeError("attempt output must be a mapping")
+    return output_mapping(output)
+
+
+def _committed_refs(
+    committed: Sequence[ArtifactRef | Mapping[str, object]],
+) -> tuple[ArtifactRef, ...]:
+    return tuple(coerce_artifact_ref(item) for item in committed)
 
 
 def _mapping_items(value: object) -> list[Mapping[str, object]]:
@@ -228,73 +242,59 @@ def publish_artifacts(state: Mapping[str, object], output: object, receipt: obje
     }
 
 
-def publish_case_design(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
-    del receipt
-    payload = _output_payload(output)
-    artifacts = _mapping_items(payload.get("artifacts"))
-    case_refs = [
-        EvidenceArtifactRefV1.model_validate(item).model_dump(mode="json")
-        for item in artifacts
-        if isinstance(item, Mapping) and str(item.get("path", "")).endswith("/case.yaml")
-    ]
-    # Carry committed preparation replacements forward, including the frozen
-    # plan; never re-hash mutable project files when publishing Case Design.
+def publish_case_design(
+    state: Mapping[str, object],
+    output: object,
+    receipt: object,
+    *,
+    committed: Sequence[ArtifactRef | Mapping[str, object]] = (),
+) -> dict[str, object]:
+    del output, receipt
+    # Sealed refs, not the agent artifact list, decide which files moved.
+    refs = _committed_refs(committed)
+    case_write = _case_named_write()
+    cases = tuple(ref for ref in refs if matches_named_write(case_write, ref.path))
+    others = tuple(ref for ref in refs if ref not in cases)
     preparation_refs = [
         EvidenceArtifactRefV1.model_validate(item).model_dump(mode="json")
-        for item in (*_mapping_items(state.get("preparation_refs")), *artifacts)
+        for item in (
+            *_mapping_items(state.get("preparation_refs")),
+            *(ref.model_dump(mode="json") for ref in others),
+        )
         if isinstance(item, Mapping)
         and isinstance(item.get("digest"), str)
-        and not str(item.get("path", "")).endswith("/case.yaml")
+        and not matches_named_write(case_write, str(item.get("path", "")))
     ]
     preparation_by_path = {str(item["path"]): item for item in preparation_refs}
-    published_case_refs = sorted(case_refs, key=lambda item: (item["path"], item["digest"]))
-    update = {
-        "artifacts": artifacts,
-        "case_refs": published_case_refs,
+    published_cases = sorted(
+        (ref.model_dump(mode="json") for ref in cases),
+        key=lambda item: (item["path"], item["digest"]),
+    )
+    update: dict[str, object] = {
+        "artifacts": [ref.model_dump(mode="json") for ref in refs],
         "preparation_refs": [preparation_by_path[path] for path in sorted(preparation_by_path)],
     }
-    if published_case_refs:
-        update["case_delta_paths"] = [item["path"] for item in published_case_refs]
+    if published_cases:
+        update["case_delta_paths"] = [item["path"] for item in published_cases]
     return update
 
 
-def _receipt_ref(receipt: object) -> ReceiptRef | None:
-    if isinstance(receipt, ReceiptRef):
-        return receipt
-    if isinstance(receipt, Mapping):
-        return ReceiptRef.model_validate(receipt)
-    return None
+def _case_named_write() -> NamedWrite:
+    from assurance_intake.ops.case_design import op as case_design_op
+
+    return next(item for item in case_design_op.ledger_writes() if item.name == "case")
 
 
 def publish_case_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
-    payload = _output_payload(output)
-    decision = payload["decision"]
-    update: dict[str, object] = {
-        "decision": decision,
-        "auto_fix_allowed": bool(payload.get("auto_fix_allowed", False)),
-        "human_review_required": bool(payload.get("human_review_required", False)),
-        "artifacts": payload.get("artifacts") or [],
-        "rounds_used": as_int(state["rounds_used"], name="rounds_used"),
-        "rounds_budget": as_int(state["rounds_budget"], name="rounds_budget"),
-    }
-    if payload.get("history_ref") is not None:
-        update["history_refs"] = [
-            EvidenceArtifactRefV1.model_validate(payload["history_ref"]).model_dump(mode="json")
-        ]
-    if decision in {"pass", "needs_human_review"}:
-        reviewed = ReviewedCaseV1.model_validate(payload["reviewed_case"])
-        receipt_ref = _receipt_ref(receipt)
-        update["reviewed_case"] = reviewed.model_dump(mode="json")
-        update["case_receipt"] = receipt_ref.model_dump(mode="json") if receipt_ref is not None else None
-    else:
-        update["reviewed_case"] = None
-        update["case_receipt"] = None
-    return update
+    from assurance_intake.graphs.case import project_case_review
+
+    return project_case_review(state, output, receipt)
 
 
 __all__ = [
     "activation_one_shot",
     "activation_review_round",
+    "case_refs_from_ledger",
     "publish_artifacts",
     "publish_case_design",
     "publish_case_review",

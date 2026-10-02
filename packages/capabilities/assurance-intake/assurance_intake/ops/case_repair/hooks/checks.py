@@ -12,6 +12,7 @@ import yaml
 from pydantic import ValidationError
 
 from agent_runtime_contracts.ops import OutputError
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 
 from assurance_intake.contracts import MinimumCoverageMatrixAuthoring
 from assurance_intake.contracts.review import ReviewRepairActionV1
@@ -313,17 +314,26 @@ def validate_review_repair(
     write_root: Path,
     contract: ReviewRepairContractV1,
 ) -> dict[str, bytes]:
-    review = read_regular_bytes(project_root, contract.review_path, kind="case-review authority")
-    if file_digest(review) != contract.review_sha256:
-        raise OutputError("case-review repair authority changed after prepare")
+    try:
+        open_artifact(
+            project_root,
+            {"path": contract.review_path, "digest": contract.review_sha256},
+        )
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise OutputError("case-review repair authority changed after prepare") from error
+        raise OutputError(f"case-review repair authority is not a regular file: {error.path}") from error
     actions_by_artifact: dict[str, list[ReviewRepairActionV1]] = {}
     for action in contract.actions:
         actions_by_artifact.setdefault(action.artifact, []).append(action)
     images: dict[str, bytes] = {}
     for relative, baseline_digest in contract.baseline_file_digests.items():
-        baseline = read_regular_bytes(project_root, relative, kind="review repair baseline")
-        if file_digest(baseline) != baseline_digest:
-            raise OutputError(f"review repair baseline changed after prepare: {relative}")
+        try:
+            baseline = open_artifact(project_root, {"path": relative, "digest": baseline_digest})
+        except ArtifactReadError as error:
+            if error.reason == "digest":
+                raise OutputError(f"review repair baseline changed after prepare: {relative}") from error
+            raise OutputError(f"review repair baseline is not a regular file: {relative}") from error
         actions = actions_by_artifact.get(relative)
         if actions is None:
             candidate_path = workspace_file(write_root, relative)

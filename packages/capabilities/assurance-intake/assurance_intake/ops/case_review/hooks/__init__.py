@@ -9,6 +9,7 @@ import yaml
 from pydantic import ValidationError
 
 from agent_runtime_contracts.ops import FinalizeContext, InputError, OutputError, PrepareContext
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.canonical import canonical_json_bytes
 
 from assurance_intake.contracts.case_selection import selection_path
@@ -21,8 +22,6 @@ from assurance_intake.domain.artifacts import (
     authenticate_files,
     file_digest,
     leafs,
-    read_regular_bytes,
-    workspace_file,
 )
 from assurance_intake.domain.case_checks import (
     authenticated_journey_keys,
@@ -33,13 +32,12 @@ from assurance_intake.domain.case_checks import (
     require_frozen_unresolved_rows,
     require_selected_test_families,
 )
-from assurance_intake.domain.plan_codec import decode_plan
 from assurance_intake.domain.planning_facts import build_planning_facts
 from assurance_intake.domain.prepare_evidence import (
     authenticate_evidence_refs,
-    frozen_plan,
     require_regular_project_input,
 )
+from assurance_intake.handoff import PLAN, REVIEW_PLAN
 from assurance_intake.ops.case_review.hooks.checks import (
     read_case_review_inputs,
     validate_case_review_repair_scope,
@@ -86,7 +84,7 @@ def case_review_inputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tup
 
 
 def before(ctx: PrepareContext, business: CaseReviewInputV1) -> CaseReviewInputV1:
-    plan = ctx.dep(frozen_plan)
+    plan = ctx.dep(PLAN)
     authenticate_evidence_refs(ctx.project_root, business.preparation_refs)
     authenticate_evidence_refs(ctx.project_root, business.case_refs)
     if business.case_delta_paths and not set(business.case_delta_paths) <= {
@@ -112,11 +110,7 @@ def before(ctx: PrepareContext, business: CaseReviewInputV1) -> CaseReviewInputV
 
 
 def after(ctx: FinalizeContext, business: CaseReviewInputV1, result: CaseReviewResultV1) -> dict[str, Any]:
-    try:
-        plan_path = workspace_file(ctx.project_root, business.plan_ref.path)
-        plan = decode_plan(plan_path.read_bytes(), business.plan_ref)
-    except (OSError, ValidationError, ValueError) as error:
-        raise InputError(f"invalid frozen assurance plan: {error}") from error
+    plan = ctx.dep(REVIEW_PLAN)
     if plan.plan_digest != business.plan_digest:
         raise InputError("frozen assurance plan does not match case review input")
     document = result
@@ -174,9 +168,12 @@ def after(ctx: FinalizeContext, business: CaseReviewInputV1, result: CaseReviewR
     )
     by_path = {item["path"]: item for item in artifacts}
     review_ref = EvidenceArtifactRefV1.model_validate(by_path[REVIEW_PATH])
-    review_bytes = read_regular_bytes(ctx.write_root, REVIEW_PATH, kind="staged case review")
-    if file_digest(review_bytes) != review_ref.digest:
-        raise OutputError("staged case review changed during finalization")
+    try:
+        review_bytes = open_artifact(ctx.write_root, review_ref)
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise OutputError("staged case review changed during finalization") from error
+        raise OutputError(f"staged case review is missing or is not a regular file: {error}") from error
     try:
         staged_review = CaseReviewResultV1.model_validate_json(review_bytes)
     except ValidationError as error:
@@ -190,9 +187,9 @@ def after(ctx: FinalizeContext, business: CaseReviewInputV1, result: CaseReviewR
     documents: list[tuple[EvidenceArtifactRefV1, Mapping[str, object]]] = []
     for ref in business.case_refs:
         try:
-            source = yaml.safe_load(read_regular_bytes(ctx.write_root, ref.path, kind="case"))
-        except (OutputError, yaml.YAMLError):
-            source = yaml.safe_load(read_regular_bytes(ctx.project_root, ref.path, kind="case"))
+            source = yaml.safe_load(open_artifact(ctx.write_root, ref))
+        except (ArtifactReadError, OutputError, yaml.YAMLError):
+            source = yaml.safe_load(open_artifact(ctx.project_root, ref))
         if not isinstance(source, Mapping):
             raise OutputError(f"case source is not a mapping: {ref.path}")
         documents.append((ref, source))

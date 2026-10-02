@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
+from graph_engine.artifacts import ArtifactRef, refs_from_write_set
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
 from graph_engine.attempts.contracts import (
     ExecutedAttemptResult,
@@ -92,6 +93,7 @@ class _PromotedCommit:
     snapshot: AttemptSnapshot
     output: JSONValue
     receipt: PromotionReceipt
+    artifacts: tuple[ArtifactRef, ...]
 
 
 class AssuranceAttemptKernel:
@@ -204,7 +206,19 @@ class AssuranceAttemptKernel:
         if snapshot.terminal is not None:
             snapshot = await self._complete_terminal_release(attempt_key, context, snapshot, cut)
             assert snapshot.terminal is not None
-            return _resolution_from_terminal(snapshot.terminal, contract)
+            resolution = _resolution_from_terminal(snapshot.terminal, contract)
+            if isinstance(resolution, CommittedTaskResult):
+                # The promotion receipt stores digests, not paths. The write root still
+                # holds the sealed files, so a resumed commit can rebuild the ledger.
+                sealed = await self.workspace.seal(
+                    await self.workspace.open_or_create(
+                        attempt_key,
+                        _resolved_claims(contract, validated_input),
+                        seed_from=context.seed_attempt_key,
+                    )
+                )
+                return resolution.model_copy(update={"committed_artifacts": refs_from_write_set(sealed)})
+            return resolution
 
         if snapshot.activity_state is None and self._pause_requested is not None and self._pause_requested():
             return PendingTaskResult(wakeup=SystemReference(reference_id="operator_stop"))
@@ -295,7 +309,10 @@ class AssuranceAttemptKernel:
         )
         trace.extend(["record_terminal", "release_resources", "record_release_proof"])
         assert snapshot.terminal is not None
-        return _resolution_from_terminal(snapshot.terminal, contract)
+        resolution = _resolution_from_terminal(snapshot.terminal, contract)
+        if isinstance(resolution, CommittedTaskResult):
+            return resolution.model_copy(update={"committed_artifacts": commit.artifacts})
+        return resolution
 
     async def _authorize(
         self,
@@ -511,7 +528,12 @@ class AssuranceAttemptKernel:
                 )
         trace.append("promote")
         cut("after_promotion_before_receipt")
-        return _PromotedCommit(snapshot=snapshot, output=output, receipt=receipt)
+        return _PromotedCommit(
+            snapshot=snapshot,
+            output=output,
+            receipt=receipt,
+            artifacts=refs_from_write_set(sealed),
+        )
 
     async def _settle_effects(
         self,

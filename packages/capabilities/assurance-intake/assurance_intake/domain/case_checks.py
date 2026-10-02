@@ -15,6 +15,7 @@ from agent_runtime_contracts.ops import (
     InputError,
     OutputError,
 )
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 
 from assurance_intake.contracts import (
     CaseReviewResultV1,
@@ -27,7 +28,7 @@ from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.review import (
     normalized_auto_fix_edits,
 )
-from assurance_intake.domain.artifacts import allowed_by_lock, file_digest, read_regular_bytes
+from assurance_intake.domain.artifacts import allowed_by_lock, read_regular_bytes
 from assurance_intake.domain.explore_context import load_exploration_document
 from assurance_intake.domain.obligations import (
     journey_keys_from_document,
@@ -54,11 +55,14 @@ def _authenticated_capability_leafs(
     if expected_digest is None:
         raise InputError("frozen assurance plan does not bind the capability catalog")
     try:
-        data = read_regular_bytes(workspace, _CAPABILITY_CATALOG_PATH, kind="capability catalog")
-    except OutputError as error:
+        data = open_artifact(
+            workspace,
+            {"path": _CAPABILITY_CATALOG_PATH, "digest": expected_digest},
+        )
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise InputError("capability catalog does not match the frozen assurance plan") from error
         raise InputError(str(error)) from error
-    if file_digest(data) != expected_digest:
-        raise InputError("capability catalog does not match the frozen assurance plan")
     try:
         document = json.loads(data)
         raw = document.get("typed_leafs") if isinstance(document, Mapping) else None
@@ -80,11 +84,11 @@ def authenticated_journey_keys(
     if expected_digest is None:
         raise InputError("frozen assurance plan does not bind data knowledge")
     try:
-        data = read_regular_bytes(workspace, _DATA_KNOWLEDGE_PATH, kind="data knowledge")
-    except OutputError as error:
+        data = open_artifact(workspace, {"path": _DATA_KNOWLEDGE_PATH, "digest": expected_digest})
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise InputError("data knowledge does not match the frozen assurance plan") from error
         raise InputError(str(error)) from error
-    if file_digest(data) != expected_digest:
-        raise InputError("data knowledge does not match the frozen assurance plan")
     try:
         document = yaml.safe_load(data)
         if not isinstance(document, Mapping):
@@ -318,11 +322,11 @@ _MATRIX_MUTABLE_FIELDS = frozenset({"status", "covered_by_cases", "skip_reason"}
 def bound_obligations(workspace: Path, plan: ResolvedAssurancePlan) -> tuple[PreparedObligationV1, ...]:
     ref = plan.quality_goal.obligations_ref
     try:
-        data = read_regular_bytes(workspace, ref.path, kind="frozen exploration")
-    except OutputError as error:
+        data = open_artifact(workspace, ref)
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise InputError("frozen exploration does not match the assurance plan") from error
         raise InputError(str(error)) from error
-    if file_digest(data) != ref.digest:
-        raise InputError("frozen exploration does not match the assurance plan")
     try:
         exploration = load_exploration_document(data)
         return normalize_goal_obligations(

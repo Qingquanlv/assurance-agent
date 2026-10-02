@@ -15,7 +15,7 @@ from assurance_intake.contracts.review import (
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
-from assurance_intake.domain.artifacts import file_digest, read_regular_bytes
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from assurance_intake.ops.case_review.models import CaseReviewInputV1
 
 
@@ -110,8 +110,11 @@ def read_case_review_inputs(
         raise InputError("preparation_refs must authenticate the minimum coverage matrix for case review")
     images: dict[str, bytes] = {}
     for ref in (*payload.case_refs, *matrix_refs):
-        data = read_regular_bytes(workspace, ref.path, kind="case-review input")
-        if file_digest(data) != ref.digest:
-            raise OutputError(f"case-review input digest mismatch: {ref.path}")
+        try:
+            data = open_artifact(workspace, ref)
+        except ArtifactReadError as error:
+            if error.reason == "digest":
+                raise OutputError(f"case-review input digest mismatch: {ref.path}") from error
+            raise OutputError(f"case-review input is missing or is not a regular file: {ref.path}") from error
         images[ref.path] = data
     return images

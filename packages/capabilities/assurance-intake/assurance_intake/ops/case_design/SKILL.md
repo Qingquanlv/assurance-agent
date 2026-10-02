@@ -154,11 +154,11 @@ valid trace entry.
 
 **After completing work:**
 
-1. Write all required output files:
-   - `qa/.qa.yaml`
-   - `qa/proposal.md`
-   - `qa/results/trace/minimum-coverage-matrix.json`
-   - every exact path in graph-provided `case_delta_paths`
+1. Write all required output files named by this run's `outputs` map:
+   - `outputs.marker`
+   - `outputs.proposal`
+   - `outputs.matrix`
+   - every path in `outputs.case`
 2. Report a graph-owned state delta after writing files:
    - `phases.case_design.status = done`
    - `phases.case_design.outputs` = all output files
@@ -259,16 +259,19 @@ graph-provided `capability_leafs` list.
 
 ## Locked Runtime Return Contract
 
-The written files are the sole source of truth. After the final edit, read back
-`.qa.yaml`, `proposal.md`, `trace/minimum-coverage-matrix.json`, and every exact
-graph-provided `case_delta_paths` file. The final
-assistant response MUST be exactly one JSON object with one field:
+The written files are the sole source of truth. This run's JSON instruction
+includes `outputs`, mapping each name to the path or paths to write. After the
+final edit, read back `outputs.marker`, `outputs.proposal`, `outputs.matrix`, and
+every path in `outputs.case`. The final
+assistant response MUST be exactly one JSON object with one field, `output_files`,
+listing those paths (one string for each single-file output, every string in
+`outputs.case`) sorted lexicographically:
 
 ```json
-{"output_files":["qa/.qa.yaml","qa/cases/<trusted-module>/case.yaml","qa/proposal.md","qa/results/trace/minimum-coverage-matrix.json"]}
+{"output_files":["<outputs.marker>","<each outputs.case path>","<outputs.proposal>","<outputs.matrix>"]}
 ```
 
-The MRC matrix path is mandatory, and every `case_delta_paths` entry is mandatory,
+The MRC matrix path is mandatory (`outputs.matrix`), and every `outputs.case` entry is mandatory,
 even when the matrix contains skipped-by-scope rows. List only graph-declared exact outputs, use
 canonical project-relative paths, and include
 no path outside the current change directory. Do not duplicate the case delta in
@@ -303,8 +306,8 @@ Do NOT generate case delta, plan, test code, execution result, review result, or
 4. `proposal.md` records `generation_mode: autonomous` and describes which defaults were used.
 
 After the mode-specific gate passes, this skill MUST:
-1. Write `qa/proposal.md`
-2. Write `qa/cases/<module>/case.yaml`
+1. Write `outputs.proposal`
+2. Write every path in `outputs.case`
 
 After the case YAML is written and self-reviewed, the ONLY next workflow is aa-case-reviewer.
 
@@ -740,7 +743,7 @@ The option list MUST include an explicit Fuzz/Performance opt-in option even if 
 After the user approves the coverage approach, write:
 
 ```
-qa/proposal.md
+outputs.proposal
 ```
 
 `proposal.md` records the approved QA proposal. It is a **process asset**, not a main asset. It must not be merged into `qa/cases/`. It will be archived with the change.
@@ -925,7 +928,7 @@ Once the YAML passes, show the user a brief summary:
 
 ```
 Files written:
-  qa/proposal.md
+  outputs.proposal
   qa/cases/<module>/case.yaml
 
 Case delta:
@@ -1001,8 +1004,8 @@ qa/
 
 | Superpowers for QA | OpenSpec |
 |---|---|
-| `qa/.qa.yaml` | `openspec/changes/<id>/.openspec.yaml` |
-| `qa/proposal.md` | `openspec/changes/<id>/proposal.md` |
+| `outputs.marker` | `openspec/changes/<id>/.openspec.yaml` |
+| `outputs.proposal` | `openspec/changes/<id>/proposal.md` |
 | `qa/results/plans/*.md` | `openspec/changes/<id>/tasks.md` |
 | `qa/cases/<module>/case.yaml` | `openspec/changes/<id>/specs/<module>/spec.md` |
 | `qa/cases/<module>/case.yaml` | `openspec/specs/<module>/spec.md` |
@@ -1015,7 +1018,7 @@ qa/
 |---|---|---|
 | `qa/cases/<module>/case.yaml` | Main asset | — (target of merge) |
 | `qa/cases/<module>/case.yaml` | Delta (process) | Yes → merged into main |
-| `qa/proposal.md` | Process asset | No → archived only |
+| `outputs.proposal` | Process asset | No → archived only |
 | `qa/results/plans/*.md` | Process asset | No → archived only |
 | `qa/results/execution/` | Process asset | No → archived only |
 | `qa/results/review/` | Process asset | No → archived only |
@@ -1099,7 +1102,7 @@ records `skip_reason: capability_unresolved:` followed by the precise reason.
 Keep the frozen `mrc_id`; multiple unresolved rows may have null keys. Do not
 write a knowledge-proposal file or a covered matrix entry for an empty key.
 
-Also write `qa/results/trace/minimum-coverage-matrix.json`:
+Also write `outputs.matrix`:
 
 ```yaml
 - mrc_id: MRC-API-006
@@ -1555,8 +1558,8 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 
 48. At least one happy path case (P0 or P1) exists in `added` or `modified`.
 48a. **Selected-layer automation closure:** parse `.qa.yaml` `approval.approved_approach`, list every selected automated layer, and verify each has at least one `added` or `modified` case with the same exact `type` and `automation.required: true`. Perform this cross-file check after all case edits; per-case schema checks alone are insufficient.
-49. `proposal.md` exists at `qa/proposal.md`.
-50. `.qa.yaml` exists at `qa/.qa.yaml`.
+49. `proposal.md` exists at `outputs.proposal`.
+50. `.qa.yaml` exists at `outputs.marker`.
 51. MRC closed keys: every `data_integrity` / `negative` / journey key in
     `trace/minimum-coverage-matrix.json` cites `.aa/data-knowledge.yaml` or the
     declared journey set; any unavailable key is documented in `proposal.md`
@@ -1576,7 +1579,7 @@ After writing and self-reviewing the case YAML:
 `aa-case-reviewer` reads:
 
 ```
-qa/proposal.md
+outputs.proposal
 qa/cases/<module>/case.yaml
 ```
 

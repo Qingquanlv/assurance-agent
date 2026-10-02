@@ -102,8 +102,8 @@ analysis are expected to expose.
 **After completing work:**
 
 1. Write output files:
-   - `qa/results/review/case-review.json`
-   - `qa/results/review/case-review-summary.md`
+   - `outputs.review`
+   - `outputs.summary`
 2. Report the graph-owned state delta (the graph applies it; do not write an orchestration state file):
    - `phases.case_review.status` = `pass | needs_fix | needs_human_review | reject`
    - `phases.case_review.gate_file` = `review/case-review.json`
@@ -177,8 +177,8 @@ docs/**/*.md
 Write the following files:
 
 ```text
-qa/results/review/case-review.json
-qa/results/review/case-review-summary.md
+outputs.review
+outputs.summary
 ```
 
 Create the review directory if it does not exist.
@@ -189,8 +189,8 @@ Create the review directory if it does not exist.
 
 This skill is a **gate producer**. The workflow cannot advance past case review without the JSON file this skill writes.
 
-- You **must** write `qa/results/review/case-review.json` as valid JSON with all required fields.
-- You **must** write `qa/results/review/case-review-summary.md`.
+- You **must** write `outputs.review` as valid JSON with all required fields.
+- You **must** write `outputs.summary`.
 - A natural language conclusion in chat is **not** a substitute for the JSON file. Never end with only a textual verdict.
 - User approval in chat does not release the gate; only a valid `case-review.json` does. If the user says "approved", "looks good", or "continue", treat it only as review context — still validate every review criterion independently. Only write `decision == "pass"` when the artifacts satisfy all review criteria.
 - If you cannot write the JSON file for any reason, treat the review as **failed** and report it — the workflow must treat a missing or invalid `case-review.json` as a STOP condition.
@@ -924,7 +924,7 @@ scope, not from the highest finding severity.
 Write valid JSON to:
 
 ```text
-qa/results/review/case-review.json
+outputs.review
 ```
 
 **Minimal top-level structure (illustrative — see `assurance_intake.contracts` (`CaseReviewResultV1`) for the full contract):**
@@ -992,7 +992,7 @@ For all other categories, `fix_scope` is omitted.
 Write a human-readable summary to:
 
 ```text
-qa/results/review/case-review-summary.md
+outputs.summary
 ```
 
 Use this structure:

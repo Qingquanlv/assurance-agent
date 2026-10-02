@@ -7,6 +7,7 @@ from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
+from graph_engine.artifacts import ArtifactRef
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
@@ -19,10 +20,7 @@ def _canonical_relative(path: str) -> str:
     return path
 
 
-class EvidenceArtifactRefV1(FrozenModel):
-    path: str = Field(min_length=1)
-    digest: str = Field(pattern=SHA256_PATTERN)
-
+class EvidenceArtifactRefV1(ArtifactRef):
     @field_validator("path")
     @classmethod
     def _path(cls, value: str) -> str:
