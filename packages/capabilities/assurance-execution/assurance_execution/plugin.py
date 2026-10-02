@@ -43,10 +43,19 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.execution.schema.observation-bundle.v1": "schemas/observation-bundle.v1.schema.json",
     "assurance.execution.schema.execution-manifest.v1": "schemas/execution-manifest.v1.schema.json",
     "assurance.execution.schema.selected-targets.v1": "schemas/selected-targets.v1.schema.json",
-    "assurance.execution.workflow.execute.input.v1": "schemas/workflow/execute-input.v1.schema.json",
-    "assurance.execution.workflow.execute.output.v1": "schemas/workflow/execute-output.v1.schema.json",
-    "assurance.execution.workflow.rerun.input.v1": "schemas/workflow/rerun-input.v1.schema.json",
-    "assurance.execution.workflow.rerun.output.v1": "schemas/workflow/rerun-output.v1.schema.json",
+}
+
+_GENERATED_SCHEMAS: dict[str, str] = {
+    "assurance.execution.schema.closed-mapping.v1": "assurance_execution.contracts:ClosedMappingV1",
+    "assurance.execution.schema.execution-event.v1": (
+        "assurance_execution.contracts.observations:ExecutionEventV1"
+    ),
+    "assurance.execution.schema.execution-evidence.v1": "assurance_execution.contracts:ExecutionEvidenceV1",
+    "assurance.execution.schema.execution-manifest.v1": "assurance_execution.contracts:ExecutionManifest",
+    "assurance.execution.schema.observation-bundle.v1": (
+        "assurance_execution.contracts.observations:ObservationBundleV1"
+    ),
+    "assurance.execution.schema.selected-targets.v1": "assurance_execution.contracts:SelectedTargets",
 }
 
 _HANDLERS = execution_handlers()
@@ -58,6 +67,7 @@ _VALIDATORS = {
 
 
 class ExecutionPlugin(CapabilityPlugin):
+    generated_schemas = _GENERATED_SCHEMAS
     spec = CapabilitySpec(
         plugin_id="assurance.execution",
         version="0.3.0",

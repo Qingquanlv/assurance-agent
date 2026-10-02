@@ -186,7 +186,7 @@ def _mutate_schema_bytes(workspace: Path, product_root: Path, fixtures: Path) ->
         / "assurance_intake"
         / "contracts"
         / "schemas"
-        / "case.v1.schema.json"
+        / "case-authoring.v1.schema.json"
     )
     path.write_bytes(path.read_bytes() + b"\n")
 

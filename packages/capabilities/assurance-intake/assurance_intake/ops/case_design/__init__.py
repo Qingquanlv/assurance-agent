@@ -26,6 +26,7 @@ op = router.agent(
     ),
     finalize=Finalize(hook=hooks.after),
     output=CaseDesignOutputV1,
+    retry=router.agent_retry.model_copy(update={"carry_invalid_output": True}),
 )
 
 __all__ = ["CaseDesignInputV1", "CaseDesignOutputV1", "op"]

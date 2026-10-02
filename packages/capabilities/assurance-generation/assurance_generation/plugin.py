@@ -44,8 +44,14 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.generation.schema.generated-files.v1": "schemas/generated-files.v1.schema.json",
     "assurance.generation.schema.plan-check.v1": "schemas/plan-check.v1.schema.json",
     "assurance.generation.schema.plan-review.v1": "schemas/plan-review.v1.schema.json",
-    "assurance.generation.workflow.generate.input.v1": "schemas/workflow/generate-input.v1.schema.json",
-    "assurance.generation.workflow.generate.output.v1": "schemas/workflow/generate-output.v1.schema.json",
+}
+
+_GENERATED_SCHEMAS: dict[str, str] = {
+    "assurance.generation.schema.codegen-mapping.v1": "assurance_generation.contracts:CodegenMapping",
+    "assurance.generation.schema.discovery-campaign.v1": "assurance_generation.contracts:CampaignSpec",
+    "assurance.generation.schema.generated-files.v1": "assurance_generation.contracts:GeneratedFilesV1",
+    "assurance.generation.schema.plan-check.v1": "assurance_generation.contracts:PlanCheckDocument",
+    "assurance.generation.schema.plan-review.v1": "assurance_generation.contracts:PlanReviewAuthoring",
 }
 
 _HANDLERS = generation_handlers()
@@ -57,6 +63,7 @@ _VALIDATORS = {
 
 
 class GenerationPlugin(CapabilityPlugin):
+    generated_schemas = _GENERATED_SCHEMAS
     spec = CapabilitySpec(
         plugin_id="assurance.generation",
         version="0.3.0",

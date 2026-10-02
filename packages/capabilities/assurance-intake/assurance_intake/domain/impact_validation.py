@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from assurance_intake.contracts.common import TEST_FAMILY_ORDER, TestFamily
-from assurance_intake.contracts.impact import ChangeImpactInventoryV1, _OPEN_DISPOSITIONS
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 
 _KIND_FAMILY: dict[str, TestFamily] = {
     "api": "api",
@@ -78,10 +78,9 @@ def validate_inventory_closed_keys(
 def impact_required_families(inventory: ChangeImpactInventoryV1) -> tuple[TestFamily, ...]:
     """Families that closed rows need; open rows never retain a family."""
 
+    open_row_ids = {row.row_id for row in inventory.open_rows()}
     families = {
-        _KIND_FAMILY[row.affected_behavior.kind]
-        for row in inventory.rows
-        if row.disposition not in _OPEN_DISPOSITIONS
+        _KIND_FAMILY[row.affected_behavior.kind] for row in inventory.rows if row.row_id not in open_row_ids
     }
     return tuple(family for family in TEST_FAMILY_ORDER if family in families)
 

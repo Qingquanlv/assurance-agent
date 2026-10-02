@@ -116,9 +116,18 @@ def require_selected_test_families(
     authored = {entry.type.lower() for entry in required_cases}
     missing = [family for family in selected if family not in authored]
     if missing:
+        inactive = [
+            f"{entry.case_id} ({entry.status})"
+            for entry in (*document.added, *document.modified)
+            if entry.type.lower() in missing and entry.automation.required and entry.status != "active"
+        ]
+        hint = "; each needs a case of that type with status: active and automation.required: true"
+        if inactive:
+            hint += "; only status: active counts: " + ", ".join(inactive[:12])
         raise OutputError(
             "case design is missing required automated cases for selected test families: "
             + ", ".join(missing)
+            + hint
         )
 
 

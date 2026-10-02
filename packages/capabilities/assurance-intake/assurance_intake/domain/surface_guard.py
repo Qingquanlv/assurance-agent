@@ -41,7 +41,10 @@ def _require_api_steps(entry: CaseEntryAuthoring, operations: set[tuple[str, str
         _require_operation(pair, operations)
     if matched == 0:
         label = getattr(entry, "case_id", "API")
-        raise SurfaceMismatch(f"{label}: API case requires at least one method/path step")
+        raise SurfaceMismatch(
+            f"{label}: API case requires at least one structured step "
+            "{method: <METHOD>, path: /absolute/path} copied from api_discovery"
+        )
 
 
 def _require_e2e_steps(entry: CaseEntryAuthoring, pages: set[str]) -> None:

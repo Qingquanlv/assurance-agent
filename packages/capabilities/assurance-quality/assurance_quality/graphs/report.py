@@ -18,8 +18,8 @@ from assurance_quality.graphs.nodes import (
     terminal_done,
 )
 from assurance_quality.graphs.state import QualityState
+from assurance_quality.ops.report import op as report
 
-_REPORT_ID = "assurance.quality.agent.report.v1"
 _REPORT_OTHERWISE = "failed"
 _REPORT_TABLE: dict[str, Callable[[Mapping[str, object]], bool]] = {
     "done": lambda state: bool(state.get("report_outcome") or state.get("report_purpose") == "diagnostic"),
@@ -44,7 +44,7 @@ def build_report_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder.add_node("clear-report", _node(clear_report_state))
     builder.add_attempt(
         "quality.report",
-        _REPORT_ID,
+        report,
         select=select_report,
         publish=publish_report,
         activation=activation_one_shot,

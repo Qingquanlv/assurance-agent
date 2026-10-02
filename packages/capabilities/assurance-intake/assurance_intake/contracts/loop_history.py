@@ -42,7 +42,7 @@ class LoopRoundHistoryV1(FrozenModel):
             self.source_refs
         ):
             raise ValueError("source_refs must be sorted and unique by path")
-        identity = _history_identity(
+        identity = history_identity(
             change_id=self.change_id,
             coverage_epoch=self.coverage_epoch,
             loop_kind=self.loop_kind,
@@ -57,7 +57,7 @@ class LoopRoundHistoryV1(FrozenModel):
         return self
 
 
-def _history_identity(
+def history_identity(
     *,
     change_id: str,
     coverage_epoch: int,
@@ -81,4 +81,4 @@ def _history_identity(
     return f"loop-{canonical_digest(cast(JSONValue, payload))}"
 
 
-__all__ = ["LoopFamily", "LoopKind", "LoopRoundHistoryV1"]
+__all__ = ["LoopFamily", "LoopKind", "LoopRoundHistoryV1", "history_identity"]

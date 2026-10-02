@@ -47,41 +47,56 @@ from assurance_product.status import (
     load_persisted_status,
     render_status_from_langgraph,
 )
+from assurance_generation.ops.api_codegen import op as api_codegen
+from assurance_improvement.ops.archive import op as archive
+from assurance_improvement.ops.improvement_review import op as improvement_review
+from assurance_improvement.ops.retro import op as retro
+from assurance_improvement.ops.retro_eval_analysis import op as retro_eval_analysis
+from assurance_improvement.ops.retro_issue_analysis import op as retro_issue_analysis
+from assurance_improvement.ops.retro_workflow_analysis import op as retro_workflow_analysis
 from assurance_intake.contracts.plan import TestFamilyPolicyV1
+from assurance_intake.ops.case_design import op as case_design
+from assurance_intake.ops.case_repair import op as case_repair
+from assurance_intake.ops.case_review import op as case_review
+from assurance_intake.ops.explore import op as explore
+from assurance_intake.ops.intake import op as intake
+from assurance_quality.ops.issue_analysis import op as issue_analysis
+from assurance_quality.ops.issue_triage import op as issue_triage
+from assurance_quality.ops.report import op as report
 
 _TEST_CRASH_AT: str | None = None
 
 
 ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingProxyType(
     {
-        "archive": ("assurance.improvement.agent.archive.v1",),
+        "archive": (archive.contract_id,),
         "full": (
-            "assurance.generation.agent.api.codegen.v1",
-            "assurance.improvement.agent.archive.v1",
-            "assurance.intake.agent.intake.v1",
-            "assurance.quality.agent.report.v1",
+            api_codegen.contract_id,
+            archive.contract_id,
+            intake.contract_id,
+            report.contract_id,
         ),
         "improvement-apply": (),
         "improvement-evaluate": (),
         "improvement-export": (),
-        "improvement-review": ("assurance.improvement.agent.improvement-review.v1",),
+        "improvement-review": (improvement_review.contract_id,),
         "improvement-rollback": (),
         "init": (),
         "intake": (
-            "assurance.intake.agent.intake.v1",
-            "assurance.intake.agent.explore.v1",
-            "assurance.intake.agent.case-design.v1",
-            "assurance.intake.agent.case-repair.v1",
-            "assurance.intake.agent.case-review.v1",
+            intake.contract_id,
+            explore.contract_id,
+            case_design.contract_id,
+            case_repair.contract_id,
+            case_review.contract_id,
         ),
-        "issue-analyze": ("assurance.quality.agent.issue-analysis.v1",),
+        "issue-analyze": (issue_analysis.contract_id,),
         "issue-reconcile": (),
-        "issue-review": ("assurance.quality.agent.issue-triage.v1",),
+        "issue-review": (issue_triage.contract_id,),
         "retro": (
-            "assurance.improvement.agent.retro.v1",
-            "assurance.improvement.agent.retro-eval-analysis.v1",
-            "assurance.improvement.agent.retro-issue-analysis.v1",
-            "assurance.improvement.agent.retro-workflow-analysis.v1",
+            retro.contract_id,
+            retro_eval_analysis.contract_id,
+            retro_issue_analysis.contract_id,
+            retro_workflow_analysis.contract_id,
         ),
     }
 )

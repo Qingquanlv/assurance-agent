@@ -21,34 +21,8 @@ from assurance_product.configuration import capability_leafs_from_knowledge
 from assurance_product.models import LOCKED_ALLOWED_ARTIFACT_PATHS, ProductInputV1
 from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
 
-_HISTORICAL_PREPARE_IDS = (
-    "assurance.intake.case-design.prepare",
-    "assurance.intake.case-repair.prepare",
-    "assurance.intake.case-review.prepare",
-    "assurance.intake.explore.prepare",
-    "assurance.intake.intake.prepare",
-    "assurance.generation.api.codegen.prepare",
-    "assurance.generation.api.codegen-review.prepare",
-    "assurance.generation.e2e.codegen.prepare",
-    "assurance.generation.e2e.codegen-review.prepare",
-    "assurance.generation.fuzz.codegen.prepare",
-    "assurance.generation.fuzz.codegen-review.prepare",
-    "assurance.generation.performance.codegen.prepare",
-    "assurance.generation.performance.codegen-review.prepare",
-    "assurance.healing.coverage-repair.prepare",
-    "assurance.healing.fix-proposal.prepare",
-    "assurance.quality.fact-baseline.prepare",
-    "assurance.quality.inspect.prepare",
-    "assurance.quality.issue-analysis.prepare",
-    "assurance.quality.issue-triage.prepare",
-    "assurance.quality.report.prepare",
-    "assurance.improvement.archive.prepare",
-    "assurance.improvement.improvement-review.prepare",
-    "assurance.improvement.retro-eval-analysis.prepare",
-    "assurance.improvement.retro-issue-analysis.prepare",
-    "assurance.improvement.retro-workflow-analysis.prepare",
-    "assurance.improvement.retro.prepare",
-)
+# Deployment JSON is written with sort_keys, so this order does not affect written bytes.
+PREPARE_IDS = tuple(sorted(AGENT_EXECUTION_CONTRACTS))
 
 _ADAPTER_CONFIGURATION_DIGEST = "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d"
 _TLS_IDENTITY_DIGEST = "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
@@ -57,17 +31,6 @@ _REQUEST_POLICY_ID = "assurance.product.agent.request.default"
 _CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
 _POLICY_RESOURCE_ID = "assurance.product.configuration.product-policy"
 _KNOWLEDGE_RESOURCE_ID = "assurance.product.configuration.data-knowledge"
-
-
-def _semantic_contract_id(prepare_id: str) -> str:
-    rest = prepare_id.removeprefix("assurance.").removesuffix(".prepare")
-    feature, _, base = rest.partition(".")
-    return f"assurance.{feature}.agent.{base}.v1"
-
-
-PREPARE_IDS = tuple(_semantic_contract_id(item) for item in _HISTORICAL_PREPARE_IDS) + (
-    "assurance.healing.agent.apply-test-repair.v1",
-)
 
 _PLUGIN_YAML = """schema_version: \"1\"
 plugin_id: assurance.product.configuration
@@ -286,8 +249,6 @@ def prepare_composition(
     change_id: str,
     parent_session_id: str | None = None,
 ) -> dict[str, object]:
-    if set(PREPARE_IDS) != set(AGENT_EXECUTION_CONTRACTS):
-        raise ValueError("PREPARE_IDS drifted from AGENT_EXECUTION_CONTRACTS")
     project = project_dir.resolve()
     destination = run_dir.resolve()
     destination.mkdir(parents=True, exist_ok=True)

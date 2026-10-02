@@ -135,7 +135,7 @@ def test_opencode_benchmark_has_full_locked_items(benchmark_manifest, module):
     assert set(item.routing_assignments) == set(PREPARE_IDS)
     assert item.routing_assignments == item.deployment_binding_routes
     assert all(
-        route.provider_model == "deepseek/deepseek-v4-flash" for route in item.routing_assignments.values()
+        route.provider_model == "deepseek/deepseek-flash" for route in item.routing_assignments.values()
     )
     assert all(route.worker_profile == "max" for route in item.routing_assignments.values())
 
@@ -150,7 +150,7 @@ def test_benchmark_runner_accepts_only_deepseek_v4_pro_routes() -> None:
     deepseek_item = deepcopy(manifest["items"][0])
     for route_map in ("routing_assignments", "deployment_binding_routes"):
         for assignment in deepseek_item[route_map].values():
-            assignment["provider_model"] = "deepseek/deepseek-v4-flash"
+            assignment["provider_model"] = "deepseek/deepseek-flash"
 
     accepted = runner._manifest_item({"items": [deepseek_item]}, "opencode-ret-dept-management", "opencode")
     assert accepted["routing_assignments"] == deepseek_item["routing_assignments"]

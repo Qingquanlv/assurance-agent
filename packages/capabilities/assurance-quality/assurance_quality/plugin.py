@@ -67,28 +67,40 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.quality.schema.sufficiency.v2": "schemas/sufficiency.v2.schema.json",
     "assurance.quality.schema.trace-sufficiency.v1": "schemas/trace-sufficiency.v1.schema.json",
     "assurance.quality.schema.trace.v2": "schemas/trace.v2.schema.json",
-    "assurance.quality.workflow.assess.input.v1": "schemas/workflow/assess-input.v1.schema.json",
-    "assurance.quality.workflow.assess.output.v1": "schemas/workflow/assess-output.v1.schema.json",
-    "assurance.quality.workflow.issue-analyze.input.v1": (
-        "schemas/workflow/issue-analyze-input.v1.schema.json"
+}
+
+_GENERATED_SCHEMAS: dict[str, str] = {
+    "assurance.quality.schema.adversarial-yield.v1": "assurance_quality.contracts:AdversarialYieldEvidence",
+    "assurance.quality.schema.assertion-strength.v1": (
+        "assurance_quality.contracts:AssertionStrengthEvidence"
     ),
-    "assurance.quality.workflow.issue-analyze.output.v1": (
-        "schemas/workflow/issue-analyze-output.v1.schema.json"
+    "assurance.quality.schema.auth-matrix.v1": "assurance_quality.contracts:AuthMatrixEvidence",
+    "assurance.quality.schema.baseline-drift.v1": "assurance_quality.contracts:BaselineDriftEvidence",
+    "assurance.quality.schema.c-layer.v1": "assurance_quality.contracts:CLayerMetricsDocument",
+    "assurance.quality.schema.constraint-coverage.v1": (
+        "assurance_quality.contracts:ConstraintCoverageEvidence"
     ),
-    "assurance.quality.workflow.issue-reconcile.input.v1": (
-        "schemas/workflow/issue-reconcile-input.v1.schema.json"
+    "assurance.quality.schema.coverage-diff.v1": "assurance_quality.contracts:CoverageDiffEvidence",
+    "assurance.quality.schema.coverage-gaps.v1": "assurance_quality.contracts:CoverageGapsDocument",
+    "assurance.quality.schema.fact-baseline.v1": "assurance_quality.contracts:FactBaselineAuthoring",
+    "assurance.quality.schema.issue-events.v1": (
+        "assurance_quality.contracts.issue_events:CHANGE_ISSUE_EVENT_ADAPTER"
     ),
-    "assurance.quality.workflow.issue-reconcile.output.v1": (
-        "schemas/workflow/issue-reconcile-output.v1.schema.json"
+    "assurance.quality.schema.issues.v1": "assurance_quality.contracts:ChangeIssueSnapshot",
+    "assurance.quality.schema.journey-coverage.v1": "assurance_quality.contracts:JourneyCoverageEvidence",
+    "assurance.quality.schema.metrics.v1": "assurance_quality.contracts:MetricsDocument",
+    "assurance.quality.schema.minimum-coverage.v1": "assurance_quality.contracts:MinimumCoverageResult",
+    "assurance.quality.schema.mutation.v1": "assurance_quality.contracts:MutationEvidence",
+    "assurance.quality.schema.obligation-assessment.v1": (
+        "assurance_quality.contracts.obligations:ObligationAssessmentV1"
     ),
-    "assurance.quality.workflow.issue-review.input.v1": (
-        "schemas/workflow/issue-review-input.v1.schema.json"
-    ),
-    "assurance.quality.workflow.issue-review.output.v1": (
-        "schemas/workflow/issue-review-output.v1.schema.json"
-    ),
-    "assurance.quality.workflow.report.input.v1": "schemas/workflow/report-input.v1.schema.json",
-    "assurance.quality.workflow.report.output.v1": "schemas/workflow/report-output.v1.schema.json",
+    "assurance.quality.schema.perf-slack.v1": "assurance_quality.contracts:PerfSlackEvidence",
+    "assurance.quality.schema.quality-gate.v2": "assurance_quality.contracts:QualityGateResultV2",
+    "assurance.quality.schema.quarantine.v1": "assurance_quality.contracts:QuarantineProjection",
+    "assurance.quality.schema.report.v1": "assurance_quality.contracts:QualityReport",
+    "assurance.quality.schema.sufficiency.v2": "assurance_quality.contracts:SufficiencyReportV2",
+    "assurance.quality.schema.trace-sufficiency.v1": "assurance_quality.contracts:TraceSufficiencyFacts",
+    "assurance.quality.schema.trace.v2": "assurance_quality.contracts:TraceProjectionV2",
 }
 
 
@@ -105,6 +117,7 @@ _VALIDATORS = {
 
 
 class QualityPlugin(CapabilityPlugin):
+    generated_schemas = _GENERATED_SCHEMAS
     spec = CapabilitySpec(
         plugin_id="assurance.quality",
         version="0.3.0",

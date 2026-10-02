@@ -454,6 +454,8 @@ def test_custom_runtime_ports_are_written_to_run_spec(
     spec = yaml.safe_load((output / "run-spec.yaml").read_text(encoding="utf-8"))
     assert spec["sut"]["base_url"] == "http://127.0.0.1:19999"
     assert spec["sut"]["readiness_url"] == "http://127.0.0.1:19999/openapi.json"
+    assert spec["sut"]["api_base_url"] == "http://127.0.0.1:19999"
+    assert spec["sut"]["ui_base_url"] == "http://127.0.0.1:13100"
     assert runner._required_runtime_environment(output)["FRONTEND_URL"] == "http://127.0.0.1:13100"
 
 

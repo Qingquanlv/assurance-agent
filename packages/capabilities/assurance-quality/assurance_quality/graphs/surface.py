@@ -10,12 +10,12 @@ from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import AttemptGraph
 
+from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.surface import SurfaceProbeInputV1, SurfaceProbeResultV1
 from assurance_quality.graphs.issues import route_attempt
 from assurance_quality.graphs.nodes import terminal_done
 from assurance_quality.graphs.state import QualityState
 
-_SURFACE_BASELINE_ID = "assurance.quality.surface-baseline"
 _ATTEMPT_TARGETS = ("done", "failed")
 
 
@@ -59,7 +59,7 @@ def build_surface_baseline_graph(context: CapabilityBuildContext) -> CompiledSta
     builder: AttemptGraph[QualityState] = AttemptGraph(QualityState, context, namespace="quality")
     builder.add_attempt(
         "quality.surface-baseline",
-        _SURFACE_BASELINE_ID,
+        TASK_ATTEMPT_CONTRACTS["surface-baseline"],
         select=select_surface_baseline,
         publish=publish_surface_baseline,
         activation=activation_surface_baseline,

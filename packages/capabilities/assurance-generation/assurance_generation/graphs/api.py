@@ -18,6 +18,14 @@ from assurance_generation.graphs.nodes import (
     select_codegen_review,
 )
 from assurance_generation.graphs.state import FamilyLaneOutput, GenerationState, make_family_lane_result
+from assurance_generation.ops.api_codegen import op as api_codegen
+from assurance_generation.ops.api_codegen_review import op as api_codegen_review
+from assurance_generation.ops.e2e_codegen import op as e2e_codegen
+from assurance_generation.ops.e2e_codegen_review import op as e2e_codegen_review
+from assurance_generation.ops.fuzz_codegen import op as fuzz_codegen
+from assurance_generation.ops.fuzz_codegen_review import op as fuzz_codegen_review
+from assurance_generation.ops.performance_codegen import op as performance_codegen
+from assurance_generation.ops.performance_codegen_review import op as performance_codegen_review
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import AttemptGraph
 from graph_engine.stategraph.routing import select_exclusive_route
@@ -186,8 +194,16 @@ def _node(fn: object) -> Callable[..., Any]:
     return cast(Callable[..., Any], fn)
 
 
-def _contract_id(family: str, stage: str) -> str:
-    return f"assurance.generation.agent.{family}.{stage}.v1"
+_FAMILY_STAGE_OPS = {
+    ("api", "codegen"): api_codegen,
+    ("api", "codegen-review"): api_codegen_review,
+    ("e2e", "codegen"): e2e_codegen,
+    ("e2e", "codegen-review"): e2e_codegen_review,
+    ("fuzz", "codegen"): fuzz_codegen,
+    ("fuzz", "codegen-review"): fuzz_codegen_review,
+    ("performance", "codegen"): performance_codegen,
+    ("performance", "codegen-review"): performance_codegen_review,
+}
 
 
 def _assemble_family_graph(
@@ -211,7 +227,7 @@ def _assemble_family_graph(
         )
     builder.add_attempt(
         "codegen",
-        _contract_id(family, "codegen"),
+        _FAMILY_STAGE_OPS[(family, "codegen")],
         select=select_codegen,
         publish=publish_codegen,
         activation=activation_codegen,
@@ -219,7 +235,7 @@ def _assemble_family_graph(
     )
     builder.add_attempt(
         "codegen-review",
-        _contract_id(family, "codegen-review"),
+        _FAMILY_STAGE_OPS[(family, "codegen-review")],
         select=select_codegen_review,
         publish=publish_codegen_review,
         activation=activation_codegen_review,

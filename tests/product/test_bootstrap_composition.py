@@ -29,7 +29,7 @@ def _project(tmp_path: Path) -> Path:
 
 
 def test_prepare_ids_match_conformance() -> None:
-    assert tuple(PREPARE_IDS) == CONFORMANCE_PREPARE_IDS
+    assert PREPARE_IDS == tuple(sorted(CONFORMANCE_PREPARE_IDS))
     assert set(PREPARE_IDS) == set(AGENT_EXECUTION_CONTRACTS)
 
 

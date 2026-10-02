@@ -11,6 +11,7 @@ from graph_engine.stategraph import AttemptGraph
 from graph_engine.stategraph.routing import select_exclusive_route
 
 from assurance_quality.contracts.assessment import InspectionDisposition
+from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_quality.graphs.issues import route_attempt
 from assurance_quality.graphs.nodes import (
     activation_assess,
@@ -22,9 +23,8 @@ from assurance_quality.graphs.nodes import (
     terminal_done,
 )
 from assurance_quality.graphs.state import QualityState
+from assurance_quality.ops.inspect import op as inspect_op
 
-_INSPECT_ID = "assurance.quality.agent.inspect.v1"
-_MATERIALIZE_ID = "assurance.quality.materialize-assessment-inputs"
 _COVERAGE_OTHERWISE = "failed"
 _DISPOSITIONS: tuple[InspectionDisposition, ...] = (
     "satisfied",
@@ -60,7 +60,7 @@ def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: AttemptGraph[QualityState] = AttemptGraph(QualityState, context, namespace="quality")
     builder.add_attempt(
         "quality.materialize-assessment-inputs",
-        _MATERIALIZE_ID,
+        TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"],
         select=select_materialize_assessment,
         publish=publish_materialize_assessment,
         activation=activation_materialize_assessment,
@@ -68,7 +68,7 @@ def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     )
     builder.add_attempt(
         "quality.inspect",
-        _INSPECT_ID,
+        inspect_op,
         select=select_inspect,
         publish=publish_inspect,
         activation=activation_assess,

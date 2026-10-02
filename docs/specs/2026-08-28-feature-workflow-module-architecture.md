@@ -228,34 +228,34 @@ Product root and Feature modules share one envelope and parser, but role-specifi
 
 ### 7. Feature input and output contracts
 
-- Every public Feature export has a required input and output contract registered through existing schema contribution mechanisms.
+- Every public Feature export is a StateGraph. Product adapters map Product state into that graph state, and the feature publishes a Pydantic public result. Those boundaries are not registered JSON Schema documents.
 - A Product subgraph call must declare how its predecessor/root values map to the Feature input. The runtime must actually apply subgraph `input_projection`; static node input alone is not sufficient.
 - A Feature receives only its declared input, namespaced Product configuration explicitly allowed by contract, Framework invocation context, and declared bound resources.
 - A cross-module Feature call may not use an unrestricted root pointer to inspect arbitrary parent input.
 - Existing invocation-root projection semantics remain compatible for legacy Workflows. Feature graphs use an explicit current-graph-input projection source to read the child input they were given; the migration does not silently redefine `root_pointer`.
-- A Feature graph declares how terminal tokens form its output. The runtime validates that output against the export contract before returning it to Product main.
+- A Feature graph publishes its public result on graph state. Product reads that result. The runtime does not validate it against a registered workflow JSON Schema.
 - Product downstream gates and projections read the public output token, not the Feature's internal node outputs.
 - Output contract/projection failure is deterministic and fail-closed, with no downstream route emitted.
-- Calls between private graphs inside one Feature may continue using internal contracts, but crossing the module boundary always requires public I/O validation.
+- Calls between private graphs inside one Feature may continue using internal contracts. Crossing the module boundary uses the public graph state and the published Pydantic result.
 
 The module boundary is lowered into generic graph fields before runtime; this is how runtime remains module-unaware:
 
 | Generic field/change | Required behavior |
 |---|---|
-| subgraph-node `input_schema` | resolved export input schema ID; absent only for legacy/private uncontracted calls |
+| subgraph-node `input_schema` | not a workflow JSON Schema id; feature input is graph state filled by the product adapter |
 | existing subgraph-node `input_projection` | call-site parent/predecessor → child input mapping; evaluated at child start |
 | new `graph_input_pointer` projection source | reads the current GraphInstance input inside the child without changing legacy invocation `root_pointer` semantics |
 | subgraph-node `output_projection` | resolved export child-terminal-output → public output mapping |
-| subgraph-node `output_schema` | resolved export output schema ID |
+| subgraph-node `output_schema` | not a workflow JSON Schema id; the public result is the feature Pydantic model |
 
-Assembler copies the resolved export contract IDs and output projection onto the ordinary subgraph node. The generic compiled node preserves those fields; it does not preserve module/import/export metadata.
+Assembler copies the subgraph input and output projections onto the ordinary subgraph node. The generic compiled node preserves those fields; it does not preserve module/import/export metadata, and it does not attach a workflow JSON Schema id.
 
 Planner validation points are fixed:
 
-- before `GraphStarted`, evaluate input projection and validate `input_schema`; invalid input emits no child start or task dispatch;
-- when the child graph completes but before parent `NodeCompleted`/`TokenOffered`, apply output projection and validate `output_schema`;
-- persist the validated child input in the existing `GraphStarted` event and the validated public output in the existing parent `NodeCompleted` event;
-- typed `invalid_input`/`invalid_output` failures are reproducible from the locked Workflow/schema registry and do not depend on ambient files or Python globals.
+- before `GraphStarted`, the product adapter maps predecessor state into the feature graph;
+- when the child graph completes but before parent `NodeCompleted`/`TokenOffered`, Product reads the feature's public Pydantic result;
+- the child input and public result are carried on graph state;
+- feature input and output are not validated against workflow JSON Schema ids in the schema registry.
 
 No new module-aware runtime event or dynamic export lookup is introduced.
 
@@ -274,29 +274,29 @@ No new module-aware runtime event or dynamic export lookup is introduced.
 
 The Product root module ID is `assurance.product.workflow`. The first modular split freezes the following Feature module and export surface; existing internal graph names are not automatically public.
 
-| Module ID | Product import alias / export | I/O contract IDs | Owns internally |
+| Module ID | Product import alias / export | Public result | Owns internally |
 |---|---|---|---|
-| `assurance.intake.workflow` | `intake.prepare` / `prepare` | `assurance.intake.workflow.prepare.input.v1` / `.output.v1` | intake, exploration, case design/review and the bounded review loop |
-| `assurance.intake.workflow` | `intake.case` / `case` | `assurance.intake.workflow.case.input.v1` / `.output.v1` | case-only design/review flow |
-| `assurance.generation.workflow` | `generation.generate` / `generate` | `assurance.generation.workflow.generate.input.v1` / `.output.v1` | family selection and all plan/review/codegen/fix loops |
-| `assurance.execution.workflow` | `execution.execute` / `execute` | `assurance.execution.workflow.execute.input.v1` / `.output.v1` | initial execution and evidence normalization |
-| `assurance.execution.workflow` | `execution.rerun` / `rerun` | `assurance.execution.workflow.rerun.input.v1` / `.output.v1` | post-Healing rerun using the same verdict contract |
-| `assurance.quality.workflow` | `quality.assess` / `assess` | `assurance.quality.workflow.assess.input.v1` / `.output.v1` | fact baseline, inspect, quality and normalized coverage outcome |
-| `assurance.quality.workflow` | `quality.issue-review` / `issue-review` | `assurance.quality.workflow.issue-review.input.v1` / `.output.v1` | issue triage/review |
-| `assurance.quality.workflow` | `quality.issue-analyze` / `issue-analyze` | `assurance.quality.workflow.issue-analyze.input.v1` / `.output.v1` | issue analysis and normalized fix eligibility/classification |
-| `assurance.quality.workflow` | `quality.issue-reconcile` / `issue-reconcile` | `assurance.quality.workflow.issue-reconcile.input.v1` / `.output.v1` | issue reconciliation |
-| `assurance.quality.workflow` | `quality.report` / `report` | `assurance.quality.workflow.report.input.v1` / `.output.v1` | report materialization without deciding achieved by itself |
-| `assurance.healing.workflow` | `healing.repair-failure` / `repair-failure` | `assurance.healing.workflow.repair-failure.input.v1` / `.output.v1` | eligible test/test-data fix proposal and application boundary |
-| `assurance.healing.workflow` | `healing.repair-coverage` / `repair-coverage` | `assurance.healing.workflow.repair-coverage.input.v1` / `.output.v1` | coverage repair and repair outcome normalization |
-| `assurance.improvement.workflow` | `improvement.archive` / `archive` | `assurance.improvement.workflow.archive.input.v1` / `.output.v1` | archive |
-| `assurance.improvement.workflow` | `improvement.retro` / `retro` | `assurance.improvement.workflow.retro.input.v1` / `.output.v1` | Retro collection, three analyses and reconciliation |
-| `assurance.improvement.workflow` | `improvement.review` / `review` | `assurance.improvement.workflow.review.input.v1` / `.output.v1` | Improvement review and authenticated lifecycle transition |
-| `assurance.improvement.workflow` | `improvement.evaluate` / `evaluate` | `assurance.improvement.workflow.evaluate.input.v1` / `.output.v1` | evaluate |
-| `assurance.improvement.workflow` | `improvement.export` / `export` | `assurance.improvement.workflow.export.input.v1` / `.output.v1` | export |
-| `assurance.improvement.workflow` | `improvement.apply` / `apply` | `assurance.improvement.workflow.apply.input.v1` / `.output.v1` | approved-only apply |
-| `assurance.improvement.workflow` | `improvement.rollback` / `rollback` | `assurance.improvement.workflow.rollback.input.v1` / `.output.v1` | rollback |
+| `assurance.intake.workflow` | `intake.prepare` / `prepare` | graph state, terminal status `prepared` | intake, exploration, case design/review and the bounded review loop |
+| `assurance.intake.workflow` | `intake.case` / `case` | `CaseFlowResultV1` | case-only design/review flow |
+| `assurance.generation.workflow` | `generation.generate` / `generate` | `GenerationCycleResultV1` | family selection and all plan/review/codegen/fix loops |
+| `assurance.execution.workflow` | `execution.execute` / `execute` | `ExecutionCycleResultV1` | initial execution and evidence normalization |
+| `assurance.execution.workflow` | `execution.rerun` / `rerun` | `ExecutionCycleResultV1` | post-Healing rerun using the same public result |
+| `assurance.quality.workflow` | `quality.assess` / `assess` | `QualityAssessPublicV1` | fact baseline, inspect, quality and normalized coverage outcome |
+| `assurance.quality.workflow` | `quality.issue-review` / `issue-review` | `QualityIssuePublicV1` | issue triage/review |
+| `assurance.quality.workflow` | `quality.issue-analyze` / `issue-analyze` | `QualityIssuePublicV1` | issue analysis and normalized fix eligibility/classification |
+| `assurance.quality.workflow` | `quality.issue-reconcile` / `issue-reconcile` | `QualityIssuePublicV1` | issue reconciliation |
+| `assurance.quality.workflow` | `quality.report` / `report` | `QualityReportPublicV1` | report materialization without deciding achieved by itself |
+| `assurance.healing.workflow` | `healing.repair-failure` / `repair-failure` | `HealingRepairPublicV1` | eligible test/test-data fix proposal and application boundary |
+| `assurance.healing.workflow` | `healing.repair-coverage` / `repair-coverage` | `HealingRepairPublicV1` | coverage repair and repair outcome normalization |
+| `assurance.improvement.workflow` | `improvement.archive` / `archive` | improvement graph state | archive |
+| `assurance.improvement.workflow` | `improvement.retro` / `retro` | improvement graph state | Retro collection, three analyses and reconciliation |
+| `assurance.improvement.workflow` | `improvement.review` / `review` | improvement graph state | Improvement review and authenticated lifecycle transition |
+| `assurance.improvement.workflow` | `improvement.evaluate` / `evaluate` | improvement graph state | evaluate |
+| `assurance.improvement.workflow` | `improvement.export` / `export` | improvement graph state | export |
+| `assurance.improvement.workflow` | `improvement.apply` / `apply` | improvement graph state | approved-only apply |
+| `assurance.improvement.workflow` | `improvement.rollback` / `rollback` | improvement graph state | rollback |
 
-In the table, `.output.v1` expands the complete preceding qualified prefix; it is notation, not a literal leading-dot identifier. Every contract is a frozen, extra-forbid schema registered by its owning Feature. Inputs carry `change_id` plus the typed artifact references, budgets and policy values required by that flow. Outputs carry only normalized public outcomes, consumed budget counters and authenticated artifact references/digests; they do not expose internal node tokens.
+Feature export boundaries are the feature graph state and the Pydantic public result each graph publishes. Product adapters map Product state into that graph state. Those boundaries are not registered JSON Schema documents.
 
 The Product Entrypoint mapping is also fixed:
 

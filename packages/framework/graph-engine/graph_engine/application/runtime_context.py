@@ -45,7 +45,7 @@ class WorkspaceProviderPort(Protocol):
     """Per-invocation workspace provider. Held by reference; never checkpointed."""
 
     async def open_or_create(
-        self, attempt_key: AttemptKey, claims: ResourceClaims
+        self, attempt_key: AttemptKey, claims: ResourceClaims, *, seed_from: AttemptKey | None = None
     ) -> TaskWorkspaceBinding: ...
 
     async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet: ...

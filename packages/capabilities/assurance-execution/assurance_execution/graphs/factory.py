@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 from langgraph.graph import END, START
 from langgraph.graph.state import CompiledStateGraph
 
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.feature import ExecutionGraphs
 from assurance_execution.graphs.nodes import (
     activation_execute,
@@ -16,12 +17,11 @@ from assurance_execution.graphs.nodes import (
     select_rerun,
 )
 from assurance_execution.graphs.state import ExecutionState
+from graph_engine.attempts import TaskAttemptContract
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.stategraph import AttemptGraph
 from graph_engine.stategraph.routing import select_exclusive_route
 
-_EXECUTE_CONTRACT = "assurance.execution.execute"
-_RUN_CONTRACT = "assurance.execution.run"
 ExecutionSemanticNodeId = Literal["execution.execute", "execution.run"]
 
 
@@ -54,14 +54,14 @@ def build_execution_graphs(context: CapabilityBuildContext) -> ExecutionGraphs:
     return ExecutionGraphs(
         execute=_compile_graph(
             context,
-            contract_id=_EXECUTE_CONTRACT,
+            contract=TASK_ATTEMPT_CONTRACTS["execute"],
             semantic_node_id="execution.execute",
             activation=activation_execute,
             select=select_execute,
         ),
         rerun=_compile_graph(
             context,
-            contract_id=_RUN_CONTRACT,
+            contract=TASK_ATTEMPT_CONTRACTS["run"],
             semantic_node_id="execution.run",
             activation=activation_rerun,
             select=select_rerun,
@@ -72,7 +72,7 @@ def build_execution_graphs(context: CapabilityBuildContext) -> ExecutionGraphs:
 def _compile_graph(
     context: CapabilityBuildContext,
     *,
-    contract_id: str,
+    contract: TaskAttemptContract[Any, Any],
     semantic_node_id: ExecutionSemanticNodeId,
     activation: object,
     select: object,
@@ -85,7 +85,7 @@ def _compile_graph(
     )
     builder.add_attempt(
         semantic_node_id,
-        contract_id,
+        contract,
         select=select,
         publish=partial(publish_execution, semantic_node_id=semantic_node_id),
         semantic_node_id=semantic_node_id,

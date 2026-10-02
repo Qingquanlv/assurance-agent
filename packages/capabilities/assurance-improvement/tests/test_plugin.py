@@ -64,7 +64,7 @@ def test_improvement_source_identity() -> None:
     assert descriptor.engine_api == ENGINE_API_VERSION
     assert ENGINE_API_VERSION == "2.0"
     assert descriptor.schemas == tuple(sorted(descriptor.schemas))
-    assert len(descriptor.schemas) == 23
+    assert len(descriptor.schemas) == 9
     assert descriptor.task_handlers == tuple(sorted(descriptor.task_handlers))
     assert descriptor.commit_validators == tuple(sorted(descriptor.commit_validators))
     assert descriptor.resources == tuple(sorted(descriptor.resources))
