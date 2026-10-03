@@ -243,6 +243,48 @@ def test_bound_agent_executors_carry_the_production_host(opencode_composition, t
     asyncio.run(_bound_agent_executors_carry_host(opencode_composition, tmp_path))
 
 
+def test_post_factory_full_manifest_rejects_newly_broken_schema(
+    opencode_composition, tmp_path: Path, monkeypatch
+) -> None:
+    from assurance_product.graphs import factory as graph_factory
+    from assurance_product.product import prepare_change_workspace
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    project = write_project_dir(tmp_path / "project")
+    workspace = prepare_change_workspace(project, "CH-POST-FACTORY-SCHEMA")
+    resolved = next(iter(opencode_composition.semantic_attempt_contracts.values()))
+    real_build = graph_factory.build_product_graphs
+    factory_calls: list[str] = []
+
+    def build_then_change_model(*args: Any, **kwargs: Any) -> Any:
+        graphs = real_build(*args, **kwargs)
+        factory_calls.append("built")
+
+        def broken_schema(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("post-factory schema drift")
+
+        monkeypatch.setattr(resolved.contract.input_model, "model_json_schema", classmethod(broken_schema))
+        return graphs
+
+    async def compile_after_factory() -> None:
+        async with ProductRuntimePorts.open(workspace, opencode_composition) as ports:
+            monkeypatch.setattr(graph_factory, "build_product_graphs", build_then_change_model)
+            lease = await ports.backend.lease.acquire("inv-schema-drift", owner_id="test-post-factory")
+            try:
+                with pytest.raises(RuntimeError, match="post-factory schema drift"):
+                    ports.execution_factory(
+                        invocation_id="inv-schema-drift",
+                        entrypoint="improvement-apply",
+                        root_input_digest="c" * 64,
+                    ).bind(lease)
+                assert factory_calls == ["built"]
+                assert ports._artifact is None
+            finally:
+                await ports.backend.lease.release(lease)
+
+    asyncio.run(compile_after_factory())
+
+
 async def _bound_agent_executors_carry_host(composition, tmp_path: Path) -> None:
     from agent_runtime_contracts import ResolvedRawAgentExecutor
     from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS

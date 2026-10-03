@@ -262,8 +262,8 @@ def test_resume_file_asserts_revision_before_opening_ports(tmp_path: Path, monke
         lambda _composition: type("Lock", (), {"digest": current.product_lock_digest})(),
     )
     monkeypatch.setattr(
-        "assurance_product.application.product_graph_manifest",
-        lambda *_args, **_kwargs: type("Manifest", (), {"revision": current})(),
+        "assurance_product.application.product_graph_revision",
+        lambda *_args, **_kwargs: current,
     )
     monkeypatch.setattr(
         AssuranceProductApplication,
