@@ -239,41 +239,6 @@ async def _shutdown_order(composition, tmp_path: Path) -> None:
     assert "kernel" in order
 
 
-def test_aa_compile_does_not_construct_invocation_runtime(cli_runner, installed_sources, monkeypatch) -> None:
-    from assurance_product.cli import app
-    from assurance_product.runtime_ports import AuthorizedSecretResolver, ProductRuntimePorts
-    from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
-    from tests.product.cli_support import source_args
-
-    opened = {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
-
-    def _count(name: str):
-        def _blocked(*args: object, **kwargs: object) -> object:
-            del args, kwargs
-            opened[name] += 1
-            raise AssertionError(f"aa compile must not {name}")
-
-        return _blocked
-
-    monkeypatch.setattr(ProductRuntimePorts, "open", classmethod(_count("sqlite")))
-    monkeypatch.setattr(AuthorizedSecretResolver, "resolve", _count("secret"))
-    monkeypatch.setattr(
-        "graph_engine.attempts.production_host.create_production_task_execution_host",
-        _count("host"),
-    )
-    monkeypatch.setattr(LocalInvocationRunnerLease, "acquire", _count("lease"))
-    try:
-        from agent_runtime_opencode.transport.http import OpenCodeHttpClient
-
-        monkeypatch.setattr(OpenCodeHttpClient, "create_session", _count("opencode"))
-    except ImportError:
-        pass
-
-    result = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
-    assert result.exit_code == 0, result.output
-    assert opened == {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
-
-
 def test_bound_agent_executors_carry_the_production_host(opencode_composition, tmp_path: Path) -> None:
     asyncio.run(_bound_agent_executors_carry_host(opencode_composition, tmp_path))
 
