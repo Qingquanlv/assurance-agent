@@ -186,7 +186,9 @@ def test_full_manifest_observes_replaced_live_contract_with_same_composition_ide
     assert updated.attempt_contract_digests[contract_id] != original.attempt_contract_digests[contract_id]
 
 
-def test_full_manifest_keeps_source_factory_observation_before_schema_callbacks(monkeypatch) -> None:
+def test_full_manifest_keeps_source_factory_observation_before_schema_callbacks(
+    opencode_composition, monkeypatch
+) -> None:
     from assurance_product import product
     from assurance_product import graph_factories
     from assurance_product.graphs import revisions
@@ -197,17 +199,26 @@ def test_full_manifest_keeps_source_factory_observation_before_schema_callbacks(
     monkeypatch.setattr(graph_factories, "FEATURE_GRAPH_FACTORIES", (before_factory,))
     version_contracts = {"sample": _Contract("before")}
     monkeypatch.setattr(revisions, "ENTRYPOINT_CONTRACTS", version_contracts)
+    contract_id, resolved = next(iter(opencode_composition.semantic_attempt_contracts.items()))
+    input_model = resolved.contract.input_model
+    original_schema = input_model.model_json_schema
+    schema_calls: list[str] = []
 
-    def change_later_observations() -> None:
+    def schema_with_later_observations(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        schema_calls.append(contract_id)
         entries[SourceKey(SourceRole.PRODUCT, "example.product")] = SimpleNamespace(
             snapshot=SimpleNamespace(digest="3" * 64)
         )
         monkeypatch.setattr(graph_factories, "FEATURE_GRAPH_FACTORIES", (after_factory,))
         version_contracts["sample"] = _Contract("after")
+        return original_schema(*args, **kwargs)
 
-    composition.semantic_attempt_contracts = {"trigger": _Contract("unused", change_later_observations)}
+    monkeypatch.setattr(input_model, "model_json_schema", classmethod(schema_with_later_observations))
+    composition.semantic_attempt_contracts = {contract_id: resolved}
     full = product.product_graph_manifest(composition, lock)  # type: ignore[arg-type]
 
+    assert schema_calls == [contract_id]
+    assert full.attempt_contract_digests[contract_id]
     assert full.revision.wheel_source_digests["assurance.product"] == "1" * 64
     assert "example:before" in full.revision.factory_symbols
     assert "example:after" not in full.revision.factory_symbols
