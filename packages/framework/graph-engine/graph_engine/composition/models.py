@@ -1857,6 +1857,15 @@ def _validate_canonical_relative_path(value: str) -> str:
         value.encode("utf-8")
     except UnicodeEncodeError as error:
         raise ValueError("source file path must be a canonical relative path") from error
+    if type(value) is str:
+        if (
+            not value
+            or "\0" in value
+            or "\\" in value
+            or any(part in {"", ".", ".."} for part in value.split("/"))
+        ):
+            raise ValueError("source file path must be a canonical relative path")
+        return value
     path = PurePosixPath(value)
     parts = value.split("/")
     if (

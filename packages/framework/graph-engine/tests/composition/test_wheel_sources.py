@@ -1322,6 +1322,113 @@ def test_editable_identity_allows_only_the_coordinate_free_transition(tmp_path: 
         )
 
 
+def test_parse_record_retains_rows_without_constructing_empty_source_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_source_file(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("RECORD parsing must not construct an empty SourceFile")
+
+    monkeypatch.setattr(wheel_sources.SourceFile, "from_bytes", unexpected_source_file)
+    record = (
+        '\n"dir/a,b.py",sha256=malformed,0\n'
+        "é/文件.py,,\n"
+        "toy_runtime-1.2.3.dist-info/RECORD,,\n"
+        "signed.py,,-2\n"
+        'spaced.py,," +3 "\n'
+    ).encode("utf-8")
+
+    assert wheel_sources._parse_record(record) == (
+        ("dir/a,b.py", "sha256=malformed", 0),
+        ("é/文件.py", None, None),
+        ("toy_runtime-1.2.3.dist-info/RECORD", None, None),
+        ("signed.py", None, -2),
+        ("spaced.py", None, 3),
+    )
+
+
+@pytest.mark.parametrize("record", (b"two,fields\n", b"four,fields,here,extra\n", b"../bin/script,,,\n"))
+def test_parse_record_rejects_wrong_row_width_before_installer_skip(record: bytes) -> None:
+    with pytest.raises(SourceSnapshotError, match="^installed distribution RECORD is malformed$"):
+        wheel_sources._parse_record(record)
+
+
+def test_parse_record_preserves_utf8_and_csv_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SourceSnapshotError, match="RECORD is malformed") as bad_utf8:
+        wheel_sources._parse_record(b"\xff")
+    assert isinstance(bad_utf8.value.__cause__, UnicodeDecodeError)
+
+    csv_error = csv.Error("injected parser error")
+
+    def failing_reader(_rows: object) -> object:
+        raise csv_error
+
+    monkeypatch.setattr(wheel_sources.csv, "reader", failing_reader)
+    with pytest.raises(SourceSnapshotError, match="RECORD is malformed") as bad_csv:
+        wheel_sources._parse_record(b"safe.py,,\n")
+    assert bad_csv.value.__cause__ is csv_error
+
+
+@pytest.mark.parametrize(
+    "record, message",
+    (
+        (b"safe.py,,\nsafe.py,,\n", "duplicate RECORD path: safe.py"),
+        (b"../bin/script,,bad\n../bin/script,,\n", "duplicate RECORD path: ../bin/script"),
+    ),
+)
+def test_parse_record_rejects_duplicate_paths_before_installer_skip(record: bytes, message: str) -> None:
+    with pytest.raises(SourceSnapshotError) as error:
+        wheel_sources._parse_record(record)
+    assert str(error.value) == message
+
+
+def test_parse_record_skips_installer_parents_before_other_path_and_size_checks() -> None:
+    assert wheel_sources._parse_record(b"../bin/script,,bad\n../bin//script,,also-bad\n") == ()
+
+
+@pytest.mark.parametrize("path", ("", "/absolute", "a\0b", "a\\b", "./a", "a//b"))
+def test_parse_record_rejects_unsafe_path_before_invalid_size(path: str) -> None:
+    record = f"{path},,not-an-integer\n".encode("utf-8")
+    with pytest.raises(SourceSnapshotError, match="^unsafe RECORD path:") as error:
+        wheel_sources._parse_record(record)
+    assert isinstance(error.value.__cause__, ValueError)
+    assert str(error.value.__cause__) == "source file path must be a canonical relative path"
+
+
+def test_parse_record_preserves_invalid_size_cause_for_safe_path() -> None:
+    with pytest.raises(SourceSnapshotError, match="^invalid RECORD size: safe.py$") as error:
+        wheel_sources._parse_record(b"safe.py,,not-an-integer\n")
+    assert isinstance(error.value.__cause__, ValueError)
+
+
+def test_parse_record_keeps_str_subclass_validation_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DynamicPath(str):
+        rendered = "other.py"
+
+        def __str__(self) -> str:
+            return self.rendered
+
+    path = DynamicPath("safe.py")
+    monkeypatch.setattr(wheel_sources.csv, "reader", lambda _rows: ((path, "", ""),))
+    with pytest.raises(SourceSnapshotError, match="^unsafe RECORD path:") as error:
+        wheel_sources._parse_record(b"unused")
+    assert isinstance(error.value.__cause__, ValueError)
+    path.rendered = "safe.py"
+    assert wheel_sources._parse_record(b"unused") == ((path, None, None),)
+
+
+def test_installed_snapshot_rejects_malformed_declared_hash_after_record_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    rows = _record_rows(distribution)
+    rows[0][1] = "sha256=malformed"
+    _replace_record_rows(distribution, rows)
+
+    with pytest.raises(SourceSnapshotError, match="RECORD hash mismatch"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+
+
 def test_installed_snapshot_hashes_actual_bytes_and_record_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

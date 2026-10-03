@@ -41,6 +41,7 @@ from graph_engine.composition.models import (
     SourceIdentity,
     SourceKind,
     SourceSnapshot,
+    _validate_canonical_relative_path,
 )
 from graph_engine.composition.import_plan import (
     ImportPlanSession,
@@ -1125,7 +1126,7 @@ def _parse_record(record_bytes: bytes) -> tuple[tuple[str, str | None, int | Non
         if any(part == ".." for part in relative_path.split("/")):
             continue
         try:
-            SourceFile.from_bytes(relative_path, b"")
+            _validate_canonical_relative_path(relative_path)
         except (TypeError, ValueError) as error:
             raise SourceSnapshotError(f"unsafe RECORD path: {relative_path!r}") from error
         try:
