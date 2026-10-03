@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import errno
 import hashlib
 import importlib
 from importlib.machinery import ModuleSpec, NamespaceLoader, PathFinder
@@ -341,6 +342,431 @@ def _installed_distribution(
         ),
     )
     return metadata.Distribution.at(dist_info)
+
+
+def _nested_installed_distribution(
+    tmp_path: Path,
+) -> tuple[metadata.Distribution, Path, Path, Path]:
+    distribution = _installed_distribution(tmp_path)
+    root = Path(distribution.locate_file(""))
+    parent = root / "toy_plugin" / "nested"
+    parent.mkdir()
+    first = parent / "first.py"
+    second = parent / "second.py"
+    first.write_bytes(b"FIRST = 1\n")
+    second.write_bytes(b"SECOND = 2\n")
+    rows = _record_rows(distribution)
+    existing = tuple(row[0] for row in rows if not row[0].endswith("/RECORD"))
+    _write_record(
+        root,
+        _record_path(distribution).parent,
+        (*existing, first.relative_to(root).as_posix(), second.relative_to(root).as_posix()),
+    )
+    return distribution, parent, first, second
+
+
+def test_installed_snapshot_reuses_shared_parent_without_reopening_it_for_every_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution, _parent, first, second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    real_open = os.open
+    nested_opens = 0
+
+    def record_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal nested_opens
+        if path == "nested" and flags & getattr(os, "O_DIRECTORY", 0):
+            nested_opens += 1
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(wheel_sources.os, "open", record_open)
+    snapshot = snapshot_wheel_source(
+        WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    )
+
+    assert {
+        first.relative_to(tmp_path / "site").as_posix(),
+        second.relative_to(tmp_path / "site").as_posix(),
+    } <= {item.path for item in snapshot.files}
+    assert nested_opens <= 4
+
+
+@pytest.mark.parametrize("restore", (False, True))
+def test_installed_snapshot_rejects_shared_parent_replacement_between_nested_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore: bool
+) -> None:
+    distribution, parent, first, second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    displaced = parent.with_name("nested-displaced")
+    changed = False
+
+    def replace(phase: str, relative_path: str | None) -> None:
+        nonlocal changed
+        if phase != "after_final_stat" or relative_path != "toy_plugin/nested/first.py" or changed:
+            return
+        changed = True
+        parent.rename(displaced)
+        if restore:
+            displaced.rename(parent)
+        else:
+            parent.mkdir()
+            first.write_bytes((displaced / first.name).read_bytes())
+            second.write_bytes((displaced / second.name).read_bytes())
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", replace)
+    with pytest.raises(SourceSnapshotError):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert changed
+
+
+@pytest.mark.parametrize("restore", (False, True))
+def test_installed_snapshot_rejects_shared_parent_symlink_swap_between_nested_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore: bool
+) -> None:
+    distribution, parent, _first, _second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    displaced = parent.with_name("nested-displaced")
+    changed = False
+
+    def swap(phase: str, relative_path: str | None) -> None:
+        nonlocal changed
+        if phase != "after_final_stat" or relative_path != "toy_plugin/nested/first.py" or changed:
+            return
+        changed = True
+        parent.rename(displaced)
+        parent.symlink_to(displaced, target_is_directory=True)
+        if restore:
+            parent.unlink()
+            displaced.rename(parent)
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", swap)
+    with pytest.raises((SourceSnapshotError, OSError)):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert changed
+
+
+@pytest.mark.parametrize("phase", ("before_rescan", "after_rescan"))
+@pytest.mark.parametrize("restore", (False, True))
+def test_installed_snapshot_preserves_measured_root_rename_behavior_during_rescan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, restore: bool
+) -> None:
+    distribution, _parent, _first, _second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    baseline = snapshot_wheel_source(source)
+    root = Path(distribution.locate_file(""))
+    displaced = root.with_name("site-displaced")
+    changed = False
+
+    def rename(at: str, _relative_path: str | None) -> None:
+        nonlocal changed
+        if at != phase or changed:
+            return
+        changed = True
+        root.rename(displaced)
+        if restore:
+            displaced.rename(root)
+        else:
+            root.mkdir()
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", rename)
+    if restore and phase == "after_rescan":
+        restored = snapshot_wheel_source(source)
+        assert restored.files == baseline.files
+        assert restored.digest == baseline.digest
+        assert snapshot_wheel_source(source).digest == baseline.digest
+    else:
+        with pytest.raises(SourceSnapshotError):
+            snapshot_wheel_source(source)
+    assert changed
+
+
+def test_installed_snapshot_rejects_restored_file_bytes_after_another_nested_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution, _parent, first, _second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    original = first.read_bytes()
+    changed = False
+
+    def mutate(phase: str, relative_path: str | None) -> None:
+        nonlocal changed
+        if phase != "after_final_stat" or relative_path != "toy_plugin/nested/second.py" or changed:
+            return
+        changed = True
+        first.write_bytes(b"FIRST = 9\n")
+        first.write_bytes(original)
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", mutate)
+    with pytest.raises(SourceSnapshotError):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert changed
+
+
+def test_installed_snapshot_rejects_restored_shared_directory_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution, parent, _first, _second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    original_mode = parent.stat().st_mode & 0o777
+    changed = False
+
+    def change_mode(phase: str, relative_path: str | None) -> None:
+        nonlocal changed
+        if phase != "after_final_stat" or relative_path != "toy_plugin/nested/first.py" or changed:
+            return
+        changed = True
+        parent.chmod(original_mode ^ 0o010)
+        parent.chmod(original_mode)
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", change_mode)
+    with pytest.raises(SourceSnapshotError):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert changed
+
+
+@pytest.mark.parametrize(
+    "failure", ("first_open", "later_open", "first_fstat", "later_fstat", "file_read", "rescan")
+)
+def test_installed_snapshot_closes_every_descriptor_after_traversal_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    distribution, _parent, _first, _second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    real_open, real_dup, real_close, real_fstat, real_read, real_stat = (
+        os.open,
+        os.dup,
+        os.close,
+        os.fstat,
+        os.read,
+        os.stat,
+    )
+    live: set[int] = set()
+    directory_names: dict[int, str] = {}
+    root_fd: int | None = None
+    injected = False
+    in_rescan = False
+
+    def track_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal injected, root_fd
+        if failure in ("first_open", "later_open") and not injected:
+            target = "toy_plugin" if failure == "first_open" else "nested"
+            if path == target and flags & getattr(os, "O_DIRECTORY", 0):
+                injected = True
+                if root_fd is not None:
+                    real_fstat(root_fd)
+                raise OSError(errno.EACCES, "injected directory open failure")
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        live.add(fd)
+        if flags & getattr(os, "O_DIRECTORY", 0):
+            directory_names[fd] = str(path)
+            if path == "site":
+                root_fd = fd
+        return fd
+
+    def track_dup(fd: int) -> int:
+        duplicated = real_dup(fd)
+        live.add(duplicated)
+        if fd in directory_names:
+            directory_names[duplicated] = directory_names[fd]
+        return duplicated
+
+    def track_close(fd: int) -> None:
+        real_close(fd)
+        live.discard(fd)
+        directory_names.pop(fd, None)
+
+    def fail_fstat(fd: int) -> os.stat_result:
+        nonlocal injected
+        if failure in ("first_fstat", "later_fstat") and not injected:
+            target = "toy_plugin" if failure == "first_fstat" else "nested"
+            if directory_names.get(fd) == target:
+                injected = True
+                if root_fd is not None:
+                    real_fstat(root_fd)
+                raise OSError(errno.EIO, "injected directory fstat failure")
+        return real_fstat(fd)
+
+    def fail_read(fd: int, count: int) -> bytes:
+        nonlocal injected
+        if failure == "file_read" and not injected and in_rescan is False:
+            injected = True
+            if root_fd is not None:
+                real_fstat(root_fd)
+            raise OSError(errno.EIO, "injected file read failure")
+        return real_read(fd, count)
+
+    def fail_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal injected
+        if failure == "rescan" and in_rescan and not injected and path == "__init__.py":
+            injected = True
+            if root_fd is not None:
+                real_fstat(root_fd)
+            raise OSError(errno.EIO, "injected final rescan failure")
+        return real_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    def mark_rescan(phase: str, _relative_path: str | None) -> None:
+        nonlocal in_rescan
+        if phase == "before_rescan":
+            in_rescan = True
+
+    monkeypatch.setattr(wheel_sources.os, "open", track_open)
+    monkeypatch.setattr(wheel_sources.os, "dup", track_dup)
+    monkeypatch.setattr(wheel_sources.os, "close", track_close)
+    monkeypatch.setattr(wheel_sources.os, "fstat", fail_fstat)
+    monkeypatch.setattr(wheel_sources.os, "read", fail_read)
+    monkeypatch.setattr(wheel_sources.os, "stat", fail_stat)
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", mark_rescan)
+
+    with pytest.raises((SourceSnapshotError, OSError)) as caught:
+        snapshot_wheel_source(source)
+    if not injected:
+        raise caught.value
+    assert live == set()
+    assert snapshot_wheel_source(source).files
+    assert live == set()
+
+
+def test_installed_snapshot_deep_path_keeps_directory_descriptors_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    root = Path(distribution.locate_file(""))
+    parent = root / "toy_plugin"
+    for index in range(34):
+        parent /= f"depth_{index}"
+        parent.mkdir()
+    leaf = parent / "leaf.py"
+    leaf.write_bytes(b"DEEP = True\n")
+    rows = _record_rows(distribution)
+    existing = tuple(row[0] for row in rows if not row[0].endswith("/RECORD"))
+    _write_record(root, _record_path(distribution).parent, (*existing, leaf.relative_to(root).as_posix()))
+
+    real_open, real_close = os.open, os.close
+    live_directory_fds: set[int] = set()
+    peak = 0
+
+    def track_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal peak
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if flags & getattr(os, "O_DIRECTORY", 0):
+            live_directory_fds.add(fd)
+            peak = max(peak, len(live_directory_fds))
+        return fd
+
+    def track_close(fd: int) -> None:
+        real_close(fd)
+        live_directory_fds.discard(fd)
+
+    monkeypatch.setattr(wheel_sources.os, "open", track_open)
+    monkeypatch.setattr(wheel_sources.os, "close", track_close)
+    snapshot = snapshot_wheel_source(
+        WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    )
+
+    assert (
+        next(item.content for item in snapshot.files if item.path == leaf.relative_to(root).as_posix())
+        == b"DEEP = True\n"
+    )
+    assert peak <= 34
+    assert live_directory_fds == set()
+
+
+@pytest.mark.parametrize("fault", (errno.EMFILE, errno.ENFILE, errno.EACCES))
+def test_installed_snapshot_retries_only_resource_exhaustion_without_retaining_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: int
+) -> None:
+    distribution, _parent, _first, _second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    real_open, real_close = os.open, os.close
+    opened: set[int] = set()
+    injected = False
+
+    def fault_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal injected
+        if path == "nested" and flags & getattr(os, "O_DIRECTORY", 0) and not injected:
+            injected = True
+            raise OSError(fault, "injected directory open failure")
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        opened.add(fd)
+        return fd
+
+    def track_close(fd: int) -> None:
+        real_close(fd)
+        opened.discard(fd)
+
+    monkeypatch.setattr(wheel_sources.os, "open", fault_open)
+    monkeypatch.setattr(wheel_sources.os, "close", track_close)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    if fault == errno.EACCES:
+        with pytest.raises((SourceSnapshotError, OSError)):
+            snapshot_wheel_source(source)
+    else:
+        assert snapshot_wheel_source(source).files
+    assert injected
+    assert opened == set()
+
+
+def test_installed_snapshot_next_capture_reads_changed_files_and_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution, _parent, first, _second = _nested_installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    baseline = snapshot_wheel_source(source)
+
+    first.write_bytes(b"FIRST = 9\n")
+    with pytest.raises(SourceSnapshotError, match="RECORD hash mismatch"):
+        snapshot_wheel_source(source)
+
+    root = Path(distribution.locate_file(""))
+    added = first.with_name("added.py")
+    added.write_bytes(b"ADDED = True\n")
+    rows = _record_rows(distribution)
+    existing = tuple(row[0] for row in rows if not row[0].endswith("/RECORD"))
+    _write_record(root, _record_path(distribution).parent, (*existing, added.relative_to(root).as_posix()))
+    updated = snapshot_wheel_source(source)
+
+    assert updated.digest != baseline.digest
+    assert (
+        next(item.content for item in updated.files if item.path == first.relative_to(root).as_posix())
+        == b"FIRST = 9\n"
+    )
+    assert (
+        next(item.content for item in updated.files if item.path == added.relative_to(root).as_posix())
+        == b"ADDED = True\n"
+    )
 
 
 def _namespace_distribution(
