@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from assurance_product.change_workspace import ChangeWorkspace
@@ -197,6 +198,7 @@ def _durable_chain(
     composition: FrozenComposition,
     identity: InvocationIdentityRecord,
     expect_attempt_records: bool,
+    prepare_evaluation: bool = False,
     workspace: ChangeWorkspace | None = None,
 ) -> object:
     from assurance_product.cli import _authorization
@@ -223,18 +225,18 @@ def _durable_chain(
                 root_input_digest=identity.root_input_digest,
                 fencing_token=started.fencing_token,
             )
-            snapshot = await artifact.entrypoints["improvement-evaluate"].aget_state(
-                {
-                    "configurable": {
-                        "thread_id": invocation_id,
-                        "assurance_revision_id": artifact.manifest.revision.revision_id,
-                        "assurance_product_lock_digest": artifact.manifest.revision.product_lock_digest,
-                        "assurance_root_input_digest": identity.root_input_digest,
-                        "assurance_fencing_token": started.fencing_token,
-                        "assurance_initial_checkpoint": False,
-                    }
+            graph = artifact.entrypoints["improvement-evaluate"]
+            config: RunnableConfig = {
+                "configurable": {
+                    "thread_id": invocation_id,
+                    "assurance_revision_id": artifact.manifest.revision.revision_id,
+                    "assurance_product_lock_digest": artifact.manifest.revision.product_lock_digest,
+                    "assurance_root_input_digest": identity.root_input_digest,
+                    "assurance_fencing_token": started.fencing_token,
+                    "assurance_initial_checkpoint": False,
                 }
-            )
+            }
+            snapshot = await graph.aget_state(config)
             configurable = dict(getattr(snapshot, "config", {}) or {}).get("configurable") or {}
             checkpoint_id = configurable.get("checkpoint_id")
             assert isinstance(checkpoint_id, str) and checkpoint_id
@@ -253,6 +255,8 @@ def _durable_chain(
                     for event in record.events
                 )
             assert ports.network.allow_opencode is False
+            if prepare_evaluation:
+                await graph.aupdate_state(config, _evaluate_task_payload(), as_node="validate")
             return started
 
     return asyncio.run(_read())
@@ -358,56 +362,6 @@ def _authenticate_reopen(
     return status_doc
 
 
-def _inject_evaluate_payload(
-    *,
-    project_dir: Path,
-    change_id: str,
-    invocation_id: str,
-    composition: FrozenComposition,
-    identity: InvocationIdentityRecord,
-) -> None:
-    from assurance_product.cli import _authorization
-    from assurance_product.runtime_ports import ProductRuntimePorts
-
-    async def _update() -> None:
-        workspace = ChangeWorkspace.open(project_dir.resolve(), change_id)
-        authorization = _authorization([f"{SECRET_HANDLE}=env:{SECRET_ENV}"])
-        async with ProductRuntimePorts.open(
-            workspace,
-            composition,
-            invocation=invocation_id,
-            authorization=authorization,
-        ) as ports:
-            started = await ports.backend.journal.read_invocation_started(invocation_id)
-            assert started is not None
-            assert started.product_lock_digest == identity.product_lock_digest
-            assert started.root_input_digest == identity.root_input_digest
-            assert started.graph_revision == identity.revision_id
-            assert started.fencing_token >= 1
-            artifact = ports._compile_bound(
-                invocation_id=invocation_id,
-                root_input_digest=identity.root_input_digest,
-                fencing_token=started.fencing_token,
-            )
-            graph = artifact.entrypoints["improvement-evaluate"]
-            await graph.aupdate_state(
-                {
-                    "configurable": {
-                        "thread_id": invocation_id,
-                        "assurance_revision_id": artifact.manifest.revision.revision_id,
-                        "assurance_product_lock_digest": artifact.manifest.revision.product_lock_digest,
-                        "assurance_root_input_digest": identity.root_input_digest,
-                        "assurance_fencing_token": started.fencing_token,
-                        "assurance_initial_checkpoint": False,
-                    }
-                },
-                _evaluate_task_payload(),
-                as_node="validate",
-            )
-
-    asyncio.run(_update())
-
-
 def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     cli_runner, installed_sources, opencode_composition, tmp_path: Path, monkeypatch
 ) -> None:
@@ -466,14 +420,7 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         composition=composition,
         identity=identity,
         expect_attempt_records=False,
-    )
-
-    _inject_evaluate_payload(
-        project_dir=project_dir,
-        change_id=change_id,
-        invocation_id=_EVALUATE_INVOCATION,
-        composition=composition,
-        identity=identity,
+        prepare_evaluation=True,
     )
     from types import MappingProxyType
     from assurance_product import application as application_mod
