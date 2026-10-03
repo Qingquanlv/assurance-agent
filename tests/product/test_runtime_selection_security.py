@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("installed_sources")
+
 
 def test_cutover_validator_and_runtime_selector_are_gone() -> None:
     import importlib.util
