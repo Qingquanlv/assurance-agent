@@ -4,8 +4,6 @@ import ast
 import importlib
 from pathlib import Path
 
-from tests.architecture.legacy_import_inventory import scan_legacy_imports
-
 SIX_WHEEL_WORKFLOW = Path(
     "tests/capabilities/fixtures/six-wheel-product/test_six_wheel_product/workflow.yaml"
 )
@@ -106,14 +104,6 @@ def test_compiler_and_custom_runtime_packages_are_physically_absent() -> None:
     root = _repo_root()
     remaining = tuple(path.as_posix() for path in DELETED_AUTHORITY_PATHS if (root / path).exists())
     assert remaining == ()
-
-
-def test_production_imports_no_leftover_compiler_or_runtime_modules() -> None:
-    hits = scan_legacy_imports()
-    production = tuple(
-        hit for hit in hits if hit.path.startswith("packages/") and "/tests/" not in f"/{hit.path}/"
-    )
-    assert production == (), tuple(sorted({hit.path for hit in production}))
 
 
 def test_live_event_models_have_no_workflow_token_authority() -> None:

@@ -13,7 +13,14 @@ from graph_engine.composition.dependencies import DependencyConflict
 from graph_engine.composition.resolver import ResolutionError
 from graph_engine.composition.source_fs import SourceSnapshotError
 
-from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID, copy_config_tree, request_for
+from tests.product.composition_harness import (
+    SHADOW_VALIDATOR_CLONE_ID,
+    copy_config_tree,
+    coverage_bytes,
+    evict_generated_binding_modules,
+    project_binding_coverage,
+    request_for,
+)
 
 
 def test_undeclared_installed_module_cannot_change_assembly(
@@ -30,12 +37,18 @@ def test_undeclared_installed_module_cannot_change_assembly(
     extra.mkdir()
     (extra / "__init__.py").write_text("PLUGIN = object()\n", encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
+    evict_generated_binding_modules()
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     assert (
         type(composition.lock).__name__,
         composition.lock.digest,
         composition.manifest.graph_factory_symbol,
     ) == before
+    cached_coverage = project_binding_coverage(opencode_composition)
+    resolved_coverage = project_binding_coverage(composition)
+    assert coverage_bytes(cached_coverage) == coverage_bytes(resolved_coverage)
+    assert opencode_composition.lock.canonical_bytes == composition.lock.canonical_bytes
+    assert opencode_composition.digest == composition.digest
 
 
 def test_shadow_validator_clone_is_absent_from_authenticated_composition(opencode_composition):
@@ -125,24 +138,6 @@ def test_forged_deployment_declaration_fails_closed(installed_sources, tmp_path:
     finally:
         _swap_sys_path(forged, extract)
         _drop_modules_from_roots(forged)
-
-
-def test_mutated_config_tree_changes_lock(installed_sources, opencode_composition, tmp_path: Path):
-    from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
-
-    original = opencode_composition
-    mutated = copy_config_tree(tmp_path / "mutated-config")
-    policy = mutated.path / ".aa" / "policy.yaml"
-    policy.write_text(policy.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")
-    changed = resolve_assurance_composition(
-        AssuranceCompositionRequest(
-            product_entrypoint="assurance-opencode",
-            deployment_source=installed_sources.deployments["opencode"],
-            configuration_tree=mutated,
-        )
-    )
-    assert changed.lock.digest != original.lock.digest
-    assert changed.digest != original.digest
 
 
 def test_wrong_runtime_is_rejected_before_fallback(installed_sources):

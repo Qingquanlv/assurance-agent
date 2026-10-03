@@ -6,24 +6,11 @@ from graph_engine.composition import CapabilityBindingEntry
 
 from tests.product.composition_harness import (
     SHADOW_VALIDATOR_CLONE_ID,
-    coverage_bytes,
     evict_generated_binding_modules,
     project_binding_coverage,
     request_for,
 )
 from tests.product.conformance import ALL_BINDING_IDS
-
-
-def test_repeated_resolution_matches_session_composition(installed_sources, opencode_composition):
-    evict_generated_binding_modules()
-    from assurance_product.product import resolve_assurance_composition
-
-    fresh = resolve_assurance_composition(request_for("opencode", installed_sources))
-    cached = project_binding_coverage(opencode_composition)
-    resolved = project_binding_coverage(fresh)
-    assert coverage_bytes(cached) == coverage_bytes(resolved)
-    assert opencode_composition.lock.canonical_bytes == fresh.lock.canonical_bytes
-    assert opencode_composition.digest == fresh.digest
 
 
 def test_binding_coverage_is_the_authenticated_opencode_projection(opencode_composition):

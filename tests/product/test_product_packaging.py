@@ -89,6 +89,11 @@ def built_engine_wheel(tmp_path: Path) -> Path:
     return wheels[0]
 
 
+def _is_leftover_tree_workspace(name: str) -> bool:
+    parts = Path(name).parts
+    return len(parts) >= 2 and parts[-1] == "workspace.py" and parts[-2] == "runtime"
+
+
 def test_wheels_omit_whole_tree_modules_and_result_export_schema(
     built_engine_wheel: Path, built_product_wheel: Path
 ) -> None:
@@ -96,6 +101,7 @@ def test_wheels_omit_whole_tree_modules_and_result_export_schema(
         engine_names = archive.namelist()
     assert all("tree_io" not in Path(name).parts for name in engine_names)
     assert all(name != "graph_engine/workspace.py" for name in engine_names)
+    assert all(not _is_leftover_tree_workspace(name) for name in engine_names)
     assert all("result-export" not in name for name in engine_names)
 
     with zipfile.ZipFile(built_product_wheel) as archive:
@@ -103,6 +109,7 @@ def test_wheels_omit_whole_tree_modules_and_result_export_schema(
     assert all("result-export" not in name for name in product_names)
     assert all("tree_io" not in Path(name).parts for name in product_names)
     assert all(name != "graph_engine/workspace.py" for name in product_names)
+    assert all(not _is_leftover_tree_workspace(name) for name in product_names)
     assert all("runtime_selection.py" not in name for name in product_names)
     assert "graph_engine.graphs" not in read_wheel_metadata(built_product_wheel).entry_points
 

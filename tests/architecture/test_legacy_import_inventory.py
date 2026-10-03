@@ -80,14 +80,6 @@ def test_scanner_audits_benchmark_source_without_rescanning_run_evidence(tmp_pat
     assert [hit.path for hit in hits] == ["benchmark/assurance-product/run_item.py"]
 
 
-def test_legacy_imports_are_only_on_explicit_allowlist() -> None:
-    allowlist = load_explicit_allowlist()
-    hits = scan_legacy_imports()
-    unexpected = unallowlisted_hits(hits, allowlist)
-    paths = tuple(sorted({hit.path for hit in unexpected}))
-    assert unexpected == (), paths
-
-
 def test_legacy_import_inventory_is_empty_without_allowlist() -> None:
     hits = scan_legacy_imports()
     paths = tuple(sorted({hit.path for hit in hits}))
