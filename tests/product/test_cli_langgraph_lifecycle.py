@@ -319,13 +319,12 @@ def _authenticate_reopen(
     statused = cli_runner.invoke(app, ["status", *existing])
     assert statused.exit_code == 0, statused.output
     status_doc = parse_json_output(statused.stdout)
-    reopened = InvocationIdentityRecord.model_validate_json(
-        _identity_path(
-            Path(existing[existing.index("--project-dir") + 1]),
-            str(existing[existing.index("--change") + 1]),
-            str(existing[existing.index("--invocation-id") + 1]),
-        ).read_bytes()
+    identity_path = _identity_path(
+        Path(existing[existing.index("--project-dir") + 1]),
+        str(existing[existing.index("--change") + 1]),
+        str(existing[existing.index("--invocation-id") + 1]),
     )
+    reopened = InvocationIdentityRecord.model_validate_json(identity_path.read_bytes())
     assert reopened.model_dump(mode="json") == identity.model_dump(mode="json")
     assert status_doc["invocation_id"] == reopened.invocation_id
     assert status_doc["lock_digest"] == reopened.product_lock_digest
@@ -335,6 +334,8 @@ def _authenticate_reopen(
         locked = cli_runner.invoke(app, ["lock", "show", *existing])
         assert locked.exit_code == 0, locked.output
         lock_doc = parse_json_output(locked.stdout)
+        after_lock = InvocationIdentityRecord.model_validate_json(identity_path.read_bytes())
+        assert after_lock.model_dump(mode="json") == identity.model_dump(mode="json")
         assert lock_doc["lock_digest"] == reopened.product_lock_digest
         assert lock_doc["lock"]["schema_version"] == "3"
         assert lock_doc["revision"]["revision_id"] == reopened.revision_id
