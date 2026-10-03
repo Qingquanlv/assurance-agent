@@ -9,7 +9,10 @@ from importlib import metadata
 
 import pytest
 
+import graph_engine.composition.models as composition_models
 from graph_engine.composition.import_plan import (
+    _ModuleOutsideAuthenticatedSource,
+    _authenticated_module_shape,
     ImportPlanSession,
     ModuleImportPlan,
     ModuleRole,
@@ -82,6 +85,207 @@ def _remove_modules(*prefixes: str) -> None:
 
 def _reject_unowned(_entry: ModuleImportPlan, _module: ModuleType) -> bool:
     return False
+
+
+def test_authenticated_shape_preserves_modules_packages_namespaces_and_roots(tmp_path: Path) -> None:
+    source = _source(entrypoint_value="plain:provider")
+    snapshot = _snapshot(
+        tmp_path,
+        source,
+        {
+            "plain.py": b"",
+            "package/__init__.py": b"",
+            "package/nested/__init__.py": b"",
+            "only/branch/leaf.py": b"",
+            "src/dual.py": b"",
+            "vendor/dual.py": b"",
+            "foobar/leaf.py": b"",
+        },
+    )
+
+    def shape(
+        name: str, roots: tuple[str, ...] = ("",)
+    ) -> tuple[StandardLoader, Path | None, tuple[Path, ...]]:
+        return _authenticated_module_shape(name, roots, snapshot)
+
+    assert shape("plain") == (StandardLoader.SOURCE, tmp_path / "plain.py", ())
+    assert shape("package") == (StandardLoader.SOURCE, tmp_path / "package/__init__.py", ())
+    assert shape("package.nested") == (
+        StandardLoader.SOURCE,
+        tmp_path / "package/nested/__init__.py",
+        (),
+    )
+    assert shape("only") == (StandardLoader.NAMESPACE, None, (tmp_path / "only",))
+    assert shape("only.branch") == (
+        StandardLoader.NAMESPACE,
+        None,
+        (tmp_path / "only/branch",),
+    )
+    assert shape("dual", ("src",)) == (StandardLoader.SOURCE, tmp_path / "src/dual.py", ())
+    assert shape("dual", ("vendor",)) == (StandardLoader.SOURCE, tmp_path / "vendor/dual.py", ())
+    with pytest.raises(SourceSnapshotError, match="ambiguous authenticated origins"):
+        shape("dual", ("src", "vendor"))
+    with pytest.raises(_ModuleOutsideAuthenticatedSource):
+        shape("foo")
+    assert shape("foobar") == (StandardLoader.NAMESPACE, None, (tmp_path / "foobar",))
+
+
+def test_authenticated_shape_preserves_extension_candidates_and_ambiguity(tmp_path: Path) -> None:
+    suffix = EXTENSION_SUFFIXES[0]
+    source = _source(entrypoint_value="plain:provider")
+    snapshot = _snapshot(
+        tmp_path,
+        source,
+        {
+            f"native{suffix}": b"",
+            f"native_package/__init__{suffix}": b"",
+            "ambiguous.py": b"",
+            f"ambiguous{suffix}": b"",
+        },
+    )
+    assert _authenticated_module_shape("native", ("",), snapshot) == (
+        StandardLoader.EXTENSION,
+        tmp_path / f"native{suffix}",
+        (),
+    )
+    assert _authenticated_module_shape("native_package", ("",), snapshot) == (
+        StandardLoader.EXTENSION,
+        tmp_path / f"native_package/__init__{suffix}",
+        (),
+    )
+    with pytest.raises(SourceSnapshotError, match="ambiguous authenticated origins"):
+        _authenticated_module_shape("ambiguous", ("",), snapshot)
+
+
+def test_exact_snapshot_shape_probes_reuse_one_immutable_index(tmp_path: Path, monkeypatch) -> None:
+    snapshot = _snapshot(tmp_path, _source(entrypoint_value="pkg:provider"), {"pkg/leaf.py": b""})
+    assert snapshot._file_paths == frozenset({"pkg/leaf.py"})
+    assert snapshot._directory_prefixes == frozenset({"pkg"})
+    file_paths = snapshot._file_paths
+    directories = snapshot._directory_prefixes
+    path_reads = 0
+    original_getattribute = SourceFile.__getattribute__
+
+    def count_path_reads(self: SourceFile, name: str):
+        nonlocal path_reads
+        if name == "path":
+            path_reads += 1
+        return original_getattribute(self, name)
+
+    monkeypatch.setattr(SourceFile, "__getattribute__", count_path_reads)
+    for _ in range(12):
+        assert _authenticated_module_shape("pkg", ("",), snapshot)[0] is StandardLoader.NAMESPACE
+        with pytest.raises(_ModuleOutsideAuthenticatedSource):
+            _authenticated_module_shape("absent", ("",), snapshot)
+        assert snapshot._file_paths is file_paths
+        assert snapshot._directory_prefixes is directories
+    assert path_reads == 0
+
+
+def test_exact_snapshot_builds_indexes_once_per_construction_not_per_shape_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _snapshot(tmp_path, _source(entrypoint_value="pkg:provider"), {}).identity
+    source_file = SourceFile.from_bytes("pkg/leaf.py", b"")
+    constructions = 0
+    original_frozenset = frozenset
+
+    def count_index_constructions(values=()):
+        nonlocal constructions
+        constructions += 1
+        return original_frozenset(values)
+
+    monkeypatch.setattr(composition_models, "frozenset", count_index_constructions, raising=False)
+    first = SourceSnapshot.from_identity(identity, (source_file,))
+    assert constructions == 2
+    for _ in range(12):
+        assert _authenticated_module_shape("pkg", ("",), first)[0] is StandardLoader.NAMESPACE
+    assert constructions == 2
+    second = SourceSnapshot.from_identity(identity, (source_file,))
+    assert second == first
+    assert constructions == 4
+
+
+def test_new_and_replaced_snapshot_rederive_namespace_membership(tmp_path: Path) -> None:
+    source = _source(entrypoint_value="pkg:provider")
+    original = _snapshot(tmp_path, source, {"pkg/leaf.py": b""})
+    changed = SourceSnapshot.from_identity(original.identity, (SourceFile.from_bytes("other/leaf.py", b""),))
+    replaced = replace(original, files=changed.files, digest=changed.digest)
+    for candidate in (changed, replaced):
+        assert candidate._directory_prefixes == frozenset({"other"})
+        with pytest.raises(_ModuleOutsideAuthenticatedSource):
+            _authenticated_module_shape("pkg", ("",), candidate)
+        assert _authenticated_module_shape("other", ("",), candidate)[0] is StandardLoader.NAMESPACE
+    assert original._directory_prefixes == frozenset({"pkg"})
+    assert _authenticated_module_shape("pkg", ("",), original)[0] is StandardLoader.NAMESPACE
+
+
+def test_dynamic_path_and_files_subclasses_keep_live_shape_behavior(tmp_path: Path) -> None:
+    source = _source(entrypoint_value="pkg:provider")
+    identity = _snapshot(tmp_path, source, {}).identity
+    path_state = {"prefix": True}
+
+    class DynamicPath(str):
+        def startswith(self, prefix: str, *args: object) -> bool:
+            return path_state["prefix"] and super().startswith(prefix, *args)
+
+    path_file = SourceFile.from_bytes(DynamicPath("pkg/leaf.py"), b"")
+    path_snapshot = SourceSnapshot.from_identity(identity, (path_file,))
+    assert path_snapshot._file_paths is None
+    assert path_snapshot._directory_prefixes is None
+    assert _authenticated_module_shape("pkg", ("",), path_snapshot)[0] is StandardLoader.NAMESPACE
+    path_state["prefix"] = False
+    with pytest.raises(_ModuleOutsideAuthenticatedSource):
+        _authenticated_module_shape("pkg", ("",), path_snapshot)
+
+    file_state = {"all": True}
+    files = (SourceFile.from_bytes("alpha/leaf.py", b""), SourceFile.from_bytes("beta/leaf.py", b""))
+
+    class DynamicFiles(tuple):
+        def __iter__(self):
+            return iter(tuple.__iter__(self) if file_state["all"] else (self[1],))
+
+    ordinary = SourceSnapshot.from_identity(identity, files)
+    files_snapshot = SourceSnapshot(identity=identity, files=DynamicFiles(files), digest=ordinary.digest)
+    assert files_snapshot._file_paths is None
+    assert files_snapshot._directory_prefixes is None
+    assert _authenticated_module_shape("alpha", ("",), files_snapshot)[0] is StandardLoader.NAMESPACE
+    file_state["all"] = False
+    with pytest.raises(_ModuleOutsideAuthenticatedSource):
+        _authenticated_module_shape("alpha", ("",), files_snapshot)
+    assert _authenticated_module_shape("beta", ("",), files_snapshot)[0] is StandardLoader.NAMESPACE
+
+
+def test_other_snapshot_subclasses_remain_uncached_and_accepted(tmp_path: Path) -> None:
+    identity = _snapshot(tmp_path, _source(entrypoint_value="pkg:provider"), {}).identity
+
+    class SnapshotChild(SourceSnapshot):
+        pass
+
+    class FileChild(SourceFile):
+        pass
+
+    class PassiveFiles(tuple):
+        pass
+
+    class PassivePath(str):
+        pass
+
+    plain_file = SourceFile.from_bytes("pkg/leaf.py", b"")
+    exact = SourceSnapshot.from_identity(identity, (plain_file,))
+    candidates = (
+        SnapshotChild.from_identity(identity, (plain_file,)),
+        SourceSnapshot.from_identity(identity, (FileChild.from_bytes("pkg/leaf.py", b""),)),
+        SourceSnapshot.from_identity(identity, (SourceFile.from_bytes(PassivePath("pkg/leaf.py"), b""),)),
+        SourceSnapshot(identity=identity, files=PassiveFiles((plain_file,)), digest=exact.digest),
+    )
+    for candidate in candidates:
+        assert candidate._file_paths is None
+        assert candidate._directory_prefixes is None
+        assert _authenticated_module_shape("pkg", ("",), candidate)[0] is StandardLoader.NAMESPACE
+    replaced = replace(exact, files=PassiveFiles((plain_file,)))
+    assert replaced._file_paths is None
+    assert replaced._directory_prefixes is None
 
 
 def test_plan_contains_only_the_current_entrypoint_lineage(tmp_path: Path) -> None:

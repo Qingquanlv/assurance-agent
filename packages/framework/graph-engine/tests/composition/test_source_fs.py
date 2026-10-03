@@ -94,6 +94,34 @@ def test_source_models_reject_mutable_file_lists_and_unsafe_paths(tmp_path: Path
         DeclaredTreePolicy(kind="config_tree")  # type: ignore[arg-type]
 
 
+def test_source_snapshot_index_preserves_constructor_validation_and_value_semantics(tmp_path: Path) -> None:
+    identity = SourceIdentity(SourceKind.CONFIG_TREE, tmp_path.resolve())
+    first = SourceFile.from_bytes("a/first.py", b"first")
+    second = SourceFile.from_bytes("b/second.py", b"second")
+    valid = SourceSnapshot.from_identity(identity, (first, second))
+    rebuilt = SourceSnapshot.from_identity(identity, (first, second))
+
+    assert valid == rebuilt
+    assert hash(valid) == hash(rebuilt)
+    assert valid._file_paths == frozenset({"a/first.py", "b/second.py"})
+    assert valid._directory_prefixes == frozenset({"a", "b"})
+    assert valid._file_paths is not rebuilt._file_paths
+    assert valid._directory_prefixes is not rebuilt._directory_prefixes
+    assert "_file_paths" not in repr(valid)
+    empty = SourceSnapshot.from_identity(identity, ())
+    assert empty._file_paths == frozenset()
+    assert empty._directory_prefixes == frozenset()
+
+    with pytest.raises(ValueError, match="unique canonical path order"):
+        SourceSnapshot(identity, (second, first), valid.digest)
+    with pytest.raises(ValueError, match="unique canonical path order"):
+        SourceSnapshot(identity, (first, first), valid.digest)
+    with pytest.raises(ValueError, match="digest does not authenticate"):
+        SourceSnapshot(identity, (first, second), "0" * 64)
+    with pytest.raises(ValueError, match="canonical relative path"):
+        SourceFile.from_bytes("../unsafe.py", b"")
+
+
 @pytest.mark.parametrize(
     "bad_path",
     (

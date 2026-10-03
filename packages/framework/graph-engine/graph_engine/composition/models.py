@@ -229,6 +229,10 @@ class SourceSnapshot:
     identity: SourceIdentity
     files: tuple[SourceFile, ...]
     digest: str
+    _file_paths: frozenset[str] | None = dataclass_field(default=None, init=False, compare=False, repr=False)
+    _directory_prefixes: frozenset[str] | None = dataclass_field(
+        default=None, init=False, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, SourceIdentity):
@@ -243,6 +247,20 @@ class SourceSnapshot:
         expected = _snapshot_digest(self.identity, self.files)
         if self.digest != expected:
             raise ValueError("source snapshot digest does not authenticate its files")
+        if (
+            type(self) is SourceSnapshot
+            and type(self.files) is tuple
+            and all(type(item) is SourceFile for item in self.files)
+            and all(type(path) is str for path in paths)
+        ):
+            directory_prefixes: set[str] = set()
+            for path in paths:
+                parent = path.rpartition("/")[0]
+                while parent:
+                    directory_prefixes.add(parent)
+                    parent = parent.rpartition("/")[0]
+            object.__setattr__(self, "_file_paths", frozenset(paths))
+            object.__setattr__(self, "_directory_prefixes", frozenset(directory_prefixes))
 
     @classmethod
     def from_files(
