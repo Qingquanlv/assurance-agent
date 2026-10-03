@@ -939,14 +939,33 @@ class _DirectoryTraversal:
         return parent_fd, parts[-1], tuple(states)
 
     @contextmanager
-    def parent(self, relative_path: str) -> Iterator[tuple[int, str, tuple[tuple[str, _EntryState], ...]]]:
+    def parent(
+        self, relative_path: str, *, reserve_file_fd: bool = False
+    ) -> Iterator[tuple[int, str, tuple[tuple[str, _EntryState], ...]]]:
         if relative_path.count("/") <= _MAX_RETAINED_DIRECTORIES:
+            reserved_fd = -1
             try:
+                if reserve_file_fd:
+                    reserved_fd = os.dup(self.root_fd)
                 cached = self._cached_parent(relative_path)
             except OSError as error:
+                if reserved_fd >= 0:
+                    try:
+                        os.close(reserved_fd)
+                    except OSError:
+                        pass
                 if error.errno not in (errno.EMFILE, errno.ENFILE):
                     raise
+            except BaseException:
+                if reserved_fd >= 0:
+                    try:
+                        os.close(reserved_fd)
+                    except OSError:
+                        pass
+                raise
             else:
+                if reserved_fd >= 0:
+                    os.close(reserved_fd)
                 yield cached
                 return
         self.close()
@@ -999,7 +1018,7 @@ def _read_stable_installed_file(
     traversal: _DirectoryTraversal,
     relative_path: str,
 ) -> tuple[SourceFile, _EntryState]:
-    with traversal.parent(relative_path) as (parent_fd, name, _visited):
+    with traversal.parent(relative_path, reserve_file_fd=True) as (parent_fd, name, _visited):
         return _read_stable_installed_file_at(parent_fd, name, relative_path)
 
 

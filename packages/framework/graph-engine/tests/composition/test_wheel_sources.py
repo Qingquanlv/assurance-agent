@@ -10,7 +10,9 @@ from importlib import metadata
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
+from textwrap import dedent
 from types import ModuleType
 
 import pytest
@@ -736,6 +738,96 @@ def test_installed_snapshot_retries_only_resource_exhaustion_without_retaining_d
         assert snapshot_wheel_source(source).files
     assert injected
     assert opened == set()
+
+
+def test_installed_snapshot_retries_file_open_when_cached_parents_exhaust_descriptors(
+    tmp_path: Path,
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    root = Path(distribution.locate_file(""))
+    parent = root / "a" / "b" / "c"
+    parent.mkdir(parents=True)
+    leaf = parent / "file.py"
+    leaf.write_bytes(b"VALUE = 1\n")
+    rows = _record_rows(distribution)
+    existing = tuple(row[0] for row in rows if not row[0].endswith("/RECORD"))
+    _write_record(root, _record_path(distribution).parent, (*existing, "a/b/c/file.py"))
+
+    script = dedent("""\
+        import errno
+        from importlib import metadata
+        import os
+        from pathlib import Path
+        import resource
+        import sys
+
+        import graph_engine.composition.sources as sources
+
+        distribution = metadata.Distribution.at(Path(sys.argv[1]))
+        root = Path(sys.argv[2])
+        root_fd = sources._open_physical_root(root)
+        _soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        limit = 64 if hard == resource.RLIM_INFINITY else min(64, hard)
+        assert limit >= 16
+        resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
+        filler = []
+        try:
+            while True:
+                try:
+                    filler.append(os.open(os.devnull, os.O_RDONLY))
+                except OSError as error:
+                    if error.errno != errno.EMFILE:
+                        raise
+                    break
+            for _ in range(3):
+                os.close(filler.pop())
+
+            parent_fd, name, _states = sources._open_parent_uncached(root_fd, "a/b/c/file.py")
+            try:
+                source_file, _state = sources._read_stable_installed_file_at(
+                    parent_fd, name, "a/b/c/file.py"
+                )
+                assert source_file.content == b"VALUE = 1\\n"
+            finally:
+                os.close(parent_fd)
+            print("uncached read fits")
+
+            observed = []
+            def boundary(phase, relative_path):
+                if relative_path == "a/b/c/file.py":
+                    observed.append(phase)
+                    os.fstat(root_fd)
+
+            sources._snapshot_boundary = boundary
+            sources._open_physical_root = lambda _root: root_fd
+            _resolved, files, _record = sources._capture_installed_distribution_files(distribution)
+            assert next(item.content for item in files if item.path == "a/b/c/file.py") == b"VALUE = 1\\n"
+            assert observed == [
+                "before_component_open", "before_read", "before_final_stat", "after_final_stat"
+            ]
+            try:
+                os.fstat(root_fd)
+            except OSError as error:
+                assert error.errno == errno.EBADF
+            else:
+                raise AssertionError("capture did not close its root descriptor")
+            print("full capture succeeds and closes root")
+        finally:
+            for fd in filler:
+                os.close(fd)
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(_record_path(distribution).parent), str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == [
+        "uncached read fits",
+        "full capture succeeds and closes root",
+    ]
 
 
 def test_installed_snapshot_next_capture_reads_changed_files_and_record(
