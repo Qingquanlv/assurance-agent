@@ -288,6 +288,65 @@ def test_other_snapshot_subclasses_remain_uncached_and_accepted(tmp_path: Path) 
     assert replaced._directory_prefixes is None
 
 
+def test_snapshot_subclass_uses_live_files_before_private_index_fields(tmp_path: Path) -> None:
+    identity = _snapshot(tmp_path, _source(entrypoint_value="alpha:provider"), {}).identity
+    alpha = SourceFile.from_bytes("alpha/leaf.py", b"")
+    beta = SourceFile.from_bytes("beta/leaf.py", b"")
+    selected_files = {"current": (alpha,)}
+
+    class DynamicSnapshot(SourceSnapshot):
+        def __getattribute__(self, name: str):
+            if name in {"_file_paths", "_directory_prefixes"}:
+                raise AssertionError("snapshot subclass index fields must not be read")
+            if name == "files":
+                return selected_files["current"]
+            return object.__getattribute__(self, name)
+
+    snapshot = DynamicSnapshot.from_identity(identity, (alpha,))
+    assert _authenticated_module_shape("alpha", ("",), snapshot) == (
+        StandardLoader.NAMESPACE,
+        None,
+        (tmp_path / "alpha",),
+    )
+    selected_files["current"] = (beta,)
+    with pytest.raises(_ModuleOutsideAuthenticatedSource):
+        _authenticated_module_shape("alpha", ("",), snapshot)
+    assert _authenticated_module_shape("beta", ("",), snapshot) == (
+        StandardLoader.NAMESPACE,
+        None,
+        (tmp_path / "beta",),
+    )
+
+
+def test_source_file_subclass_uses_live_path_on_each_shape_probe(tmp_path: Path) -> None:
+    identity = _snapshot(tmp_path, _source(entrypoint_value="alpha:provider"), {}).identity
+    selected_path = {"current": "alpha/leaf.py"}
+
+    class DynamicFile(SourceFile):
+        def __getattribute__(self, name: str):
+            if name == "path":
+                return selected_path["current"]
+            return object.__getattribute__(self, name)
+
+    source_file = DynamicFile.from_bytes("alpha/leaf.py", b"")
+    snapshot = SourceSnapshot.from_identity(identity, (source_file,))
+    assert snapshot._file_paths is None
+    assert snapshot._directory_prefixes is None
+    assert _authenticated_module_shape("alpha", ("",), snapshot) == (
+        StandardLoader.NAMESPACE,
+        None,
+        (tmp_path / "alpha",),
+    )
+    selected_path["current"] = "beta/leaf.py"
+    with pytest.raises(_ModuleOutsideAuthenticatedSource):
+        _authenticated_module_shape("alpha", ("",), snapshot)
+    assert _authenticated_module_shape("beta", ("",), snapshot) == (
+        StandardLoader.NAMESPACE,
+        None,
+        (tmp_path / "beta",),
+    )
+
+
 def test_plan_contains_only_the_current_entrypoint_lineage(tmp_path: Path) -> None:
     source = _source(entrypoint_value="alpha_namespace.provider:provider")
     snapshot = _snapshot(
