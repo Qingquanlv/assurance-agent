@@ -260,7 +260,7 @@ def test_full_manifest_uses_entrypoint_and_checkpoint_bindings_captured_before_c
 
 
 def test_bad_live_model_fails_full_gates_before_start_identity_or_checkpoint(
-    opencode_composition, installed_sources, tmp_path: Path
+    opencode_composition, installed_sources, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from assurance_product.application import AssuranceProductApplication
     from assurance_product.product import (
@@ -274,15 +274,13 @@ def test_bad_live_model_fails_full_gates_before_start_identity_or_checkpoint(
         lifecycle_authorization,
     )
 
-    class BrokenInput(BaseModel):
-        @classmethod
-        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
-            raise RuntimeError("broken live schema")
+    resolved = next(iter(opencode_composition.semantic_attempt_contracts.values()))
 
-    contract_id, resolved = next(iter(opencode_composition.semantic_attempt_contracts.items()))
-    contracts = dict(opencode_composition.semantic_attempt_contracts)
-    contracts[contract_id] = replace(resolved, contract=replace(resolved.contract, input_model=BrokenInput))
-    composition = replace(opencode_composition, semantic_attempt_contracts=MappingProxyType(contracts))
+    def broken_live_schema(cls: type[BaseModel], *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("broken live schema")
+
+    monkeypatch.setattr(resolved.contract.input_model, "model_json_schema", classmethod(broken_live_schema))
+    composition = opencode_composition
     lock = product_lock_from_composition(composition)
     assert product_graph_revision(composition, lock).product_lock_digest == lock.digest
 
