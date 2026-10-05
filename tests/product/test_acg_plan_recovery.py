@@ -11,12 +11,15 @@ import pytest
 from assurance_generation.contracts.agent import PlanInputV1
 from assurance_intake.contracts.explore import ExploreAdvisoryV1, PreparedExploreV1
 from assurance_intake.contracts.plan import (
+    PREPARATION_REFS_PATH,
+    PreparationRefsDocumentV1,
     ResolvePlanInputV1,
     ResolvePlanOutputV1,
     TestFamilyPolicyV1 as FamilyPolicyV1,
     plan_artifact_ref,
     plan_bytes,
 )
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.domain.plan_codec import seal_plan
 from assurance_intake.domain.obligations import normalize_obligation_drafts
 from assurance_product.change_workspace import ChangeWorkspace
@@ -41,7 +44,7 @@ from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 
 from assurance_intake.feature import TASK_ATTEMPT_CONTRACTS
-from assurance_intake.validators import SEALED_ARTIFACT_REFS_VALIDATOR_ID, SealedArtifactRefsValidator
+from assurance_intake.plugin import IntakePlugin
 from tests.acg_plan_fixture import DEFAULT_POLICY, install_plan
 
 
@@ -113,6 +116,25 @@ def _plan_scenario(tmp_path: Path) -> _PlanScenario:
         }
     )
     ref = plan_artifact_ref(plan)
+    preparation_refs = tuple(sorted((bound_ref, plan.impact_inventory_ref, ref), key=lambda item: item.path))
+    preparation_bytes = (
+        canonical_json_bytes(
+            cast(
+                JSONValue,
+                PreparationRefsDocumentV1(preparation_refs=preparation_refs).model_dump(mode="json"),
+            )
+        )
+        + b"\n"
+    )
+    expected_output = ResolvePlanOutputV1(
+        plan=plan,
+        plan_ref=ref,
+        preparation_refs=preparation_refs,
+        preparation_refs_ref=EvidenceArtifactRefV1(
+            path=PREPARATION_REFS_PATH,
+            digest=hashlib.sha256(preparation_bytes).hexdigest(),
+        ),
+    )
     contract = TASK_ATTEMPT_CONTRACTS["resolve-plan"]
     executor = DeterministicTaskExecutor(
         contract.handler_id,
@@ -142,7 +164,7 @@ def _plan_scenario(tmp_path: Path) -> _PlanScenario:
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision=_REVISION,
-        validators={SEALED_ARTIFACT_REFS_VALIDATOR_ID: SealedArtifactRefsValidator()},
+        validators=IntakePlugin.spec.commit_validators,
     )
     return _PlanScenario(
         kernel=kernel,
@@ -152,7 +174,7 @@ def _plan_scenario(tmp_path: Path) -> _PlanScenario:
         execution_context=execution_context,
         store=store,
         executor=executor,
-        expected_output=ResolvePlanOutputV1(plan=plan, plan_ref=ref),
+        expected_output=expected_output,
         project=project,
     )
 
@@ -199,6 +221,7 @@ async def _committed_plan_replay_survives_sqlite_restart(tmp_path: Path) -> None
                 arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
                 workspace=TaskWorkspaceProvider(scenario.store),
                 graph_revision=_REVISION,
+                validators=IntakePlugin.spec.commit_validators,
             )
             first = await first_kernel.execute_or_recover(
                 scenario.attempt_key,
@@ -213,6 +236,7 @@ async def _committed_plan_replay_survives_sqlite_restart(tmp_path: Path) -> None
                 arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
                 workspace=TaskWorkspaceProvider(scenario.store),
                 graph_revision=_REVISION,
+                validators=IntakePlugin.spec.commit_validators,
             )
             replay = await replay_kernel.execute_or_recover(
                 scenario.attempt_key,

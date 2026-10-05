@@ -853,3 +853,9 @@ import langgraph，唯一例外 `assurance_product.sqlite_checkpointer`
 21. `aa run` 拒绝软链接项目目录。
 22. 删除没有图绑定的 healing `coverage-repair` Agent 契约。覆盖不足由 full 的 coverage
     循环回到 case design 处理。
+23. intake task 的输出带上它写出的每个文件的 ref，提交校验器
+    `SealedArtifactRefsValidator` 据此绑定封存文件。resolve-plan 输出加
+    `preparation_refs_ref`，指向 `qa/results/preparation/refs.json`；校验器在没有
+    `artifacts` 的输出里认 `plan_ref`、`plan.exploration_ref`、`preparation_refs_ref`、
+    `rework_ref`。`preparation_refs` 里是其他步骤写的文件，不参与绑定。resolve-plan 的
+    契约 digest 因此变了一次。

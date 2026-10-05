@@ -19,6 +19,9 @@ def _ref(value: object) -> tuple[str, str]:
     return path, digest
 
 
+_OWNED_OUTPUT_REF_FIELDS = ("plan_ref", "preparation_refs_ref", "rework_ref")
+
+
 def _output_refs(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise ValueError("Intake task output is not a mapping")
@@ -29,10 +32,14 @@ def _output_refs(value: object) -> dict[str, str]:
             raise ValueError("Intake output artifacts are not a list")
         candidates = artifacts
     else:
+        candidates = [
+            value[field] for field in _OWNED_OUTPUT_REF_FIELDS if field in value and value[field] is not None
+        ]
         plan = value.get("plan")
-        if not isinstance(plan, Mapping):
+        if isinstance(plan, Mapping) and plan.get("exploration_ref") is not None:
+            candidates.append(plan["exploration_ref"])
+        if not candidates:
             raise ValueError("Intake output has no artifact refs")
-        candidates = (value.get("plan_ref"), plan.get("exploration_ref"))
     for item in candidates:
         path, digest = _ref(item)
         previous = refs.get(path)
