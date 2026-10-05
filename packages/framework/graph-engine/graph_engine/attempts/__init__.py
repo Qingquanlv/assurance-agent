@@ -13,6 +13,7 @@ from graph_engine.attempts.contracts import (
     resolve_contract,
 )
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.phase import AttemptPhase, AttemptPhaseIntegrityError, derive_attempt_phase
 from graph_engine.attempts.resolutions import (
     AttemptResolution,
     CommittedEffectFailure,
@@ -29,6 +30,8 @@ __all__ = [
     "AttemptExecutionContext",
     "AttemptExecutor",
     "AttemptKey",
+    "AttemptPhase",
+    "AttemptPhaseIntegrityError",
     "AttemptResolution",
     "AttemptRetryPolicy",
     "AttemptTimeoutPolicy",
@@ -51,5 +54,6 @@ __all__ = [
     "TaskAttemptContract",
     "TerminalReceiptRef",
     "derive_attempt_key",
+    "derive_attempt_phase",
     "resolve_contract",
 ]
