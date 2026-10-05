@@ -233,15 +233,16 @@ def resolve_plan_artifact(
         exploration_ref=exploration_ref,
         plan_ref=plan_artifact_ref(plan),
     )
+    staged_refs = stage_json_artifact(
+        write_root,
+        PREPARATION_REFS_PATH,
+        PreparationRefsDocumentV1(preparation_refs=preparation_refs),
+    )
     output = ResolvePlanOutputV1(
         plan=plan,
         plan_ref=plan_artifact_ref(plan),
         preparation_refs=preparation_refs,
-    )
-    stage_json_artifact(
-        write_root,
-        PREPARATION_REFS_PATH,
-        PreparationRefsDocumentV1(preparation_refs=preparation_refs),
+        preparation_refs_ref=EvidenceArtifactRefV1.model_validate(staged_refs.model_dump(mode="json")),
     )
     staged = stage_json_artifact(write_root, output.plan_ref.path, output.plan, trailing_newline=False)
     if staged.digest != output.plan_ref.digest:
