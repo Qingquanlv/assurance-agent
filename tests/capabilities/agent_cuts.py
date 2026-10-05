@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import ModuleType
@@ -30,6 +31,11 @@ from assurance_improvement.ops.retro import finalize as retro_finalize
 from assurance_quality.ops.inspect import finalize as inspect_finalize
 
 assert "assurance.improvement.retro-synthesize" in TASK_ATTEMPT_CONTRACTS
+
+_INTAKE_QA_FIXTURE = (
+    Path(__file__).resolve().parents[2]
+    / "packages/capabilities/assurance-intake/tests/fixtures/qa-valid.yaml"
+)
 
 AGENT_CUTS = (
     "prepare-complete",
@@ -319,6 +325,7 @@ async def run_finalize_cut(wheel: str, cut: str) -> IndeterminateObservation:
                 "CH-DEMO-001",
                 capability_leafs=("auth.session.create", "entities.item.create"),
             )
+            _install_case_review_reads(workspace)
             prepare = {
                 **cast(dict[str, Any], payload),
                 "change_id": "CH-DEMO-001",
@@ -374,6 +381,41 @@ async def run_six_wheel_cut(cut: str) -> IndeterminateObservation:
         finalize_invoked=host.finalize_calls > 0,
         finalize_failed_closed=failed_closed,
         spawned=host.spawned and cut != "prepare-complete",
+    )
+
+
+def _install_case_review_reads(workspace: Path) -> None:
+    qa = workspace / "qa"
+    (qa / "results" / "trace").mkdir(parents=True, exist_ok=True)
+    (qa / ".qa.yaml").write_bytes(_INTAKE_QA_FIXTURE.read_bytes())
+    (qa / "proposal.md").write_text("# Fixture case proposal\n", encoding="utf-8")
+    (qa / "requirement.md").write_text("# Fixture requirement\n", encoding="utf-8")
+    (qa / "results" / "trace" / "minimum-coverage-matrix.json").write_text(
+        json.dumps(
+            [
+                {
+                    "mrc_id": "MRC-API-001",
+                    "key": "auth.session.create",
+                    "required": True,
+                    "covered_by_cases": ["TC_MENU_001"],
+                    "status": "covered",
+                    "skip_reason": None,
+                    "category": "api",
+                    "layer": "api",
+                },
+                {
+                    "mrc_id": "MRC-API-002",
+                    "key": "entities.item.create",
+                    "required": True,
+                    "covered_by_cases": ["TC_MENU_002"],
+                    "status": "covered",
+                    "skip_reason": None,
+                    "category": "api",
+                    "layer": "api",
+                },
+            ]
+        ),
+        encoding="utf-8",
     )
 
 

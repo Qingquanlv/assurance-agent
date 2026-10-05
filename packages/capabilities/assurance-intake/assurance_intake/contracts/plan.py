@@ -299,11 +299,25 @@ class ResolvePlanOutputV1(FrozenModel):
     plan: ResolvedAssurancePlan
     plan_ref: EvidenceArtifactRefV1
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    preparation_refs_ref: EvidenceArtifactRefV1
 
     @model_validator(mode="after")
     def _ref_matches_plan(self) -> Self:
         if self.plan_ref != plan_artifact_ref(self.plan):
             raise ValueError("plan_ref does not match the resolved plan")
+        if self.preparation_refs_ref.path != PREPARATION_REFS_PATH:
+            raise ValueError("preparation_refs_ref must bind the preparation refs document")
+        expected = hashlib.sha256(
+            canonical_json_bytes(
+                cast(
+                    JSONValue,
+                    PreparationRefsDocumentV1(preparation_refs=self.preparation_refs).model_dump(mode="json"),
+                )
+            )
+            + b"\n"
+        ).hexdigest()
+        if self.preparation_refs_ref.digest != expected:
+            raise ValueError("preparation_refs_ref does not match the preparation refs document")
         return self
 
 
