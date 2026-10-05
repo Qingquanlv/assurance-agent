@@ -7,6 +7,7 @@ import configparser
 from contextlib import contextmanager
 import csv
 from dataclasses import dataclass, field, replace
+import errno
 from email.parser import BytesParser
 from email.policy import compat32
 import hashlib
@@ -40,6 +41,7 @@ from graph_engine.composition.models import (
     SourceIdentity,
     SourceKind,
     SourceSnapshot,
+    _validate_canonical_relative_path,
 )
 from graph_engine.composition.import_plan import (
     ImportPlanSession,
@@ -200,6 +202,7 @@ _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW
 _FILE_FLAGS = os.O_RDONLY | _NOFOLLOW | _NONBLOCK
 _MISSING_MODULE = object()
+_MAX_RETAINED_DIRECTORIES = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -738,45 +741,46 @@ def _capture_installed_distribution_files(
     record_relative = _record_relative_path(distribution, root)
     root_fd = _open_physical_root(root)
     try:
-        try:
-            record_file, record_state = _read_stable_installed_file(root_fd, record_relative)
-        except SourceSnapshotError as error:
-            raise SourceSnapshotError("installed distribution RECORD is missing or unreadable") from error
-        rows = _parse_record(record_file.content)
-        if record_relative not in {path for path, _hash, _size in rows}:
-            raise SourceSnapshotError("installed distribution RECORD does not list itself")
-        declared_paths = tuple(path for path, _hash, _size in rows)
-        before_directories = _capture_directory_states(root_fd, declared_paths)
+        with _directory_traversal(root_fd) as traversal:
+            try:
+                record_file, record_state = _read_stable_installed_file(traversal, record_relative)
+            except SourceSnapshotError as error:
+                raise SourceSnapshotError("installed distribution RECORD is missing or unreadable") from error
+            rows = _parse_record(record_file.content)
+            if record_relative not in {path for path, _hash, _size in rows}:
+                raise SourceSnapshotError("installed distribution RECORD does not list itself")
+            declared_paths = tuple(path for path, _hash, _size in rows)
+            before_directories = _capture_directory_states(traversal, declared_paths)
 
-        files: list[SourceFile] = []
-        captured_states: dict[str, _EntryState] = {}
-        for relative_path, declared_hash, declared_size in rows:
-            if _is_cache_file(relative_path):
-                continue
-            if relative_path == record_relative:
-                source_file = record_file
-                state = record_state
-            else:
-                source_file, state = _read_stable_installed_file(root_fd, relative_path)
-            if declared_hash is not None:
-                _validate_record_hash(relative_path, source_file.content, declared_hash)
-            if declared_size is not None and len(source_file.content) != declared_size:
-                raise SourceSnapshotError(f"RECORD size mismatch: {relative_path}")
-            files.append(source_file)
-            captured_states[relative_path] = state
+            files: list[SourceFile] = []
+            captured_states: dict[str, _EntryState] = {}
+            for relative_path, declared_hash, declared_size in rows:
+                if _is_cache_file(relative_path):
+                    continue
+                if relative_path == record_relative:
+                    source_file = record_file
+                    state = record_state
+                else:
+                    source_file, state = _read_stable_installed_file(traversal, relative_path)
+                if declared_hash is not None:
+                    _validate_record_hash(relative_path, source_file.content, declared_hash)
+                if declared_size is not None and len(source_file.content) != declared_size:
+                    raise SourceSnapshotError(f"RECORD size mismatch: {relative_path}")
+                files.append(source_file)
+                captured_states[relative_path] = state
 
-        _snapshot_boundary("before_rescan", None)
-        for relative_path, expected in captured_states.items():
-            if _stat_installed_file(root_fd, relative_path) != expected:
-                raise SourceSnapshotError("installed distribution changed while it was captured")
-        if _capture_directory_states(root_fd, declared_paths) != before_directories:
-            raise SourceSnapshotError("installed distribution directories changed while it was captured")
-        rescanned_record, rescanned_state = _read_stable_installed_file(root_fd, record_relative)
-        if rescanned_state != record_state or rescanned_record.content != record_file.content:
-            raise SourceSnapshotError("installed distribution RECORD changed while it was captured")
-        _snapshot_boundary("after_rescan", None)
-        resolved_root = _resolve_stable_root(root, root_fd)
-        return resolved_root, tuple(files), record_relative
+            _snapshot_boundary("before_rescan", None)
+            for relative_path, expected in captured_states.items():
+                if _stat_installed_file(traversal, relative_path) != expected:
+                    raise SourceSnapshotError("installed distribution changed while it was captured")
+            if _capture_directory_states(traversal, declared_paths) != before_directories:
+                raise SourceSnapshotError("installed distribution directories changed while it was captured")
+            rescanned_record, rescanned_state = _read_stable_installed_file(traversal, record_relative)
+            if rescanned_state != record_state or rescanned_record.content != record_file.content:
+                raise SourceSnapshotError("installed distribution RECORD changed while it was captured")
+            _snapshot_boundary("after_rescan", None)
+            resolved_root = _resolve_stable_root(root, root_fd)
+            return resolved_root, tuple(files), record_relative
     finally:
         os.close(root_fd)
 
@@ -822,62 +826,206 @@ def _open_physical_root(root: Path) -> int:
     return descriptor
 
 
-def _open_parent_at(root_fd: int, relative_path: str) -> tuple[int, str]:
+@dataclass(frozen=True, slots=True)
+class _RetainedDirectory:
+    component: str
+    prefix: str
+    fd: int
+    state: _EntryState
+
+
+def _open_directory_component(
+    parent_fd: int, component: str, prefix: str, enumerated: os.stat_result
+) -> tuple[int, _EntryState]:
+    child = os.open(component, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+    try:
+        opened = os.fstat(child)
+        if not stat.S_ISDIR(opened.st_mode) or _file_identity(opened) != _file_identity(enumerated):
+            raise SourceSnapshotError(f"RECORD directory changed while opening: {prefix}")
+        return child, _file_state(opened)
+    except BaseException:
+        try:
+            os.close(child)
+        except OSError:
+            pass
+        raise
+
+
+def _open_parent_uncached(
+    root_fd: int, relative_path: str
+) -> tuple[int, str, tuple[tuple[str, _EntryState], ...]]:
     parts = relative_path.split("/")
     parent_fd = os.dup(root_fd)
     walked = ""
+    states: list[tuple[str, _EntryState]] = []
     try:
         for component in parts[:-1]:
             walked = f"{walked}/{component}" if walked else component
             enumerated = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
-            child = os.open(component, _DIRECTORY_FLAGS, dir_fd=parent_fd)
-            opened = os.fstat(child)
-            if not stat.S_ISDIR(opened.st_mode) or _file_identity(opened) != _file_identity(enumerated):
-                os.close(child)
-                raise SourceSnapshotError(f"RECORD directory changed while opening: {walked}")
-            os.close(parent_fd)
+            child, state = _open_directory_component(parent_fd, component, walked, enumerated)
+            try:
+                os.close(parent_fd)
+            except BaseException:
+                try:
+                    os.close(child)
+                except OSError:
+                    pass
+                raise
             parent_fd = child
-        return parent_fd, parts[-1]
+            states.append((walked, state))
+        return parent_fd, parts[-1], tuple(states)
     except BaseException:
-        os.close(parent_fd)
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
         raise
 
 
+class _DirectoryTraversal:
+    """Reuse only directory handles acquired by this one installed-wheel capture."""
+
+    def __init__(self, root_fd: int) -> None:
+        self.root_fd = root_fd
+        self._stack: list[_RetainedDirectory] = []
+
+    def close(self) -> None:
+        self._close_suffix(0)
+
+    def _close_suffix(self, length: int) -> None:
+        first_error: OSError | None = None
+        while len(self._stack) > length:
+            retained = self._stack.pop()
+            try:
+                os.close(retained.fd)
+            except OSError as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
+    def _cached_parent(self, relative_path: str) -> tuple[int, str, tuple[tuple[str, _EntryState], ...]]:
+        parts = relative_path.split("/")
+        parents = parts[:-1]
+        common = 0
+        while (
+            common < min(len(parents), len(self._stack)) and parents[common] == self._stack[common].component
+        ):
+            common += 1
+        self._close_suffix(common)
+
+        parent_fd = self.root_fd
+        walked = ""
+        states: list[tuple[str, _EntryState]] = []
+        for index, component in enumerate(parents):
+            walked = f"{walked}/{component}" if walked else component
+            enumerated = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+            if index < common:
+                retained = self._stack[index]
+                opened = os.fstat(retained.fd)
+                if (
+                    not stat.S_ISDIR(enumerated.st_mode)
+                    or not stat.S_ISDIR(opened.st_mode)
+                    or _file_state(enumerated) != retained.state
+                    or _file_state(opened) != retained.state
+                ):
+                    raise SourceSnapshotError(f"RECORD directory changed while traversing: {walked}")
+                parent_fd = retained.fd
+                states.append((walked, retained.state))
+            else:
+                child, state = _open_directory_component(parent_fd, component, walked, enumerated)
+                self._stack.append(_RetainedDirectory(component, walked, child, state))
+                parent_fd = child
+                states.append((walked, state))
+        return parent_fd, parts[-1], tuple(states)
+
+    @contextmanager
+    def parent(
+        self, relative_path: str, *, reserve_file_fd: bool = False
+    ) -> Iterator[tuple[int, str, tuple[tuple[str, _EntryState], ...]]]:
+        if relative_path.count("/") <= _MAX_RETAINED_DIRECTORIES:
+            reserved_fd = -1
+            try:
+                if reserve_file_fd:
+                    reserved_fd = os.dup(self.root_fd)
+                cached = self._cached_parent(relative_path)
+            except OSError as error:
+                if reserved_fd >= 0:
+                    try:
+                        os.close(reserved_fd)
+                    except OSError:
+                        pass
+                if error.errno not in (errno.EMFILE, errno.ENFILE):
+                    raise
+            except BaseException:
+                if reserved_fd >= 0:
+                    try:
+                        os.close(reserved_fd)
+                    except OSError:
+                        pass
+                raise
+            else:
+                if reserved_fd >= 0:
+                    os.close(reserved_fd)
+                yield cached
+                return
+        self.close()
+        parent_fd, name, states = _open_parent_uncached(self.root_fd, relative_path)
+        try:
+            yield parent_fd, name, states
+        except BaseException:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+            raise
+        else:
+            os.close(parent_fd)
+
+
+@contextmanager
+def _directory_traversal(root_fd: int) -> Iterator[_DirectoryTraversal]:
+    traversal = _DirectoryTraversal(root_fd)
+    try:
+        yield traversal
+    except BaseException:
+        try:
+            traversal.close()
+        except OSError:
+            pass
+        raise
+    else:
+        traversal.close()
+
+
 def _capture_directory_states(
-    root_fd: int,
+    traversal: _DirectoryTraversal,
     relative_paths: tuple[str, ...],
 ) -> tuple[tuple[str, _EntryState], ...]:
-    states: dict[str, _EntryState] = {"": _file_state(os.fstat(root_fd))}
+    states: dict[str, _EntryState] = {"": _file_state(os.fstat(traversal.root_fd))}
     for relative_path in relative_paths:
-        descriptor = os.dup(root_fd)
-        walked = ""
         try:
-            for component in relative_path.split("/")[:-1]:
-                walked = f"{walked}/{component}" if walked else component
-                enumerated = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
-                child = os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptor)
-                opened = os.fstat(child)
-                if not stat.S_ISDIR(opened.st_mode) or _file_identity(opened) != _file_identity(enumerated):
-                    os.close(child)
-                    raise SourceSnapshotError(f"RECORD directory changed while opening: {walked}")
-                os.close(descriptor)
-                descriptor = child
-                state = _file_state(opened)
-                previous = states.setdefault(walked, state)
-                if previous != state:
-                    raise SourceSnapshotError(f"RECORD directory changed while enumerating: {walked}")
+            with traversal.parent(relative_path) as (_parent_fd, _name, visited):
+                for walked, state in visited:
+                    previous = states.setdefault(walked, state)
+                    if previous != state:
+                        raise SourceSnapshotError(f"RECORD directory changed while enumerating: {walked}")
         except OSError as error:
             raise SourceSnapshotError(f"cannot capture RECORD directory state: {relative_path}") from error
-        finally:
-            os.close(descriptor)
     return tuple(sorted(states.items()))
 
 
 def _read_stable_installed_file(
-    root_fd: int,
+    traversal: _DirectoryTraversal,
     relative_path: str,
 ) -> tuple[SourceFile, _EntryState]:
-    parent_fd, name = _open_parent_at(root_fd, relative_path)
+    with traversal.parent(relative_path, reserve_file_fd=True) as (parent_fd, name, _visited):
+        return _read_stable_installed_file_at(parent_fd, name, relative_path)
+
+
+def _read_stable_installed_file_at(
+    parent_fd: int, name: str, relative_path: str
+) -> tuple[SourceFile, _EntryState]:
     descriptor = -1
     try:
         try:
@@ -914,12 +1062,10 @@ def _read_stable_installed_file(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        os.close(parent_fd)
 
 
-def _stat_installed_file(root_fd: int, relative_path: str) -> _EntryState:
-    parent_fd, name = _open_parent_at(root_fd, relative_path)
-    try:
+def _stat_installed_file(traversal: _DirectoryTraversal, relative_path: str) -> _EntryState:
+    with traversal.parent(relative_path) as (parent_fd, name, _visited):
         try:
             status = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except OSError as error:
@@ -927,8 +1073,6 @@ def _stat_installed_file(root_fd: int, relative_path: str) -> _EntryState:
         if not stat.S_ISREG(status.st_mode):
             raise SourceSnapshotError(f"RECORD path is not a regular no-follow file: {relative_path}")
         return _file_state(status)
-    finally:
-        os.close(parent_fd)
 
 
 def _resolve_stable_root(root: Path, root_fd: int) -> Path:
@@ -982,7 +1126,7 @@ def _parse_record(record_bytes: bytes) -> tuple[tuple[str, str | None, int | Non
         if any(part == ".." for part in relative_path.split("/")):
             continue
         try:
-            SourceFile.from_bytes(relative_path, b"")
+            _validate_canonical_relative_path(relative_path)
         except (TypeError, ValueError) as error:
             raise SourceSnapshotError(f"unsafe RECORD path: {relative_path!r}") from error
         try:

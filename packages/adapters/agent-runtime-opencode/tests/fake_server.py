@@ -139,7 +139,11 @@ class OpenCodeFakeServer:
             self.add_session(session_id=f"ses_existing_{index + 1}", metadata=self.metadata)
         handler = _make_handler(self)
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
         self._thread.start()
         port = self._server.server_address[1]
         self.base_url = f"http://127.0.0.1:{port}"

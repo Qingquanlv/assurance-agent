@@ -78,15 +78,41 @@ def test_help_exposes_exact_command_tree(cli_runner):
 
 
 def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
-    cli_runner, installed_sources, opencode_composition, tmp_path: Path
+    cli_runner, installed_sources, opencode_composition, tmp_path: Path, monkeypatch
 ):
     from assurance_product.application import ProductBuildArtifacts
     from assurance_product.cli import app
     from assurance_product.runtime_bindings import raw_agent_runtime_binding_rows
+    from assurance_product.runtime_ports import AuthorizedSecretResolver, ProductRuntimePorts
+    from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
     from tests.product.test_python_native_cutover import (
         count_raw_agent_runtime_bindings,
         count_semantic_agent_contracts,
     )
+
+    opened = {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
+
+    def _count(name: str):
+        def _blocked(*args: object, **kwargs: object) -> object:
+            del args, kwargs
+            opened[name] += 1
+            raise AssertionError(f"aa compile must not {name}")
+
+        return _blocked
+
+    monkeypatch.setattr(ProductRuntimePorts, "open", classmethod(_count("sqlite")))
+    monkeypatch.setattr(AuthorizedSecretResolver, "resolve", _count("secret"))
+    monkeypatch.setattr(
+        "graph_engine.attempts.production_host.create_production_task_execution_host",
+        _count("host"),
+    )
+    monkeypatch.setattr(LocalInvocationRunnerLease, "acquire", _count("lease"))
+    try:
+        from agent_runtime_opencode.transport.http import OpenCodeHttpClient
+
+        monkeypatch.setattr(OpenCodeHttpClient, "create_session", _count("opencode"))
+    except ImportError:
+        pass
 
     engine_root = tmp_path / "engine-root"
     engine_root.mkdir()
@@ -95,6 +121,7 @@ def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
         ["compile", "--json", *source_args(installed_sources), "--engine-root", str(engine_root)],
     )
     assert result.exit_code == 0, result.output
+    assert opened == {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
     assert not (engine_root / "invocations").exists() or not any((engine_root / "invocations").iterdir())
     document = json.loads(result.stdout)
     assert set(document) == {"product_lock", "graph_manifest"}
@@ -129,6 +156,7 @@ def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
     args[args.index("--config-tree") + 1] = str(tree.path)
     changed = cli_runner.invoke(app, ["compile", "--json", *args])
     assert changed.exit_code == 0, changed.output
+    assert opened == {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
     second = json.loads(changed.stdout)
     assert second["product_lock"]["digest"] != document["product_lock"]["digest"]
     assert (

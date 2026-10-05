@@ -611,7 +611,16 @@ def _authenticated_module_shape(
     import_roots: tuple[str, ...],
     snapshot: SourceSnapshot,
 ) -> tuple[StandardLoader, Path | None, tuple[Path, ...]]:
-    source_paths = {source_file.path for source_file in snapshot.files}
+    if (
+        type(snapshot) is SourceSnapshot
+        and snapshot._file_paths is not None
+        and snapshot._directory_prefixes is not None
+    ):
+        source_paths = snapshot._file_paths
+        directory_prefixes = snapshot._directory_prefixes
+    else:
+        source_paths = {source_file.path for source_file in snapshot.files}
+        directory_prefixes = None
     module_path = module_name.replace(".", "/")
     origins: list[tuple[StandardLoader, str]] = []
     namespace_paths: list[str] = []
@@ -628,7 +637,11 @@ def _authenticated_module_shape(
             ):
                 if candidate in source_paths:
                     origins.append((StandardLoader.EXTENSION, candidate))
-        if any(path.startswith(f"{relative_module}/") for path in source_paths):
+        if (
+            relative_module in directory_prefixes
+            if directory_prefixes is not None
+            else any(path.startswith(f"{relative_module}/") for path in source_paths)
+        ):
             namespace_paths.append(relative_module)
     if len(origins) > 1:
         raise SourceSnapshotError(f"provider module has ambiguous authenticated origins: {module_name}")

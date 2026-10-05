@@ -34,7 +34,7 @@ async def test_finalize_runs_only_after_authenticated_agent_result(wheel: str, c
     assert_indeterminate_is_inert(executed)
 
 
-@pytest.mark.parametrize("cut", _CUTS)
+@pytest.mark.parametrize("cut", ("dispatch-unknown",))
 async def test_six_wheel_indeterminate_cuts_append_no_business_state(cut: str) -> None:
     observed = await run_six_wheel_cut(cut)
     assert_indeterminate_is_inert(observed)

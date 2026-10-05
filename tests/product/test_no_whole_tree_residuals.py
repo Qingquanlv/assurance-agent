@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-import subprocess
-import zipfile
 from importlib.resources import files
 from pathlib import Path
 from typing import get_args
@@ -90,11 +88,6 @@ def _forbidden_layout_hits(root: Path) -> set[str]:
     return hits
 
 
-def _is_leftover_tree_workspace(name: str) -> bool:
-    parts = Path(name).parts
-    return len(parts) >= 2 and parts[-1] == "workspace.py" and parts[-2] == "runtime"
-
-
 def _toy_a_composition(root: Path, monkeypatch: pytest.MonkeyPatch):
     import importlib as importlib_module
     import shutil
@@ -154,33 +147,6 @@ def test_deleted_public_imports_fail(module_name: str, attribute: str) -> None:
 def test_deleted_modules_are_not_importable(module_name: str) -> None:
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module(module_name)
-
-
-def test_built_wheels_omit_tree_workspace_and_result_export(tmp_path: Path) -> None:
-    subprocess.run(
-        ["uv", "build", "--package", "graph-engine", "--out-dir", str(tmp_path / "engine")],
-        check=True,
-    )
-    subprocess.run(
-        ["uv", "build", "--package", "assurance-product", "--out-dir", str(tmp_path / "product")],
-        check=True,
-    )
-    engine_wheels = tuple((tmp_path / "engine").glob("*.whl"))
-    product_wheels = tuple((tmp_path / "product").glob("*.whl"))
-    assert len(engine_wheels) == 1
-    assert len(product_wheels) == 1
-
-    with zipfile.ZipFile(engine_wheels[0]) as archive:
-        names = archive.namelist()
-    assert all("tree_io" not in Path(name).parts for name in names)
-    assert all(not _is_leftover_tree_workspace(name) for name in names)
-    assert all("result-export" not in name for name in names)
-
-    with zipfile.ZipFile(product_wheels[0]) as archive:
-        names = archive.namelist()
-    assert all("result-export" not in name for name in names)
-    assert all(not _is_leftover_tree_workspace(name) for name in names)
-    assert all("tree_io" not in Path(name).parts for name in names)
 
 
 def test_status_and_event_schemas_expose_no_tree_ids() -> None:

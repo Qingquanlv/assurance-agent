@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from graph_engine.attempts import ResolvedAttemptContract
+from graph_engine.boot.graph_revision import EntrypointGraphContract, GraphRevision
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.composition import (
     CapabilityBindingEntry,
@@ -400,19 +401,10 @@ def reject_organization_overrides(organization_root: Path | None) -> None:
         raise OrganizationOverrideError(str(error)) from error
 
 
-def product_graph_manifest(
+def _revision_sources(
     composition: FrozenComposition,
-    product_lock: ProductLock,
-):
-    from importlib import metadata
-
-    from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
-    from assurance_product.graphs.factory import entrypoint_contracts
-    from graph_engine.boot.boot import CHECKPOINT_CONTRACT_VERSION
-    from graph_engine.boot.graph_revision import GraphBuildManifest, GraphRevision
-    from graph_engine.canonical import canonical_digest
-    from graph_engine.composition.models import SourceKey, SourceRole
-
+    feature_graph_factories: tuple[Any, ...],
+) -> tuple[dict[str, str], tuple[str, ...]]:
     sources = composition.registries.sources.entries
     wheel_source_digests: dict[str, str] = {}
     product_key = SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
@@ -424,29 +416,85 @@ def product_graph_manifest(
             wheel_source_digests[owner] = sources[key].snapshot.digest
     factory_symbols = (
         "assurance_product.graphs.factory:build_product_graphs",
-        *(ref.symbol for ref in FEATURE_GRAPH_FACTORIES),
+        *(ref.symbol for ref in feature_graph_factories),
     )
+    return wheel_source_digests, factory_symbols
+
+
+def _revision_from_sources(
+    product_lock: ProductLock,
+    wheel_source_digests: Mapping[str, str],
+    factory_symbols: tuple[str, ...],
+    entrypoint_contracts: Mapping[str, EntrypointGraphContract],
+    checkpoint_contract_version: str,
+    package_version: Callable[[str], str],
+) -> GraphRevision:
+    return GraphRevision.build(
+        product_lock_digest=product_lock.digest,
+        wheel_source_digests=wheel_source_digests,
+        factory_symbols=factory_symbols,
+        state_schema_versions={
+            name: contract.state_schema_version for name, contract in entrypoint_contracts.items()
+        },
+        langgraph_version=package_version("langgraph"),
+        checkpoint_contract_version=checkpoint_contract_version,
+    )
+
+
+def product_graph_revision(
+    composition: FrozenComposition,
+    product_lock: ProductLock,
+) -> GraphRevision:
+    from importlib import metadata
+
+    from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
+    from assurance_product.graphs.factory import entrypoint_contracts
+    from graph_engine.boot.boot import CHECKPOINT_CONTRACT_VERSION
+
+    wheel_source_digests, factory_symbols = _revision_sources(composition, FEATURE_GRAPH_FACTORIES)
+    return _revision_from_sources(
+        product_lock,
+        wheel_source_digests,
+        factory_symbols,
+        entrypoint_contracts(),
+        CHECKPOINT_CONTRACT_VERSION,
+        metadata.version,
+    )
+
+
+def product_graph_manifest(
+    composition: FrozenComposition,
+    product_lock: ProductLock,
+):
+    from importlib import metadata
+
+    from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
+    from assurance_product.graphs.factory import entrypoint_contracts
+    from graph_engine.boot.boot import CHECKPOINT_CONTRACT_VERSION
+    from graph_engine.boot.graph_revision import GraphBuildManifest
+    from graph_engine.canonical import canonical_digest
+
+    wheel_source_digests, factory_symbols = _revision_sources(composition, FEATURE_GRAPH_FACTORIES)
     contracts = getattr(composition, "semantic_attempt_contracts", {})
     attempt_contract_digests = {
         contract_id: canonical_digest(contract.canonical_projection())
         for contract_id, contract in cast(Mapping[str, Any], contracts).items()
         if hasattr(contract, "canonical_projection")
     }
-    revision = GraphRevision.build(
-        product_lock_digest=product_lock.digest,
-        wheel_source_digests=wheel_source_digests,
-        factory_symbols=factory_symbols,
-        state_schema_versions={
-            name: contract.state_schema_version for name, contract in entrypoint_contracts().items()
-        },
-        langgraph_version=metadata.version("langgraph"),
-        checkpoint_contract_version=CHECKPOINT_CONTRACT_VERSION,
+    root_contracts = entrypoint_contracts()
+    revision = _revision_from_sources(
+        product_lock,
+        wheel_source_digests,
+        factory_symbols,
+        root_contracts,
+        CHECKPOINT_CONTRACT_VERSION,
+        metadata.version,
     )
     return GraphBuildManifest(
         revision=revision,
         entrypoint_contract_digests={
             name: canonical_digest(contract.canonical_projection())
-            for name, contract in entrypoint_contracts().items()
+            for name, contract in root_contracts.items()
         },
         attempt_contract_digests=attempt_contract_digests,
     )

@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_SECURITY_GATE_NODE_IDS = {
     "source_authentication": (
         "tests/product/test_composition_authority.py::test_forged_deployment_declaration_fails_closed",
-        "tests/product/test_composition_authority.py::test_mutated_config_tree_changes_lock",
+        "tests/product/test_cli_compile.py::test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation",
         "tests/product/test_product_input.py::test_product_input_authenticates_resource_refs_against_composition",
         "tests/capabilities/test_six_wheel_composition.py::test_binding_digests_recompute_from_checked_in_bytes",
         "packages/framework/graph-engine/tests/boot/test_source_authentication.py::test_sut_and_cross_owner_symbols_fail_before_import",

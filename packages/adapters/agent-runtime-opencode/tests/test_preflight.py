@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
+import json
+import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -203,7 +206,11 @@ class _RecordingProxy:
                 del format, args
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
         self._thread.start()
         port = self._server.server_address[1]
         self.url = f"http://127.0.0.1:{port}"
@@ -212,6 +219,49 @@ class _RecordingProxy:
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=2)
+
+
+def test_http_test_servers_use_short_shutdown_polling_with_real_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selector_type = getattr(socketserver, "_ServerSelector")
+    select = selector_type.select
+    observed_timeouts: list[float | None] = []
+
+    def record_select(self: object, timeout: float | None = None) -> object:
+        observed_timeouts.append(timeout)
+        return select(self, timeout)
+
+    monkeypatch.setattr(selector_type, "select", record_select)
+
+    fake = OpenCodeFakeServer(profile=_profile())
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", fake._server.server_address[1])
+        try:
+            connection.request("GET", "/global/health")
+            response = connection.getresponse()
+            assert response.status == 200
+            assert json.loads(response.read()) == {"healthy": True, "version": "opencode-http-v1"}
+        finally:
+            connection.close()
+    finally:
+        fake.close()
+    assert observed_timeouts and all(timeout is not None and timeout <= 0.02 for timeout in observed_timeouts)
+
+    observed_timeouts.clear()
+    proxy = _RecordingProxy()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", proxy._server.server_address[1])
+        try:
+            connection.request("GET", "/global/health")
+            response = connection.getresponse()
+            assert response.status == 200
+            assert response.read() == b'{"healthy":false,"via":"proxy"}'
+        finally:
+            connection.close()
+    finally:
+        proxy.close()
+    assert observed_timeouts and all(timeout is not None and timeout <= 0.02 for timeout in observed_timeouts)
 
 
 async def test_http_client_ignores_ambient_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -5,10 +5,11 @@ import os
 import subprocess
 import sys
 import textwrap
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
+import graph_engine.composition.models as composition_models
 import graph_engine.composition.source_fs as source_fs
 from graph_engine.composition import (
     DeclaredTreePolicy,
@@ -21,6 +22,165 @@ from graph_engine.composition import (
     capture_explicit_file,
     recapture_declared_files,
 )
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "file.py",
+        "dir/file.py",
+        "é/文件.py",
+        "é.py",
+        "e\u0301.py",
+        "a:b",
+        "C:relative",
+        "with space.py",
+        "tab\tname.py",
+        "line\nname.py",
+        "...",
+    ),
+)
+def test_canonical_relative_path_accepts_exact_strings_without_normalizing(path: str) -> None:
+    assert composition_models._validate_canonical_relative_path(path) is path
+    assert SourceFile.from_bytes(path, b"source").path is path
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "",
+        ".",
+        "..",
+        "./a",
+        "a/.",
+        "a/../b",
+        "/a",
+        "//a",
+        "///a",
+        "/",
+        "a//b",
+        "a/",
+        "a\\b",
+        "C:\\a",
+        "a\0b",
+    ),
+)
+def test_canonical_relative_path_rejects_noncanonical_exact_strings(path: str) -> None:
+    with pytest.raises(ValueError, match="^source file path must be a canonical relative path$") as error:
+        composition_models._validate_canonical_relative_path(path)
+    assert error.value.__cause__ is None
+
+
+@pytest.mark.parametrize("value", (None, 7, b"file.py", Path("file.py")))
+def test_canonical_relative_path_rejects_nonstrings(value: object) -> None:
+    with pytest.raises(TypeError, match="^source file path must be text$"):
+        composition_models._validate_canonical_relative_path(value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("path", ("\ud800", "\udc00", "a/\ud800", "\udc00\\bad"))
+def test_canonical_relative_path_checks_utf8_before_lexical_faults(path: str) -> None:
+    with pytest.raises(ValueError, match="^source file path must be a canonical relative path$") as error:
+        composition_models._validate_canonical_relative_path(path)
+    assert isinstance(error.value.__cause__, UnicodeEncodeError)
+    assert error.value.__cause__.encoding == "utf-8"
+
+
+def test_canonical_relative_path_avoids_pure_path_for_exact_strings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    real_pure_path = PurePosixPath
+
+    def tracked_pure_path(value: str) -> PurePosixPath:
+        calls.append(value)
+        return real_pure_path(value)
+
+    monkeypatch.setattr(composition_models, "PurePosixPath", tracked_pure_path)
+    ordinary = "dir/file.py"
+    assert composition_models._validate_canonical_relative_path(ordinary) is ordinary
+    with pytest.raises(ValueError, match="canonical relative path"):
+        composition_models._validate_canonical_relative_path("a//b")
+    assert calls == []
+
+    class PassivePath(str):
+        pass
+
+    accepted = PassivePath("dir/file.py")
+    rejected = PassivePath("a//b")
+    assert composition_models._validate_canonical_relative_path(accepted) is accepted
+    with pytest.raises(ValueError, match="canonical relative path"):
+        composition_models._validate_canonical_relative_path(rejected)
+    assert calls == [accepted, rejected]
+
+
+def test_canonical_relative_path_preserves_dynamic_subclass_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    real_pure_path = PurePosixPath
+
+    def tracked_pure_path(value: str) -> PurePosixPath:
+        events.append("pure-path")
+        return real_pure_path(value)
+
+    monkeypatch.setattr(composition_models, "PurePosixPath", tracked_pure_path)
+
+    class DynamicPath(str):
+        rendered = "different.py"
+
+        def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+            events.append("encode")
+            return super().encode(encoding, errors)
+
+        def __str__(self) -> str:
+            events.append("str")
+            return self.rendered
+
+        def split(self, sep: str | None = None, maxsplit: int = -1) -> list[str]:
+            events.append("split")
+            return super().split(sep, maxsplit)
+
+    value = DynamicPath("file.py")
+    with pytest.raises(ValueError, match="canonical relative path"):
+        composition_models._validate_canonical_relative_path(value)
+    assert events[:4] == ["encode", "pure-path", "str", "split"]
+    value.rendered = "file.py"
+    events.clear()
+    assert composition_models._validate_canonical_relative_path(value) is value
+    assert events[:4] == ["encode", "pure-path", "str", "split"]
+
+    class SplitPath(str):
+        alternate = True
+
+        def split(self, sep: str | None = None, maxsplit: int = -1) -> list[str]:
+            return ["different.py"] if self.alternate else super().split(sep, maxsplit)
+
+    split_value = SplitPath("file.py")
+    with pytest.raises(ValueError, match="canonical relative path"):
+        composition_models._validate_canonical_relative_path(split_value)
+    split_value.alternate = False
+    assert composition_models._validate_canonical_relative_path(split_value) is split_value
+
+
+def test_canonical_relative_path_preserves_subclass_encode_exceptions() -> None:
+    unicode_error = UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed")
+    other_error = RuntimeError("custom encode failed")
+
+    class EncodingPath(str):
+        failure: Exception
+
+        def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+            raise self.failure
+
+    value = EncodingPath("file.py")
+    value.failure = unicode_error
+    with pytest.raises(ValueError, match="canonical relative path") as chained:
+        composition_models._validate_canonical_relative_path(value)
+    assert chained.value.__cause__ is unicode_error
+    value.failure = other_error
+    with pytest.raises(RuntimeError) as propagated:
+        composition_models._validate_canonical_relative_path(value)
+    assert propagated.value is other_error
 
 
 def test_declared_tree_digest_is_path_order_independent(tmp_path: Path) -> None:
@@ -92,6 +252,34 @@ def test_source_models_reject_mutable_file_lists_and_unsafe_paths(tmp_path: Path
         SourceFile.from_bytes("../escape", b"outside\n")
     with pytest.raises(TypeError, match="policy kind must be a SourceKind"):
         DeclaredTreePolicy(kind="config_tree")  # type: ignore[arg-type]
+
+
+def test_source_snapshot_index_preserves_constructor_validation_and_value_semantics(tmp_path: Path) -> None:
+    identity = SourceIdentity(SourceKind.CONFIG_TREE, tmp_path.resolve())
+    first = SourceFile.from_bytes("a/first.py", b"first")
+    second = SourceFile.from_bytes("b/second.py", b"second")
+    valid = SourceSnapshot.from_identity(identity, (first, second))
+    rebuilt = SourceSnapshot.from_identity(identity, (first, second))
+
+    assert valid == rebuilt
+    assert hash(valid) == hash(rebuilt)
+    assert valid._file_paths == frozenset({"a/first.py", "b/second.py"})
+    assert valid._directory_prefixes == frozenset({"a", "b"})
+    assert valid._file_paths is not rebuilt._file_paths
+    assert valid._directory_prefixes is not rebuilt._directory_prefixes
+    assert "_file_paths" not in repr(valid)
+    empty = SourceSnapshot.from_identity(identity, ())
+    assert empty._file_paths == frozenset()
+    assert empty._directory_prefixes == frozenset()
+
+    with pytest.raises(ValueError, match="unique canonical path order"):
+        SourceSnapshot(identity, (second, first), valid.digest)
+    with pytest.raises(ValueError, match="unique canonical path order"):
+        SourceSnapshot(identity, (first, first), valid.digest)
+    with pytest.raises(ValueError, match="digest does not authenticate"):
+        SourceSnapshot(identity, (first, second), "0" * 64)
+    with pytest.raises(ValueError, match="canonical relative path"):
+        SourceFile.from_bytes("../unsafe.py", b"")
 
 
 @pytest.mark.parametrize(

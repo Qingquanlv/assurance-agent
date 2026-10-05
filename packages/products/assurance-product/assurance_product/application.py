@@ -33,6 +33,7 @@ from assurance_product.invocation_identity import (
 from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1, StatusV1
 from assurance_product.product import (
     product_graph_manifest,
+    product_graph_revision,
     product_lock_from_composition,
     reject_organization_overrides,
 )
@@ -628,12 +629,12 @@ class AssuranceProductApplication:
             authorization=authorization,
         )
         product_lock = product_lock_from_composition(composition)
-        manifest = product_graph_manifest(composition, product_lock)
+        revision = product_graph_revision(composition, product_lock)
         return {
             "lock_digest": product_lock.digest,
             "engine_api": product_lock.engine_api,
             "lock": product_lock.model_dump(mode="json"),
-            "revision": manifest.revision.model_dump(mode="json"),
+            "revision": revision.model_dump(mode="json"),
         }
 
     def bindings_build(self, *, manifest: Path, output_dir: Path) -> dict[str, object]:
@@ -1024,7 +1025,7 @@ def _bind_revision(
 
 def _assert_langgraph_revision(workspace: ChangeWorkspace, composition: Any, invocation_id: str) -> None:
     product_lock = product_lock_from_composition(composition)
-    current = product_graph_manifest(composition, product_lock).revision
+    current = product_graph_revision(composition, product_lock)
     assert_recorded_revision(workspace, invocation_id, current)
 
 

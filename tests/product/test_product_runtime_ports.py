@@ -239,43 +239,50 @@ async def _shutdown_order(composition, tmp_path: Path) -> None:
     assert "kernel" in order
 
 
-def test_aa_compile_does_not_construct_invocation_runtime(cli_runner, installed_sources, monkeypatch) -> None:
-    from assurance_product.cli import app
-    from assurance_product.runtime_ports import AuthorizedSecretResolver, ProductRuntimePorts
-    from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
-    from tests.product.cli_support import source_args
-
-    opened = {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
-
-    def _count(name: str):
-        def _blocked(*args: object, **kwargs: object) -> object:
-            del args, kwargs
-            opened[name] += 1
-            raise AssertionError(f"aa compile must not {name}")
-
-        return _blocked
-
-    monkeypatch.setattr(ProductRuntimePorts, "open", classmethod(_count("sqlite")))
-    monkeypatch.setattr(AuthorizedSecretResolver, "resolve", _count("secret"))
-    monkeypatch.setattr(
-        "graph_engine.attempts.production_host.create_production_task_execution_host",
-        _count("host"),
-    )
-    monkeypatch.setattr(LocalInvocationRunnerLease, "acquire", _count("lease"))
-    try:
-        from agent_runtime_opencode.transport.http import OpenCodeHttpClient
-
-        monkeypatch.setattr(OpenCodeHttpClient, "create_session", _count("opencode"))
-    except ImportError:
-        pass
-
-    result = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
-    assert result.exit_code == 0, result.output
-    assert opened == {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
-
-
 def test_bound_agent_executors_carry_the_production_host(opencode_composition, tmp_path: Path) -> None:
     asyncio.run(_bound_agent_executors_carry_host(opencode_composition, tmp_path))
+
+
+def test_post_factory_full_manifest_rejects_newly_broken_schema(
+    opencode_composition, tmp_path: Path, monkeypatch
+) -> None:
+    from assurance_product.graphs import factory as graph_factory
+    from assurance_product.product import prepare_change_workspace
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    project = write_project_dir(tmp_path / "project")
+    workspace = prepare_change_workspace(project, "CH-POST-FACTORY-SCHEMA")
+    resolved = next(iter(opencode_composition.semantic_attempt_contracts.values()))
+    real_build = graph_factory.build_product_graphs
+    factory_calls: list[str] = []
+
+    def build_then_change_model(*args: Any, **kwargs: Any) -> Any:
+        graphs = real_build(*args, **kwargs)
+        factory_calls.append("built")
+
+        def broken_schema(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("post-factory schema drift")
+
+        monkeypatch.setattr(resolved.contract.input_model, "model_json_schema", classmethod(broken_schema))
+        return graphs
+
+    async def compile_after_factory() -> None:
+        async with ProductRuntimePorts.open(workspace, opencode_composition) as ports:
+            monkeypatch.setattr(graph_factory, "build_product_graphs", build_then_change_model)
+            lease = await ports.backend.lease.acquire("inv-schema-drift", owner_id="test-post-factory")
+            try:
+                with pytest.raises(RuntimeError, match="post-factory schema drift"):
+                    ports.execution_factory(
+                        invocation_id="inv-schema-drift",
+                        entrypoint="improvement-apply",
+                        root_input_digest="c" * 64,
+                    ).bind(lease)
+                assert factory_calls == ["built"]
+                assert ports._artifact is None
+            finally:
+                await ports.backend.lease.release(lease)
+
+    asyncio.run(compile_after_factory())
 
 
 async def _bound_agent_executors_carry_host(composition, tmp_path: Path) -> None:
