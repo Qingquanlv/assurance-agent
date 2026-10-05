@@ -128,6 +128,26 @@ second coordinator were rejected because they would lengthen the call graph with
 state or behavior than the private method. Public protocols, resolution types, journal events and
 bytes, crash-cut names and positions, and all other persisted contracts are unchanged.
 
+
+### 2026-10-05 follow-up: extract the commit subprotocol
+
+The earlier decision to keep validation-through-promotion inside `kernel.py` is superseded after
+the explicit Attempt phase projection in PR #64 made the remaining physical coupling easier to
+measure. The validation-through-promotion cluster is now an internal
+`graph_engine.attempts.commit` subprotocol.
+
+The Kernel remains the sole graph-facing transaction coordinator. It still owns authorization,
+the live fence authority, Effect handoff, terminal publication, and durable release. The commit
+subprotocol receives only a narrow fence callback at its irreversible prepare/promotion
+boundaries and otherwise owns the existing output/intent validation, atomic observation/intent
+journal append, seal, ordered Validators, durable prepare/recovery, and promotion/recovery
+implementation.
+
+This is a behavior-preserving physical extraction: public protocols, persisted events and bytes,
+crash-cut names and positions, transaction trace, Effect settlement semantics, and terminal/release
+semantics remain unchanged. Activity recovery is intentionally not part of this extraction.
+
+
 ## Acceptance
 
 - all graph execution callers still depend only on `execute_or_recover`;
