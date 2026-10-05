@@ -22,7 +22,7 @@ from agent_runtime_contracts.ops import ArtifactListResultV1
 from assurance_intake.contracts.agent import ArtifactDigestV1
 from assurance_intake.ops.case_design import CaseDesignInputV1, CaseDesignOutputV1
 from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
+from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs as _build_intake_graphs
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult, TaskAttemptContract
 from graph_engine.attempts.keys import AttemptKey
@@ -36,6 +36,13 @@ from graph_engine.plugin_api import (
 from graph_engine.testing import GraphHarness, committed
 from tests.acg_plan_fixture import install_plan
 
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_intake_graphs(*args, **kwargs):
+    return compile_bundle(_build_intake_graphs(*args, **kwargs))
+
+
 _SHA = "a" * 64
 _RECEIPT_ID = "receipt-1"
 _INTAKE_ID = "assurance.intake.agent.intake.v1"
@@ -44,6 +51,7 @@ _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _CASE_REPAIR_ID = "assurance.intake.agent.case-repair.v1"
 _CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
 _RESOLVE_PLAN_ID = "assurance.intake.task.resolve-plan"
+_COVERAGE_REWORK_ID = "assurance.intake.task.coverage-rework"
 _GRAPH_CONTRACT_IDS = (
     _INTAKE_ID,
     _EXPLORE_ID,
@@ -51,6 +59,7 @@ _GRAPH_CONTRACT_IDS = (
     _CASE_DESIGN_ID,
     _CASE_REPAIR_ID,
     _CASE_REVIEW_ID,
+    _COVERAGE_REWORK_ID,
 )
 _PHASE_NODES = frozenset(
     {
@@ -119,6 +128,7 @@ def intake_graph_input() -> dict[str, object]:
         },
         "rounds_used": 0,
         "rounds_budget": 2,
+        "artifact_ledger": {"intake.plan": [plan_ref]},
         "coverage_epoch": 0,
         "preparation_refs": [
             {"path": "qa/requirement.md", "digest": _SHA},
@@ -137,6 +147,13 @@ def intake_graph_input() -> dict[str, object]:
 
 def _receipt() -> ReceiptRef:
     return ReceiptRef(receipt_id=_RECEIPT_ID, receipt_digest=_SHA)
+
+
+def _ledger_entry(path: str) -> dict[str, object]:
+    return {
+        "refs": [{"path": path, "digest": _SHA}],
+        "receipt": {"receipt_id": _RECEIPT_ID, "receipt_digest": _SHA},
+    }
 
 
 def _artifact_output() -> ArtifactListResultV1:
@@ -163,6 +180,23 @@ def _reviewed_case() -> dict[str, object]:
     }
 
 
+def _public_outcome(
+    decision: str,
+    *,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+) -> str:
+    if decision == "pass":
+        return "pass"
+    if decision == "reject":
+        return "reject"
+    if human_review_required or decision == "needs_human_review":
+        return "needs_human"
+    if decision == "needs_fix" and auto_fix_allowed:
+        return "needs_fix"
+    return "needs_human"
+
+
 def _review_output(
     *,
     decision: str = "pass",
@@ -171,11 +205,21 @@ def _review_output(
     rounds_used: int = 0,
     rounds_budget: int = 2,
 ) -> dict[str, object]:
+    del rounds_used, rounds_budget
     return {
         "decision": decision,
+        "public_outcome": _public_outcome(
+            decision,
+            auto_fix_allowed=auto_fix_allowed,
+            human_review_required=human_review_required,
+        ),
         "auto_fix_allowed": auto_fix_allowed,
         "human_review_required": human_review_required,
         "artifacts": [
+            {
+                "path": "qa/cases/reviewed-case.json",
+                "digest": _SHA,
+            },
             {
                 "path": "qa/results/review/case-review.json",
                 "digest": _SHA,
@@ -186,8 +230,6 @@ def _review_output(
             },
         ],
         "reviewed_case": _reviewed_case(),
-        "rounds_used": rounds_used,
-        "rounds_budget": rounds_budget,
     }
 
 
@@ -254,13 +296,6 @@ def recording_context():
 
 
 def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch: pytest.MonkeyPatch) -> None:
-    from assurance_intake.graphs.calls import (
-        activation_review_round,
-        select_case_design,
-        select_case_repair,
-        select_case_review,
-    )
-
     calls: list[tuple[str, str, object, object]] = []
     original = recording_context.attempt
 
@@ -283,7 +318,7 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
 
     monkeypatch.setattr(recording_context, "attempt", record_attempt)
     bundle = build_intake_graphs(recording_context)
-    assert tuple(item.name for item in fields(bundle)) == ("prepare", "case")
+    assert tuple(item.name for item in fields(bundle)) == ("prepare", "case", "coverage_rework")
     assert isinstance(bundle, IntakeGraphs)
     assert recording_context.bound_contract_ids == (
         _INTAKE_ID,
@@ -292,22 +327,14 @@ def test_intake_factory_exports_prepare_and_case(recording_context, monkeypatch:
         _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
         _CASE_REPAIR_ID,
+        _COVERAGE_REWORK_ID,
     )
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
     assert recording_context.bound_contract_ids.count(_CASE_DESIGN_ID) == 1
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
     assert calls[3][:2] == (_CASE_DESIGN_ID, "intake.case-design")
-    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[3][2:]) == tuple(
-        (fn.__module__, fn.__qualname__) for fn in (activation_review_round, select_case_design)
-    )
     assert calls[4][:2] == (_CASE_REVIEW_ID, "intake.case-review")
-    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[4][2:]) == tuple(
-        (fn.__module__, fn.__qualname__) for fn in (activation_review_round, select_case_review)
-    )
     assert calls[5][:2] == (_CASE_REPAIR_ID, "intake.case-repair")
-    assert tuple((fn.__module__, fn.__qualname__) for fn in calls[5][2:]) == tuple(
-        (fn.__module__, fn.__qualname__) for fn in (activation_review_round, select_case_repair)
-    )
 
 
 def test_prepare_contains_only_preparation_nodes(recording_context) -> None:
@@ -322,12 +349,12 @@ def test_prepare_contains_only_preparation_nodes(recording_context) -> None:
 def test_shared_case_contains_complete_review_flow(recording_context) -> None:
     bundle = build_intake_graphs(recording_context)
     assert _top_level_names(bundle.case) == {
+        "__flow_entry__",
         "case-design",
         "case-repair",
         "case-review",
-        "review-round-advance",
         "human-review",
-        "done",
+        "reviewed",
         "rejected",
         "exhausted",
         "failed",
@@ -383,19 +410,23 @@ async def test_case_graph_runs_design_then_review() -> None:
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "reviewed"
-    reviewed = terminal["reviewed_case"]
-    assert isinstance(reviewed, dict)
-    assert reviewed["coverage_epoch"] == 0
-    assert reviewed["case_refs"] == [
-        {
-            "path": "qa/cases/menus/case.yaml",
-            "digest": _SHA,
-        }
-    ]
-    assert terminal["receipt"] == {
-        "receipt_id": _RECEIPT_ID,
-        "receipt_digest": _SHA,
+    assert terminal["artifact_ledger"] == {
+        "intake.plan": [
+            {
+                "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
+                "digest": _SHA,
+            }
+        ],
+        "intake.case": _ledger_entry("qa/cases/menus/case.yaml"),
+        "intake.proposal": _ledger_entry("qa/proposal.md"),
+        "intake.review": _ledger_entry("qa/results/review/case-review.json"),
+        "intake.reviewed_case": _ledger_entry("qa/cases/reviewed-case.json"),
     }
+    assert "requirement" not in terminal
+    assert "case_receipt" not in terminal
+    assert "receipt" not in terminal
+    assert terminal["reviewed_refs"] == _reviewed_case()["preparation_refs"]
+    assert "reviewed_case" not in terminal
 
 
 async def test_case_rejection_is_an_explicit_unsuccessful_terminal() -> None:
@@ -414,9 +445,10 @@ async def test_case_rejection_is_an_explicit_unsuccessful_terminal() -> None:
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "rejected"
-    assert terminal["decision"] == "reject"
-    assert terminal["reviewed_case"] is None
-    assert terminal["case_receipt"] is None
+    assert "decision" not in terminal
+    assert terminal["reviewed_refs"] == _reviewed_case()["preparation_refs"]
+    assert "reviewed_case" not in terminal
+    assert "case_receipt" not in terminal
 
 
 async def test_case_auto_fix_runs_repair_and_review_again() -> None:
@@ -453,12 +485,17 @@ async def test_case_auto_fix_runs_repair_and_review_again() -> None:
     ]
     repair = result.select_values[2]
     assert isinstance(repair, dict)
-    assert repair["review_repair"] is None
+    assert repair.get("review_repair") is None
     assert "validation_attempt" not in repair
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "reviewed"
-    assert terminal["rounds_used"] == 1
+    review_rounds = [
+        item["review_round"]
+        for item in result.select_values
+        if isinstance(item, dict) and "review_round" in item
+    ]
+    assert review_rounds == [0, 1]
 
 
 async def test_case_repair_failure_exhausts_the_case_flow() -> None:
@@ -492,7 +529,10 @@ async def test_case_budget_exhaustion_is_explicit() -> None:
     context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
     bundle = build_intake_graphs(context)
     receipt = _receipt()
-    graph_input = {**intake_graph_input(), "rounds_used": 2, "rounds_budget": 2}
+    graph_input = intake_graph_input()
+    budgets = graph_input["budgets"]
+    assert isinstance(budgets, dict)
+    graph_input["budgets"] = {**budgets, "review_rounds": 0}
     result = await harness.run(
         bundle.case,
         input=graph_input,
@@ -514,9 +554,10 @@ async def test_case_budget_exhaustion_is_explicit() -> None:
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "exhausted"
-    assert terminal["rounds_used"] == 2
-    assert terminal["reviewed_case"] is None
-    assert terminal["case_receipt"] is None
+    assert "rounds_used" not in terminal
+    assert terminal["reviewed_refs"] == _reviewed_case()["preparation_refs"]
+    assert "reviewed_case" not in terminal
+    assert "case_receipt" not in terminal
 
 
 async def test_case_design_failure_is_failed_not_exhausted() -> None:
@@ -531,8 +572,77 @@ async def test_case_design_failure_is_failed_not_exhausted() -> None:
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "failed"
-    assert terminal["reviewed_case"] is None
-    assert terminal["case_receipt"] is None
+    assert terminal.get("reviewed_case") is None
+    assert "case_receipt" not in terminal
+
+
+async def test_case_starts_from_the_input_plan_ref_when_the_ledger_is_empty() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
+    bundle = build_intake_graphs(context)
+    payload = intake_graph_input()
+    payload["artifact_ledger"] = {}
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.case,
+        input=payload,
+        script={
+            "intake.case-design": [committed(_design_output(), receipt)],
+            "intake.case-review": [committed(_review_output(), receipt)],
+        },
+    )
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "reviewed"
+    assert [call.semantic_node_id for call in result.semantic_calls] == [
+        "intake.case-design",
+        "intake.case-review",
+    ]
+
+
+def _review_at(epoch: int) -> dict[str, object]:
+    output = _review_output()
+    reviewed = dict(output["reviewed_case"]) if isinstance(output["reviewed_case"], dict) else {}
+    reviewed["coverage_epoch"] = epoch
+    selection = dict(reviewed["selection_ref"]) if isinstance(reviewed.get("selection_ref"), dict) else {}
+    selection["path"] = f"qa/results/cases/epochs/{epoch}/selection.json"
+    reviewed["selection_ref"] = selection
+    return {**output, "reviewed_case": reviewed}
+
+
+async def test_coverage_epoch_changes_the_case_activation_key() -> None:
+    async def once(epoch: int) -> tuple[str, int]:
+        harness = GraphHarness()
+        context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
+        bundle = build_intake_graphs(context)
+        receipt = _receipt()
+        payload = intake_graph_input()
+        payload["coverage_epoch"] = epoch
+        payload["rounds_used"] = 4
+        result = await harness.run(
+            bundle.case,
+            input=payload,
+            script={
+                "intake.case-design": [committed(_design_output(), receipt)],
+                "intake.case-review": [committed(_review_at(epoch), receipt)],
+            },
+        )
+        terminal = result.terminal
+        assert isinstance(terminal, dict)
+        assert terminal["status"] == "reviewed"
+        design = next(call for call in result.semantic_calls if call.semantic_node_id == "intake.case-design")
+        review = next(
+            item["review_round"]
+            for item in result.select_values
+            if isinstance(item, dict) and "review_round" in item
+        )
+        assert isinstance(review, int)
+        return design.input_digest, review
+
+    first_digest, first_round = await once(0)
+    second_digest, second_round = await once(1)
+    assert first_digest != second_digest
+    assert first_round == second_round == 0
 
 
 class _RecordingPrepare:
@@ -685,27 +795,34 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     assert isinstance(output.output, BaseModel)
 
 
-def test_publish_plan_rebinds_exploration_to_the_plan_digest(tmp_path: Path) -> None:
-    from assurance_intake.graphs.calls import publish_plan
+def test_preparation_refs_replace_a_stale_exploration_digest(tmp_path: Path) -> None:
+    from assurance_intake.contracts.plan import ResolvePlanInputV1
+    from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+    from assurance_intake.ops.resolve_plan.hooks.artifacts import _preparation_refs
 
     plan, plan_ref = install_plan(
         tmp_path,
         "CH-DEMO-001",
         capability_leafs=("entities.item.create",),
     )
-    bound = plan.exploration_ref.model_dump(mode="json")
-    stale = {"path": bound["path"], "digest": "b" * 64}
-    inventory = plan.impact_inventory_ref.model_dump(mode="json")
-    published = publish_plan(
-        {"artifacts": [stale, inventory, stale], "preparation_refs": [stale]},
-        {"plan": plan.model_dump(mode="json"), "plan_ref": plan_ref},
-        None,
+    bound = EvidenceArtifactRefV1.model_validate(plan.exploration_ref.model_dump(mode="json"))
+    stale = EvidenceArtifactRefV1(path=bound.path, digest="b" * 64)
+    inventory = EvidenceArtifactRefV1.model_validate(plan.impact_inventory_ref.model_dump(mode="json"))
+    plan_ref_model = EvidenceArtifactRefV1.model_validate(plan_ref)
+    request = ResolvePlanInputV1.model_construct(
+        artifacts=(stale, inventory, stale),
+        impact_inventory_ref=inventory,
+        exploration_ref=stale,
     )
-    assert published["artifacts"] == [bound, inventory]
-    preparation = published["preparation_refs"]
-    assert isinstance(preparation, list)
+    preparation = _preparation_refs(
+        request,
+        project_root=tmp_path,
+        exploration_ref=bound,
+        plan_ref=plan_ref_model,
+    )
     assert bound in preparation
     assert stale not in preparation
+    assert plan_ref_model in preparation
 
 
 async def test_prepare_graph_runs_intake_explore_and_plan_resolution(tmp_path: Path) -> None:
@@ -722,6 +839,10 @@ async def test_prepare_graph_runs_intake_explore_and_plan_resolution(tmp_path: P
     prepare_input.pop("plan_digest")
     prepare_input.pop("plan_ref")
     prepare_input.pop("selected_test_families")
+    prepare_input["artifact_ledger"] = {
+        "intake.exploration": [plan.exploration_ref.model_dump(mode="json")],
+        "intake.inventory": [plan.impact_inventory_ref.model_dump(mode="json")],
+    }
     result = await harness.run(
         bundle.prepare,
         input=prepare_input,
@@ -730,7 +851,11 @@ async def test_prepare_graph_runs_intake_explore_and_plan_resolution(tmp_path: P
             "intake.explore": [committed(_artifact_output(), receipt)],
             "intake.resolve-plan": [
                 committed(
-                    {"plan": plan.model_dump(mode="json"), "plan_ref": plan_ref},
+                    {
+                        "plan": plan.model_dump(mode="json"),
+                        "plan_ref": plan_ref,
+                        "preparation_refs": [plan_ref],
+                    },
                     receipt,
                 )
             ],
@@ -750,3 +875,8 @@ async def test_prepare_graph_runs_intake_explore_and_plan_resolution(tmp_path: P
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal.get("status") == "prepared"
+    assert terminal.get("flow_outcome") == "prepared"
+    assert "plan_digest" in terminal
+    assert "preparation_refs" in terminal
+    assert "intake.exploration" in terminal["artifact_ledger"]
+    assert "requirement" not in terminal

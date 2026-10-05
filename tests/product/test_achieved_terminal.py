@@ -320,6 +320,157 @@ def _quality_gate_for(
     return {"inspection": inspection.model_dump(mode="json"), "report": report.model_dump(mode="json")}
 
 
+def _stage_status_ledger(
+    project: Path,
+    *,
+    semantic: str = "execution.execute",
+    epoch: int = 0,
+    quality: bool = True,
+) -> dict[str, object]:
+    from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
+    from assurance_execution.contracts.workflow import (
+        EXECUTION_CYCLE_PATH,
+        ExecutionCycleDocumentV1,
+        ExecutionSemanticNodeId,
+        execution_evidence_path,
+    )
+    from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+    from assurance_quality.contracts.assessment import (
+        INSPECTION_OUTCOME_PATH,
+        REPORT_OUTCOME_PATH,
+        InspectionDocumentV1,
+        ReportOutcomeDocumentV1,
+    )
+    from assurance_quality.ops.inspect import op as inspect_op
+    from assurance_quality.ops.report import op as report_op
+    from graph_engine.artifacts import stage_json_artifact
+
+    evidence_path = execution_evidence_path(cast(ExecutionSemanticNodeId, semantic))
+    evidence_bytes = project.joinpath(*evidence_path.split("/")).read_bytes()
+    evidence = ExecutionEvidenceV1.model_validate_json(evidence_bytes)
+    evidence_ref = EvidenceArtifactRefV1(
+        path=evidence_path,
+        digest=hashlib.sha256(evidence_bytes).hexdigest(),
+    )
+    execution_gate = _execution_gate(evidence.model_dump(mode="json"), semantic_node_id=semantic)
+    gate = _quality_gate_for(project, execution_gate)
+    raw_inspection = gate["inspection"]
+    raw_report = gate["report"]
+    if not isinstance(raw_inspection, dict) or not isinstance(raw_report, dict):
+        raise AssertionError("quality gate fixture must be mappings")
+    inspection = dict(raw_inspection)
+    report = dict(raw_report)
+    inspection["coverage_epoch"] = epoch
+    report["coverage_epoch"] = epoch
+    raw_reviewed = inspection["reviewed_case"]
+    if not isinstance(raw_reviewed, dict):
+        raise AssertionError("reviewed case fixture must be a mapping")
+    reviewed = {**raw_reviewed, "coverage_epoch": epoch}
+    if epoch != 0:
+        selection = f"qa/results/cases/epochs/{epoch}/selection.json"
+        source = project / "qa/results/cases/epochs/0/selection.json"
+        destination = project / selection
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+        raw_selection = reviewed["selection_ref"]
+        if not isinstance(raw_selection, dict):
+            raise AssertionError("selection ref fixture must be a mapping")
+        reviewed["selection_ref"] = {
+            **raw_selection,
+            "path": selection,
+            "digest": hashlib.sha256(destination.read_bytes()).hexdigest(),
+        }
+    inspection["reviewed_case"] = reviewed
+    mapping_ref = EvidenceArtifactRefV1.model_validate(inspection["mapping_ref"])
+    case_refs = reviewed["case_refs"]
+    if not isinstance(case_refs, list | tuple):
+        raise AssertionError("case refs fixture must be a sequence")
+    source_refs = tuple(EvidenceArtifactRefV1.model_validate(item) for item in case_refs)
+    if evidence.executed_at is None:
+        raise AssertionError("status fixture evidence must bind executed_at")
+    cycle = ExecutionCycleDocumentV1.model_validate(
+        {
+            "change_id": evidence.change_id,
+            "plan_digest": evidence.plan_digest,
+            "plan_ref": evidence.plan_ref.model_dump(mode="json"),
+            "coverage_epoch": epoch,
+            "repair_round": 0,
+            "batch_id": evidence.batch_id,
+            "executed_at": evidence.executed_at,
+            "final_status": "PASS" if evidence.status == "passed" else "FAIL",
+            "evidence_ref": evidence_ref.model_dump(mode="json"),
+            "mapping_ref": mapping_ref.model_dump(mode="json"),
+            "source_refs": [item.model_dump(mode="json") for item in source_refs],
+            "family_outcomes": [item.model_dump(mode="json") for item in evidence.family_outcomes],
+        }
+    )
+    cycle_ref = stage_json_artifact(project, EXECUTION_CYCLE_PATH, cycle)
+    ledger: dict[str, object] = {
+        TASK_ATTEMPT_CONTRACTS["execute"].artifact("cycle").ledger_key: {
+            "refs": [{"path": cycle_ref.path, "digest": cycle_ref.digest}],
+            "receipt": {"receipt_id": "execution", "receipt_digest": _SHA},
+        }
+    }
+    if quality:
+        inspection_receipt = inspection.pop("inspection_receipt")
+        report_receipt = report.pop("report_receipt")
+        inspection_ref = stage_json_artifact(
+            project, INSPECTION_OUTCOME_PATH, InspectionDocumentV1.model_validate(inspection)
+        )
+        report_ref = stage_json_artifact(
+            project, REPORT_OUTCOME_PATH, ReportOutcomeDocumentV1.model_validate(report)
+        )
+        ledger[inspect_op.artifact("inspection-outcome").ledger_key] = {
+            "refs": [{"path": inspection_ref.path, "digest": inspection_ref.digest}],
+            "receipt": inspection_receipt,
+        }
+        ledger[report_op.artifact("report-outcome").ledger_key] = {
+            "refs": [{"path": report_ref.path, "digest": report_ref.digest}],
+            "receipt": report_receipt,
+        }
+    return ledger
+
+
+def _status_snapshot(
+    project: Path,
+    *,
+    semantic: str = "execution.execute",
+    current: int = 0,
+    epoch: int | None = None,
+    quality: bool = True,
+    families: list[str] | None = None,
+    terminal: dict[str, str] | None = None,
+    extra: dict[str, object] | None = None,
+) -> SimpleNamespace:
+    if epoch is None:
+        epoch = current
+    values: dict[str, object] = {
+        "artifact_ledger": _stage_status_ledger(project, semantic=semantic, epoch=epoch, quality=quality),
+        "budgets": {"coverage_rounds": 1},
+        "flow_control": {"loops": {"coverage": current}},
+        "selected_test_families": ["api"] if families is None else families,
+        "terminal": {"status": "completed", "reason": "achieved"} if terminal is None else terminal,
+    }
+    if extra:
+        values.update(extra)
+    return SimpleNamespace(next=(), interrupts=(), values=values)
+
+
+def _render(snapshot: SimpleNamespace, project: Path):
+    from assurance_product.status import render_status_from_langgraph
+
+    return render_status_from_langgraph(
+        invocation_id="inv-achieved-001",
+        lock_digest=_SHA,
+        root_input_digest=_SHA,
+        entrypoint="full",
+        change_id=CHANGE_ID,
+        status="completed",
+        snapshot=snapshot,
+        project_root=project,
+    )
+
+
 def test_status_v1_rejects_tree_fields():
     from assurance_product.models import StatusV1
 
@@ -346,49 +497,74 @@ def test_status_v1_rejects_unknown_publication_status():
         StatusV1.model_validate({key: value for key, value in valid_status().items() if key != "publication"})
 
 
-def test_render_status_binds_terminal_execution_checkpoint() -> None:
-    from assurance_product.status import render_status_from_langgraph
-
-    evidence = _execution_evidence(batch_id="batch-rerun", status="passed")
-    snapshot = SimpleNamespace(
-        next=(),
-        interrupts=(),
-        values={
-            "execution_semantic_node_id": "execution.run",
-            "batch_id": evidence["batch_id"],
-            "execution_evidence": evidence,
-            "execution_digest": _canonical(evidence),
-        },
-    )
-
-    status = render_status_from_langgraph(
-        invocation_id="inv-achieved-001",
-        lock_digest=_SHA,
-        root_input_digest=_SHA,
-        entrypoint="full",
-        change_id=CHANGE_ID,
-        status="completed",
-        snapshot=snapshot,
-    )
+def test_render_status_binds_terminal_execution_checkpoint(tmp_path: Path) -> None:
+    project = _ready_change(tmp_path)
+    rerun = _execution_evidence(batch_id="batch-rerun", status="passed", **_plan_binding_for(project))
+    _write(project, "qa/results/execution/run-result.json", json.dumps(rerun).encode("utf-8"))
+    status = _render(_status_snapshot(project, semantic="execution.run", quality=False), project)
 
     assert status.execution_gate is not None
     assert status.execution_gate.semantic_node_id == "execution.run"
     assert status.execution_gate.batch_id == "batch-rerun"
-    assert status.execution_gate.execution_digest == _canonical(evidence)
+    assert status.execution_gate.execution_digest == _canonical(rerun)
+
+
+def test_status_maps_execute_and_rerun_evidence_paths_to_semantic_nodes(tmp_path: Path) -> None:
+    execute_project = _ready_change(tmp_path / "execute")
+    execute = _render(
+        _status_snapshot(execute_project, semantic="execution.execute", quality=False),
+        execute_project,
+    )
+    assert execute.execution_gate is not None
+    assert execute.execution_gate.semantic_node_id == "execution.execute"
+
+    run_project = _ready_change(tmp_path / "run")
+    rerun = _execution_evidence(batch_id="batch-rerun", status="passed", **_plan_binding_for(run_project))
+    _write(run_project, "qa/results/execution/run-result.json", json.dumps(rerun).encode("utf-8"))
+    run = _render(_status_snapshot(run_project, semantic="execution.run", quality=False), run_project)
+    assert run.execution_gate is not None
+    assert run.execution_gate.semantic_node_id == "execution.run"
+
+
+def test_status_ignores_the_previous_epoch_execution_file(tmp_path: Path) -> None:
+    project = _ready_change(tmp_path)
+    status = _render(_status_snapshot(project, current=1, epoch=0), project)
+    assert status.coverage_progress is None
+    assert status.execution_gate is None
+    assert status.quality_gate is None
+
+
+def test_status_rejects_a_changed_execution_file_whose_digest_does_not_match(
+    tmp_path: Path,
+) -> None:
+    import pytest
+
+    from assurance_execution.contracts.workflow import EXECUTION_CYCLE_PATH
+
+    project = _ready_change(tmp_path)
+    snapshot = _status_snapshot(project, quality=False)
+    (project / EXECUTION_CYCLE_PATH).write_text('{"tampered": true}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=EXECUTION_CYCLE_PATH):
+        _render(snapshot, project)
 
 
 def test_execution_publish_records_checkpoint_authority() -> None:
-    from assurance_execution.graphs.nodes import publish_execution
+    from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+    from assurance_execution.operations.cycle import seal_execution
 
-    evidence = _execution_evidence(batch_id="batch-rerun", status="passed")
-    published = publish_execution(
-        {"rounds_budget": 2, "rounds_used": 1},
+    evidence = ExecutionEvidenceV1.model_validate(
+        _execution_evidence(batch_id="batch-rerun", status="passed")
+    )
+    published = seal_execution(
         evidence,
-        object(),
-        semantic_node_id="execution.run",
+        change_id=evidence.change_id,
+        coverage_epoch=0,
+        repair_round=0,
+        execution_kind="run",
+        generation=None,
     )
 
-    assert published["execution_semantic_node_id"] == "execution.run"
+    assert published.execution_semantic_node_id == "execution.run"
 
 
 def test_finalize_achieved_writes_status_without_apply_manifest(tmp_path: Path):
@@ -688,7 +864,7 @@ def test_finalize_achieved_requires_terminal_full_success(tmp_path: Path):
     with pytest.raises(ValueError, match="interrupt"):
         finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status(pending_interrupt=pending))
     with pytest.raises(ValueError, match="full"):
-        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status(entrypoint="archive"))
+        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status(entrypoint="init"))
 
     change = project / "qa"
     assert not (change / "status.json").exists()

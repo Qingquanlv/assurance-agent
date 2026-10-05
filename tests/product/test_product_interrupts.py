@@ -1,18 +1,20 @@
+"""Multiple pending interrupts resume by LangGraph interrupt id."""
+
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import pytest
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 
-from assurance_product.graphs.execute import resume_product_interrupts
-from assurance_product.graphs.state import ProductState
 
-_FIRST_ID = "case-human-review"
-_SECOND_ID = "improvement-apply-human-review"
+class _ToyState(TypedDict, total=False):
+    change_id: str
+    human_action: str
+    decision: str
 
 
 def _config() -> RunnableConfig:
@@ -45,10 +47,10 @@ def _human_node(interrupt_id: str, output_key: str):
     return node
 
 
-def test_multiple_feature_interrupts_resume_by_logical_interrupt_id() -> None:
-    builder: StateGraph[ProductState] = StateGraph(ProductState)
-    builder.add_node("case-human", cast(Any, _human_node(_FIRST_ID, "human_action")))
-    builder.add_node("improvement-human", cast(Any, _human_node(_SECOND_ID, "feature_action")))
+def test_multiple_feature_interrupts_resume_by_langgraph_interrupt_id() -> None:
+    builder: StateGraph[_ToyState] = StateGraph(_ToyState)
+    builder.add_node("case-human", cast(Any, _human_node("full.human-review", "human_action")))
+    builder.add_node("improvement-human", cast(Any, _human_node("full.approval", "decision")))
     builder.add_edge(START, "case-human")
     builder.add_edge(START, "improvement-human")
     builder.add_edge("case-human", END)
@@ -56,12 +58,21 @@ def test_multiple_feature_interrupts_resume_by_logical_interrupt_id() -> None:
     graph = builder.compile(checkpointer=InMemorySaver())
     config = _config()
     graph.invoke({"change_id": "CH-DEMO-001"}, config=config)
-    with pytest.raises(ValueError, match="scalar resume rejected"):
-        resume_product_interrupts(graph, config, "approve")
-    resumed = resume_product_interrupts(
-        graph,
-        config,
-        {_FIRST_ID: {"action": "approve"}, _SECOND_ID: {"action": "reject"}},
+    snapshot = graph.get_state(config)
+    pending = {item.id: item.value["interrupt_id"] for item in snapshot.interrupts}
+    assert set(pending.values()) == {"full.human-review", "full.approval"}
+    assert set(pending) != set(pending.values())
+    with pytest.raises(Exception):
+        graph.invoke(Command(resume="approve"), config=config)
+    by_logical = {logical: graph_id for graph_id, logical in pending.items()}
+    resumed = graph.invoke(
+        Command(
+            resume={
+                by_logical["full.human-review"]: {"action": "approve"},
+                by_logical["full.approval"]: {"action": "reject"},
+            }
+        ),
+        config=config,
     )
     assert resumed["human_action"] == "approve"
-    assert resumed["feature_action"] == "reject"
+    assert resumed["decision"] == "reject"

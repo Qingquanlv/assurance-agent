@@ -28,7 +28,7 @@ class _ProductPortsFixture:
     async def bind_without_runner_lease(self) -> object:
         factory = self.ports.execution_factory(
             invocation_id="inv-missing-fence",
-            entrypoint="improvement-apply",
+            entrypoint="init",
             root_input_digest="c" * 64,
         )
         return factory.bind(None)  # type: ignore[arg-type]
@@ -50,7 +50,7 @@ def product_ports_fixture(opencode_composition, tmp_path: Path):
             composition,
             invocation="inv-missing-fence",
             authorization=lifecycle_authorization(),
-            reachable_contract_ids=ENTRYPOINT_AGENT_CONTRACT_IDS["improvement-apply"],
+            reachable_contract_ids=ENTRYPOINT_AGENT_CONTRACT_IDS["init"],
         ) as ports:
             fixture = _ProductPortsFixture(ports=ports)
             original = ports.kernel.execute_or_recover
@@ -127,7 +127,7 @@ async def _register_observer(composition, tmp_path: Path) -> None:
                 root_input_digest="c" * 64,
             ).bind(lease)
             assert bound.artifact.checkpointer_backend_id
-            assert set(bound.artifact.entrypoints) >= {"archive", "intake"}
+            assert set(bound.artifact.entrypoints) >= {"init", "intake"}
             assert bound.runtime_context.fencing_token == lease.fencing_token
         finally:
             await ports.backend.lease.release(lease)

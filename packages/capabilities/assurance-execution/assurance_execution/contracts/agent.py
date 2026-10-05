@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import AwareDatetime, Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_serializer, model_validator
 
 from agent_runtime_contracts import AgentRunResult
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.execution import ExecutionReceiptV1
@@ -85,7 +86,7 @@ class ExecutionPrepareInputV1(FrozenModel):
     coverage_epoch_token: str = Field(default="0", min_length=1)
     repair_round: int = Field(default=0, ge=0)
     execution_kind: Literal["execute", "run"] = "execute"
-    generation_result: GenerationCycleResultV1 | None = None
+    generation_ref: EvidenceArtifactRefV1 | None = None
     allowed_origins: tuple[str, ...] = ()
     timeout_seconds: int = Field(default=3600, ge=31, le=3600)
 
@@ -105,10 +106,27 @@ class ExecutionPrepareInputV1(FrozenModel):
     def _prepare_capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _sorted_unique(value, label="capability leaf")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_epoch_token(cls, value: object) -> object:
+        if isinstance(value, dict) and "coverage_epoch_token" not in value:
+            return {**value, "coverage_epoch_token": str(value.get("coverage_epoch", 0))}
+        return value
+
     @model_validator(mode="after")
-    def _plan_matches_generation(self) -> ExecutionPrepareInputV1:
+    def _epoch_token_matches(self) -> ExecutionPrepareInputV1:
         if self.coverage_epoch_token != str(self.coverage_epoch):
             raise ValueError("coverage_epoch_token must equal coverage_epoch")
+        return self
+
+
+class PreparedExecutionV1(ExecutionPrepareInputV1):
+    """Execution input after prepare has loaded the generation cycle."""
+
+    generation_result: GenerationCycleResultV1 | None = None
+
+    @model_validator(mode="after")
+    def _plan_matches_generation(self) -> PreparedExecutionV1:
         if self.generation_result is not None:
             require_same_plan(
                 self.plan_digest,
@@ -117,6 +135,37 @@ class ExecutionPrepareInputV1(FrozenModel):
                 self.generation_result.plan_ref,
             )
         return self
+
+
+class RerunPrepareInputV1(ExecutionPrepareInputV1):
+    """Rerun may rewrite generation from the applied repair healing wrote.
+
+    Absent repair fields are omitted from the dump so an unadapted rerun keeps
+    the execution input bytes the handler already accepts.
+    """
+
+    applied_repair_ref: EvidenceArtifactRefV1 | None = None
+    apply_receipt: ReceiptRef | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_repair(self, handler: Any) -> Any:
+        dumped = handler(self)
+        if not isinstance(dumped, dict) or not _repair_is_bound(self):
+            if isinstance(dumped, dict):
+                for key in _REPAIR_FIELDS:
+                    dumped.pop(key, None)
+            return dumped
+        return dumped
+
+
+_REPAIR_FIELDS = (
+    "applied_repair_ref",
+    "apply_receipt",
+)
+
+
+def _repair_is_bound(value: RerunPrepareInputV1) -> bool:
+    return value.apply_receipt is not None or value.applied_repair_ref is not None
 
 
 class RunTestsInputV1(FrozenModel):

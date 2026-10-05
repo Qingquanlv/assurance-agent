@@ -4,19 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_runtime_contracts.ops import (
-    InputError,
     OutputError,
-    failed_input,
-    failed_output,
-    validate_model,
 )
-from graph_engine.canonical import JSONValue
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_healing.contracts.status import HealingStatusV1
@@ -26,7 +20,7 @@ from assurance_quality.contracts.trace import (
     TraceRow,
     TraceTestRef,
 )
-from assurance_quality.operations.common import catalog_context, leafs_of
+from assurance_quality.operations.common import catalog_context
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 _CASE_TYPE_TO_TARGET: dict[str, Literal["api", "e2e", "fuzz", "performance"]] = {
@@ -217,29 +211,3 @@ def project_trace(payload: TraceOperationInput) -> TraceProjectionV2:
         )
     except ValidationError as error:
         raise OutputError(str(error)) from error
-
-
-class MaterializeTraceHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_model(TraceOperationInput, request.input)
-            if payload.execution_evidence is not None:
-                try:
-                    ExecutionEvidenceV1.model_validate(
-                        payload.execution_evidence.model_dump(mode="json"),
-                        context={
-                            "capability_leafs": leafs_of(payload.capability_leafs),
-                            "case_ids": leafs_of(payload.case_ids),
-                        },
-                    )
-                except ValidationError as error:
-                    raise InputError(str(error)) from error
-            projection = project_trace(payload)
-            return TaskOutcome.succeeded(cast(JSONValue, projection.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))
-        except ValidationError as error:
-            return failed_input(error)

@@ -477,7 +477,7 @@ def write_obligation_assessment(
 ) -> EvidenceArtifactRefV1:
     relative = (
         f"qa/results/inspect/epochs/{request.reviewed_case.coverage_epoch}/"
-        f"batches/{request.execution.batch_id}/obligation-assessment.json"
+        f"rounds/{request.repair_round}/obligation-assessment.json"
     )
     path = write_root.joinpath(*PurePosixPath(relative).parts)
     path.parent.mkdir(parents=True, exist_ok=True)

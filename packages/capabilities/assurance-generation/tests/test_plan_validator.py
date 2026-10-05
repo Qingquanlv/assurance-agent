@@ -5,7 +5,6 @@ from typing import Any
 
 import pytest
 
-from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
@@ -14,7 +13,6 @@ from graph_engine.plugin_api import (
     ValidationResult,
 )
 
-from assurance_generation.plugin import GenerationPlugin
 from assurance_generation.validators.plans import (
     FAMILIES,
     FamilyPlanValidator,
@@ -201,16 +199,3 @@ def test_plan_mechanical_rejects_family_discriminator_mismatch() -> None:
     assert result.accepted is False
     assert result.reason is not None
     assert "family" in result.reason
-
-
-def test_plugin_contributed_codegen_validators_allowlist_registered_paths() -> None:
-    contribution = GenerationPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
-    generated = contribution.commit_validators["assurance.generation.validator.generated-files.v1"]
-    mapping = contribution.commit_validators["assurance.generation.validator.codegen-mapping.v1"]
-    context = validation_context()
-    allowed = candidate_with("qa/tests/api/test_users.py")
-    assert generated.validate(allowed, context).accepted is True
-    assert mapping.validate(allowed, context).accepted is True
-    rejected = generated.validate(candidate_with("src/app.py"), context)
-    assert rejected.accepted is False
-    assert mapping.validate(candidate_with("../secret.md"), context).accepted is False

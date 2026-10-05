@@ -49,10 +49,7 @@ from graph_engine.composition.models import (
 )
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
-from graph_engine.effects.contracts import (
-    EXPECTED_EFFECT_KINDS,
-    effect_idempotency_key,
-)
+from graph_engine.effects.contracts import effect_idempotency_key
 from graph_engine.effects.state import EffectCallContext, MemoryEffectState
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
@@ -86,13 +83,26 @@ _RECEIPT_SCHEMA = (
     b'"additionalProperties":false}'
 )
 _KIND_OWNER = {
-    "assurance.healing.effect.allocation.v2": "assurance.healing",
-    "assurance.healing.effect.heal-apply.v2": "assurance.healing",
-    "assurance.healing.effect.proposal-approved.v1": "assurance.healing",
-    "assurance.improvement.effect.archive.v1": "assurance.improvement",
-    "assurance.improvement.effect.delivery.v1": "assurance.improvement",
-    "assurance.improvement.effect.promotion.v1": "assurance.improvement",
+    "example.alpha.effect.allocation.v1": "example.alpha",
+    "example.alpha.effect.apply.v1": "example.alpha",
+    "example.alpha.effect.approval.v1": "example.alpha",
+    "example.beta.effect.archive.v1": "example.beta",
+    "example.beta.effect.delivery.v1": "example.beta",
+    "example.beta.effect.promotion.v1": "example.beta",
 }
+REGISTERED_EFFECT_KINDS = frozenset(_KIND_OWNER)
+
+
+def _owner_id(kind: str) -> str:
+    owner = _KIND_OWNER.get(kind)
+    if owner is not None:
+        return owner
+    plugin, separator, _rest = kind.partition(".effect.")
+    if separator and plugin:
+        return plugin
+    raise KeyError(kind)
+
+
 _PERMANENT = EffectApplyResult(
     status="permanent",
     failure=TaskFailure(kind="external_effect", message="denied", retryable=False),
@@ -339,11 +349,11 @@ def build_effect_registries(
     policy: EffectPolicy | None = None,
     receipt_schema: bytes = _RECEIPT_SCHEMA,
 ) -> tuple[EffectRegistry, SchemaRegistry]:
-    selected = kinds if kinds is not None else tuple(sorted(EXPECTED_EFFECT_KINDS))
+    selected = kinds if kinds is not None else tuple(sorted(REGISTERED_EFFECT_KINDS))
     selected_policy = policy or EffectPolicy(max_attempts=3, timeout_seconds=30, backoff_seconds=0)
     grouped: dict[str, list[str]] = {}
     for kind in selected:
-        grouped.setdefault(_KIND_OWNER[kind], []).append(kind)
+        grouped.setdefault(_owner_id(kind), []).append(kind)
     sources: list[SourceSnapshot] = []
     contributions: list[AuthenticatedContribution] = []
     for owner_id, owner_kinds in grouped.items():
@@ -389,8 +399,9 @@ def make_effect_kernel(
     kind: str,
     policy: EffectPolicy | None = None,
     transaction_cut: Any = None,
+    kinds: tuple[str, ...] | None = None,
 ):
-    effects, schemas = build_effect_registries(handler, policy=policy)
+    effects, schemas = build_effect_registries(handler, policy=policy, kinds=kinds)
     project = tmp_path / "project"
     project.mkdir()
     store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
@@ -430,32 +441,24 @@ def make_effect_kernel(
     return kernel, key, resolved, validated, context, writer, workspace, project, store, effects, schemas
 
 
-def test_expected_effect_kinds_match_registry() -> None:
+def test_fixture_registry_matches_registered_effect_kinds() -> None:
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
     effect_registry, _schemas = build_effect_registries(handler)
-    assert set(effect_registry.entries) == EXPECTED_EFFECT_KINDS
-    assert EXPECTED_EFFECT_KINDS == {
-        "assurance.healing.effect.allocation.v2",
-        "assurance.healing.effect.heal-apply.v2",
-        "assurance.healing.effect.proposal-approved.v1",
-        "assurance.improvement.effect.archive.v1",
-        "assurance.improvement.effect.delivery.v1",
-        "assurance.improvement.effect.promotion.v1",
-    }
+    assert set(effect_registry.entries) == REGISTERED_EFFECT_KINDS
 
 
 def test_improvement_graph_names_are_not_effect_kinds() -> None:
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
     effect_registry, _schemas = build_effect_registries(handler)
     for name in GRAPH_NAMES:
-        assert name not in EXPECTED_EFFECT_KINDS
+        assert name not in REGISTERED_EFFECT_KINDS
         assert name not in effect_registry.entries
 
 
 @pytest.mark.parametrize(
     ("case", "expected_message"),
     [
-        ("unknown_kind", "'unknown effect kind: assurance.unknown.effect.v1'"),
+        ("unknown_kind", "'unknown effect kind: example.unknown.effect.v1'"),
         ("missing_schema", "effect intent schema is not registered: missing.intent.schema.v1"),
         ("invalid_payload", "missing required property: remote_id"),
     ],
@@ -465,8 +468,8 @@ async def test_effect_intent_validation_errors_are_exact(
     case: str,
     expected_message: str,
 ) -> None:
-    known_kind = "assurance.improvement.effect.delivery.v1"
-    intent_kind = "assurance.unknown.effect.v1" if case == "unknown_kind" else known_kind
+    known_kind = "example.beta.effect.delivery.v1"
+    intent_kind = "example.unknown.effect.v1" if case == "unknown_kind" else known_kind
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
     kernel, key, resolved, validated, context, writer, workspace, _project, store, effects, _schemas = (
         make_effect_kernel(tmp_path, handler=handler, kind=intent_kind)
@@ -514,7 +517,7 @@ async def test_effect_intent_validation_errors_are_exact(
         store.close()
 
 
-@pytest.mark.parametrize("kind", sorted(EXPECTED_EFFECT_KINDS))
+@pytest.mark.parametrize("kind", sorted(REGISTERED_EFFECT_KINDS))
 @pytest.mark.parametrize(
     "case",
     [
@@ -609,7 +612,7 @@ async def test_one_attempt_cannot_be_settled_by_both_protocols(tmp_path: Path) -
     leftover_test = Path(__file__).resolve().parents[1] / "runtime" / "test_effects.py"
     assert not leftover_effects.exists()
     assert not leftover_test.exists()
-    kind = "assurance.improvement.effect.delivery.v1"
+    kind = "example.beta.effect.delivery.v1"
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
     kernel, key, resolved, validated, context, _writer, _workspace, _project, store, effects, schemas = (
         make_effect_kernel(tmp_path, handler=handler, kind=kind)
@@ -634,3 +637,38 @@ def test_kernel_does_not_import_legacy_effect_executor() -> None:
     source = inspect.getsource(kernel_mod)
     assert "runtime.effects" not in source
     assert "EffectExecutor" not in source
+    assert "EXPECTED_EFFECT_KINDS" not in source
+
+
+async def test_plugin_declared_non_assurance_kind_is_accepted(tmp_path: Path) -> None:
+    kind = "example.gamma.effect.mark.v1"
+    handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
+    kernel, key, resolved, validated, context, _writer, _workspace, _project, store, effects, _schemas = (
+        make_effect_kernel(tmp_path, handler=handler, kind=kind, kinds=(kind,))
+    )
+    try:
+        assert kind in effects.entries
+        assert kind not in REGISTERED_EFFECT_KINDS
+        result = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(result, CommittedTaskResult)
+        assert handler.apply_keys == (effect_idempotency_key(key, 1),)
+    finally:
+        store.close()
+
+
+async def test_undeclared_effect_kind_is_rejected(tmp_path: Path) -> None:
+    kind = "example.missing.effect.v1"
+    handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
+    kernel, key, resolved, validated, context, writer, workspace, _project, store, effects, _schemas = (
+        make_effect_kernel(tmp_path, handler=handler, kind=kind)
+    )
+    try:
+        assert kind not in effects.entries
+        result = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(result, PermanentTaskFailure)
+        assert result.kind == "configuration"
+        assert result.message == f"'unknown effect kind: {kind}'"
+        assert writer.calls == 1
+        assert workspace.promotions == 0
+    finally:
+        store.close()

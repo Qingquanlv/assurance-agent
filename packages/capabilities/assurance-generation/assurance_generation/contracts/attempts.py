@@ -8,11 +8,13 @@ from agent_runtime_contracts.qa_paths import qa_join
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
+from graph_engine.stategraph.ledger import NamedWrite
 
 from assurance_generation.contracts.init_runtime import InitTestRuntimeInputV1, InitTestRuntimeResultV1
 from assurance_generation.contracts.workflow import (
-    CompleteGenerationInputV1,
-    GenerationCycleResultV1,
+    GENERATION_CYCLE_PATH,
+    GenerationCyclePublishedV1,
+    PublishCycleInputV1,
     ResolveGenerationInputV1,
 )
 from assurance_intake.contracts.workflow import ReviewedCaseV1
@@ -43,12 +45,14 @@ _PUBLISH_CYCLE = TaskAttemptContract(
     contract_id="assurance.generation.publish-cycle",
     owner_id="assurance.generation",
     handler_id="assurance.generation.publish-cycle.execute",
-    input_model=CompleteGenerationInputV1,
-    output_model=GenerationCycleResultV1,
+    input_model=PublishCycleInputV1,
+    output_model=GenerationCyclePublishedV1,
+    writes=(NamedWrite("cycle", GENERATION_CYCLE_PATH),),
     resources=ResourceClaimTemplate(
         parameters={"coverage_epoch": "/coverage_epoch_token"},
         reads=("qa",),
         writes=(
+            GENERATION_CYCLE_PATH,
             qa_join("generation/epochs/{coverage_epoch}/mapping.json"),
             qa_join("generation/epochs/{coverage_epoch}/obligation-methods.json"),
         ),

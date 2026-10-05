@@ -10,11 +10,6 @@ from agent_runtime_contracts import AgentRunResult
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts import LayerName
-from assurance_healing.contracts.coverage_repair import (
-    CoverageRepairApplySummary,
-    CoverageRepairBaseline,
-    CoverageRepairBrief,
-)
 from assurance_healing.contracts.proposal import FixProposalSummary
 from assurance_healing.contracts.wire import FrozenContract, HexDigest, validate_repo_path
 from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr
@@ -70,7 +65,8 @@ class FixProposalInputV1(FrozenModel):
     require_approval: bool = True
     execution_evidence_digest: HexDigest
     issue_analysis_ref: EvidenceArtifactRefV1 | None = None
-    claimed_capabilities: tuple[str, ...] = ()
+    issue_analysis_handoff_ref: EvidenceArtifactRefV1 | None = None
+    coverage_epoch: int = Field(default=0, ge=0)
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @model_validator(mode="after")
@@ -103,42 +99,6 @@ class FixProposalInputV1(FrozenModel):
 class FixProposalFinalizeInputV1(FixProposalInputV1):
     agent_result: AgentRunResult
     prepare: FixProposalInputV1
-
-
-class CoverageRepairInputV1(FrozenModel):
-    change_id: str = Field(min_length=1)
-    brief: CoverageRepairBrief
-    baseline_digest: HexDigest
-    allowed_roots: tuple[str, ...]
-    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
-
-    @field_validator("allowed_roots")
-    @classmethod
-    def _roots(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        roots = _sorted_unique(value, label="allowed root")
-        if not roots:
-            raise ValueError("allowed_roots must be non-empty")
-        return roots
-
-
-class CoverageRepairFinalizeInputV1(FrozenModel):
-    agent_result: AgentRunResult
-    change_id: str = Field(min_length=1)
-    brief: CoverageRepairBrief
-    baseline_digest: HexDigest
-    allowed_roots: tuple[str, ...]
-    artifact_paths: tuple[str, ...] = ()
-    prepare: CoverageRepairInputV1
-
-    @field_validator("allowed_roots")
-    @classmethod
-    def _roots(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _sorted_unique(value, label="allowed root")
-
-    @field_validator("artifact_paths")
-    @classmethod
-    def _paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _canonical_paths(value) if value else ()
 
 
 class AllocateHealingInputV1(FrozenModel):
@@ -210,36 +170,9 @@ class RecordApplyInputV1(FrozenModel):
         return _canonical_paths(value)
 
 
-class CoverageRepairAllocateInputV1(FrozenModel):
-    change_id: str = Field(min_length=1)
-    brief: CoverageRepairBrief
-    test_tree_sha256: NonEmptyStr
-    test_files_sha256: dict[str, str]
-    product_tree_sha256: NonEmptyStr
-    product_files_sha256: dict[str, str]
-    declaration_tree_sha256: NonEmptyStr
-    declaration_files_sha256: dict[str, str]
-    prior_attempts_used: int = Field(ge=0)
-
-
-class CoverageRepairSafetyInputV1(FrozenModel):
-    change_id: str = Field(min_length=1)
-    attempt: int = Field(ge=1)
-    brief: CoverageRepairBrief
-    baseline: CoverageRepairBaseline
-    current_test_files: dict[str, str]
-    current_product_files: dict[str, str]
-    current_declaration_files: dict[str, str]
-    summary: CoverageRepairApplySummary
-
-
 __all__ = [
     "FixProposalFinalizeInputV1",
     "AllocateHealingInputV1",
-    "CoverageRepairAllocateInputV1",
-    "CoverageRepairFinalizeInputV1",
-    "CoverageRepairInputV1",
-    "CoverageRepairSafetyInputV1",
     "FixProposalInputV1",
     "FixProposalResultItemV1",
     "FixProposalResultV1",

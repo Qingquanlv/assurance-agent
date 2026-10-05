@@ -140,7 +140,7 @@ still owns LangGraph topology. No decorator scan or new graph DSL is involved.
 
 ### Agent op authoring
 
-Each of the 27 Agent contracts has a prepare handler and a finalize handler.
+Each of the 26 Agent contracts has a prepare handler and a finalize handler.
 
 Intake declares every operation, like a FastAPI route, in its own directory under
 [`ops/`](packages/capabilities/assurance-intake/assurance_intake/ops/), for example

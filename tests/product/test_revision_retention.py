@@ -43,7 +43,7 @@ def _identity(invocation_id: str, *, phase: str, lock: str, revision_id: str) ->
         schema_version="1",
         phase=phase,  # type: ignore[arg-type]
         invocation_id=invocation_id,
-        entrypoint="improvement-evaluate",
+        entrypoint="init",
         root_input_digest="f" * 64,
         product_lock_digest=lock,
         revision_id=revision_id,

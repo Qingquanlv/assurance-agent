@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts.ops import InputError, failed_input, validate_model
-from graph_engine.canonical import JSONValue
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from agent_runtime_contracts.ops import InputError
 
 from assurance_execution.contracts.agent import SelectInputV1
 from assurance_execution.contracts.selection import ClosedMappingEntryV1, ClosedMappingV1
-from assurance_execution.operations.common import leafs_of, mapping_digest
+from assurance_execution.operations.common import leafs_of
 from assurance_generation.contracts import CodegenMapping
 from assurance_intake.contracts import CaseYamlAuthoring
 
@@ -67,23 +64,3 @@ def close_mappings(payload: SelectInputV1) -> ClosedMappingV1:
         )
     except ValidationError as error:
         raise InputError(str(error)) from error
-
-
-class SelectHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_model(SelectInputV1, request.input)
-            closed = close_mappings(payload)
-            return TaskOutcome.succeeded(
-                cast(
-                    JSONValue,
-                    {
-                        "selected_targets": payload.selected_targets.model_dump(mode="json"),
-                        "mapping": closed.model_dump(mode="json"),
-                        "mapping_digest": mapping_digest(closed),
-                    },
-                )
-            )
-        except InputError as error:
-            return failed_input(error)

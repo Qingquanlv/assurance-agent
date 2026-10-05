@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -470,6 +470,7 @@ class TaskContext:
     invocation: InvocationMetadata
     activity: TaskActivityPort | None = None
     secrets: SecretPort | None = None
+    runtime_evidence: Callable[[], Awaitable[object]] | None = None
 
     def effect(self, kind: str, payload: JSONValue) -> EffectIntent:
         return EffectIntent(kind=kind, payload=payload)

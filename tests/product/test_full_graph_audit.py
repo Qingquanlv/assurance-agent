@@ -2,56 +2,49 @@ from __future__ import annotations
 
 import pytest
 
-from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS
 from assurance_product.models import PRODUCT_ENTRYPOINTS
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
-_ARCHIVE_ENTRYPOINTS = frozenset({"archive"})
-_IMPROVEMENT_ENTRYPOINTS = frozenset(
-    {
-        "retro",
-        "improvement-review",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-apply",
-        "improvement-rollback",
-    }
-)
-
 
 def test_full_graph_has_no_orphans_or_forbidden_targets() -> None:
-    assert set(ENTRYPOINT_CONTRACTS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(ENTRYPOINT_CONTRACTS) == 13
+    from assurance_product.graphs.factory import entrypoint_contracts
+
+    contracts = entrypoint_contracts()
+    assert set(contracts) == set(PRODUCT_ENTRYPOINTS)
+    assert len(contracts) == 7
     forbidden = [
         name
-        for name, contract in ENTRYPOINT_CONTRACTS.items()
+        for name, contract in contracts.items()
         if any(part.startswith("runtime.") for part in (name, contract.name))
     ]
     assert forbidden == []
-    assert set(ENTRYPOINT_CONTRACTS) - set(PRODUCT_ENTRYPOINTS) == set()
+    assert set(contracts) - set(PRODUCT_ENTRYPOINTS) == set()
 
 
 def test_full_graph_has_no_archive_branch_and_keeps_retro_improvement() -> None:
-    assert "full" in ENTRYPOINT_CONTRACTS
-    assert "archive" in ENTRYPOINT_CONTRACTS
-    assert "retro" in ENTRYPOINT_CONTRACTS
-    assert "improvement-review" in ENTRYPOINT_CONTRACTS
-    assert "improvement-apply" in ENTRYPOINT_CONTRACTS
-    assert _ARCHIVE_ENTRYPOINTS.isdisjoint(_IMPROVEMENT_ENTRYPOINTS)
-    assert "achieved" not in ENTRYPOINT_CONTRACTS
-    assert ENTRYPOINT_CONTRACTS["archive"].name == "archive"
-    assert ENTRYPOINT_CONTRACTS["retro"].name == "retro"
-    assert ENTRYPOINT_CONTRACTS["improvement-review"].name == "improvement-review"
+    from assurance_product.graphs.factory import entrypoint_contracts
+
+    contracts = entrypoint_contracts()
+    assert "full" in contracts
+    assert "retro" in contracts
+    assert "archive" not in contracts
+    assert "improvement-review" not in contracts
+    assert "improvement-apply" not in contracts
+    assert "achieved" not in contracts
+    assert contracts["full"].name == "full"
+    assert contracts["retro"].name == "retro"
 
 
 def test_python_roots_are_the_product_application_surface() -> None:
+    from assurance_product.graphs.factory import entrypoint_contracts
     from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID
 
-    assert set(ENTRYPOINT_CONTRACTS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(ENTRYPOINT_CONTRACTS) == 13
-    assert SHADOW_VALIDATOR_CLONE_ID not in ENTRYPOINT_CONTRACTS
-    for contract in ENTRYPOINT_CONTRACTS.values():
+    contracts = entrypoint_contracts()
+    assert set(contracts) == set(PRODUCT_ENTRYPOINTS)
+    assert len(contracts) == 7
+    assert SHADOW_VALIDATOR_CLONE_ID not in contracts
+    for contract in contracts.values():
         assert contract.input_schema_digest
         assert contract.output_schema_digest
         assert contract.state_schema_digest

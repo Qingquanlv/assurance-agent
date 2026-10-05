@@ -6,9 +6,9 @@ from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 from agent_runtime_contracts import AgentExecutionContract
 from assurance_quality.contracts.agent import (
     FactBaselineResultV1,
-    FinalizedIssueAnalysisV1,
     InspectionResultV1,
     IssueAnalysisResultV1,
+    IssueAnalysisBoundInputV1,
     IssueTriageResultV1,
     QualitySkillInputV1,
     ReportResultV1,
@@ -19,13 +19,14 @@ from assurance_quality.contracts.attempts import (
     attempt_contract_refs,
 )
 from assurance_quality.contracts.assessment import (
-    AssessmentSkillInputV1,
-    FactBaselineSkillInputV1,
+    FactBaselineBoundInputV1,
     FinalizedFactBaselineV1,
-    FinalizedInspectionV1,
-    FinalizedReportV1,
-    ReportSkillInputV1,
+    InspectBoundInputV1,
+    InspectPublishedV1,
+    ReportBoundInputV1,
+    ReportPublishedV1,
 )
+from assurance_quality.contracts.decisions import IssueAnalysisPublishedV1, IssueTriagePublishedV1
 from assurance_quality.plugin import QualityPlugin
 
 
@@ -47,8 +48,8 @@ def test_quality_owns_five_agent_contracts() -> None:
     resolved = materialize.resources.resolve(
         {
             "coverage_epoch_token": "2",
+            "repair_round_token": "1",
             "reviewed_case": {"change_id": "CH-1", "coverage_epoch": 2},
-            "execution": {"batch_id": "B-1"},
         }
     )
     assert resolved.reads == (
@@ -59,13 +60,14 @@ def test_quality_owns_five_agent_contracts() -> None:
         "qa",
     )
     assert resolved.writes == (
-        "qa/results/inspect/epochs/2/batches/B-1/coverage-gaps.json",
-        "qa/results/inspect/epochs/2/batches/B-1/issue-evidence-manifest.json",
-        "qa/results/inspect/epochs/2/batches/B-1/metrics.json",
-        "qa/results/inspect/epochs/2/batches/B-1/obligation-assessment.json",
-        "qa/results/inspect/epochs/2/batches/B-1/observations.json",
-        "qa/results/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
-        "qa/results/inspect/epochs/2/batches/B-1/trace.json",
+        "qa/results/inspect/assessment-inputs.json",
+        "qa/results/inspect/epochs/2/rounds/1/coverage-gaps.json",
+        "qa/results/inspect/epochs/2/rounds/1/issue-evidence-manifest.json",
+        "qa/results/inspect/epochs/2/rounds/1/metrics.json",
+        "qa/results/inspect/epochs/2/rounds/1/obligation-assessment.json",
+        "qa/results/inspect/epochs/2/rounds/1/observations.json",
+        "qa/results/inspect/epochs/2/rounds/1/trace-sufficiency.json",
+        "qa/results/inspect/epochs/2/rounds/1/trace.json",
     )
     expected = {
         "fact-baseline": ("aa-fact-baseline", "assurance-v1-doc-author", FactBaselineResultV1),
@@ -83,19 +85,23 @@ def test_quality_owns_five_agent_contracts() -> None:
         assert contract.prepare_handler_id == f"assurance.quality.{base}.prepare"
         assert contract.finalize_handler_id == f"assurance.quality.{base}.finalize"
         claims = contract.phase_write_claims
-        assert set(claims.runtime) == set(contract.resources.writes)
+        assert set(claims.runtime) | set(claims.finalize) | set(claims.prepare) == set(
+            contract.resources.writes
+        )
         assert contract.skill_id == skill_id
         assert contract.agent_profile == profile
         expected_input = {
-            "fact-baseline": FactBaselineSkillInputV1,
-            "inspect": AssessmentSkillInputV1,
-            "report": ReportSkillInputV1,
+            "fact-baseline": FactBaselineBoundInputV1,
+            "inspect": InspectBoundInputV1,
+            "issue-analysis": IssueAnalysisBoundInputV1,
+            "report": ReportBoundInputV1,
         }.get(base, QualitySkillInputV1)
         expected_output = {
             "fact-baseline": FinalizedFactBaselineV1,
-            "inspect": FinalizedInspectionV1,
-            "issue-analysis": FinalizedIssueAnalysisV1,
-            "report": FinalizedReportV1,
+            "inspect": InspectPublishedV1,
+            "issue-analysis": IssueAnalysisPublishedV1,
+            "issue-triage": IssueTriagePublishedV1,
+            "report": ReportPublishedV1,
         }.get(base, result_model)
         assert contract.input_model is expected_input
         assert contract.agent_result_model is result_model
@@ -111,5 +117,5 @@ def test_quality_plugin_projects_authenticated_attempt_contracts() -> None:
     contribution = QualityPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     assert refs == contribution.attempt_contracts == QualityPlugin.descriptor().attempt_contracts
     assert all(isinstance(item, AttemptContractRef) for item in refs)
-    assert len(contribution.commit_validators) == 6
+    assert contribution.commit_validators == {}
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())

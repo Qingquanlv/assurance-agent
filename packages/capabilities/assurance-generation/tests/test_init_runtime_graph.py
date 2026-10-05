@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from assurance_generation.graphs.factory import build_generation_graphs
+from assurance_generation.graphs.factory import build_generation_graphs as _build_generation_graphs
 from graph_engine.testing import GraphHarness
 from test_generation_graph_factory import (  # pyright: ignore[reportMissingImports]
     generation_contracts,
 )
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_generation_graphs(*args, **kwargs):
+    return compile_bundle(_build_generation_graphs(*args, **kwargs))
 
 
 @pytest.fixture
@@ -19,5 +25,6 @@ def recording_context():
 
 def test_init_runtime_is_a_one_attempt_graph(recording_context) -> None:
     bundle = build_generation_graphs(recording_context)
-    assert "generation.init-test-runtime" in bundle.init_runtime.nodes
-    assert "generation" not in bundle.init_runtime.nodes
+    assert "init-test-runtime" in bundle.init_runtime.nodes
+    assert "completed" in bundle.init_runtime.nodes
+    assert "generation.init-test-runtime" not in bundle.init_runtime.nodes

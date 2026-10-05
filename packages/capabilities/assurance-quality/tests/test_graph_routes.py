@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-import pytest
 
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_quality.contracts.assessment import InspectionDisposition
-from assurance_quality.contracts.decisions import FailureClassification
-from assurance_quality.graphs.assessment import coverage_named_matches, route_coverage
-from assurance_quality.graphs.factory import build_quality_graphs
-from assurance_quality.graphs.issues import failure_named_matches, route_failure
+from assurance_quality.contracts.decisions import FailureClassification, triage_route
+from assurance_quality.graphs.factory import build_quality_graphs as _build_quality_graphs
 from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
 from graph_engine.testing import GraphHarness
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_quality_graphs(*args, **kwargs):
+    return compile_bundle(_build_quality_graphs(*args, **kwargs))
 
 
 def quality_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
@@ -28,11 +28,10 @@ def quality_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
 
 _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_quality" / "graphs"
 _ROUTE_FILES = {
-    "assessment.py": ("coverage_named_matches", "route_coverage"),
-    "issues.py": ("route_attempt", "failure_named_matches", "route_failure"),
-    "report.py": ("route_report_attempt",),
+    "assessment.py": (),
+    "issues.py": (),
 }
-_EXCLUSIVE_ROUTES = frozenset({"route_coverage", "route_failure", "route_report_attempt"})
+_EXCLUSIVE_ROUTES = frozenset()
 _FORBIDDEN_IMPLEMENTATION = (
     "operations",
     "validators",
@@ -47,15 +46,6 @@ _FOREIGN_GRAPH_OWNERS = (
     "assurance_execution",
     "assurance_healing",
     "assurance_improvement",
-)
-_COVERAGE_OTHERWISE = "failed"
-_FAILURE_OTHERWISE = "failed"
-_INSPECTION_DISPOSITIONS: tuple[InspectionDisposition, ...] = (
-    "satisfied",
-    "coverage_insufficient",
-    "repairable_execution_failure",
-    "needs_human",
-    "blocked",
 )
 
 
@@ -132,82 +122,23 @@ def test_routes_use_select_exclusive_route_without_priority_if_elif() -> None:
                 _assert_no_priority_if(table)
 
 
-@pytest.mark.parametrize(
-    ("builder", "otherwise"),
-    [
-        (coverage_named_matches, _COVERAGE_OTHERWISE),
-        (failure_named_matches, _FAILURE_OTHERWISE),
-    ],
-)
-def test_exclusive_route_zero_and_two_simultaneous_named_matches(
-    builder: Callable[[Mapping[str, object]], dict[str, str | None]], otherwise: str
-) -> None:
-    empty = builder({})
-    assert select_exclusive_route(empty, otherwise=otherwise) == otherwise
-    with pytest.raises(AmbiguousRouteMatch):
-        select_exclusive_route(
-            {"first": otherwise, "second": f"{otherwise}-alt"},
-            otherwise=otherwise,
-        )
-
-
-@pytest.mark.parametrize("disposition", _INSPECTION_DISPOSITIONS)
-def test_known_inspection_dispositions_route_to_themselves(disposition: str) -> None:
-    assert route_coverage({"inspection_outcome": {"disposition": disposition}}) == disposition
-
-
-def test_unknown_inspection_disposition_fails_closed() -> None:
-    first_branch = _INSPECTION_DISPOSITIONS[0]
-    unknown = {"inspection_outcome": {"disposition": "not_a_disposition"}}
-    assert route_coverage(unknown) == _COVERAGE_OTHERWISE
-    assert route_coverage({}) == _COVERAGE_OTHERWISE
-    assert route_coverage(unknown) != first_branch
-    assert coverage_named_matches(unknown)[first_branch] is None
-
-
 def test_known_failure_classifications_do_not_select_healing() -> None:
-    assert route_failure({"classification": "test", "fix_eligible": True}) == "fix-eligible"
-    assert route_failure({"classification": "test-data", "fix_eligible": True}) == "fix-eligible"
-    assert route_failure({"classification": "product_bug"}) == "report-issue"
-    assert route_failure({"classification": "environment_failure"}) == "report-issue"
-    assert route_failure({"classification": "infrastructure_failure"}) == "report-issue"
-    assert "heal" not in route_failure({"classification": "test", "fix_eligible": True})
-    assert "repair" not in route_failure({"classification": "test", "fix_eligible": True})
+    assert triage_route("test", True) == "fix_eligible"
+    assert triage_route("test-data", True) == "fix_eligible"
+    assert triage_route("product_bug", False) == "report_issue"
+    assert triage_route("environment_failure", False) == "report_issue"
+    assert triage_route("infrastructure_failure", False) == "report_issue"
+    assert "heal" not in triage_route("test", True)
+    assert "repair" not in triage_route("test", True)
 
 
 def test_unknown_failure_classification_fails_closed() -> None:
-    first_branch = "environment_failure"
-    assert route_failure({"classification": "unknown"}) == _FAILURE_OTHERWISE
-    assert route_failure({"classification": "pending"}) == _FAILURE_OTHERWISE
-    assert route_failure({"classification": "failed"}) == _FAILURE_OTHERWISE
-    assert route_failure({"classification": "not_a_failure"}) == _FAILURE_OTHERWISE
-    assert route_failure({}) == _FAILURE_OTHERWISE
-    assert route_failure({"classification": "unknown"}) != first_branch
-    assert route_failure({"classification": "test", "fix_eligible": False}) == _FAILURE_OTHERWISE
-    matches = failure_named_matches({"classification": "unknown"})
-    assert all(target is None for target in matches.values())
-
-
-def test_attempt_failure_fails_closed_despite_leftover_successful_outcome() -> None:
-    failure = {
-        "resolution_kind": "rejected",
-        "reason": "kernel rejected",
-        "writes_promoted": False,
-    }
-    assess_recheck = {
-        "coverage_state": "satisfied",
-        "inspection_outcome": {"disposition": "satisfied"},
-        "attempt_failure": failure,
-    }
-    issue_recheck = {
-        "classification": "test",
-        "fix_eligible": True,
-        "attempt_failure": failure,
-    }
-    assert route_coverage(assess_recheck) == _COVERAGE_OTHERWISE
-    assert route_failure(issue_recheck) == _FAILURE_OTHERWISE
-    assert route_coverage(assess_recheck) != "satisfied"
-    assert route_failure(issue_recheck) != "fix-eligible"
+    assert triage_route("unknown", False) == "unclassified"
+    assert triage_route("pending", False) == "unclassified"
+    assert triage_route("failed", False) == "unclassified"
+    assert triage_route("not_a_failure", False) == "unclassified"
+    assert triage_route(None, False) == "unclassified"
+    assert triage_route("test", False) == "unclassified"
 
 
 def test_quality_graphs_do_not_import_healing_graphs_or_implementation() -> None:

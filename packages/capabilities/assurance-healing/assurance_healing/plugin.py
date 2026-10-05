@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
+    CommitValidator,
     EffectPolicy,
     EffectRegistration,
     PluginContribution,
@@ -37,9 +38,6 @@ from assurance_healing.effects.approval import (
 )
 from assurance_healing.operations import handlers as healing_task_handlers
 from assurance_healing.resource_loader import resource_bytes
-from assurance_healing.validators.override import OverrideValidator
-from assurance_healing.validators.repair import RepairCandidateValidator
-from assurance_healing.validators.test_tree import TestTreeValidator
 
 HEALING_SOURCE = ProviderSource(
     distribution="assurance-healing",
@@ -61,15 +59,11 @@ ALLOCATION_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=30.0, backoff_s
 APPROVAL_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=30.0, backoff_seconds=1.0)
 HEAL_APPLY_POLICY = EffectPolicy(max_attempts=5, timeout_seconds=120.0, backoff_seconds=2.0)
 
-HEALING_RESOURCE_FILES: dict[str, str] = {
-    **router.resource_files(),
-    "assurance.healing.policy.test-change-policy.v1": "policy/test-change-policy.v1.json",
-}
+HEALING_RESOURCE_FILES: dict[str, str] = dict(router.resource_files())
 
 _SCHEMA_FILES: dict[str, str] = {
     "assurance.healing.schema.allocation-intent.v2": "schemas/allocation-intent.v2.schema.json",
     "assurance.healing.schema.allocation-receipt.v2": "schemas/allocation-receipt.v2.schema.json",
-    "assurance.healing.schema.coverage-repair.v1": "schemas/coverage-repair.v1.schema.json",
     "assurance.healing.schema.fix-proposal.v1": "schemas/fix-proposal.v1.schema.json",
     "assurance.healing.schema.heal-apply-intent.v2": "schemas/heal-apply-intent.v2.schema.json",
     "assurance.healing.schema.heal-apply-receipt.v2": "schemas/heal-apply-receipt.v2.schema.json",
@@ -88,7 +82,6 @@ _GENERATED_SCHEMAS: dict[str, str] = {
     "assurance.healing.schema.allocation-receipt.v2": (
         "assurance_healing.contracts:HealingAllocationReceiptV2"
     ),
-    "assurance.healing.schema.coverage-repair.v1": "assurance_healing.contracts:CoverageRepairBrief",
     "assurance.healing.schema.fix-proposal.v1": "assurance_healing.contracts:FixProposal",
     "assurance.healing.schema.heal-apply-intent.v2": "assurance_healing.contracts:HealApplyIntentV2",
     "assurance.healing.schema.heal-apply-receipt.v2": "assurance_healing.contracts:HealApplyReceiptV2",
@@ -102,11 +95,7 @@ _GENERATED_SCHEMAS: dict[str, str] = {
     ),
 }
 
-_VALIDATORS = {
-    "assurance.healing.validator.override.v1": OverrideValidator(path_only=True),
-    "assurance.healing.validator.repair-candidate.v1": RepairCandidateValidator(path_only=True),
-    "assurance.healing.validator.test-tree.v1": TestTreeValidator(path_only=True),
-}
+_VALIDATORS: dict[str, CommitValidator] = {}
 
 
 def _effect_registrations() -> tuple[EffectRegistration, ...]:

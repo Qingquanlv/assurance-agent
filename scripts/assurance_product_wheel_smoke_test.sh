@@ -409,12 +409,12 @@ def check_compile_ok(
 
     contracts = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
-    if len(PRODUCT_ENTRYPOINTS) != 13:
-        raise SystemExit(f"13 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
-    if len(contracts) != 27:
-        raise SystemExit(f"27 Agent contracts expected, found {len(contracts)}")
-    if len(contracts) + len(tasks) != 45:
-        raise SystemExit(f"45 Attempt contracts expected, found {len(contracts) + len(tasks)}")
+    if len(PRODUCT_ENTRYPOINTS) != 7:
+        raise SystemExit(f"7 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
+    if len(contracts) != 26:
+        raise SystemExit(f"26 Agent contracts expected, found {len(contracts)}")
+    if len(contracts) + len(tasks) != 47:
+        raise SystemExit(f"47 Attempt contracts expected, found {len(contracts) + len(tasks)}")
     if not callable(runtime_bindings_from_composition):
         raise SystemExit("runtime_bindings_from_composition is missing")
     if not callable(raw_agent_runtime_binding_rows):
@@ -439,11 +439,11 @@ def check_compile_ok(
         )
     )
     rows = raw_agent_runtime_binding_rows(composition)
-    if len(rows) != 27:
-        raise SystemExit(f"27 runtime binding rows expected, found {len(rows)}")
+    if len(rows) != 26:
+        raise SystemExit(f"26 runtime binding rows expected, found {len(rows)}")
     authenticated = authenticate_raw_agent_runtime_bindings(rows, contracts, adapter="opencode")
-    if len(authenticated) != 27:
-        raise SystemExit(f"27 authenticated bindings expected, found {len(authenticated)}")
+    if len(authenticated) != 26:
+        raise SystemExit(f"26 authenticated bindings expected, found {len(authenticated)}")
     binding_source = Path(sys.modules["assurance_product.runtime_bindings"].__file__ or "").read_text(
         encoding="utf-8"
     )

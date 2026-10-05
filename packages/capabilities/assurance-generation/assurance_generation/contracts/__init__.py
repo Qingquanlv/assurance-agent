@@ -32,12 +32,7 @@ from assurance_generation.contracts.plans import (
     PlanCheckDocument,
     PlanResultV1,
 )
-from assurance_generation.contracts.decisions import (
-    GenerationCompletionOutput,
-    GenerationReviewRoundAdvanceOutput,
-    advance_review_round,
-    complete_generation,
-)
+from assurance_generation.contracts.decisions import GenerationCompletionOutput, complete_generation
 from assurance_generation.contracts.reviews import (
     PlanReview,
     PlanReviewAuthoring,
@@ -79,9 +74,7 @@ __all__ = [
     "ReviewDecision",
     "ReviewFinding",
     "ResolveGenerationInputV1",
-    "advance_review_round",
     "attempt_contract_refs",
     "complete_generation",
     "GenerationCompletionOutput",
-    "GenerationReviewRoundAdvanceOutput",
 ]

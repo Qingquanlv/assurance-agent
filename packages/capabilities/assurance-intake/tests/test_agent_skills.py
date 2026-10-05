@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 from copy import deepcopy
 from collections.abc import Mapping
@@ -12,7 +13,7 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
-from agent_runtime_contracts import AgentRunRequest, AgentRunResult
+from agent_runtime_contracts import AgentRunResult, PreparedAgentRun
 from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler, TaskOutcome
@@ -27,7 +28,7 @@ from agent_runtime_contracts.ops import ArtifactListResultV1
 from assurance_intake.feature import AGENT_JOB_CONTRACTS
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.ops.case_review.hooks import case_review_outputs
+from assurance_intake.ops.case_review import op as case_review_op
 from assurance_intake.ops.case_review.hooks.seal import (
     collect_selected_cases,
     expected_case_selection,
@@ -40,8 +41,6 @@ from assurance_intake.contracts.explore import (
     PreparedExploreV1,
 )
 from assurance_intake.domain.obligations import normalize_obligation_drafts
-from assurance_intake.domain import case_delta as case_delta_domain
-from assurance_intake.ops.intake import hooks as intake_hooks
 
 prepare = op_handler("assurance.intake.intake.prepare")
 finalize = op_handler("assurance.intake.intake.finalize")
@@ -160,6 +159,21 @@ async def run_prepare(
             exploration.write_bytes(mismatched_exploration)
     if ".case-review." in handler_module and isinstance(payload, dict):
         payload = _with_case_refs(workspace, payload)
+        matrix = workspace / "qa/results/trace/minimum-coverage-matrix.json"
+        if matrix.is_file():
+            refs = list(cast(list[JSONValue], payload.get("preparation_refs", [])))
+            if not any(
+                isinstance(item, Mapping)
+                and item.get("path") == "qa/results/trace/minimum-coverage-matrix.json"
+                for item in refs
+            ):
+                refs.append(
+                    {
+                        "path": "qa/results/trace/minimum-coverage-matrix.json",
+                        "digest": hashlib.sha256(matrix.read_bytes()).hexdigest(),
+                    }
+                )
+            payload = {**payload, "preparation_refs": refs}
     if ".explore." in handler_module and isinstance(payload, dict):
         payload = {**payload, "candidate_test_families": ["api"]}
     return await execute_task(handler, payload, workspace, binding_data=binding, write_root=write_root)
@@ -346,17 +360,38 @@ def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
     assert "phases.explore.status == done" not in skill
     assert "Emit a knowledge proposal" not in skill
     assert "Never inspect `.qa.yaml` for Explore state" in skill
-    assert (
-        '{"output_files":["qa/.qa.yaml",'
-        '"qa/cases/<trusted-module>/case.yaml",'
-        '"qa/proposal.md",'
-        '"qa/results/trace/minimum-coverage-matrix.json"]}'
-    ) in skill
+    assert "outputs.marker" in skill
+    assert "outputs.proposal" in skill
+    assert "outputs.matrix" in skill
+    assert "outputs.case" in skill
     assert "every written `cases/**/case.yaml`" not in skill
-    assert '"qa/results/trace/minimum-coverage-matrix.json"' in skill
+    assert "outputs.matrix" in skill
     assert "The MRC matrix path is mandatory" in skill
     assert "deterministic finalize step" in skill
     assert "json.dumps(yaml.safe_load" not in skill
+
+
+def test_case_skills_do_not_spell_declared_write_paths() -> None:
+    from agent_runtime_contracts.ops import Dir, Out
+
+    from assurance_intake.ops.case_design import op as case_design
+    from assurance_intake.ops.case_repair import op as case_repair
+    from assurance_intake.ops.case_review import op as case_review
+
+    for op in (case_design, case_repair, case_review):
+        skill = intake_ops.router.resource_text(f"ops/{op.directory}/SKILL.md")
+        for entry in op.agent.writes:
+            if isinstance(entry, Out):
+                assert entry.path not in skill
+                assert f"outputs.{entry.name}" in skill
+            elif isinstance(entry, str):
+                assert entry not in skill
+            elif isinstance(entry, Dir) and entry.name is not None:
+                assert f"outputs.{entry.name}" in skill
+    projection = str(case_design.contract().canonical_projection())
+    assert "marker" not in projection
+    assert case_design.ledger_namespace() == "intake"
+    assert any(item.name == "case" and item.many for item in case_design.ledger_writes())
 
 
 def test_case_design_skill_spells_out_the_typed_trace_value_shape() -> None:
@@ -644,7 +679,7 @@ async def test_case_repair_prepare_allows_covered_repair_for_bound_api_key(tmp_p
     prepared = await run_prepare(cast(TaskHandler, case_repair_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded", prepared.failure
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     repair = cast(Mapping[str, object], business["review_repair"])
     action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
@@ -761,7 +796,7 @@ async def test_intake_prepare_rejects_missing_requirement(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_intake_prepare_embeds_locked_requirement_and_write_rules(tmp_path: Path) -> None:
     prepared = await run_prepare(cast(TaskHandler, prepare), INTAKE_INPUT, BINDING, tmp_path)
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
     assert request.workspace.allowed_outputs == ("qa/.qa.yaml",)
     skill, business = request.instructions
@@ -810,8 +845,11 @@ async def test_explore_prepare_materializes_deterministic_graph_context(tmp_path
 async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: Path) -> None:
     first = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
     second = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
-    request = AgentRunRequest.model_validate(first.output)
-    assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
+    request = PreparedAgentRun.model_validate(first.output).run_request
+    assert (
+        request.canonical_bytes()
+        == PreparedAgentRun.model_validate(second.output).run_request.canonical_bytes()
+    )
     assert request.workspace.allowed_outputs == (
         "qa/.qa.yaml",
         "qa/cases/menus/case.yaml",
@@ -820,6 +858,13 @@ async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: P
     )
     assert not any("**" in path for path in request.workspace.allowed_outputs)
     assert request.workspace.allowed_outputs.count("qa/cases/menus/case.yaml") == 1
+    assert "outputs" not in type(request.workspace).model_fields
+    business = cast(Mapping[str, object], request.instructions[1].json_content)
+    outputs = cast(Mapping[str, object], business["outputs"])
+    assert outputs["marker"] == "qa/.qa.yaml"
+    assert outputs["proposal"] == "qa/proposal.md"
+    assert outputs["matrix"] == "qa/results/trace/minimum-coverage-matrix.json"
+    assert list(cast(tuple[str, ...], outputs["case"])) == ["qa/cases/menus/case.yaml"]
 
 
 @pytest.mark.asyncio
@@ -838,7 +883,7 @@ async def test_case_design_prepare_includes_deterministic_validation_feedback(tm
     )
 
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     notice = request.instructions[1].text_content or ""
     business = cast(Mapping[str, object], request.instructions[2].json_content)
     assert "capability key is not a declared typed leaf" in notice
@@ -859,7 +904,7 @@ async def test_case_repair_prepare_builds_a_deterministic_review_repair_contract
     prepared = await run_prepare(cast(TaskHandler, case_repair_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     assert "Locator-bounded case repair" in (request.instructions[0].text_content or "")
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     repair = cast(Mapping[str, object], business["review_repair"])
@@ -880,7 +925,7 @@ async def test_case_design_prepare_ignores_committed_needs_fix_review(tmp_path: 
     prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded", prepared.failure
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     assert "Capability-owned case-design skill" in (request.instructions[0].text_content or "")
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert "review_repair" not in business
@@ -912,7 +957,11 @@ async def test_case_repair_prepare_requires_a_committed_needs_fix_review(
 
     assert prepared.status == "failed"
     assert prepared.failure is not None
-    assert "case repair requires" in prepared.failure.message
+    assert (
+        "invalid declared input qa/results/review/case-review.json"
+        if review is None
+        else "case repair requires"
+    ) in prepared.failure.message
 
 
 @pytest.mark.asyncio
@@ -960,7 +1009,7 @@ async def test_case_repair_prepare_accepts_exact_document_section_repair_locator
     prepared = await run_prepare(cast(TaskHandler, case_repair_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     repair = cast(Mapping[str, object], business["review_repair"])
     action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
@@ -1044,7 +1093,7 @@ async def test_case_repair_prepare_preserves_mrc_locator_baseline_order(tmp_path
     prepared = await run_prepare(cast(TaskHandler, case_repair_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     repair = cast(Mapping[str, object], business["review_repair"])
     action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
@@ -1062,7 +1111,7 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
     prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     exploration = cast(Mapping[str, object], business["exploration"])
     assert exploration["change_id"] == "CH-DEMO-001"
@@ -1085,7 +1134,7 @@ async def test_case_design_prepare_consumes_sealed_prepared_exploration(tmp_path
     prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded", prepared.failure
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     exploration = cast(Mapping[str, object], business["exploration"])
     coverage = tuple(
@@ -1103,7 +1152,7 @@ async def test_case_design_prepare_reads_plan_bound_exploration_for_standalone_c
     prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert isinstance(business["exploration"], Mapping)
 
@@ -1122,7 +1171,7 @@ async def test_case_design_prepare_rejects_mismatched_exploration_identity(tmp_p
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
-    assert "change_id" in prepared.failure.message
+    assert "digest" in prepared.failure.message
 
 
 @pytest.mark.asyncio
@@ -1130,22 +1179,21 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
     change_root = tmp_path / "qa"
     (change_root / "results" / "trace").mkdir(parents=True)
     (change_root / "cases/menus").mkdir(parents=True)
-    (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
+    (change_root / ".qa.yaml").write_bytes((_FIXTURES / "qa-valid.yaml").read_bytes())
     (change_root / "requirement.md").write_text(
         "# Requirement\n\nP95 must be at most 500 ms.\n", encoding="utf-8"
     )
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
-    (change_root / "results/trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
+    _write_review_matrix(tmp_path, missing=[])
     (change_root / "requirement.md").write_text("# Requirement\n", encoding="utf-8")
-    (change_root / "cases/menus/case.yaml").write_text(
-        "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
-        encoding="utf-8",
+    (change_root / "cases/menus/case.yaml").write_bytes(
+        (_FIXTURES / "case-authoring-valid.yaml").read_bytes()
     )
 
     prepared = await run_prepare(cast(TaskHandler, case_review_prepare), CASE_REVIEW_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert business["case_delta_paths"] == ("qa/cases/menus/case.yaml",)
     assert business["review_input_paths"] == (
@@ -1162,15 +1210,18 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
 async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
     tmp_path: Path, tampered_path: str | None
 ) -> None:
-    from assurance_intake.graphs.calls import publish_case_design, select_case_review
+    from assurance_intake.domain.case_delta import refresh_case_attempt_input
 
     change = "qa"
+    _write_review_matrix(tmp_path, missing=[])
     content = {
-        ".qa.yaml": "change_id: CH-DEMO-001\n",
+        ".qa.yaml": (_FIXTURES / "qa-valid.yaml").read_text(encoding="utf-8"),
         "requirement.md": "# Owner requirement\n",
         "proposal.md": "# Proposal\n",
-        "results/trace/minimum-coverage-matrix.json": "[]\n",
-        "cases/menus/case.yaml": "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
+        "results/trace/minimum-coverage-matrix.json": (
+            tmp_path / "qa/results/trace/minimum-coverage-matrix.json"
+        ).read_text(encoding="utf-8"),
+        "cases/menus/case.yaml": (_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"),
     }
     for relative, text in content.items():
         path = tmp_path / change / relative
@@ -1198,33 +1249,39 @@ async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
     }
     original_refs = deepcopy(state["preparation_refs"])
     # Case Design legitimately updates metadata inside its committed write set.
-    (tmp_path / change / ".qa.yaml").write_text(content[".qa.yaml"] + "selected_test_families: [api]\n")
-    committed_refs = [ref(relative) for relative in content if relative != "requirement.md"]
-    update = publish_case_design(state, {"artifacts": committed_refs}, object())
-    state.update(update)
-    assert update["case_delta_paths"] == ["qa/cases/menus/case.yaml"]
+    (tmp_path / change / ".qa.yaml").write_text(content[".qa.yaml"] + "# committed edit\n")
+    state["marker_ref"] = ref(".qa.yaml")
+    state["proposal_ref"] = ref("proposal.md")
+    state["matrix_ref"] = ref("results/trace/minimum-coverage-matrix.json")
+    state["case_refs"] = [ref("cases/menus/case.yaml")]
+    refreshed = refresh_case_attempt_input(state)
+    assert isinstance(refreshed, dict)
+    allowed = refreshed.pop("allowed_artifact_paths", None)
+    if allowed is not None:
+        refreshed["artifact_paths"] = allowed
+    assert refreshed["case_delta_paths"] == ["qa/cases/menus/case.yaml"]
     assert original_refs != [ref(".qa.yaml"), ref("requirement.md")]
+    assert refreshed["preparation_refs"] == [
+        ref(relative) for relative in sorted(content) if not relative.endswith("/case.yaml")
+    ]
     if tampered_path is not None:
         (tmp_path / change / tampered_path).write_text("uncommitted drift\n")
 
     prepared = await run_prepare(
         cast(TaskHandler, case_review_prepare),
-        select_case_review(state).model_dump(mode="json"),
+        cast(JSONValue, refreshed),
         BINDING,
         tmp_path,
     )
     if tampered_path is None:
         assert prepared.status == "succeeded", prepared.failure
-        assert state["preparation_refs"] == [
+        assert refreshed["preparation_refs"] == [
             ref(relative) for relative in sorted(content) if not relative.endswith("/case.yaml")
         ]
     else:
         assert prepared.status == "failed"
         assert prepared.failure.kind == "invalid_input"
-        assert (
-            f"evidence digest changed after it was committed: {change}/{tampered_path}"
-            in prepared.failure.message
-        )
+        assert f"artifact digest does not match: {change}/{tampered_path}" in prepared.failure.message
 
 
 @pytest.mark.asyncio
@@ -1237,7 +1294,7 @@ async def test_case_review_prepare_rejects_missing_locked_input(tmp_path: Path) 
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
-    assert "missing case-review input" in prepared.failure.message
+    assert "invalid declared input qa/.qa.yaml" in prepared.failure.message
 
 
 @pytest.mark.asyncio
@@ -1262,7 +1319,7 @@ async def test_case_review_prepare_rejects_intermediate_directory_symlink(tmp_pa
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
-    assert "must not contain a symlink" in prepared.failure.message
+    assert "artifact path contains a symlink" in prepared.failure.message
 
 
 @pytest.mark.asyncio
@@ -1273,13 +1330,13 @@ async def test_case_review_finalize_accepts_mrc_key_that_is_not_a_capability_lea
     outcome = await _finalize_review_with_written_cases(
         tmp_path, _case_review_document(missing=["entities.fake"])
     )
-    assert outcome.status == "succeeded"
+    assert outcome.status == "succeeded", outcome.failure
 
 
 @pytest.mark.asyncio
 async def test_prepare_instruction_order_is_skill_then_business(tmp_path: Path) -> None:
     prepared = await run_prepare(cast(TaskHandler, case_design_prepare), CASE_INPUT, BINDING, tmp_path)
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     assert len(request.instructions) == 2
     skill, business = request.instructions
     assert skill.media_type == "text/plain"
@@ -1315,7 +1372,14 @@ async def test_case_author_and_reviewer_observe_same_source_snapshot(tmp_path: P
     ):
         path = change / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("Read app/router.py\n")
+        if relative == ".qa.yaml":
+            path.write_bytes((_FIXTURES / "qa-valid.yaml").read_bytes())
+        elif relative == "cases/menus/case.yaml":
+            path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
+        elif relative == "results/trace/minimum-coverage-matrix.json":
+            _write_review_matrix(tmp_path, missing=[])
+        else:
+            path.write_text("Read app/router.py\n")
     source = tmp_path / "app/router.py"
     source.parent.mkdir()
     source.write_text("def get_items(): pass\n")
@@ -1323,10 +1387,12 @@ async def test_case_author_and_reviewer_observe_same_source_snapshot(tmp_path: P
     reviewer = await run_prepare(cast(TaskHandler, case_review_prepare), CASE_REVIEW_INPUT, BINDING, tmp_path)
     assert author.status == reviewer.status == "succeeded"
     author_input = cast(
-        Mapping[str, Any], AgentRunRequest.model_validate(author.output).instructions[1].json_content
+        Mapping[str, Any],
+        PreparedAgentRun.model_validate(author.output).run_request.instructions[1].json_content,
     )
     review_input = cast(
-        Mapping[str, Any], AgentRunRequest.model_validate(reviewer.output).instructions[1].json_content
+        Mapping[str, Any],
+        PreparedAgentRun.model_validate(reviewer.output).run_request.instructions[1].json_content,
     )
     assert author_input["planning_facts"] == review_input["planning_facts"]
     assert any(
@@ -1477,6 +1543,16 @@ def _install_and_write_case_review_seal(
     review_round: int = 0,
     change_id: str = "CH-DEMO-001",
 ) -> list[dict[str, str]]:
+    marker = project / "qa/.qa.yaml"
+    if not marker.exists():
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_bytes((_FIXTURES / "qa-valid.yaml").read_bytes())
+    proposal = project / "qa/proposal.md"
+    if not proposal.exists():
+        proposal.write_text("# Proposal\n", encoding="utf-8")
+    requirement = project / "qa/requirement.md"
+    if not requirement.exists():
+        requirement.write_text("# Requirement\n", encoding="utf-8")
     plan, plan_ref = install_plan(
         project,
         change_id,
@@ -1548,6 +1624,13 @@ async def _finalize_files(
     plan = None
     plan_ref = None
     handler_module = _handler_id(handler)
+    if handler_module.endswith(".intake.finalize"):
+        from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
+
+        snapshot = (write_root or workspace) / RUN_SPEC_SNAPSHOT_PATH
+        if not snapshot.exists():
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            snapshot.write_text("candidate_test_families: [api]\n", encoding="utf-8")
     if _is_plan_bound(handler_module):
         selected = tuple(cast(Any, selected_test_families or ["api"]))
         plan, plan_ref = install_plan(
@@ -1617,6 +1700,11 @@ async def _finalize_review_with_written_cases(
     staged_review: bytes | None = None,
 ) -> TaskOutcome:
     _, write_root = dual_roots(workspace)
+    marker = workspace / "qa/.qa.yaml"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_bytes((_FIXTURES / "qa-valid.yaml").read_bytes())
+    (workspace / "qa/requirement.md").write_text("# Requirement\n", encoding="utf-8")
+    (workspace / "qa/proposal.md").write_text("# Proposal\n", encoding="utf-8")
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     case_relative = _write_case_delta(workspace, authored)
     matrix_relative = "qa/results/trace/minimum-coverage-matrix.json"
@@ -1650,7 +1738,7 @@ async def _finalize_review_with_written_cases(
         cast(TaskHandler, case_review_finalize),
         document,
         workspace,
-        list(case_review_outputs("CH-DEMO-001")),
+        list(case_review_op.agent.files()),
         change_id="CH-DEMO-001",
         write_root=write_root,
         case_delta_paths=[case_relative],
@@ -1658,6 +1746,33 @@ async def _finalize_review_with_written_cases(
         preparation_refs=bound_preparation,
     )
     return executed.outcome
+
+
+@pytest.mark.asyncio
+async def test_case_review_rejects_project_case_change_after_handle_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_review_matrix(tmp_path, missing=[])
+    router_module = importlib.import_module("agent_runtime_contracts.ops.router")
+    original_read = router_module.read_workspace_file
+    changed = False
+
+    def mutate_on_typed_capture(workspace: Path, relative: str) -> bytes:
+        nonlocal changed
+        if workspace == tmp_path and relative == "qa/cases/menus/case.yaml" and not changed:
+            path = workspace / relative
+            current = original_read(workspace, relative)
+            replacement = current.replace(b"TC_MENU_001", b"TC_MENU_999")
+            assert replacement != current
+            path.write_bytes(replacement)
+            changed = True
+        return original_read(workspace, relative)
+
+    monkeypatch.setattr(router_module, "read_workspace_file", mutate_on_typed_capture)
+    outcome = await _finalize_review_with_written_cases(tmp_path, _case_review_document(missing=[]))
+    assert changed
+    assert outcome.failure is not None and outcome.failure.kind == "invalid_input"
+    assert "changed after authentication" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -1674,7 +1789,7 @@ async def test_case_review_rejects_invalid_or_divergent_staged_document(
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_output"
-    assert "staged case review" in outcome.failure.message
+    assert "case review" in outcome.failure.message or "case-review.json" in outcome.failure.message
     _, stage = dual_roots(tmp_path)
     assert (stage / "qa/results/review/case-review.json").read_bytes() == staged_review
 
@@ -1742,23 +1857,26 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
         authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
         outputs = _write_case_design_outputs(stage, authored)
         handler = cast(TaskHandler, case_design_finalize)
-        handler_globals = vars(case_delta_domain)
     else:
         (stage / "qa").mkdir(parents=True, exist_ok=True)
         (stage / "qa/.qa.yaml").write_text("change_id: CH-DEMO-001\n")
         (stage / "qa/requirement.md").write_text("# Requirement\n")
         outputs = ["qa/.qa.yaml"]
         handler = cast(TaskHandler, finalize)
-        handler_globals = vars(intake_hooks)
-    read = handler_globals["read_regular_bytes"]
+    router_module = importlib.import_module("agent_runtime_contracts.ops.router")
+    read = router_module.read_workspace_file
+    marker_reads = 0
 
-    def replace_before_validation(workspace: Path, relative: str, *, kind: str) -> bytes:
+    def replace_before_recheck(workspace: Path, relative: str) -> bytes:
+        nonlocal marker_reads
         if workspace == stage and relative == "qa/.qa.yaml":
-            path = workspace / relative
-            path.write_bytes(path.read_bytes() + b"# concurrent change\n")
-        return read(workspace, relative, kind=kind)
+            marker_reads += 1
+            if marker_reads == 2:
+                path = workspace / relative
+                path.write_bytes(path.read_bytes() + b"# concurrent change\n")
+        return read(workspace, relative)
 
-    monkeypatch.setitem(handler_globals, "read_regular_bytes", replace_before_validation)
+    monkeypatch.setattr(router_module, "read_workspace_file", replace_before_recheck)
     result = await _finalize_files(
         handler,
         cast(JSONValue, {"output_files": outputs}),
@@ -1769,10 +1887,7 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
         write_root=stage,
     )
     assert result.status == "failed"
-    if phase == "case-design":
-        assert "qa/.qa.yaml changed" in result.failure.message
-    else:
-        assert "qa/.qa.yaml changed" in result.failure.message
+    assert "staged output changed during finalization: qa/.qa.yaml" in result.failure.message
 
 
 def _write_case_design_outputs(workspace: Path, document: object) -> list[str]:
@@ -1855,7 +1970,7 @@ def _write_fixable_case_review(
 async def _prepared_review_repair(workspace: Path) -> Mapping[str, object]:
     prepared = await run_prepare(cast(TaskHandler, case_repair_prepare), CASE_INPUT, BINDING, workspace)
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     dumped = request.model_dump(mode="json")
     instructions = cast(list[dict[str, object]], dumped["instructions"])
     business = cast(dict[str, object], instructions[1]["json_content"])
@@ -2128,6 +2243,8 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
     official = (write_root / _EXPLORATION).read_bytes()
     assert executed.output == {
         "artifacts": [
+            {"path": _CONTEXT, "digest": hashlib.sha256(files[_CONTEXT]).hexdigest()},
+            {"path": _EXPLORATION_DRAFT, "digest": hashlib.sha256(files[_EXPLORATION_DRAFT]).hexdigest()},
             {"path": _EXPLORATION, "digest": hashlib.sha256(official).hexdigest()},
             {"path": _INVENTORY, "digest": hashlib.sha256(files[_INVENTORY]).hexdigest()},
         ]
@@ -2238,6 +2355,36 @@ async def test_explore_finalize_accepts_observation_goals_with_status(tmp_path: 
         observation = requirement["observations"][0]
         assert observation["predicate"] == "status_code_eq"
         assert observation["expected"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage_first", [False, True])
+async def test_explore_quote_authenticates_captured_source(tmp_path: Path, stage_first: bool) -> None:
+    project, write_root = dual_roots(tmp_path)
+    requirement_path = "qa/requirement.md"
+    snapshot_path = "qa/results/intake/sources/run-spec.effective.yaml"
+    quote = "Create a menu." if stage_first else "Create an item."
+    advisory = _advisory_with_source_evidence()
+    advisory["minimum_required_coverage"][0]["basis_quotes"] = [
+        {"source_id": "requirement", "quote": quote, "context_quote": None}
+    ]
+    _stage_explore_outputs(write_root, advisory=advisory)
+    for relative, data in (
+        (requirement_path, b"Create an item."),
+        (snapshot_path, b"candidate_test_families: [api]\n"),
+    ):
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    if stage_first:
+        staged_requirement = write_root / requirement_path
+        staged_requirement.write_text(quote, encoding="utf-8")
+    outcome = await _finalize_explore(project, write_root)
+    assert outcome.status == "succeeded", outcome.failure
+    official = json.loads((write_root / _EXPLORATION).read_bytes())
+    basis = official["minimum_required_coverage"][0]["expected_basis_refs"][0]
+    assert basis["source_status"] == "authenticated"
+    assert basis["source"]["artifact"]["digest"] == hashlib.sha256(quote.encode()).hexdigest()
 
 
 @pytest.mark.asyncio
@@ -2443,7 +2590,7 @@ async def test_explore_finalize_requires_the_prepared_context_in_staging(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path) -> None:
+async def test_intake_finalize_rejects_extra_file_even_under_locked_prefix(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     relative = "qa/cases/system/dept/case.yaml"
     payload = b"# RET-dept-management\n\nCover department CRUD.\n"
@@ -2471,14 +2618,9 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
         write_root=write_root,
         change_id="CH-DEMO-001",
     )
-    assert executed.status == "succeeded"
-    assert executed.output == {
-        "artifacts": [
-            {"path": "qa/.qa.yaml", "digest": hashlib.sha256(marker).hexdigest()},
-            {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
-            {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
-        ]
-    }
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "extra=['qa/cases/system/dept/case.yaml']" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -2506,7 +2648,7 @@ async def test_intake_finalize_rejects_file_outside_locked_prefix(tmp_path: Path
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-    assert "undeclared" in executed.failure.message
+    assert "extra=['qa/notes/outside.md']" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -2533,6 +2675,12 @@ async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
         "artifacts": [
             {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
             {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
+            {
+                "path": "qa/results/intake/sources/run-spec.effective.yaml",
+                "digest": hashlib.sha256(
+                    (write_root / "qa/results/intake/sources/run-spec.effective.yaml").read_bytes()
+                ).hexdigest(),
+            },
         ]
     }
     AGENT_JOB_CONTRACTS["intake"].output_model.model_validate(executed.output)
@@ -2547,12 +2695,14 @@ async def test_intake_finalize_rejects_stale_canonical_file_when_candidate_is_mi
     stale = project / relative
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text("stale canonical content\n", encoding="utf-8")
+    (write_root / "qa").mkdir(parents=True, exist_ok=True)
+    (write_root / "qa/.qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
 
     executed = await _finalize_files(
         cast(TaskHandler, finalize),
-        {"output_files": [relative]},
+        {"output_files": ["qa/.qa.yaml"]},
         project,
-        [relative],
+        ["qa/.qa.yaml", relative],
         write_root=write_root,
     )
 
@@ -3255,7 +3405,7 @@ async def test_case_repair_finalize_rejects_review_receipt_outside_frozen_output
 
     assert executed.status == "failed"
     assert executed.failure is not None
-    assert "frozen case-design outputs" in executed.failure.message
+    assert "extra=['qa/results/repair-notes.txt']" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -3292,7 +3442,7 @@ async def test_case_repair_finalize_rejects_non_regular_staged_review_output(
 
     assert executed.status == "failed"
     assert executed.failure is not None
-    assert "staged a non-target output" in executed.failure.message
+    assert "not a regular single-link file" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -3687,7 +3837,7 @@ async def test_case_design_finalize_requires_every_locked_case_yaml(
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-    assert "case_delta_paths" in executed.failure.message
+    assert "missing=['qa/cases/menus/case.yaml']" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -3741,6 +3891,8 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
     project, write_root = dual_roots(tmp_path)
     _write_review_matrix(project, missing=[])
     change_root = project / "qa"
+    (change_root / ".qa.yaml").write_bytes((_FIXTURES / "qa-valid.yaml").read_bytes())
+    (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     requirement = change_root / "requirement.md"
     requirement.write_text("# Requirement\n", encoding="utf-8")
     case_path = change_root / "cases/menus/case.yaml"
@@ -3814,6 +3966,8 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
     project, write_root = dual_roots(tmp_path)
     _write_review_matrix(project, missing=[])
     change_root = project / "qa"
+    (change_root / ".qa.yaml").write_bytes((_FIXTURES / "qa-valid.yaml").read_bytes())
+    (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     requirement = change_root / "requirement.md"
     requirement.write_text("# Requirement\n", encoding="utf-8")
     case_path = change_root / "cases/menus/case.yaml"
@@ -3966,14 +4120,14 @@ async def test_case_review_finalize_preserves_raw_review_bytes(
     )
     before = {
         relative: (write_root / relative).read_bytes()
-        for relative in case_review_outputs("CH-DEMO-001")
+        for relative in case_review_op.agent.files()
         if relative != "qa/results/review/case-review-summary.md"
     }
     executed = await _finalize_files(
         cast(TaskHandler, case_review_finalize),
         review_document,
         project,
-        list(case_review_outputs("CH-DEMO-001")),
+        list(case_review_op.agent.files()),
         change_id="CH-DEMO-001",
         case_delta_paths=[case_relative],
         preparation_refs=bound_preparation,
@@ -4036,7 +4190,7 @@ async def test_case_review_finalize_generates_host_seals(
             cast(TaskHandler, case_review_finalize),
             review_document,
             project,
-            list(case_review_outputs("CH-DEMO-001")),
+            list(case_review_op.agent.files()),
             change_id="CH-DEMO-001",
             case_delta_paths=[case_relative],
             preparation_refs=bound_preparation,
@@ -4088,20 +4242,13 @@ async def test_case_review_finalize_rejects_auto_fix_outside_case_design_write_s
         }
     )
 
-    executed = await _finalize_files(
-        cast(TaskHandler, case_review_finalize),
-        cast(JSONValue, document),
-        tmp_path,
-        [],
-        change_id="CH-DEMO-001",
-        case_delta_paths=["qa/cases/menus/case.yaml"],
-    )
+    outcome = await _finalize_review_with_written_cases(tmp_path, cast(JSONValue, document))
 
-    assert executed.status == "failed"
-    assert executed.failure is not None
-    assert executed.failure.kind == "invalid_output"
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
     assert "automatic repair artifact is outside the locked case-design write set" in (
-        executed.failure.message
+        outcome.failure.message
     )
 
 
@@ -4116,18 +4263,11 @@ async def test_case_review_finalize_rejects_auto_fix_without_an_exact_field_loca
     document = json.loads((tmp_path / "qa/results/review/case-review.json").read_text(encoding="utf-8"))
     document["findings"][0]["locator"]["key"] = None
 
-    executed = await _finalize_files(
-        cast(TaskHandler, case_review_finalize),
-        cast(JSONValue, document),
-        tmp_path,
-        [],
-        change_id="CH-DEMO-001",
-        case_delta_paths=["qa/cases/menus/case.yaml"],
-    )
+    outcome = await _finalize_review_with_written_cases(tmp_path, cast(JSONValue, document))
 
-    assert executed.status == "failed"
-    assert executed.failure is not None
-    assert "exact locator key" in executed.failure.message
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "exact locator key" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -4269,7 +4409,7 @@ async def test_case_design_prepare_embeds_the_frozen_inventory(tmp_path: Path) -
         impact_rows=(_case_impact_row(),),
     )
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     inventory = cast(Mapping[str, object], business["impact_inventory"])
     rows = cast(list[Mapping[str, object]], inventory["rows"])
@@ -4288,7 +4428,7 @@ async def test_case_design_prepare_infers_case_paths_from_inventory(tmp_path: Pa
         impact_rows=(_case_impact_row(case_module="system/dept"),),
     )
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert business["case_delta_paths"] == ("qa/cases/system/dept/case.yaml",)
     assert request.workspace.allowed_outputs == (
@@ -4313,7 +4453,7 @@ async def test_case_design_prepare_locks_every_inferred_module(tmp_path: Path) -
         ),
     )
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     business = cast(Mapping[str, object], request.instructions[1].json_content)
     assert business["case_delta_paths"] == (
         "qa/cases/system/dept/case.yaml",
@@ -4337,7 +4477,7 @@ async def test_case_design_prepare_derives_module_when_explore_omits_case_module
         impact_rows=(_case_impact_row(),),
     )
     assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     assert "qa/cases/items/case.yaml" in request.workspace.allowed_outputs
 
 
@@ -4382,7 +4522,7 @@ async def test_case_design_finalize_locks_inferred_case_module(tmp_path: Path) -
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
-        case_delta_paths=[],
+        case_delta_paths=[inferred],
         impact_rows=(_case_impact_row(case_module="system/dept"),),
     )
     assert executed.status == "succeeded", executed.failure

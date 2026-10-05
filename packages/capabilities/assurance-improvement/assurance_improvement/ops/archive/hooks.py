@@ -4,20 +4,18 @@ from __future__ import annotations
 
 from agent_runtime_contracts.ops import FinalizeContext, InputError, OutputError
 
-from assurance_improvement.contracts.agent import ArchiveResultV1, ImprovementSkillInputV1
+from assurance_improvement.contracts.agent import (
+    ArchivePublishedV1,
+    ArchiveResultV1,
+    ImprovementSkillInputV1,
+)
 from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
 from assurance_quality.contracts.report import QualityReport
 
 
 def after(
     ctx: FinalizeContext, business: ImprovementSkillInputV1, result: ArchiveResultV1
-) -> ArchiveResultV1:
-    if result.change_id != business.change_id:
-        raise OutputError("archive identity does not match the locked change")
-    if result.invocation_id != business.invocation_id:
-        raise OutputError("archive invocation is not locked")
-    if result.archive_digest != business.archive_digest:
-        raise OutputError("archive digest is not closed against the locked tree")
+) -> ArchivePublishedV1:
     report_raw = ctx.prepared.get("quality_report")
     if report_raw is None:
         raise InputError("archive finalize requires the authenticated quality report")
@@ -38,4 +36,4 @@ def after(
         raise OutputError("archive artifact path is outside the locked manifest")
     if result.issue_risk not in {None, "clear"} and result.archive_status != "archived_with_warnings":
         raise OutputError("non-clear issue risk requires archived_with_warnings")
-    return result
+    return ArchivePublishedV1(archive_status=result.archive_status, result=result)

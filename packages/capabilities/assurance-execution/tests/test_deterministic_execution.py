@@ -5,8 +5,14 @@ from pydantic import ValidationError
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import FamilyExecutionOutcomeV1
-from assurance_execution.graphs.factory import build_execution_graphs
+from assurance_execution.graphs.factory import build_execution_graphs as _build_execution_graphs
 from graph_engine.testing import GraphHarness
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_execution_graphs(*args, **kwargs):
+    return compile_bundle(_build_execution_graphs(*args, **kwargs))
 
 
 def test_execution_is_a_non_retrying_task_not_an_agent() -> None:

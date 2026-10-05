@@ -23,6 +23,17 @@ from graph_engine.plugin_api import FrozenModel
 from assurance_intake.contracts import NonEmptyStr
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
+FailureClassification = Literal[
+    "environment_failure",
+    "failed",
+    "infrastructure_failure",
+    "pending",
+    "product_bug",
+    "test",
+    "test-data",
+    "unknown",
+]
+
 ObservationKind = Literal[
     "test_failure",
     "warning",
@@ -216,10 +227,6 @@ class IssueReconcileStatusDocument(RootModel[IssueReconcileStatusV2]):
     pass
 
 
-def load_issue_reconcile_status_document(raw: object) -> IssueReconcileStatusV2:
-    return IssueReconcileStatusDocument.model_validate(raw).root
-
-
 class ProvisionalAssessment(BaseModel):
     model_config = _FROZEN
 
@@ -409,6 +416,7 @@ class ReconcileIssuesInputV1(FrozenModel):
     observations_ref: EvidenceArtifactRefV1 | None = None
     analyzer: str = "assurance.quality"
     prompt_version: str = "1"
+    issue_analysis: dict[str, object] | None = None
 
 
 class ReconcileIssuesResultV1(FrozenModel):
@@ -423,6 +431,9 @@ class ReconcileIssuesResultV1(FrozenModel):
     project_sync_status: ProjectSyncStatus = "completed"
     batches: tuple[NonEmptyStr, ...]
     issue_snapshot_ref: EvidenceArtifactRefV1
+    classification: FailureClassification = "unknown"
+    fix_eligible: bool = False
+    evidence_refs: tuple[EvidenceArtifactRefV1, ...] = ()
 
 
 class ProblemProjection(BaseModel):

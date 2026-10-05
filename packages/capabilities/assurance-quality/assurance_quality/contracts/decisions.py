@@ -9,19 +9,16 @@ from assurance_quality.contracts.assessment import (
     InspectionDisposition,
 )
 from assurance_quality.contracts.coverage import COVERAGE_STATES, CoverageState
-from assurance_quality.contracts.agent import IssueAnalysisResultV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_quality.contracts.agent import (
+    FinalizedIssueAnalysisV1,
+    IssueAnalysisResultV1,
+    IssueTriageResultV1,
+)
+from assurance_quality.contracts.issues import FailureClassification
+from graph_engine.plugin_api import FrozenModel
 from assurance_quality.contracts.obligations import ObligationGateDecision
 
-FailureClassification = Literal[
-    "environment_failure",
-    "failed",
-    "infrastructure_failure",
-    "pending",
-    "product_bug",
-    "test",
-    "test-data",
-    "unknown",
-]
 FIX_ELIGIBLE_CLASSIFICATIONS: frozenset[str] = frozenset({"test", "test-data"})
 
 
@@ -44,6 +41,67 @@ class CoverageAssessmentPublicV1(BaseModel):
     coverage_state: CoverageState
     rounds_budget: int
     rounds_used: int
+
+
+IssueRoute = Literal["fix_eligible", "report_issue", "unclassified"]
+AnalysisOutcome = Literal["fix_eligible", "report_issue", "unclassified", "failed"]
+
+
+class IssueTriagePublishedV1(FrozenModel):
+    """Triage output the flow routes and exports. ``advice`` keeps the agent result."""
+
+    route: IssueRoute
+    classification: FailureClassification
+    fix_eligible: bool
+    evidence_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    advice: IssueTriageResultV1 | None = None
+
+
+class IssueAnalysisPublishedV1(FrozenModel):
+    """Analysis output. ``issue_analysis`` stays the finalized document retro reads."""
+
+    route: AnalysisOutcome
+    classification: FailureClassification
+    fix_eligible: bool
+    evidence_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    issue_analysis: FinalizedIssueAnalysisV1 | None = None
+    issue_analysis_ref: EvidenceArtifactRefV1 | None = None
+
+
+_REPORT_CLASSIFICATIONS = frozenset({"product_bug", "environment_failure", "infrastructure_failure"})
+
+
+def triage_route(classification: object, fix_eligible: bool) -> IssueRoute:
+    """The old issue-graph table: eligible test debt, known external failures, or neither."""
+    if classification in FIX_ELIGIBLE_CLASSIFICATIONS and fix_eligible:
+        return "fix_eligible"
+    if classification in _REPORT_CLASSIFICATIONS:
+        return "report_issue"
+    return "unclassified"
+
+
+def analysis_route(
+    result: IssueAnalysisResultV1,
+    *,
+    inspection_disposition: str | None = None,
+) -> AnalysisOutcome:
+    """Tail decision when a disposition is supplied; otherwise the graph table.
+
+    The healing budget is a product decision. An exhausted budget still leaves
+    this route at ``fix_eligible``; the product sends that entry to needs_human.
+    """
+    summary = classify_issue_candidates(result)
+    if inspection_disposition is None:
+        return triage_route(summary.classification, summary.fix_eligible)
+    if result.status == "failed":
+        return "failed"
+    if summary.classification == "unknown":
+        return "unclassified"
+    if summary.fix_eligible:
+        if inspection_disposition != "analysis_required":
+            return "report_issue"
+        return "fix_eligible"
+    return "report_issue"
 
 
 def classify_issue_candidates(result: IssueAnalysisResultV1) -> IssueAnalysisPublicV1:

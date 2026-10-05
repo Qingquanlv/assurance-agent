@@ -1,8 +1,8 @@
 """Read one committed obligation assessment.
 
-The caller names the change, plan digest, coverage epoch, and batch. This
-module opens only those paths. It does not scan sibling batches or pick the
-newest file.
+The caller names the change, plan digest, coverage epoch, and healing round.
+This module opens only those paths. It does not scan sibling rounds or pick
+the newest file.
 """
 
 from __future__ import annotations
@@ -25,18 +25,18 @@ def read_committed_assessment(
     change_id: str,
     plan_digest: str,
     coverage_epoch: str,
-    batch_id: str,
+    repair_round: str,
 ) -> dict[str, object]:
     identity = {
         "change_id": change_id,
         "plan_digest": plan_digest,
         "coverage_epoch": coverage_epoch,
-        "batch_id": batch_id,
+        "repair_round": repair_round,
     }
     plan_relative = f"qa/results/plan/{plan_digest}/resolved-assurance-plan.json"
-    batch_relative = f"qa/results/inspect/epochs/{coverage_epoch}/batches/{batch_id}"
-    manifest_relative = f"{batch_relative}/issue-evidence-manifest.json"
-    assessment_relative = f"{batch_relative}/{_ASSESSMENT_NAME}"
+    round_relative = f"qa/results/inspect/epochs/{coverage_epoch}/rounds/{repair_round}"
+    manifest_relative = f"{round_relative}/issue-evidence-manifest.json"
+    assessment_relative = f"{round_relative}/{_ASSESSMENT_NAME}"
     plan_path = project_dir / plan_relative
     manifest_path = project_dir / manifest_relative
     assessment_path = project_dir / assessment_relative
@@ -48,7 +48,7 @@ def read_committed_assessment(
     manifest = _read_json(manifest_path)
     if not isinstance(manifest, dict):
         return {**identity, "assessment": None, "reason": "missing_ref"}
-    if manifest.get("change_id") != change_id or manifest.get("batch_id") != batch_id:
+    if manifest.get("change_id") != change_id:
         return {**identity, "assessment": None, "reason": "missing_ref"}
     entries = manifest.get("entries")
     if not isinstance(entries, list):

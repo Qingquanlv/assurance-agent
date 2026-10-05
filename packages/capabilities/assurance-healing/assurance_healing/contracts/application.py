@@ -115,6 +115,9 @@ class TestRepairResultV1(FrozenModel):
         return _canonical_paths(value, required=True)
 
 
+VERIFIED_REPAIR_PATH = "qa/results/healing/verified-repair.json"
+
+
 class VerifiedTestRepairV1(FrozenModel):
     change_id: str = Field(min_length=1)
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")

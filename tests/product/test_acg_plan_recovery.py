@@ -41,6 +41,7 @@ from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 
 from assurance_intake.feature import TASK_ATTEMPT_CONTRACTS
+from assurance_intake.validators import SEALED_ARTIFACT_REFS_VALIDATOR_ID, SealedArtifactRefsValidator
 from tests.acg_plan_fixture import DEFAULT_POLICY, install_plan
 
 
@@ -141,6 +142,7 @@ def _plan_scenario(tmp_path: Path) -> _PlanScenario:
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision=_REVISION,
+        validators={SEALED_ARTIFACT_REFS_VALIDATOR_ID: SealedArtifactRefsValidator()},
     )
     return _PlanScenario(
         kernel=kernel,

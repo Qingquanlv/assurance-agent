@@ -15,7 +15,6 @@ from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import RetroAnalysisResultV3
 from assurance_improvement.contracts.delivery import artifact_digest
-from assurance_improvement.contracts.improvements import ImprovementKind, ImprovementState
 from assurance_improvement.contracts.retro import (
     EvalEvidenceSlice,
     IssueEvidenceSlice,
@@ -29,9 +28,6 @@ from assurance_improvement.ops.retro_issue_analysis import (
 )
 from assurance_improvement.ops.retro_workflow_analysis import prepare as retro_workflow_prepare
 from assurance_improvement.operations.retro import (
-    AssembleRetroContextHandler,
-    ReconcileInput,
-    reconcile_improvements,
     assemble_context,
     AssembleRetroInput,
     RetroCollectHandler,
@@ -40,10 +36,8 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     HEX_A,
     RETRO_ID,
-    as_object,
     candidate_payload,
     fake_agent_result,
-    improvement_projection,
     json_value,
     retro_result,
     issue_signal,
@@ -280,30 +274,6 @@ async def test_domain_finalize_accepts_matching_domain(tmp_path: Path) -> None:
     assert document.domain == "issue"
 
 
-@pytest.mark.asyncio
-async def test_assemble_rejects_incomplete_optional_domain() -> None:
-    payload = {
-        "generated_at": "2026-08-22T00:00:00Z",
-        "window": {
-            "selection": {"mode": "last", "requested_last": 1},
-            "change_ids": ["CH-DEMO-001"],
-        },
-        "issue_slice": _empty_slice("issue"),
-        "workflow_slice": _empty_slice("workflow"),
-        "eval_slice": _empty_slice("eval"),
-        "discovery_slice": _empty_slice("discovery"),
-        "issue_signals": _ok_signals("issue"),
-        "workflow_signals": _ok_signals("workflow"),
-        "eval_signals": _ok_signals("eval"),
-        "issue_slice_sha256": HEX_A,
-        "workflow_slice_sha256": HEX_A,
-        "eval_slice_sha256": HEX_A,
-    }
-    outcome = await execute_task(AssembleRetroContextHandler(), payload)
-    assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_input"
-
-
 def _empty_slice(domain: str) -> dict[str, object]:
     window = {"selection": {"mode": "last", "requested_last": 1}, "change_ids": ["CH-DEMO-001"]}
     sources = (
@@ -378,42 +348,6 @@ def _assemble_payload(**overrides: object) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_assemble_rejects_unauthenticated_slice_digest() -> None:
-    payload = _assemble_payload(issue_slice_sha256=HEX_A)
-    outcome = await execute_task(AssembleRetroContextHandler(), json_value(payload))
-    assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_input"
-
-
-@pytest.mark.asyncio
-async def test_assemble_rejects_signal_domain_mismatch() -> None:
-    payload = _assemble_payload()
-    issue_signals = as_object(payload["issue_signals"])
-    issue_signals["domain"] = "workflow"
-    payload["issue_signals"] = issue_signals
-    outcome = await execute_task(AssembleRetroContextHandler(), json_value(payload))
-    assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_input"
-
-
-@pytest.mark.asyncio
-async def test_assemble_rejects_mixed_retro_ids() -> None:
-    payload = _assemble_payload()
-    workflow = as_object(payload["workflow_slice"])
-    workflow["retro_id"] = "RET-OTHER"
-    signals = as_object(payload["workflow_signals"])
-    signals["retro_id"] = "RET-OTHER"
-    payload["workflow_slice"] = workflow
-    payload["workflow_signals"] = signals
-    payload["workflow_slice_sha256"] = artifact_digest(WorkflowEvidenceSlice.model_validate(workflow))
-    signals["slice_sha256"] = payload["workflow_slice_sha256"]
-    payload["workflow_signals"] = signals
-    outcome = await execute_task(AssembleRetroContextHandler(), json_value(payload))
-    assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_input"
-
-
-@pytest.mark.asyncio
 async def test_collect_rejects_mismatched_slice_retro_id() -> None:
     window = {"selection": {"mode": "last", "requested_last": 1}, "change_ids": ["CH-DEMO-001"]}
     workflow = _empty_slice("workflow")
@@ -432,59 +366,6 @@ async def test_collect_rejects_mismatched_slice_retro_id() -> None:
     )
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-
-
-@pytest.mark.asyncio
-async def test_reconcile_persists_knowledge_delta_and_supersedes() -> None:
-    assembled = await execute_task(AssembleRetroContextHandler(), json_value(_assemble_payload()))
-    assert assembled.status == "succeeded"
-    context = as_object(assembled.output)
-    predecessor_id = "IMP-OLD"
-    current = {
-        "schema_version": "1",
-        "last_seq": 1,
-        "improvements": {
-            predecessor_id: improvement_projection(
-                state="proposed",
-                delivery="change_draft",
-                improvement_id=predecessor_id,
-            )
-        },
-        "by_fingerprint": {},
-    }
-    delta = {
-        "schema_version": "1",
-        "mode": "delta",
-        "entities": {"dept": {"required_fields": ["name"]}},
-    }
-    candidate = candidate_payload(
-        kind="domain_knowledge",
-        delivery="knowledge_delta",
-        target=".aa/data-knowledge.yaml",
-        knowledge_delta=delta,
-        supersedes=predecessor_id,
-    )
-    payload = as_object(
-        reconcile_improvements(
-            ReconcileInput.model_validate(
-                {
-                    "context": context,
-                    "candidates": [candidate],
-                    "current": current,
-                    "ts": "2026-08-22T00:00:00Z",
-                }
-            )
-        )
-    )
-    improvements = as_object(payload["improvements"])
-    new_id = payload["improvement_ids"][0]
-    assert as_object(improvements[new_id])["knowledge_delta"]["mode"] == "delta"
-    assert as_object(improvements[new_id])["knowledge_delta"]["entities"]["dept"]["required_fields"] == [
-        "name"
-    ]
-    assert as_object(improvements[predecessor_id])["state"] == ImprovementState.SUPERSEDED.value
-    assert any(event["type"] == "improvement_superseded" for event in payload["events"])
-    assert as_object(improvements[new_id])["kind"] == ImprovementKind.DOMAIN_KNOWLEDGE.value
 
 
 @pytest.mark.asyncio

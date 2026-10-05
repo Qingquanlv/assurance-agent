@@ -466,7 +466,22 @@ def test_quality_agent_job_catalog_is_feature_owned() -> None:
         assert contract.contract_id == f"assurance.quality.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
-        assert contract.resources.writes == writes
+        resources = {
+            "inspect": (
+                "qa/results/inspect/coverage-rework-handoff.json",
+                "qa/results/inspect/inspection-outcome.json",
+                "qa/results/inspect/inspection.json",
+            ),
+            "report": (
+                "qa/results/report/report-outcome.json",
+                "qa/results/report/report.md",
+            ),
+            "issue-analysis": (
+                "qa/results/healing/issue-analysis-handoff.json",
+                "qa/results/inspect/issue-analysis.json",
+            ),
+        }
+        assert contract.resources.writes == resources.get(base, writes)
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped

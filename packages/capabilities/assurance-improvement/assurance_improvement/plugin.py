@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
+    CommitValidator,
     EffectPolicy,
     EffectRegistration,
     PluginContribution,
@@ -37,10 +38,6 @@ from assurance_improvement.effects.promotion import (
 )
 from assurance_improvement.operations import improvement_handlers
 from assurance_improvement.resource_loader import resource_bytes
-from assurance_improvement.validators.archive import ArchiveIntegrityValidator
-from assurance_improvement.validators.candidates import CandidatesValidator
-from assurance_improvement.validators.delivery import DeliveryValidator
-from assurance_improvement.validators.review import ReviewValidator
 
 IMPROVEMENT_SOURCE = ProviderSource(
     distribution="assurance-improvement",
@@ -64,10 +61,7 @@ DELIVERY_POLICY = EffectPolicy(max_attempts=5, timeout_seconds=120.0, backoff_se
 PROMOTION_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=60.0, backoff_seconds=2.0)
 ARCHIVE_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=60.0, backoff_seconds=2.0)
 
-IMPROVEMENT_RESOURCE_FILES: dict[str, str] = {
-    **router.resource_files(),
-    "assurance.improvement.prompt.archive-summary.v1": "skills/aa-archive/archive-summary-template.md",
-}
+IMPROVEMENT_RESOURCE_FILES: dict[str, str] = dict(router.resource_files())
 
 _SCHEMA_FILES: dict[str, str] = {
     "assurance.improvement.schema.declaration-proposal.v1": "schemas/declaration-proposal.v1.schema.json",
@@ -111,12 +105,7 @@ _GENERATED_SCHEMAS: dict[str, str] = {
     "assurance.improvement.schema.retro-signals.v3": "assurance_improvement.contracts:SignalDocumentV3",
 }
 
-_VALIDATORS = {
-    "assurance.improvement.validator.archive-integrity.v1": ArchiveIntegrityValidator(path_only=True),
-    "assurance.improvement.validator.candidates.v3": CandidatesValidator(path_only=True),
-    "assurance.improvement.validator.delivery.v1": DeliveryValidator(path_only=True),
-    "assurance.improvement.validator.review.v1": ReviewValidator(path_only=True),
-}
+_VALIDATORS: dict[str, CommitValidator] = {}
 
 
 def _effect_registrations() -> tuple[EffectRegistration, ...]:

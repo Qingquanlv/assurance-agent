@@ -4,20 +4,21 @@ from __future__ import annotations
 
 import ast
 import hashlib
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Protocol, cast
 
-from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.ops import OutputError
+from graph_engine.artifacts import ArtifactReadError, open_artifact, read_workspace_file
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
-from graph_engine.plugin_api import TaskContext
 from pydantic import ValidationError
 
 from assurance_execution.contracts import ExecutionEvidenceV1
+from assurance_execution.contracts.workflow import APPLIED_REPAIR_PATH
 from assurance_generation.contracts.codegen import durable_test_path
 from assurance_generation.contracts.mapping import ClosedMappingV1, selected_test_file
 from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.contracts.application import (
+    VERIFIED_REPAIR_PATH,
     ApplyTestRepairInputV1,
     TestRepairResultV1,
     VerifiedTestRepairV1,
@@ -25,8 +26,10 @@ from assurance_healing.contracts.application import (
 from assurance_healing.contracts.effects import ProposalApprovedIntentV1
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_intake.contracts import LoopRoundHistoryV1
-from assurance_intake.domain.loop_history import build_loop_round_history
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.domain.loop_history import build_loop_round_history
+
+_REPAIR_DERIVED = {VERIFIED_REPAIR_PATH, APPLIED_REPAIR_PATH}
 
 
 class _Workspace(Protocol):
@@ -69,42 +72,20 @@ def expected_repair_history(
     )
 
 
-def authenticate_repair_history(
-    context: TaskContext,
-    *,
-    relative: str,
-    expected: LoopRoundHistoryV1,
-) -> EvidenceArtifactRefV1:
-    path = context.write_root.joinpath(*relative.split("/"))
+def _read_repair_file(root: Path, relative: str) -> bytes:
     try:
-        authored = LoopRoundHistoryV1.model_validate_json(path.read_bytes())
-    except (OSError, ValidationError, ValueError) as error:
-        raise OutputError(f"invalid repair history: {error}") from error
-    if authored != expected:
-        raise OutputError("repair.json does not match the locked repair inputs")
-    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(path.read_bytes()).hexdigest())
-
-
-def _canonical_file(root: Path, relative: str) -> Path:
-    posix = PurePosixPath(relative)
-    if posix.is_absolute() or "\\" in relative or any(part in {"", ".", ".."} for part in posix.parts):
-        raise OutputError(f"repair path must be canonical and relative: {relative}")
-    path = root.joinpath(*posix.parts)
-    try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(root.resolve())
-    except (OSError, ValueError) as error:
-        raise OutputError(f"repair file is missing: {relative}") from error
-    if resolved != path or path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
-        raise OutputError(f"repair file must be a regular single-link file: {relative}")
-    return path
+        return read_workspace_file(root, relative)
+    except ArtifactReadError as error:
+        raise OutputError(str(error)) from error
 
 
 def _authenticate_ref(root: Path, ref: EvidenceArtifactRefV1) -> bytes:
-    data = _canonical_file(root, ref.path).read_bytes()
-    if hashlib.sha256(data).hexdigest() != ref.digest:
-        raise OutputError(f"evidence digest changed: {ref.path}")
-    return data
+    try:
+        return open_artifact(root, ref)
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise OutputError(f"evidence digest changed: {ref.path}") from error
+        raise OutputError(str(error)) from error
 
 
 def _load_ref(root: Path, ref: EvidenceArtifactRefV1, model: type[Any]) -> Any:
@@ -239,18 +220,17 @@ def verify_application(
     result: TestRepairResultV1,
     context: _Workspace,
 ) -> VerifiedTestRepairV1:
-    if result.change_id != business.change_id:
-        raise OutputError("repair result change_id does not match the locked change")
     sources = approved_sources(business, context.project_root)
     outputs = set(result.output_files)
     if outputs != set(sources):
         raise OutputError("repair output set must exactly equal the approved candidate write set")
     staged = {
-        path.relative_to(context.write_root).as_posix()
+        relative
         for path in context.write_root.rglob("*")
         if path.is_file()
         and not path.is_symlink()
-        and "/healing/epochs/" not in f"/{path.relative_to(context.write_root).as_posix()}"
+        and (relative := path.relative_to(context.write_root).as_posix()) not in _REPAIR_DERIVED
+        and "/healing/epochs/" not in f"/{relative}"
     }
     if staged != outputs:
         raise OutputError("repair result does not match the actual candidate write set")
@@ -258,7 +238,7 @@ def verify_application(
     changed: list[EvidenceArtifactRefV1] = []
     for path in result.output_files:
         before = _authenticate_ref(context.project_root, source_by_path[path])
-        after = _canonical_file(context.write_root, path).read_bytes()
+        after = _read_repair_file(context.write_root, path)
         symbols = sources[path]
         _prove_implementation_only(before, after, symbols, path)
         changed.append(EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(after).hexdigest()))
@@ -273,14 +253,8 @@ def verify_application(
     )
 
 
-class ApplyTestRepairFinalizeInputV1(ApplyTestRepairInputV1):
-    agent_result: AgentRunResult
-
-
 __all__ = [
-    "ApplyTestRepairFinalizeInputV1",
     "approved_sources",
-    "authenticate_repair_history",
     "expected_repair_history",
     "repair_history_path",
     "verify_application",

@@ -294,10 +294,6 @@ EXCLUSIVE_ROUTE_INVENTORY: tuple[ExclusiveRouteRow, ...] = (
         "exhausted",
         "feature",
     ),
-    _row(
-        "assurance.healing.workflow.graph.healing-coverage-repair", "admit", "gate", "not-eligible", "feature"
-    ),
-    _row("assurance.healing.workflow.graph.healing-coverage-repair", "finalize", "task", "failed", "feature"),
     _row("assurance.healing.workflow.graph.healing-fix-proposal", "admit", "gate", "not-eligible", "feature"),
     _row(
         "assurance.improvement.workflow.graph.improvement-apply",

@@ -9,7 +9,9 @@ from pydantic import BaseModel
 
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.attempts.node_factory import AttemptNodeFactory
+from graph_engine.artifacts import ArtifactRef
 from graph_engine.boot.boot import BoundAttemptNode, ContractOwnershipError
+from graph_engine.stategraph.publish import call_publish
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.composition.models import AttemptContractRegistry
 from graph_engine.plugin_api import PluginContribution
@@ -176,10 +178,20 @@ class RecordingCapabilityBuildContext:
         if not callable(publish):
             raise TypeError("publish must be callable")
 
-        def wrapped(state: object, output: object, receipt: object) -> Mapping[str, object]:
-            update = publish(state, output, receipt)
-            if not isinstance(update, Mapping):
-                raise TypeError("publish must return a mapping")
+        def wrapped(
+            state: object,
+            output: object,
+            receipt: object,
+            *,
+            committed: tuple[ArtifactRef | Mapping[str, object], ...] = (),
+        ) -> Mapping[str, object]:
+            update = call_publish(
+                publish,
+                state if isinstance(state, Mapping) else {},
+                output,
+                receipt,
+                committed,
+            )
             published = {str(name): value for name, value in update.items()}
             self._published_updates.append(published)
             if self._recorder is not None:

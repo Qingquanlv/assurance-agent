@@ -167,7 +167,7 @@ def test_opencode_benchmark_allows_four_review_fix_rounds() -> None:
     assert '"review_rounds": 4' in RUNNER_PATH.read_text(encoding="utf-8")
 
 
-def test_status_projection_round_trips_full_benchmark_steps() -> None:
+def test_status_projection_round_trips_full_benchmark_steps(tmp_path: Path) -> None:
     from types import SimpleNamespace
 
     from assurance_product.status import render_status_from_langgraph
@@ -212,6 +212,7 @@ def test_status_projection_round_trips_full_benchmark_steps() -> None:
             },
         ),
         journal_events=events,
+        project_root=tmp_path,
     )
 
     assert runner._status_steps(status.model_dump(mode="json")) == FULL_WORKFLOW_REQUIRED_STEPS

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from dataclasses import replace
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,8 +11,10 @@ import pytest
 from graph_engine.attempts.events import AttemptOpened, AttemptTerminated
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.persistence.attempt_journal import AttemptJournalRecord
+from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV1
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.retro_evidence import (
+    ProjectedRuntimeEvidence,
     project_runtime_evidence,
     publish_runtime_evidence,
     snapshot_runtime_evidence,
@@ -135,29 +136,6 @@ def test_pre_retro_snapshot_rejects_existing_different_bytes(tmp_path: Path) -> 
         publish_runtime_evidence(workspace, snapshot, stage="pre-retro")
 
 
-def test_graph_snapshot_node_uses_the_trusted_runtime_ref(tmp_path: Path) -> None:
-    from assurance_product.graphs.execute import snapshot_retro_runtime_node
-
-    workspace = ChangeWorkspace.prepare(tmp_path, "CH-A")
-
-    async def read_records():
-        return _records()
-
-    async def snapshot():
-        return await snapshot_runtime_evidence(workspace, read_records, invocation_id="inv-full")
-
-    update = asyncio.run(snapshot_retro_runtime_node(snapshot)({}))
-    ref = update["retro_runtime_ref"]
-    assert (tmp_path / ref["path"]).is_file()
-    assert ref["digest"] == hashlib.sha256((tmp_path / ref["path"]).read_bytes()).hexdigest()
-
-
-def test_dry_graph_snapshot_node_is_synchronous_and_has_no_side_effect() -> None:
-    from assurance_product.graphs.execute import snapshot_retro_runtime_node
-
-    assert snapshot_retro_runtime_node(None)({}) == {}
-
-
 def test_runtime_publication_rejects_symlink_parent(tmp_path: Path) -> None:
     workspace = ChangeWorkspace.prepare(tmp_path, "CH-A")
     (tmp_path / "qa/results").mkdir()
@@ -233,3 +211,60 @@ def test_product_execution_exports_runtime_evidence_except_retro(
         assert len(snapshots) == 1
         snapshot = WorkflowRuntimeEvidenceV1.model_validate_json(snapshots[0].read_bytes())
         assert len(snapshot.entries) == 2
+
+
+def test_the_port_drops_the_open_reader_and_keeps_this_invocation() -> None:
+    records = _records()
+    reader = AttemptJournalRecord.build(
+        revision=0,
+        attempt_key=AttemptKey(digest="9" * 64),
+        fencing_token=1,
+        events=(
+            AttemptOpened(
+                contract_digest="b" * 64,
+                input_digest="c" * 64,
+                graph_revision="d" * 64,
+                invocation_id="inv-full",
+                public_entrypoint="full",
+                semantic_node_id="improvement.retro-runtime-snapshot",
+            ),
+        ),
+    )
+    other = AttemptJournalRecord.build(
+        revision=0,
+        attempt_key=AttemptKey(digest="8" * 64),
+        fencing_token=1,
+        events=(
+            AttemptOpened(
+                contract_digest="b" * 64,
+                input_digest="c" * 64,
+                graph_revision="d" * 64,
+                invocation_id="other-invocation",
+                public_entrypoint="full",
+                semantic_node_id="api.codegen-review",
+            ),
+            AttemptTerminated(resolution_kind="committed"),
+        ),
+    )
+
+    async def read_records():
+        return (*records, reader, other)
+
+    port = ProjectedRuntimeEvidence(SimpleNamespace(change_id="CH-A"), read_records)  # type: ignore[arg-type]
+    excluded = asyncio.run(port.project(invocation_id="inv-full", exclude_attempt_key_digest="9" * 64))
+    expected = project_runtime_evidence(records, change_id="CH-A", invocation_id="inv-full")
+    assert excluded == expected.model_dump(mode="json")
+    assert expected.integrity.status == "complete"
+    included = asyncio.run(port.project(invocation_id="inv-full", exclude_attempt_key_digest="0" * 64))
+    assert WorkflowRuntimeEvidenceV1.model_validate(included).integrity.status == "incomplete"
+
+
+def test_pre_retro_publish_bytes_match_the_snapshot_task_encoding(tmp_path: Path) -> None:
+    from assurance_improvement.contracts.runtime_snapshot import pre_retro_evidence_path
+
+    workspace = ChangeWorkspace.prepare(tmp_path, "CH-A")
+    snapshot = project_runtime_evidence(_records(), change_id="CH-A", invocation_id="inv-full")
+    ref = publish_runtime_evidence(workspace, snapshot, stage="pre-retro")
+    relative, encoded = pre_retro_evidence_path(snapshot)
+    assert relative == ref.path
+    assert (tmp_path / ref.path).read_bytes() == encoded

@@ -142,6 +142,15 @@ def fake_agent_result(structured_result: JSONValue, **locks: JSONValue) -> JSONV
     return payload
 
 
+def issue_agent_result(structured_result: JSONValue, **locks: JSONValue) -> JSONValue:
+    """Issue analysis declares the bound input. Prepare renames the evidence digest."""
+    payload = as_object(fake_agent_result(structured_result, **locks))
+    digest = payload.pop("execution_digest", None)
+    if "execution_evidence_digest" not in payload and digest is not None:
+        payload["execution_evidence_digest"] = digest
+    return payload
+
+
 def skill_input() -> JSONValue:
     return {
         "change_id": CHANGE_ID,
@@ -213,11 +222,13 @@ def authenticated_issue_input(root: Path) -> JSONValue:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    return {
+    payload = {
         **cast(dict[str, JSONValue], skill_input()),
         "artifact_paths": [manifest_path, observations_path, source_path],
         "evidence_bundle_digest": bundle_digest,
     }
+    payload["execution_evidence_digest"] = payload.pop("execution_digest")
+    return payload
 
 
 def _resource_files() -> Iterator[Path]:
@@ -232,11 +243,13 @@ def _resource_files() -> Iterator[Path]:
 async def test_issue_finalize_rejects_candidate_without_owned_evidence(tmp_path: Path) -> None:
     outcome = await execute_task(
         cast(TaskHandler, issue_analysis_finalize),
-        fake_agent_result(issue_candidate(evidence_ids=["missing"])),
+        issue_agent_result(issue_candidate(evidence_ids=["missing"])),
         tmp_path,
     )
-    assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_output"
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    assert payload["route"] == "failed"
+    assert payload["issue_analysis"] is None
 
 
 @pytest.mark.asyncio
@@ -261,7 +274,7 @@ async def test_issue_finalize_rechecks_owned_evidence_before_stamping_candidate_
         (tmp_path / "qa/results/execution/api-result.json").write_bytes(b"changed after prepare")
     outcome = await execute_task(
         cast(TaskHandler, issue_analysis_finalize),
-        fake_agent_result(structured, **locked),
+        issue_agent_result(structured, **locked),
         tmp_path,
     )
     if tampered:
@@ -271,8 +284,11 @@ async def test_issue_finalize_rechecks_owned_evidence_before_stamping_candidate_
         return
     assert outcome.status == "succeeded"
     payload = as_object(outcome.output)
-    assert payload["agent_result"] == IssueAnalysisResultV1.model_validate(structured).model_dump(mode="json")
-    assert payload["candidate_digest"].startswith("sha256:")
+    document = as_object(payload["issue_analysis"])
+    assert document["agent_result"] == IssueAnalysisResultV1.model_validate(structured).model_dump(
+        mode="json"
+    )
+    assert str(document["candidate_digest"]).startswith("sha256:")
     assert payload["issue_analysis_ref"] == {
         "path": relative,
         "digest": hashlib.sha256(canonical_json_bytes(structured)).hexdigest(),
@@ -283,17 +299,18 @@ async def test_issue_finalize_rechecks_owned_evidence_before_stamping_candidate_
 async def test_completed_analysis_must_account_for_every_owned_observation(tmp_path: Path) -> None:
     outcome = await execute_task(
         cast(TaskHandler, issue_analysis_finalize),
-        fake_agent_result(issue_candidate(evidence_ids=[_OWNED]), owned_evidence_ids=[_OWNED, "OBS-second"]),
+        issue_agent_result(issue_candidate(evidence_ids=[_OWNED]), owned_evidence_ids=[_OWNED, "OBS-second"]),
         tmp_path,
     )
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "every owned observation" in outcome.failure.message
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    assert payload["route"] == "failed"
+    assert payload["issue_analysis"] is None
 
 
 @pytest.mark.asyncio
 async def test_issue_finalize_rejects_wrapped_input(tmp_path: Path) -> None:
-    payload = as_object(fake_agent_result(issue_candidate(evidence_ids=[_OWNED])))
+    payload = as_object(issue_agent_result(issue_candidate(evidence_ids=[_OWNED])))
     agent_result = payload.pop("agent_result")
     outcome = await execute_task(
         cast(TaskHandler, issue_analysis_finalize),
@@ -302,7 +319,7 @@ async def test_issue_finalize_rejects_wrapped_input(tmp_path: Path) -> None:
     )
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_input"
+    assert outcome.failure.kind == "invalid_output"
 
 
 @pytest.mark.asyncio
@@ -542,7 +559,7 @@ async def test_issue_triage_finalize_rejects_empty_or_subset_evidence_digests(tm
 async def test_issue_analysis_finalize_rejects_forged_problem_id(tmp_path: Path) -> None:
     outcome = await execute_task(
         cast(TaskHandler, issue_analysis_finalize),
-        fake_agent_result(issue_candidate(evidence_ids=[_OWNED], possible_problem_ids=["PROB-FORGED"])),
+        issue_agent_result(issue_candidate(evidence_ids=[_OWNED], possible_problem_ids=["PROB-FORGED"])),
         tmp_path,
     )
     assert outcome.failure is not None
@@ -561,7 +578,7 @@ async def test_issue_analysis_finalize_rejects_invalid_fingerprint_without_crash
     else:
         candidate["fingerprint_inputs"] = {"surface": "dept", "symptom": "- / ."}
     outcome = await execute_task(
-        cast(TaskHandler, issue_analysis_finalize), fake_agent_result(structured), tmp_path
+        cast(TaskHandler, issue_analysis_finalize), issue_agent_result(structured), tmp_path
     )
     assert outcome.status == "failed"
     assert outcome.failure is not None
@@ -572,7 +589,7 @@ async def test_issue_analysis_finalize_rejects_invalid_fingerprint_without_crash
 async def test_issue_analysis_finalize_requires_evidence_bundle_lock(tmp_path: Path) -> None:
     outcome = await execute_task(
         cast(TaskHandler, issue_analysis_finalize),
-        fake_agent_result(issue_candidate(evidence_ids=[_OWNED]), evidence_bundle_digest=None),
+        issue_agent_result(issue_candidate(evidence_ids=[_OWNED]), evidence_bundle_digest=None),
         tmp_path,
     )
     assert outcome.failure is not None
@@ -613,7 +630,6 @@ def test_quality_resources_forbid_legacy_and_provider_names() -> None:
         _PACKAGE / "ops/issue_analysis/SKILL.md",
         _PACKAGE / "ops/issue_triage/SKILL.md",
         _PACKAGE / "ops/report/SKILL.md",
-        _RESOURCES / "skills/aa-dashboard/SKILL.md",
     )
     missing = [item for item in required if not item.is_file()]
     assert missing == [], f"missing quality resources: {missing}"

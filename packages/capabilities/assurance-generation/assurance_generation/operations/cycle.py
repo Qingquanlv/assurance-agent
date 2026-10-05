@@ -3,21 +3,36 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from pathlib import PurePosixPath
 from pathlib import Path
 from typing import cast
 
 import yaml
 from pydantic import ValidationError
 
+from graph_engine.artifacts import stage_json_artifact
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from agent_runtime_contracts.qa_paths import qa_join
 
-from assurance_generation.contracts.codegen import durable_test_path
+from assurance_generation.contracts.codegen import CodegenAuthoringV1, durable_test_path
+from assurance_generation.contracts.decisions import complete_generation
+from assurance_generation.contracts.families import GENERATION_FAMILIES, LayerName
+from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.mapping import ClosedMappingEntryV1, ClosedMappingV1
-from assurance_generation.contracts.workflow import CompleteGenerationInputV1, GenerationCycleResultV1
+from assurance_generation.contracts.reviews import ObligationSemanticReviewV1
+from assurance_generation.contracts.workflow import (
+    CompleteGenerationInputV1,
+    GeneratedFamilyV1,
+    GENERATION_CYCLE_PATH,
+    GenerationCyclePublishedV1,
+    GenerationCycleResultV1,
+    PublishCycleInputV1,
+)
 from assurance_generation.operations.planning import evidence_ref
-from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
+from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case, open_reviewed_case
 from assurance_generation.operations.selected_cases import load_selected_cases
 from assurance_intake.contracts.explore import PreparedExploreV1
 from assurance_intake.domain.explore_context import load_exploration_document
@@ -160,11 +175,84 @@ def complete_generation_cycle(
     )
 
 
+def _read_authenticated(root: Path, ref: EvidenceArtifactRefV1) -> bytes:
+    path = root.joinpath(*PurePosixPath(ref.path).parts)
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"generation artifact is missing: {ref.path}") from error
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != ref.digest:
+        raise ValueError(f"generation artifact digest changed: {ref.path}")
+    return data
+
+
+def _family_result(payload: PublishCycleInputV1, family: LayerName, root: Path) -> GeneratedFamilyV1:
+    files_ref = getattr(payload, f"{family}_files")
+    summary_ref = getattr(payload, f"{family}_summary")
+    review_ref = getattr(payload, f"{family}_review")
+    if files_ref is None or summary_ref is None:
+        raise ValueError(f"selected family {family} is missing codegen artifacts")
+    authored = CodegenAuthoringV1.model_validate(json.loads(_read_authenticated(root, files_ref)))
+    if authored.layer != family or authored.change_id != payload.change_id:
+        raise ValueError(f"codegen manifest identity does not match {family}")
+    _read_authenticated(root, summary_ref)
+    files: list[GeneratedFileEntryV1] = []
+    for entry in authored.files:
+        data = root.joinpath(*PurePosixPath(entry.repo_path).parts).read_bytes()
+        files.append(
+            GeneratedFileEntryV1(
+                repo_path=entry.repo_path,
+                disposition=entry.disposition,
+                role=entry.role,
+                case_ids=list(entry.case_ids),
+                content_sha256=f"sha256:{hashlib.sha256(data).hexdigest()}",
+            )
+        )
+    reviews: tuple[ObligationSemanticReviewV1, ...] = ()
+    if review_ref is not None:
+        document = json.loads(_read_authenticated(root, review_ref))
+        raw_reviews = document.get("semantic_reviews") if isinstance(document, dict) else None
+        reviews = tuple(ObligationSemanticReviewV1.model_validate(item) for item in raw_reviews or ())
+    return GeneratedFamilyV1(
+        family=family,
+        coverage_epoch=payload.coverage_epoch,
+        plan_files=tuple(sorted((summary_ref.path, files_ref.path))),
+        files=tuple(sorted(files, key=lambda item: item.repo_path)),
+        mapping=authored.mapping,
+        receipt=ReceiptRef(receipt_id=f"codegen-{family}", receipt_digest=files_ref.digest),
+        method_plans=authored.method_plans,
+        semantic_reviews=reviews,
+    )
+
+
 class PublishGenerationCycleHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = CompleteGenerationInputV1.model_validate(request.input)
-            result = complete_generation_cycle(payload, context.project_root, context.write_root)
-            return TaskOutcome.succeeded(result.model_dump(mode="json"))
-        except (ValueError, ValidationError, OSError, yaml.YAMLError) as error:
+            payload = PublishCycleInputV1.model_validate(request.input)
+            reviewed = open_reviewed_case(context.project_root, payload.reviewed_case_ref, ValueError)
+            complete_generation(
+                {
+                    "completed": [{"value": True}] * len(GENERATION_FAMILIES),
+                    "selected_families": list(payload.selected_test_families),
+                }
+            )
+            cycle = CompleteGenerationInputV1(
+                change_id=payload.change_id,
+                coverage_epoch=payload.coverage_epoch,
+                reviewed_case=reviewed,
+                plan_digest=payload.plan_digest,
+                plan_ref=payload.plan_ref,
+                selected_test_families=payload.selected_test_families,
+                capability_leafs=payload.capability_leafs,
+                families=tuple(
+                    _family_result(payload, family, context.project_root)
+                    for family in payload.selected_test_families
+                ),
+            )
+            result = complete_generation_cycle(cycle, context.project_root, context.write_root)
+            stage_json_artifact(context.write_root, GENERATION_CYCLE_PATH, result)
+            published = GenerationCyclePublishedV1(generation_result=result)
+            return TaskOutcome.succeeded(published.model_dump(mode="json"))
+        except (ValueError, ValidationError, OSError, yaml.YAMLError, json.JSONDecodeError) as error:
             return TaskOutcome.failed("invalid_input", str(error), retryable=True)

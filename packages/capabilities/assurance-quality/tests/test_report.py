@@ -2,20 +2,15 @@ from __future__ import annotations
 
 import pytest
 from graph_engine.canonical import JSONValue
-from graph_engine.plugin_api import CandidateWriteSet, ValidationResult
+from graph_engine.plugin_api import CandidateWriteSet
 from pydantic import ValidationError
-from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_quality.contracts.report import QualityReport
-from assurance_quality.operations.report import DashboardHandler, GenerateReportHandler
-from assurance_quality.validators.report import ReportValidator
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     BATCH_ID,
     CHANGE_ID,
     HEX_A,
     HEX_B,
-    as_object,
-    validation_context,
     write_set,
 )
 
@@ -157,101 +152,3 @@ def report_v1_document() -> dict[str, object]:
 def test_quality_report_accepts_only_schema_1_1() -> None:
     with pytest.raises(ValidationError):
         QualityReport.model_validate(report_v1_document())
-
-
-def test_report_validator_requires_exact_quality_inputs() -> None:
-    result = ReportValidator().validate(candidate_report(missing="metrics"), validation_context())
-    assert result == ValidationResult(
-        accepted=False,
-        reason="quality report is missing the authenticated metrics projection",
-    )
-
-
-@pytest.mark.asyncio
-async def test_generate_report_uses_gate_status_not_issue_risk() -> None:
-    outcome = await execute_task(GenerateReportHandler(), report_input())
-    assert outcome.status == "succeeded"
-    payload = as_object(outcome.output)
-    assert payload["schema_version"] == "1.1"
-    assert payload["final_status"] == "FAIL"
-    assert payload["quality_score"] == 0
-    assert payload["plan"]["plan_digest"] == HEX_A
-    assert payload["recommendation"].startswith("Do not release")
-    assert "session" not in str(payload).lower()
-    assert "secret" not in str(payload).lower()
-    assert set(payload["source_digests"]) == {
-        "execution",
-        "healing",
-        "trace",
-        "coverage",
-        "metrics",
-    }
-
-
-@pytest.mark.asyncio
-async def test_generate_report_buckets_product_and_test_defects() -> None:
-    outcome = await execute_task(
-        GenerateReportHandler(),
-        report_input(analysis=_analysis(category="locator_failure")),
-    )
-    assert outcome.status == "succeeded"
-    defects = as_object(outcome.output)["defects"]
-    assert defects["test"][0]["category"] == "locator_failure"
-    assert defects["product"] == []
-
-
-@pytest.mark.asyncio
-async def test_dashboard_projects_report_without_transcript() -> None:
-    report = await execute_task(GenerateReportHandler(), report_input())
-    assert report.status == "succeeded"
-    dashboard_input: JSONValue = {
-        "change_id": CHANGE_ID,
-        "batch_id": BATCH_ID,
-        "report": report.output,
-        "quality_gate": _gate(),
-        "metrics_digest": HEX_A,
-        "report_digest": HEX_B,
-    }
-    outcome = await execute_task(DashboardHandler(), dashboard_input)
-    assert outcome.status == "succeeded"
-    payload = as_object(outcome.output)
-    assert payload["change_id"] == CHANGE_ID
-    assert payload["final_status"] == "FAIL"
-    assert payload["quality_score"] == 0
-    assert "transcript" not in payload
-    encoded = str(payload).lower()
-    assert "opencode" not in encoded
-    assert "secret" not in encoded
-
-
-@pytest.mark.asyncio
-async def test_report_markdown_is_a_deterministic_human_projection() -> None:
-    from assurance_quality.operations.report import render_quality_report_markdown
-
-    outcome = await execute_task(GenerateReportHandler(), report_input())
-    assert outcome.status == "succeeded"
-    payload = as_object(outcome.output)
-
-    first = render_quality_report_markdown(payload)
-    second = render_quality_report_markdown(payload)
-
-    assert first == second
-    assert first.startswith(b"# Quality Report\n")
-    assert b"Final status: FAIL" in first
-    assert f"Plan: {HEX_A}".encode() in first
-    assert b"Execution: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in first
-    assert b"No verifiable obligation was assessed; this is not a passing result." in first
-    assert b"\xe7\xb3\xbb\xe7\xbb\x9f\xe6\xb2\xa1\xe6\x9c\x89\xe9\x97\xae\xe9\xa2\x98" not in first
-
-
-@pytest.mark.asyncio
-async def test_report_markdown_rejects_a_non_hex_source_digest() -> None:
-    from assurance_quality.operations.report import render_quality_report_markdown
-
-    outcome = await execute_task(GenerateReportHandler(), report_input())
-    assert outcome.status == "succeeded"
-    payload = as_object(outcome.output)
-    payload["source_digests"]["execution"] = "z" * 64
-
-    with pytest.raises(ValueError, match="execution digest"):
-        render_quality_report_markdown(payload)

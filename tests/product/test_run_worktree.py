@@ -100,6 +100,35 @@ def test_ensure_run_worktree_stays_in_place_when_the_sut_is_not_git(tmp_path: Pa
     assert not (tmp_path / ".worktrees").exists()
 
 
+def test_aa_run_rejects_a_symlink_to_a_nongit_project_dir(tmp_path: Path) -> None:
+    from assurance_product.cli import CommandError, _project_for_run
+
+    real = (tmp_path / "plain").resolve()
+    real.mkdir()
+    link = tmp_path / "plain-link"
+    link.symlink_to(real)
+    with pytest.raises(CommandError, match="canonical real directory"):
+        _project_for_run(link, "CH-LINK-1")
+
+
+def test_aa_run_rejects_a_symlink_to_a_git_project_dir(tmp_path: Path) -> None:
+    from assurance_product.cli import CommandError, _project_for_run
+
+    real = _make_git_sut(tmp_path / "vue-fastapi-admin")
+    link = tmp_path / "repo-link"
+    link.symlink_to(real)
+    with pytest.raises(CommandError, match="canonical real directory"):
+        _project_for_run(link, "CH-LINK-2")
+
+
+def test_aa_run_keeps_a_canonical_real_nongit_project_dir(tmp_path: Path) -> None:
+    from assurance_product.cli import _project_for_run
+
+    real = (tmp_path / "plain").resolve()
+    real.mkdir()
+    assert _project_for_run(real, "CH-REAL-1") == real
+
+
 def test_run_bootstrap_uses_the_new_worktree_before_preflight(tmp_path: Path) -> None:
     from assurance_product.bootstrap.contracts import OpenCodeHandleV1
     from assurance_product.bootstrap.driver import run_bootstrap

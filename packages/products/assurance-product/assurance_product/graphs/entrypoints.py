@@ -1,477 +1,149 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING
 
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.state import CompiledStateGraph
+from pydantic import BaseModel, model_validator
 
-from graph_engine.boot.boot import GraphBuildContext
-from graph_engine.application.status import TerminalEnvelope
-from graph_engine.stategraph.checkpoint_bridge import omit_checkpoint_bridge_fields
+from graph_engine.flow import BoundFlow, Flow, const, ledger
+from graph_engine.flow.sources import InputSource
 
-from assurance_product.graphs.routes import route_init, route_prepare
-from assurance_product.graphs.state import ProductState
-from assurance_product.models import ProductInputV1, ProductPublicOutput, ProductReceiptRefV1
-from assurance_improvement.contracts.retro import RetroSelectionSnapshot, RetroWindow
-from assurance_intake.contracts import CaseReworkContextV1, EvidenceArtifactRefV1
-from graph_engine.canonical import JSONValue, canonical_digest
+from assurance_intake.contracts import TestFamilyPolicyV1
+from assurance_intake.handoff import PLAN, REWORK_CONTEXT
+from assurance_product.models import ProductInputV1
 
-ProductStatus = Literal["completed", "failed"]
-_FEATURE_STATUS_TO_PRODUCT: Mapping[str, ProductStatus] = {
-    "completed": "completed",
-    "passed": "completed",
-    "reviewed": "completed",
-    "done": "completed",
-    "failed": "failed",
-    "rejected": "failed",
-    "exhausted": "failed",
-    "rework": "failed",
-    "superseded": "failed",
+if TYPE_CHECKING:
+    from assurance_product.graphs.factory import ProductFeatureBundles
+
+_PUBLIC = {"completed": "completed", "failed": "failed"}
+_ENTRYPOINT_MODELS: dict[str, type[ProductInputV1]] = {}
+_QUALITY_INPUTS = {"rounds_budget": "budgets.coverage_rounds", "rounds_used": const(0)}
+_PREPARE_INPUTS = {
+    "source_artifacts": "artifacts",
+    "coverage_epoch": const(0),
+    "healing_rounds_used": const(0),
 }
-
-_INPUT_KEYS = (
-    "schema_version",
-    "change_id",
-    "requirement",
-    "run_mode",
-    "candidate_test_families",
-    "case_delta_paths",
-    "capability_leafs",
-    "capability_catalog",
-    "product_policy",
-    "data_knowledge",
-    "allowed_artifact_paths",
-    "allowed_origins",
-    "execution_timeout_seconds",
-    "budgets",
-    "artifacts",
-    "retro_window",
-    "decision",
-    "api_base_url",
-    "ui_base_url",
-    "ui_paths",
-)
+_RETRO_INPUTS = {
+    "source_refs": "artifacts",
+    "window": "retro_window",
+    "artifact_paths": "allowed_artifact_paths",
+}
+_ISSUE_ROUTES = {
+    "fix_eligible": "completed",
+    "report_issue": "completed",
+    "unclassified": "completed",
+    "failed": "failed",
+}
+_DONE_ROUTES = {"done": "completed", "failed": "failed"}
 
 
-def _as_mapping(state: object) -> Mapping[str, object]:
-    if not isinstance(state, Mapping):
-        raise TypeError("product state must be a mapping")
-    return omit_checkpoint_bridge_fields(state)
+def _entrypoint_model(entrypoint: str) -> type[ProductInputV1]:
+    cached = _ENTRYPOINT_MODELS.get(entrypoint)
+    if cached is not None:
+        return cached
+
+    class EntrypointInput(ProductInputV1):
+        @model_validator(mode="after")
+        def _check_entrypoint(self) -> EntrypointInput:
+            self.validate_for_entrypoint(entrypoint)
+            return self
+
+    EntrypointInput.__name__ = "ProductInput_" + entrypoint.replace("-", "_")
+    _ENTRYPOINT_MODELS[entrypoint] = EntrypointInput
+    return EntrypointInput
 
 
-def _public_payload(state: object) -> dict[str, object]:
-    cleaned = _as_mapping(state)
-    return {key: cleaned[key] for key in _INPUT_KEYS if key in cleaned}
+def _intake_input() -> type[BaseModel]:
+    class IntakeRootInput(_entrypoint_model("intake")):
+        family_policy: TestFamilyPolicyV1
+
+    IntakeRootInput.__name__ = "ProductInput_intake_root"
+    return IntakeRootInput
 
 
-def _input_from_state(state: object) -> ProductInputV1:
-    return ProductInputV1.model_validate(_public_payload(state))
-
-
-def validate_public_input(entrypoint: str):
-    def node(state: ProductState) -> dict[str, object]:
-        _input_from_state(state).validate_for_entrypoint(entrypoint)
-        return {}
-
-    return node
-
-
-def adapt_prepare(state: ProductState) -> dict[str, object]:
-    payload = _input_from_state(state)
-    artifact_refs = [item.model_dump(mode="json") for item in payload.artifacts]
-    preparation_refs = [
-        item
-        for item in artifact_refs
-        if "/cases/" not in str(item["path"]) and "/review/" not in str(item["path"])
-    ]
-    feature_input = {
-        "change_id": payload.change_id,
-        "requirement": payload.requirement,
-        "candidate_test_families": list(payload.candidate_test_families),
-        "case_delta_paths": list(payload.case_delta_paths),
-        "capability_leafs": list(payload.capability_leafs),
-        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
-        "rounds_budget": payload.budgets.review_rounds,
-        "rounds_used": 0,
-        "decision": payload.decision,
-        "artifacts": artifact_refs,
-        "coverage_epoch": 0,
-        "healing_rounds_used": 0,
-        "preparation_refs": preparation_refs,
-        "source_artifacts": artifact_refs,
-        "capability_catalog": payload.capability_catalog.model_dump(mode="json"),
-        "product_policy": payload.product_policy.model_dump(mode="json"),
-        "data_knowledge": payload.data_knowledge.model_dump(mode="json"),
-        "budgets": payload.budgets.model_dump(mode="json"),
-        "family_policy": state.get("family_policy"),
-    }
-    return {**feature_input, "feature_input": feature_input}
-
-
-def adapt_case(state: ProductState) -> dict[str, object]:
-    payload = _input_from_state(state)
-    rework_context = state.get("case_rework_context")
-    current_preparation = state.get("preparation_refs")
-    if isinstance(current_preparation, list) and current_preparation:
-        preparation_refs = [dict(item) for item in current_preparation if isinstance(item, Mapping)]
-    elif rework_context is not None:
-        typed_rework = CaseReworkContextV1.model_validate(rework_context)
-        preparation_refs = [
-            item.model_dump(mode="json") for item in typed_rework.previous_case.preparation_refs
-        ]
-    else:
-        preparation_refs = [item.model_dump(mode="json") for item in payload.artifacts]
-    feature_input = {
-        "change_id": payload.change_id,
-        "requirement": payload.requirement,
-        "plan_digest": state.get("plan_digest"),
-        "plan_ref": state.get("plan_ref"),
-        "selected_test_families": state.get("selected_test_families"),
-        "case_delta_paths": list(payload.case_delta_paths),
-        "capability_leafs": list(payload.capability_leafs),
-        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
-        "rounds_budget": payload.budgets.review_rounds,
-        "rounds_used": 0,
-        "decision": payload.decision,
-        "coverage_epoch": int(state.get("coverage_epoch", 0)),
-        "preparation_refs": preparation_refs,
-        "source_artifacts": [item.model_dump(mode="json") for item in payload.artifacts],
-    }
-    if rework_context is not None:
-        feature_input["case_rework_context"] = rework_context
-    ui_exploration_ref = state.get("ui_exploration_ref")
-    if ui_exploration_ref is not None:
-        feature_input["ui_exploration_ref"] = ui_exploration_ref
-    api_discovery_ref = state.get("api_discovery_ref")
-    if api_discovery_ref is not None:
-        feature_input["api_discovery_ref"] = api_discovery_ref
-    return {**feature_input, "feature_input": feature_input}
-
-
-def adapt_quality(state: ProductState) -> dict[str, object]:
-    payload = _input_from_state(state)
-    feature_input = {
-        "change_id": payload.change_id,
-        "capability_leafs": list(payload.capability_leafs),
-        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
-        "budgets": payload.budgets.model_dump(mode="json"),
-        "rounds_budget": payload.budgets.coverage_rounds,
-        "rounds_used": 0,
-    }
-    return {**feature_input, "feature_input": feature_input}
-
-
-_IMPROVEMENT_TASK_KEYS = (
-    "projection",
-    "eval_run_id",
-    "outcome",
-    "report_sha256",
-    "staged_sha256",
-    "baseline_sha256",
-    "target_digest",
-)
-
-
-def adapt_init(state: ProductState) -> dict[str, object]:
-    payload = _input_from_state(state)
-    feature_input = {
-        "change_id": payload.change_id,
-        "data_knowledge": payload.data_knowledge.model_dump(mode="json"),
-        "capability_leafs": list(payload.capability_leafs),
-        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
-    }
-    return {**feature_input, "feature_input": feature_input}
-
-
-def adapt_improvement(state: ProductState) -> dict[str, object]:
-    payload = _input_from_state(state)
-    extras = {key: state.get(key) for key in _IMPROVEMENT_TASK_KEYS if key in state}
-    feature_input = {
-        "change_id": payload.change_id,
-        "capability_leafs": list(payload.capability_leafs),
-        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
-        "artifact_paths": list(payload.allowed_artifact_paths),
-        **extras,
-    }
-    return {**feature_input, **extras, "feature_input": feature_input}
-
-
-def _retro_source_refs(state: ProductState, payload: ProductInputV1) -> tuple[EvidenceArtifactRefV1, ...]:
-    candidates: list[object] = [*payload.artifacts]
-    runtime_ref = state.get("retro_runtime_ref")
-    if runtime_ref is not None:
-        candidates.append(runtime_ref)
-    for key in ("artifacts", "source_artifacts", "report_refs", "evidence_refs", "history_refs"):
-        raw = state.get(key)
-        if isinstance(raw, (list, tuple)):
-            candidates.extend(raw)
-    snapshot = state.get("issue_snapshot_ref")
-    if snapshot is not None:
-        candidates.append(snapshot)
-    inspection = state.get("inspection_outcome")
-    if isinstance(inspection, Mapping):
-        candidates.extend(inspection.get("assessment_refs") or ())
-        for name in ("mapping_ref", "plan_ref"):
-            value = inspection.get(name)
-            if value is not None:
-                candidates.append(value)
-    elif inspection is not None:
-        candidates.extend(getattr(inspection, "assessment_refs", ()))
-        candidates.append(getattr(inspection, "mapping_ref", None))
-        candidates.append(getattr(inspection, "plan_ref", None))
-    report_outcome = state.get("report_outcome")
-    if isinstance(report_outcome, Mapping):
-        candidates.extend(report_outcome.get("report_refs") or ())
-    elif report_outcome is not None:
-        candidates.extend(getattr(report_outcome, "report_refs", ()))
-    by_path: dict[str, EvidenceArtifactRefV1] = {}
-    for candidate in candidates:
-        _remember_retro_ref(by_path, candidate, replace=False)
-    # Plan resolution rewrites exploration.json after Explore records its digest.
-    # preparation_refs carries the bytes now on disk and replaces that stale ref.
-    preparation = state.get("preparation_refs")
-    if isinstance(preparation, (list, tuple)):
-        for candidate in preparation:
-            _remember_retro_ref(by_path, candidate, replace=True)
-    return tuple(by_path[path] for path in sorted(by_path))
-
-
-def _remember_retro_ref(
-    by_path: dict[str, EvidenceArtifactRefV1],
-    candidate: object,
+def _mount(
+    child: BoundFlow,
     *,
-    replace: bool,
-) -> None:
-    if candidate is None:
-        return
-    try:
-        ref = (
-            candidate
-            if isinstance(candidate, EvidenceArtifactRefV1)
-            else EvidenceArtifactRefV1.model_validate(candidate)
-        )
-    except (TypeError, ValueError):
-        return
-    existing = by_path.get(ref.path)
-    if existing is not None and existing.digest != ref.digest and not replace:
-        raise ValueError(f"conflicting Retro source digest for {ref.path}")
-    by_path[ref.path] = ref
-
-
-def adapt_retro(state: ProductState) -> dict[str, object]:
-    payload = _input_from_state(state)
-    window = payload.retro_window or RetroWindow(
-        selection=RetroSelectionSnapshot(
-            mode="change_ids",
-            requested_change_ids=(payload.change_id,),
-        ),
-        change_ids=(payload.change_id,),
+    name: str,
+    routes: Mapping[str, str],
+    inputs: Mapping[str, InputSource] | None = None,
+) -> Flow:
+    flow = Flow(
+        name,
+        input=_entrypoint_model(name),
+        outcomes=("completed", "failed"),
+        public=_PUBLIC,
     )
-    refs = _retro_source_refs(state, payload)
-    report_outcome = state.get("report_outcome")
-    report_receipt = (
-        report_outcome.get("report_receipt")
-        if isinstance(report_outcome, Mapping)
-        else getattr(report_outcome, "report_receipt", None)
+    flow.subflow("feature", child, routes=routes, inputs=dict(inputs or {}))
+    return flow
+
+
+def thin_root_flows(bundles: ProductFeatureBundles) -> dict[str, Flow]:
+    intake = Flow(
+        "intake",
+        input=_intake_input(),
+        outcomes=("completed", "failed"),
+        public=_PUBLIC,
+        ledger_inputs=(REWORK_CONTEXT,),
     )
-    receipt_digest = (
-        report_receipt.get("receipt_digest")
-        if isinstance(report_receipt, Mapping)
-        else getattr(report_receipt, "receipt_digest", None)
+    intake.subflow(
+        "prepare",
+        bundles.intake.prepare,
+        routes={"prepared": "init", "failed": "failed"},
+        inputs=_PREPARE_INPUTS,
     )
-    identity = {
-        "window": window.model_dump(mode="json"),
-        "source_refs": [item.model_dump(mode="json") for item in refs],
-        "report_receipt_digest": receipt_digest,
-    }
-    retro_id = f"retro-{canonical_digest(cast(JSONValue, identity))}"
-    feature_input = {
-        "change_id": payload.change_id,
-        "retro_id": retro_id,
-        "window": window.model_dump(mode="json"),
-        "source_refs": [item.model_dump(mode="json") for item in refs],
-        "capability_leafs": list(payload.capability_leafs),
-        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
-        "artifact_paths": list(payload.allowed_artifact_paths),
-    }
-    return {**feature_input, "feature_input": feature_input}
-
-
-def adapt_feature_status(status: object) -> ProductStatus:
-    if status is None or status == "":
-        return "completed"
-    if not isinstance(status, str):
-        raise TypeError("feature status must be a string")
-    try:
-        return _FEATURE_STATUS_TO_PRODUCT[status]
-    except KeyError:
-        raise ValueError(f"unsupported feature terminal status: {status!r}") from None
-
-
-def _receipt_items(state: Mapping[str, object]) -> list[dict[str, object]]:
-    receipts: list[dict[str, object]] = []
-    for key in ("receipts", "receipt_refs"):
-        raw = state.get(key)
-        if not isinstance(raw, list):
-            continue
-        for item in raw:
-            if not isinstance(item, Mapping):
-                continue
-            receipt_id = item.get("receipt_id")
-            digest = item.get("receipt_digest")
-            if isinstance(receipt_id, str) and isinstance(digest, str):
-                receipts.append({"receipt_id": receipt_id, "receipt_digest": digest})
-    return receipts
-
-
-def publish_public_output(state: ProductState) -> dict[str, object]:
-    cleaned = _as_mapping(state)
-    output = ProductPublicOutput(
-        change_id=str(cleaned["change_id"]),
-        status=adapt_feature_status(cleaned.get("status")),
-        receipts=tuple(ProductReceiptRefV1.model_validate(item) for item in _receipt_items(cleaned)),
+    intake.subflow(
+        "init",
+        bundles.generation.init_runtime,
+        routes={"completed": "case", "failed": "failed"},
     )
-    dumped = output.model_dump(mode="json")
-    terminal = TerminalEnvelope.model_validate(
-        cleaned.get("terminal") or {"status": output.status, "reason": output.status}
+    intake.subflow(
+        "case",
+        bundles.intake.case,
+        routes={
+            "reviewed": "completed",
+            "rejected": "failed",
+            "exhausted": "failed",
+            "failed": "failed",
+        },
+        inputs={
+            "coverage_epoch": const(0),
+            "plan_ref": ledger(PLAN, many=False),
+            "plan_digest": "plan_digest",
+        },
     )
     return {
-        "output": dumped,
-        "status": dumped["status"],
-        "receipts": list(dumped["receipts"]),
-        "terminal": terminal.model_dump(mode="json"),
+        "intake": intake,
+        "init": _mount(
+            bundles.generation.init_runtime,
+            name="init",
+            routes={"completed": "completed", "failed": "failed"},
+        ),
+        "retro": _mount(
+            bundles.improvement.retro,
+            name="retro",
+            routes=_DONE_ROUTES,
+            inputs=_RETRO_INPUTS,
+        ),
+        "issue-review": _mount(
+            bundles.quality.issue_review,
+            name="issue-review",
+            routes=_ISSUE_ROUTES,
+            inputs=_QUALITY_INPUTS,
+        ),
+        "issue-analyze": _mount(
+            bundles.quality.issue_analyze,
+            name="issue-analyze",
+            routes=_ISSUE_ROUTES,
+            inputs=_QUALITY_INPUTS,
+        ),
+        "issue-reconcile": _mount(
+            bundles.quality.issue_reconcile,
+            name="issue-reconcile",
+            routes={"ready": "completed", "failed": "failed"},
+            inputs=_QUALITY_INPUTS,
+        ),
     }
 
 
-def compile_thin_root(
-    context: GraphBuildContext,
-    child: CompiledStateGraph,
-    *,
-    entrypoint: str,
-    adapt: object,
-) -> CompiledStateGraph:
-    builder: StateGraph[ProductState] = StateGraph(ProductState)
-    builder.add_node("validate", validate_public_input(entrypoint))
-    builder.add_node("adapt", cast(Any, adapt))
-    builder.add_node("feature", child)
-    builder.add_node("publish", publish_public_output)
-    builder.add_edge(START, "validate")
-    builder.add_edge("validate", "adapt")
-    builder.add_edge("adapt", "feature")
-    builder.add_edge("feature", "publish")
-    builder.add_edge("publish", END)
-    return context.compile_root(builder)
-
-
-def build_init_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="init", adapt=adapt_init)
-
-
-def build_intake_root(
-    context: GraphBuildContext,
-    prepare: CompiledStateGraph,
-    init: CompiledStateGraph,
-    case: CompiledStateGraph,
-) -> CompiledStateGraph:
-    builder: StateGraph[ProductState] = StateGraph(ProductState)
-    builder.add_node("validate", validate_public_input("intake"))
-    builder.add_node("adapt", cast(Any, adapt_prepare))
-    builder.add_node("prepare", prepare)
-    builder.add_node("adapt-init", cast(Any, adapt_init))
-    builder.add_node("init", init)
-    builder.add_node("adapt-case", cast(Any, adapt_case))
-    builder.add_node("case", case)
-    builder.add_node("publish", publish_public_output)
-    builder.add_edge(START, "validate")
-    builder.add_edge("validate", "adapt")
-    builder.add_edge("adapt", "prepare")
-    builder.add_conditional_edges(
-        "prepare",
-        cast(Any, route_prepare),
-        {"prepared": "adapt-init", "failed": "publish"},
-    )
-    builder.add_edge("adapt-init", "init")
-    builder.add_conditional_edges(
-        "init",
-        cast(Any, route_init),
-        {"initialized": "adapt-case", "failed": "publish"},
-    )
-    builder.add_edge("adapt-case", "case")
-    builder.add_edge("case", "publish")
-    builder.add_edge("publish", END)
-    return context.compile_root(builder)
-
-
-def build_archive_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="archive", adapt=adapt_improvement)
-
-
-def build_retro_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="retro", adapt=adapt_retro)
-
-
-def build_issue_review_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="issue-review", adapt=adapt_quality)
-
-
-def build_issue_analyze_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="issue-analyze", adapt=adapt_quality)
-
-
-def build_issue_reconcile_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="issue-reconcile", adapt=adapt_quality)
-
-
-def build_improvement_review_root(
-    context: GraphBuildContext, child: CompiledStateGraph
-) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="improvement-review", adapt=adapt_improvement)
-
-
-def build_improvement_evaluate_root(
-    context: GraphBuildContext, child: CompiledStateGraph
-) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="improvement-evaluate", adapt=adapt_improvement)
-
-
-def build_improvement_export_root(
-    context: GraphBuildContext, child: CompiledStateGraph
-) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="improvement-export", adapt=adapt_improvement)
-
-
-def build_improvement_apply_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="improvement-apply", adapt=adapt_improvement)
-
-
-def build_improvement_rollback_root(
-    context: GraphBuildContext, child: CompiledStateGraph
-) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="improvement-rollback", adapt=adapt_improvement)
-
-
-__all__ = [
-    "adapt_feature_status",
-    "adapt_improvement",
-    "adapt_init",
-    "adapt_retro",
-    "adapt_case",
-    "adapt_prepare",
-    "adapt_quality",
-    "build_archive_root",
-    "build_init_root",
-    "build_improvement_apply_root",
-    "build_improvement_evaluate_root",
-    "build_improvement_export_root",
-    "build_improvement_review_root",
-    "build_improvement_rollback_root",
-    "build_intake_root",
-    "build_issue_analyze_root",
-    "build_issue_reconcile_root",
-    "build_issue_review_root",
-    "build_retro_root",
-    "compile_thin_root",
-    "publish_public_output",
-    "validate_public_input",
-]
+__all__ = ["thin_root_flows"]

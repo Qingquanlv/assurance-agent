@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.wire.schema import canonical_digest
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.artifacts import open_artifact, stage_json_artifact
 from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.plugin_api import FrozenModel, TaskHandler
 from pydantic import ValidationError
 
+from assurance_execution.contracts.workflow import EXECUTION_CYCLE_PATH, ExecutionCycleDocumentV1
+from assurance_generation.contracts.workflow import GENERATION_CYCLE_PATH, GenerationCycleResultV1
 from assurance_healing.contracts.application import (
     AppliedTestRepairV1,
     ApplyTestRepairInputV1,
@@ -19,7 +23,8 @@ from assurance_healing.contracts.application import (
     VerifiedTestRepairV1,
 )
 from assurance_healing.contracts.agent import FixProposalResultV1
-from graph_engine.plugin_api import TaskHandler
+from assurance_healing.contracts.repair_input import ApplyBoundInputV1
+from assurance_healing.operations.repair_input import opened_repair_input
 
 from assurance_healing.ops.apply_test_repair import (
     finalize as apply_test_repair_finalize,
@@ -44,6 +49,11 @@ CASE = "qa/cases/api/case.yaml"
 REVIEW = "qa/results/review/case-review.json"
 PREP = "qa/results/intake/prepare.json"
 SHA = "a" * 64
+_POLICY = {
+    "resource_id": "assurance.product.configuration.product-policy",
+    "sha256": "d" * 64,
+}
+_EXECUTION_RECEIPT = {"receipt_id": "execute", "receipt_digest": "c" * 64}
 
 
 def _write(root: Path, relative: str, data: bytes) -> dict[str, str]:
@@ -171,6 +181,86 @@ def _approval(proposal: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _stage_cycle(workspace: Path, relative: str, document: FrozenModel) -> dict[str, str]:
+    path = workspace / relative
+    if path.exists():
+        path.unlink()
+    ref = stage_json_artifact(workspace, relative, document)
+    return {"path": ref.path, "digest": ref.digest}
+
+
+def _reviewed_case(
+    plan_digest: str,
+    plan_ref: dict[str, str],
+    *,
+    prep_ref: dict[str, str],
+    case_ref: dict[str, str],
+    review_ref: dict[str, str],
+    selection_ref: dict[str, str],
+) -> dict[str, object]:
+    return {
+        "change_id": CHANGE,
+        "coverage_epoch": 0,
+        "plan_digest": plan_digest,
+        "plan_ref": plan_ref,
+        "preparation_refs": sorted(
+            [plan_ref, prep_ref],
+            key=lambda item: (item["path"], item["digest"]),
+        ),
+        "case_refs": [case_ref],
+        "review_ref": review_ref,
+        "selection_ref": selection_ref,
+    }
+
+
+def _stage_apply_cycles(
+    project: Path,
+    *,
+    plan_digest: str,
+    plan_ref: dict[str, str],
+    reviewed: dict[str, object],
+    mapping_ref: dict[str, str],
+    source_refs: list[dict[str, str]],
+    evidence_ref: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    generation = GenerationCycleResultV1.model_validate(
+        {
+            "change_id": CHANGE,
+            "coverage_epoch": 0,
+            "reviewed_case": reviewed,
+            "plan_digest": plan_digest,
+            "plan_ref": plan_ref,
+            "mapping_ref": mapping_ref,
+            "source_refs": sorted(source_refs, key=lambda item: (item["path"], item["digest"])),
+            "plan_refs": [plan_ref],
+            "method_plan_ref": {
+                "path": "qa/results/generation/epochs/0/obligation-methods.json",
+                "digest": SHA,
+            },
+        }
+    )
+    execution = ExecutionCycleDocumentV1.model_validate(
+        {
+            "change_id": CHANGE,
+            "plan_digest": plan_digest,
+            "plan_ref": plan_ref,
+            "coverage_epoch": 0,
+            "repair_round": 1,
+            "batch_id": "batch-1",
+            "executed_at": datetime(2026, 9, 5, 12, 0, 1, tzinfo=UTC),
+            "final_status": "FAIL",
+            "evidence_ref": evidence_ref,
+            "mapping_ref": mapping_ref,
+            "source_refs": sorted(source_refs, key=lambda item: (item["path"], item["digest"])),
+            "family_outcomes": [{"family": "api", "state": "executed"}],
+        }
+    )
+    return (
+        _stage_cycle(project, GENERATION_CYCLE_PATH, generation),
+        _stage_cycle(project, EXECUTION_CYCLE_PATH, execution),
+    )
+
+
 def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
     plan, plan_ref = install_plan(
         project,
@@ -185,50 +275,115 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
     proposal = _proposal()
     proposal_ref = _write(project, PROPOSAL, _json_bytes(proposal))
     approval_ref = _write(project, APPROVAL, _json_bytes(_approval(proposal)))
-    execution_ref = _write(
+    evidence_ref = _write(
         project,
         EXECUTION,
         _json_bytes(_execution(plan.plan_digest, plan_ref)),
     )
     source_ref = _write(project, SOURCE, before)
     selection_ref = _write(project, "qa/results/cases/epochs/0/selection.json", b'{"schema_version":"1"}\n')
+    reviewed = _reviewed_case(
+        plan.plan_digest,
+        plan_ref,
+        prep_ref=prep_ref,
+        case_ref=case_ref,
+        review_ref=review_ref,
+        selection_ref=selection_ref,
+    )
+    generation_ref, execution_ref = _stage_apply_cycles(
+        project,
+        plan_digest=plan.plan_digest,
+        plan_ref=plan_ref,
+        reviewed=reviewed,
+        mapping_ref=mapping_ref,
+        source_refs=[source_ref],
+        evidence_ref=evidence_ref,
+    )
     payload: dict[str, object] = {
         "change_id": CHANGE,
         "plan_digest": plan.plan_digest,
         "plan_ref": plan_ref,
+        "capability_leafs": ["users.read"],
         "coverage_epoch": 0,
         "repair_round": 1,
-        "reviewed_case": {
-            "change_id": CHANGE,
-            "coverage_epoch": 0,
-            "plan_digest": plan.plan_digest,
-            "plan_ref": plan_ref,
-            "preparation_refs": sorted(
-                [plan_ref, prep_ref],
-                key=lambda item: (item["path"], item["digest"]),
-            ),
-            "case_refs": [case_ref],
-            "review_ref": review_ref,
-            "selection_ref": selection_ref,
-        },
+        "product_policy": _POLICY,
+        "generation_ref": generation_ref,
+        "execution_ref": execution_ref,
+        "execution_receipt": _EXECUTION_RECEIPT,
         "proposal_ref": proposal_ref,
         "approval_ref": approval_ref,
-        "execution_ref": execution_ref,
-        "mapping_ref": mapping_ref,
-        "source_refs": [source_ref],
-        "allowed_test_paths": [SOURCE],
     }
     return payload, before
 
 
+def _opened(project: Path, payload: dict[str, object]) -> dict[str, Any]:
+    return opened_repair_input(project, ApplyBoundInputV1.model_validate(payload), ValueError)
+
+
+def _restage_apply_cycles(
+    project: Path,
+    payload: dict[str, object],
+    *,
+    mapping_ref: dict[str, str] | None = None,
+    source_refs: list[dict[str, str]] | None = None,
+    evidence_ref: dict[str, str] | None = None,
+) -> None:
+    generation = open_artifact(
+        project,
+        cast(dict[str, str], payload["generation_ref"]),
+        model=GenerationCycleResultV1,
+    )
+    execution = open_artifact(
+        project,
+        cast(dict[str, str], payload["execution_ref"]),
+        model=ExecutionCycleDocumentV1,
+    )
+    next_sources = source_refs or [item.model_dump(mode="json") for item in generation.source_refs]
+    next_mapping = mapping_ref or generation.mapping_ref.model_dump(mode="json")
+    payload["generation_ref"] = _stage_cycle(
+        project,
+        GENERATION_CYCLE_PATH,
+        generation.model_copy(
+            update={
+                "mapping_ref": EvidenceArtifactRefV1.model_validate(next_mapping),
+                "source_refs": tuple(EvidenceArtifactRefV1.model_validate(item) for item in next_sources),
+            }
+        ),
+    )
+    payload["execution_ref"] = _stage_cycle(
+        project,
+        EXECUTION_CYCLE_PATH,
+        execution.model_copy(
+            update={
+                "mapping_ref": EvidenceArtifactRefV1.model_validate(
+                    mapping_ref or execution.mapping_ref.model_dump(mode="json")
+                ),
+                "source_refs": tuple(
+                    EvidenceArtifactRefV1.model_validate(item)
+                    for item in (
+                        source_refs or [row.model_dump(mode="json") for row in execution.source_refs]
+                    )
+                ),
+                "evidence_ref": EvidenceArtifactRefV1.model_validate(
+                    evidence_ref or execution.evidence_ref.model_dump(mode="json")
+                ),
+            }
+        ),
+    )
+
+
 def _write_expected_repair_history(
+    project: Path,
     stage: Path,
     payload: dict[str, object],
     *,
     after: bytes,
     outputs: list[str] | None = None,
 ) -> bytes:
-    business = ApplyTestRepairInputV1.model_validate(payload)
+    filled = _opened(project, payload)
+    business = ApplyTestRepairInputV1.model_validate(
+        {key: value for key, value in filled.items() if key in ApplyTestRepairInputV1.model_fields}
+    )
     changed = tuple(
         EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(after).hexdigest())
         for path in (outputs or [SOURCE])
@@ -326,12 +481,15 @@ async def test_finalize_proves_existing_test_bytes_changed(tmp_path: Path) -> No
     stage = tmp_path / ".stage"
     after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
     _write(stage, SOURCE, after)
-    first_history = _write_expected_repair_history(stage, payload, after=after)
+    first_history = _write_expected_repair_history(tmp_path, stage, payload, after=after)
     result = await _finalize(tmp_path, stage, payload, [SOURCE])
     assert result.outcome.status == "succeeded", result.outcome.failure
     output = cast(dict[str, Any], result.outcome.output)
     assert output["changed_test_refs"] == [{"path": SOURCE, "digest": hashlib.sha256(after).hexdigest()}]
-    assert output["mapping_ref"] == payload["mapping_ref"]
+    mapping_ref = _opened(tmp_path, payload)["mapping_ref"]
+    assert output["mapping_ref"] == (
+        mapping_ref.model_dump(mode="json") if hasattr(mapping_ref, "model_dump") else mapping_ref
+    )
     history_path = stage / "qa/results/healing/epochs/0/rounds/1/repair.json"
     history = json.loads(first_history)
     assert history["loop_kind"] == "implementation_repair"
@@ -358,26 +516,18 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
         adapter_version="1.0.0",
     )
     proposal_input = {
-        "change_id": CHANGE,
-        "plan_digest": payload["plan_digest"],
-        "plan_ref": payload["plan_ref"],
-        "owner_id": "assurance.healing",
-        "capability_leafs": ["users.read"],
-        "allowed_paths": [SOURCE],
-        "allowed_roots": ["qa"],
-        "mapping_paths": [SOURCE],
-        "baseline_digest": "b" * 64,
-        "candidate_digest": "c" * 64,
-        "policy_digest": "d" * 64,
-        "execution_evidence_digest": "e" * 64,
+        key: value for key, value in payload.items() if key not in {"proposal_ref", "approval_ref"}
     }
     proposed = await execute_task(
         cast(TaskHandler, fix_proposal_finalize),
-        {
-            **proposal_input,
-            "prepare": proposal_input,
-            "agent_result": agent.model_dump(mode="json"),
-        },
+        cast(
+            JSONValue,
+            {
+                **proposal_input,
+                "prepare": proposal_input,
+                "agent_result": agent.model_dump(mode="json"),
+            },
+        ),
         tmp_path,
         write_root=proposal_stage,
     )
@@ -387,7 +537,7 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
     stage = tmp_path / ".stage"
     after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
     _write(stage, SOURCE, after)
-    _write_expected_repair_history(stage, payload, after=after)
+    _write_expected_repair_history(tmp_path, stage, payload, after=after)
     result = await _finalize(tmp_path, stage, payload, [SOURCE])
     assert result.outcome.status == "succeeded", result.outcome.failure
 
@@ -399,10 +549,13 @@ async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tm
     other_source = other_target
     other_bytes = b"def test_other():\n    assert True\n"
     other_ref = _write(tmp_path, other_source, other_bytes)
-    source_refs = cast(list[dict[str, str]], payload["source_refs"])
-    payload["source_refs"] = sorted([*source_refs, other_ref], key=lambda ref: ref["path"])
-    payload["allowed_test_paths"] = sorted([SOURCE, other_source])
-    execution = _execution()
+    opened = _opened(tmp_path, payload)
+    current_sources = [
+        item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+        for item in opened["source_refs"]
+    ]
+    source_refs = sorted([*current_sources, other_ref], key=lambda ref: (ref["path"], ref["digest"]))
+    execution = _execution(str(payload["plan_digest"]), cast(dict[str, str], payload["plan_ref"]))
     execution["mapping"]["selected"].append(f"{other_target}::test_other")
     execution["mapping"]["mappings"].append(
         {
@@ -416,8 +569,15 @@ async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tm
         {"test": f"{other_target}::test_other", "status": "passed", "duration_ms": 1, "case_id": "CASE_2"}
     )
     execution["receipt"]["commands"][0].update(collected=2, passed=1)
-    payload["mapping_ref"] = _write(tmp_path, MAPPING, _json_bytes(execution["mapping"]))
-    payload["execution_ref"] = _write(tmp_path, EXECUTION, _json_bytes(execution))
+    mapping_ref = _write(tmp_path, MAPPING, _json_bytes(execution["mapping"]))
+    evidence_ref = _write(tmp_path, EXECUTION, _json_bytes(execution))
+    _restage_apply_cycles(
+        tmp_path,
+        payload,
+        mapping_ref=mapping_ref,
+        source_refs=source_refs,
+        evidence_ref=evidence_ref,
+    )
     prepared = await execute_task(
         cast(TaskHandler, apply_test_repair_prepare),
         cast(JSONValue, payload),
@@ -430,7 +590,7 @@ async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tm
     stage = tmp_path / ".stage"
     after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
     _write(stage, SOURCE, after)
-    _write_expected_repair_history(stage, payload, after=after)
+    _write_expected_repair_history(tmp_path, stage, payload, after=after)
     result = await _finalize(tmp_path, stage, payload, [SOURCE])
     assert result.outcome.status == "succeeded", result.outcome.failure
     assert (tmp_path / other_source).read_bytes() == other_bytes
@@ -523,7 +683,16 @@ async def test_finalize_rejects_rejected_or_missing_approval(tmp_path: Path) -> 
 async def test_finalize_rejects_mapping_membership_change(tmp_path: Path) -> None:
     payload, _before = _fixture(tmp_path)
     altered = _write(tmp_path, MAPPING, _json_bytes(_mapping(symbol="test_admin")))
-    payload["mapping_ref"] = altered
+    generation = open_artifact(
+        tmp_path,
+        cast(dict[str, str], payload["generation_ref"]),
+        model=GenerationCycleResultV1,
+    )
+    payload["generation_ref"] = _stage_cycle(
+        tmp_path,
+        GENERATION_CYCLE_PATH,
+        generation.model_copy(update={"mapping_ref": EvidenceArtifactRefV1.model_validate(altered)}),
+    )
     stage = tmp_path / ".stage"
     _write(
         stage,
@@ -565,31 +734,3 @@ def test_input_binds_reviewed_case_epoch() -> None:
                 "allowed_test_paths": [SOURCE],
             }
         )
-
-
-def test_publisher_adds_only_real_commit_receipt() -> None:
-    from assurance_healing.contracts.application import VerifiedTestRepairV1
-    from assurance_healing.graphs.nodes import publish_applied_repair
-
-    ref = {"path": SOURCE, "digest": SHA}
-    verified = VerifiedTestRepairV1.model_validate(
-        {
-            "change_id": CHANGE,
-            "plan_digest": SHA,
-            "plan_ref": {
-                "path": f"qa/results/plan/{SHA}/resolved-assurance-plan.json",
-                "digest": SHA,
-            },
-            "coverage_epoch": 0,
-            "repair_round": 1,
-            "changed_test_refs": [ref],
-            "mapping_ref": {"path": MAPPING, "digest": SHA},
-        }
-    )
-    receipt = ReceiptRef(receipt_id="receipt-1", receipt_digest=SHA)
-    published = publish_applied_repair(
-        {"kind": "failure", "rounds_used": 1, "rounds_budget": 2}, verified, receipt
-    )
-    repair_result = cast(dict[str, object], published["repair_result"])
-    assert repair_result["status"] == "applied"
-    assert repair_result["receipt"] == receipt.model_dump(mode="json")

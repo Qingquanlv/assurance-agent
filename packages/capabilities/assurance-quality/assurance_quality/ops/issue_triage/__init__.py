@@ -5,6 +5,7 @@ from __future__ import annotations
 from agent_runtime_contracts.ops import Agent, Finalize
 
 from assurance_quality.contracts.agent import IssueTriageResultV1, QualitySkillInputV1
+from assurance_quality.contracts.decisions import IssueTriagePublishedV1
 from assurance_quality.ops import router
 from assurance_quality.ops.issue_triage import hooks
 
@@ -18,7 +19,7 @@ op = router.agent(
         writes=("qa/results/inspect/issue-triage.json",),
     ),
     finalize=Finalize(hook=hooks.after),
-    output=IssueTriageResultV1,
+    output=IssueTriagePublishedV1,
 )
 
 __all__ = ["op"]

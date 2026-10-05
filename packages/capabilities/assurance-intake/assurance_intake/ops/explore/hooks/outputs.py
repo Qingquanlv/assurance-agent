@@ -3,20 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import cast
 
 import yaml
-from pydantic import ValidationError
-
 from agent_runtime_contracts.ops import (
     OutputError,
 )
-from graph_engine.canonical import canonical_json_bytes
 
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.explore import (
-    EXPLORATION_PATH,
     REQUIREMENT_PATH,
     RUN_SPEC_SNAPSHOT_PATH,
     ExploreAdvisoryV1,
@@ -28,7 +24,7 @@ from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObli
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
 )
-from assurance_intake.domain.artifacts import file_digest, workspace_file
+from assurance_intake.domain.artifacts import file_digest
 from assurance_intake.domain.impact_validation import validate_inventory_references
 from assurance_intake.domain.obligations import (
     TrustedIntakeSourcesV1,
@@ -38,18 +34,7 @@ from assurance_intake.domain.obligations import (
     normalize_obligation_drafts,
     resolve_requirement_quote,
 )
-from assurance_intake.ops.explore.models import CONTEXT_PATH, ExploreContextV1
-
-
-def _load_explore_context(workspace: Path, *, change_id: str) -> ExploreContextV1:
-    path = workspace_file(workspace, CONTEXT_PATH)
-    try:
-        context = ExploreContextV1.model_validate_json(path.read_bytes())
-    except (OSError, ValidationError, ValueError) as error:
-        raise OutputError(f"explore context.json is missing or invalid in staging: {error}") from error
-    if context.change_id != change_id:
-        raise OutputError("explore context.json change_id does not match its change directory")
-    return context
+from assurance_intake.ops.explore.models import ExploreContextV1
 
 
 def _advisory_evidence_ids(document: ExploreAdvisoryV1) -> frozenset[str]:
@@ -73,41 +58,21 @@ def _advisory_evidence_ids(document: ExploreAdvisoryV1) -> frozenset[str]:
 
 
 def validate_explore_outputs(
-    workspace: Path,
-    declared: tuple[str, ...],
+    advisory: ExploreAdvisoryV1,
+    inventory: ChangeImpactInventoryV1,
+    context: ExploreContextV1,
     *,
     change_id: str,
     capability_leafs: frozenset[str],
 ) -> None:
-    advisory: ExploreAdvisoryV1 | None = None
-    inventory: ChangeImpactInventoryV1 | None = None
-    for relative in declared:
-        parts = PurePosixPath(relative).parts
-        if relative.endswith("/explore/exploration-draft.json"):
-            if parts != ("qa", "results", "explore", "exploration-draft.json"):
-                raise OutputError(f"invalid exploration-draft.json path: {relative}")
-            path = workspace_file(workspace, relative)
-            try:
-                advisory = ExploreAdvisoryV1.model_validate_json(path.read_bytes())
-            except (OSError, ValidationError, ValueError) as error:
-                raise OutputError(f"invalid exploration-draft.json: {error}") from error
-            if advisory.change_id != change_id:
-                raise OutputError("exploration-draft.json change_id does not match its change directory")
-            if advisory.context_ref != "explore/context.json":
-                raise OutputError("exploration-draft.json context_ref must be explore/context.json")
-        elif relative.endswith("/explore/impact-inventory.json"):
-            if parts != ("qa", "results", "explore", "impact-inventory.json"):
-                raise OutputError(f"invalid impact-inventory.json path: {relative}")
-            path = workspace_file(workspace, relative)
-            try:
-                inventory = ChangeImpactInventoryV1.model_validate_json(path.read_bytes())
-            except (OSError, ValidationError, ValueError) as error:
-                raise OutputError(f"invalid impact-inventory.json: {error}") from error
-            if inventory.change_id != change_id:
-                raise OutputError("impact-inventory.json change_id does not match its change directory")
-    if advisory is None or inventory is None:
-        return
-    context = _load_explore_context(workspace, change_id=change_id)
+    if advisory.change_id != change_id:
+        raise OutputError("exploration-draft.json change_id does not match its change directory")
+    if advisory.context_ref != "explore/context.json":
+        raise OutputError("exploration-draft.json context_ref must be explore/context.json")
+    if inventory.change_id != change_id:
+        raise OutputError("impact-inventory.json change_id does not match its change directory")
+    if context.change_id != change_id:
+        raise OutputError("explore context.json change_id does not match its change directory")
     resolvable = context.impact.resolvable_ids() | frozenset(
         item.id for item in advisory.source_code_evidence
     )
@@ -119,26 +84,19 @@ def validate_explore_outputs(
     unresolvable = sorted(_advisory_evidence_ids(advisory) - resolvable)
     if unresolvable:
         raise OutputError(f"exploration.json cites unresolvable evidence ids: {unresolvable}")
-    try:
-        validate_inventory_references(
-            inventory,
-            resolvable=resolvable,
-            seed_ids=context.impact.seed_ids(),
-            capability_leafs=capability_leafs,
-        )
-    except ValueError as error:
-        raise OutputError(f"impact-inventory.json: {error}") from error
+    validate_inventory_references(
+        inventory,
+        resolvable=resolvable,
+        seed_ids=context.impact.seed_ids(),
+        capability_leafs=capability_leafs,
+    )
 
 
-def _trusted_sources(workspace: Path) -> TrustedIntakeSourcesV1 | None:
-    requirement = workspace.joinpath(*REQUIREMENT_PATH.split("/"))
-    snapshot = workspace.joinpath(*RUN_SPEC_SNAPSHOT_PATH.split("/"))
-    if not requirement.is_file() or requirement.is_symlink():
+def _trusted_sources(
+    requirement_bytes: bytes | None, snapshot_bytes: bytes | None
+) -> TrustedIntakeSourcesV1 | None:
+    if requirement_bytes is None or snapshot_bytes is None:
         return None
-    if not snapshot.is_file() or snapshot.is_symlink():
-        return None
-    requirement_bytes = requirement.read_bytes()
-    snapshot_bytes = snapshot.read_bytes()
     families: tuple[TestFamily, ...] = ()
     try:
         document = yaml.safe_load(snapshot_bytes)
@@ -192,16 +150,13 @@ def seal_official_exploration(
     workspace: Path,
     advisory: ExploreAdvisoryV1,
     *,
+    requirement_bytes: bytes | None,
+    snapshot_bytes: bytes | None,
     candidate_families: frozenset[str],
     policy_required: frozenset[str],
-) -> tuple[PreparedExploreV1, bytes]:
-    requirement = workspace.joinpath(*REQUIREMENT_PATH.split("/"))
-    text = (
-        requirement.read_text(encoding="utf-8")
-        if requirement.is_file() and not requirement.is_symlink()
-        else ""
-    )
-    digest = file_digest(requirement.read_bytes()) if requirement.is_file() else ""
+) -> PreparedExploreV1:
+    text = requirement_bytes.decode("utf-8") if requirement_bytes is not None else ""
+    digest = file_digest(requirement_bytes) if requirement_bytes is not None else ""
     resolved: dict[tuple[str, str], SourceRefV1] = {}
     quotes = [
         quote
@@ -224,7 +179,12 @@ def seal_official_exploration(
             locator=f"bytes:{start}-{end}",
         )
     rows = normalize_obligation_drafts(advisory.minimum_required_coverage, resolved_quotes=resolved)
-    sources = _trusted_sources(workspace)
+    sources = _trusted_sources(requirement_bytes, snapshot_bytes)
+    captured_images = (
+        {REQUIREMENT_PATH: requirement_bytes, RUN_SPEC_SNAPSHOT_PATH: snapshot_bytes}
+        if requirement_bytes is not None and snapshot_bytes is not None
+        else None
+    )
     sealed: list[object] = []
     for row in rows:
         bases = []
@@ -237,6 +197,7 @@ def seal_official_exploration(
                         purpose="expected_basis",
                         workspace=workspace,
                         sources=sources,
+                        captured_images=captured_images,
                     )
                     status = "authenticated"
                 except ValueError:
@@ -272,10 +233,4 @@ def seal_official_exploration(
         open_questions_for_case_design=tuple(advisory.open_questions_for_case_design),
         test_strategy=advisory.test_strategy,
     )
-    data = canonical_json_bytes(official.model_dump(mode="json")) + b"\n"
-    destination = workspace.joinpath(*EXPLORATION_PATH.split("/"))
-    if destination.exists() or destination.is_symlink():
-        raise OutputError("official exploration.json must be written by finalize only")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(data)
-    return official, data
+    return official

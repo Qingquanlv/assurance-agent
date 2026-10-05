@@ -10,7 +10,7 @@ import yaml
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
-from assurance_generation.graphs.nodes import publish_codegen, select_codegen, select_codegen_review
+from assurance_generation.contracts.agent import CodegenInputV1
 from assurance_generation.operations.codegen import codegen_prepare_handler
 from assurance_generation.operations.review import review_prepare_handler
 from tests.product.test_change_local_output_routing import execute_task
@@ -25,21 +25,9 @@ def test_codegen_retry_handoff_preserves_previous_codegen_output(family: str) ->
     first = codegen_result(files=[durable_oracle_path(family=family)], family=family)
     revised = dict(first)
     revised = {**first, "required_capabilities": ["auth.session.create", "entities.item.create"]}
-    state = {
-        **business,
-        "family": family,
-        "allowed_artifact_paths": business["artifact_paths"],
-        "rounds_used": 0,
-    }
-    state.update(publish_codegen(state, first, {"receipt_id": "r1", "receipt_digest": "a" * 64}))
-    assert select_codegen(state).codegen_output == first
-
-    state.update(publish_codegen(state, revised, {"receipt_id": "r2", "receipt_digest": "b" * 64}))
-    state["rounds_used"] = 1
-    selected = select_codegen(state)
+    selected = CodegenInputV1.model_validate({**business, "local_round": 1, "codegen_output": revised})
     assert selected.local_round == 1
     assert selected.codegen_output == revised
-    assert select_codegen_review(state).codegen_output == revised
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -57,14 +45,7 @@ async def test_codegen_retry_prepare_receives_previous_codegen_output(family: st
     case_path = tmp_path / "qa/cases/items/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_text(yaml.safe_dump(reviewed_cases(family), sort_keys=False), encoding="utf-8")
-    state = {
-        **business,
-        "family": family,
-        "allowed_artifact_paths": business["artifact_paths"],
-        "rounds_used": 1,
-    }
-    state.update(publish_codegen(state, previous, {"receipt_id": "r1", "receipt_digest": "a" * 64}))
-    selected = select_codegen(state)
+    selected = CodegenInputV1.model_validate({**business, "local_round": 1, "codegen_output": previous})
     assert selected.local_round > 0
     assert selected.codegen_output == previous
 

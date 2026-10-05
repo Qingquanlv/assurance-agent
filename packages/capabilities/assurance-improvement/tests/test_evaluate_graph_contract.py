@@ -13,7 +13,11 @@ from assurance_improvement.contracts.attempts import (
     close_improvement_task,
     select_evaluate_memory,
 )
-from assurance_improvement.contracts.delivery import MemoryEvalReceipt, artifact_digest
+from assurance_improvement.contracts.delivery import (
+    MemoryEvalPublishedV1,
+    MemoryEvalReceipt,
+    artifact_digest,
+)
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1, ImprovementEffectReceiptV1
 from assurance_improvement.contracts.improvements import ImprovementProjection
 from assurance_improvement.effects.delivery import ImprovementDeliveryEffect
@@ -35,7 +39,6 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import (
@@ -113,7 +116,7 @@ async def test_complete_typed_selector_returns_receipt_and_delivery_intent() -> 
         json_value(selected.model_dump(mode="json")),
     )
     assert outcome.status == "succeeded"
-    receipt = MemoryEvalReceipt.model_validate(outcome.output)
+    receipt = MemoryEvalReceipt.model_validate(as_object(outcome.output)["memory_eval"])
     projection = ImprovementProjection.model_validate(improvement_projection())
     assert receipt.approved_state_digest == artifact_digest(projection)
     assert receipt.approved_version == projection.version
@@ -126,19 +129,19 @@ async def test_complete_typed_selector_returns_receipt_and_delivery_intent() -> 
 
 
 def test_memory_eval_is_payload_discriminator_not_a_seventh_effect_kind() -> None:
-    assert _DELIVERY_KIND in EXPECTED_EFFECT_KINDS
-    assert "memory_eval" not in EXPECTED_EFFECT_KINDS
-    assert "assurance.improvement.effect.memory_eval.v1" not in EXPECTED_EFFECT_KINDS
     contribution = ImprovementPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
-    assert {item.kind for item in contribution.effects} == {
+    kinds = {item.kind for item in contribution.effects}
+    assert _DELIVERY_KIND in kinds
+    assert "memory_eval" not in kinds
+    assert "assurance.improvement.effect.memory_eval.v1" not in kinds
+    assert kinds == {
         "assurance.improvement.effect.archive.v1",
         "assurance.improvement.effect.delivery.v1",
         "assurance.improvement.effect.promotion.v1",
     }
-    assert len(EXPECTED_EFFECT_KINDS) == 6
     contract = TASK_ATTEMPT_CONTRACTS[_EVALUATE_ID]
     assert contract.validators == ()
-    assert contract.output_model is MemoryEvalReceipt
+    assert contract.output_model is MemoryEvalPublishedV1
 
 
 def test_offline_benchmark_eval_comparator_is_not_this_handler() -> None:
@@ -357,7 +360,8 @@ async def test_kernel_settles_delivery_inside_same_attempt_before_receipt(tmp_pa
         trace: list[str] = []
         result = await kernel.execute_or_recover(key, resolved, validated, context, trace=trace)
         assert isinstance(result, CommittedTaskResult)
-        assert isinstance(result.output, MemoryEvalReceipt)
+        assert isinstance(result.output, MemoryEvalPublishedV1)
+        assert isinstance(result.output.memory_eval, MemoryEvalReceipt)
         assert closed.dispatch_count == 1
         assert effect.apply_calls == 1
         assert "settle_effects" in trace

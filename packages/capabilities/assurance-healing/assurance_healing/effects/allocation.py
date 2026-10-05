@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from assurance_healing.contracts.effects import HealingAllocationIntentV2, HealingAllocationReceiptV2
-from assurance_healing.effects.common import apply_effect, reconcile_effect
 from assurance_healing.operations.keys import derive_allocation_ids
+from graph_engine.effects.idempotent import apply_idempotent_effect, reconcile_idempotent_effect
 from graph_engine.effects.state import EffectCallContext
 from graph_engine.plugin_api import EffectApplyResult, EffectIntent, EffectReconcileResult
 
@@ -15,7 +15,7 @@ ALLOCATION_RECEIPT_SCHEMA = "assurance.healing.schema.allocation-receipt.v2"
 
 class HealingAllocationEffect:
     async def apply(self, intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult:
-        return await apply_effect(
+        return await apply_idempotent_effect(
             context=context,
             intent=intent,
             expected_kind=ALLOCATION_KIND,
@@ -26,7 +26,7 @@ class HealingAllocationEffect:
         )
 
     async def reconcile(self, intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult:
-        return await reconcile_effect(
+        return await reconcile_idempotent_effect(
             context=context,
             intent=intent,
             expected_kind=ALLOCATION_KIND,

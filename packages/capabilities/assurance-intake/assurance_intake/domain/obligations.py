@@ -1,4 +1,4 @@
-"""Obligation normalization, source authentication, and explicit gap calculation."""
+"""Obligation normalization and source authentication."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_intake.contracts.common import SHA256_PATTERN, TestFamily, validate_family_tuple
 from assurance_intake.contracts.explore import ObligationDraftV1, SourceQuoteV1
 from assurance_intake.contracts.obligations import (
-    DiscoveryAuditRowV1,
     ExpectedBasisV1,
     PreparedObligationV1,
     RequiredObservationV1,
@@ -22,10 +22,6 @@ from assurance_intake.contracts.obligations import (
     VerificationRequirementV1,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-
-
-class InputError(ValueError):
-    """Raised for dangling or mistyped obligation references."""
 
 
 class TrustedIntakeSourcesV1(FrozenModel):
@@ -250,37 +246,12 @@ def scope_exclusion_allowed(
 
 
 def _read_trusted_bytes(workspace: Path, ref: EvidenceArtifactRefV1) -> bytes:
-    path = workspace.joinpath(*ref.path.split("/"))
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"trusted source is missing: {ref.path}")
-    data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != ref.digest:
-        raise ValueError(f"trusted source digest does not match: {ref.path}")
-    return data
-
-
-def build_source_index(
-    sources: TrustedIntakeSourcesV1, *, workspace: Path
-) -> Mapping[str, tuple[SourceRefV1, ...]]:
-    _read_trusted_bytes(workspace, sources.requirement_ref)
-    _read_trusted_bytes(workspace, sources.run_spec_ref)
-    return {
-        "requirement": (
-            SourceRefV1(
-                kind="requirement",
-                artifact=sources.requirement_ref,
-                locator="bytes:0-0",
-            ),
-        ),
-        "run-spec": (
-            SourceRefV1(
-                kind="decision",
-                artifact=sources.run_spec_ref,
-                locator="/candidate_test_families",
-            ),
-        ),
-    }
+    try:
+        return open_artifact(workspace, ref)
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise ValueError(f"trusted source digest does not match: {ref.path}") from error
+        raise ValueError(f"trusted source is missing: {ref.path}") from error
 
 
 def authenticate_source(
@@ -289,6 +260,7 @@ def authenticate_source(
     purpose: _AUTH_PURPOSE,
     workspace: Path,
     sources: TrustedIntakeSourcesV1,
+    captured_images: Mapping[str, bytes] | None = None,
 ) -> None:
     allowed = _PURPOSE_KINDS[purpose]
     if ref.kind not in allowed:
@@ -308,7 +280,12 @@ def authenticate_source(
     expected = trusted.get(ref.artifact.path)
     if expected is None or expected != ref.artifact.digest:
         raise ValueError("source artifact is not in the trusted intake index")
-    _read_trusted_bytes(workspace, ref.artifact)
+    if captured_images is None:
+        _read_trusted_bytes(workspace, ref.artifact)
+    else:
+        image = captured_images.get(ref.artifact.path)
+        if image is None or hashlib.sha256(image).hexdigest() != ref.artifact.digest:
+            raise ValueError(f"trusted source digest does not match: {ref.artifact.path}")
     if ref.kind == "decision" and ref.locator != "/candidate_test_families":
         raise ValueError("run-spec locator must be /candidate_test_families")
 
@@ -342,72 +319,14 @@ def apply_scope_exclusions(
     return tuple(updated)
 
 
-def obligation_gaps(
-    row: PreparedObligationV1,
-    *,
-    admissible_families: frozenset[str],
-    supported_profiles: frozenset[str],
-) -> tuple[str, ...]:
-    gaps: set[str] = set()
-    layers = {"api", "e2e"} if row.layer == "both" else {row.layer}
-    if row.required and not layers.intersection(admissible_families):
-        gaps.add("family_unavailable")
-    if row.key is None:
-        gaps.add("capability_unresolved")
-    if row.open_questions or not row.expected_basis_refs:
-        gaps.add("expectation_unconfirmed")
-    if any(basis.source_status != "authenticated" for basis in row.expected_basis_refs):
-        gaps.add("expectation_unconfirmed")
-    if not row.verification_requirements:
-        gaps.add("method_missing")
-    for requirement in row.verification_requirements:
-        if requirement.profile_id not in supported_profiles:
-            gaps.add("method_unsupported")
-        if any(item.expected is None for item in requirement.observations):
-            gaps.add("expectation_unconfirmed")
-    return tuple(sorted(gaps))
-
-
-def validate_discovery_closure(
-    *,
-    obligations: tuple[PreparedObligationV1, ...],
-    impact_rows: tuple[str, ...],
-    audit: tuple[DiscoveryAuditRowV1, ...],
-) -> tuple[str, ...]:
-    if len(impact_rows) != len(set(impact_rows)):
-        raise InputError("duplicate impact row")
-    known_rows = set(impact_rows)
-    known_mrc = {row.mrc_id for row in obligations}
-    for row in obligations:
-        unknown = [row_id for row_id in row.impact_row_ids if row_id not in known_rows]
-        if unknown:
-            raise InputError(f"impact row is not in the current inventory: {unknown}")
-    for entry in audit:
-        if entry.disposition == "mapped":
-            missing = [mrc_id for mrc_id in entry.mrc_ids if mrc_id not in known_mrc]
-            if missing:
-                raise InputError(f"audit maps unknown MRC: {missing}")
-    covered = {row_id for row in obligations for row_id in row.impact_row_ids}
-    explained = {entry.source.locator for entry in audit if entry.disposition in {"excluded", "pending"}}
-    gaps: set[str] = set()
-    for row_id in impact_rows:
-        if row_id not in covered and row_id not in explained:
-            gaps.add("impact_unmapped")
-    return tuple(sorted(gaps))
-
-
 __all__ = [
-    "InputError",
     "apply_scope_exclusions",
     "authenticate_source",
-    "build_source_index",
     "draft_mrc_id",
     "journey_keys_from_document",
     "normalize_goal_obligations",
     "normalize_obligation_drafts",
-    "obligation_gaps",
     "required_goal_families",
     "resolve_requirement_quote",
     "scope_exclusion_allowed",
-    "validate_discovery_closure",
 ]

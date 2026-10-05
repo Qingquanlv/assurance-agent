@@ -1,172 +1,157 @@
+"""Case flow routes: every public outcome, both failures, and budget exhaustion."""
+
 from __future__ import annotations
 
-import ast
-from collections.abc import Callable, Mapping
-from pathlib import Path
+from typing import Any
 
 import pytest
 
-from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
-from assurance_intake.graphs.case import (
-    case_review_named_matches,
-    human_review_named_matches,
-    route_case_review,
-    route_human_review,
-    route_review_round,
-)
+from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
+from graph_engine.testing import GraphHarness, committed
 
-_ROUTES_PATH = Path(__file__).resolve().parents[1] / "assurance_intake" / "graphs" / "case.py"
-_ROUTE_FUNCTIONS = (
-    "_has_budget",
-    "_is_review_repair",
-    "_named_matches",
-    "case_review_named_matches",
-    "human_review_named_matches",
-    "route_case_review",
-    "route_human_review",
-    "route_review_round",
-)
+from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_intake.graphs.factory import build_intake_graphs as _build_intake_graphs
+
+from graph_engine.testing.feature_bundle import compile_bundle
 
 
-def _review_state(
-    *,
-    decision: str = "needs_fix",
-    auto_fix_allowed: bool = False,
-    human_review_required: bool = False,
-    rounds_used: int = 0,
-    rounds_budget: int = 2,
-    action: str | None = None,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "decision": decision,
-        "auto_fix_allowed": auto_fix_allowed,
-        "human_review_required": human_review_required,
-        "rounds_used": rounds_used,
-        "rounds_budget": rounds_budget,
+def build_intake_graphs(*args, **kwargs):
+    return compile_bundle(_build_intake_graphs(*args, **kwargs))
+
+
+_SHA = "a" * 64
+_RECEIPT = ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA)
+
+
+def _contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
+    return {
+        **{contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()},
+        **{contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()},
     }
-    if action is not None:
-        payload["human_action"] = action
+
+
+def _reviewed_case() -> dict[str, object]:
+    plan_ref = {"path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json", "digest": _SHA}
+    return {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 0,
+        "plan_digest": _SHA,
+        "plan_ref": plan_ref,
+        "preparation_refs": [{"path": "qa/requirement.md", "digest": _SHA}, plan_ref],
+        "case_refs": [{"path": "qa/cases/menus/case.yaml", "digest": _SHA}],
+        "review_ref": {"path": "qa/results/review/case-review.json", "digest": _SHA},
+        "selection_ref": {"path": "qa/results/cases/epochs/0/selection.json", "digest": _SHA},
+    }
+
+
+def _review(public_outcome: str) -> dict[str, object]:
+    return {"public_outcome": public_outcome, "reviewed_case": _reviewed_case()}
+
+
+def _input(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "change_id": "CH-DEMO-001",
+        "capability_leafs": ["entities.item.create"],
+        "allowed_artifact_paths": ["qa/cases", "qa/proposal.md", "qa/results"],
+        "budgets": {"review_rounds": 2},
+        "plan_digest": _SHA,
+        "plan_ref": {"path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json", "digest": _SHA},
+        "selected_test_families": ["api"],
+        "case_delta_paths": ["qa/cases/menus/case.yaml"],
+        "preparation_refs": [{"path": "qa/requirement.md", "digest": _SHA}],
+        "coverage_epoch": 0,
+    }
+    payload.update(overrides)
     return payload
 
 
-def _assert_no_priority_if(node: ast.AST) -> None:
-    for child in ast.walk(node):
-        if isinstance(child, ast.If) and child.orelse:
-            for branch in child.orelse:
-                assert not isinstance(branch, ast.If), "exclusive routes must not use priority if/elif"
-
-
-def test_routes_use_select_exclusive_route_without_priority_if_elif() -> None:
-    source = _ROUTES_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(_ROUTES_PATH))
-    functions = {
-        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-    }
-    inspected = [functions[name] for name in _ROUTE_FUNCTIONS]
-    assert [name for name in functions if name.startswith("route_")] == [
-        "route_case_review",
-        "route_human_review",
-        "route_review_round",
-    ]
-    for node in inspected:
-        if node.name.startswith("route_"):
-            assert any(
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id == "select_exclusive_route"
-                for child in ast.walk(node)
-            ), node.name
-        _assert_no_priority_if(node)
-    for node in tree.body:
-        table: ast.AST | None = None
-        if (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id.endswith("_TABLE")
-        ):
-            table = node.value
-        elif (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id.endswith("_TABLE")
-        ):
-            table = node.value
-        if table is not None:
-            _assert_no_priority_if(table)
+async def _run(script: Any, **overrides: object) -> dict[str, Any]:
+    harness = GraphHarness()
+    bundle = build_intake_graphs(
+        harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
+    )
+    result = await harness.run(bundle.case, input=_input(**overrides), script=script)
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    return {"terminal": terminal, "calls": [call.semantic_node_id for call in result.semantic_calls]}
 
 
 @pytest.mark.parametrize(
-    ("builder", "otherwise"),
-    [
-        (case_review_named_matches, "exhausted"),
-        (human_review_named_matches, "exhausted"),
-    ],
+    ("outcome", "status"),
+    [("pass", "reviewed"), ("reject", "rejected")],
 )
-def test_exclusive_route_zero_and_two_simultaneous_named_matches(
-    builder: Callable[[Mapping[str, object]], dict[str, str | None]], otherwise: str
-) -> None:
-    empty = builder(_review_state(decision="unknown"))
-    assert select_exclusive_route(empty, otherwise=otherwise) == otherwise
-    with pytest.raises(AmbiguousRouteMatch):
-        select_exclusive_route(
-            {"first": otherwise, "second": f"{otherwise}-alt"},
-            otherwise=otherwise,
-        )
+async def test_review_outcome_routes_to_its_terminal(outcome: str, status: str) -> None:
+    result = await _run(
+        {
+            "intake.case-design": [committed({"artifacts": []}, _RECEIPT)],
+            "intake.case-review": [committed(_review(outcome), _RECEIPT)],
+        }
+    )
+    assert result["calls"] == ["intake.case-design", "intake.case-review"]
+    assert result["terminal"]["status"] == status
+    assert result["terminal"]["flow_outcome"] == status
+    assert result["terminal"]["reviewed_refs"] == _reviewed_case()["preparation_refs"]
+    assert "reviewed_case" not in result["terminal"]
 
 
-def test_case_review_pass_and_automatic_fix_and_reject_and_human() -> None:
-    assert route_case_review(_review_state(decision="pass")) == "done"
-    assert route_case_review(_review_state(decision="approved")) == "exhausted"
-    assert (
-        route_case_review(
-            _review_state(decision="needs_fix", auto_fix_allowed=True, rounds_used=0, rounds_budget=2)
-        )
-        == "review-round-advance"
+async def test_needs_fix_runs_repair_then_reviews_again() -> None:
+    result = await _run(
+        {
+            "intake.case-design": [committed({"artifacts": []}, _RECEIPT)],
+            "intake.case-repair": [committed({"artifacts": []}, _RECEIPT)],
+            "intake.case-review": [
+                committed(_review("needs_fix"), _RECEIPT),
+                committed(_review("pass"), _RECEIPT),
+            ],
+        }
     )
-    assert route_case_review(_review_state(decision="reject")) == "rejected"
-    assert route_case_review(_review_state(decision="needs_human_review", human_review_required=True)) == (
-        "human-review"
-    )
-    assert (
-        route_case_review(
-            _review_state(decision="needs_fix", auto_fix_allowed=True, rounds_used=2, rounds_budget=2)
-        )
-        == "exhausted"
-    )
+    assert result["calls"] == [
+        "intake.case-design",
+        "intake.case-review",
+        "intake.case-repair",
+        "intake.case-review",
+    ]
+    assert result["terminal"]["status"] == "reviewed"
 
 
-def test_human_review_routes_and_budget_exhaustion() -> None:
-    assert route_human_review(_review_state(action="approve")) == "done"
-    assert route_human_review(_review_state(action="reject")) == "rejected"
-    assert (
-        route_human_review(_review_state(action="request_rework", rounds_used=0, rounds_budget=2))
-        == "review-round-advance"
+async def test_needs_fix_past_the_budget_is_exhausted() -> None:
+    result = await _run(
+        {
+            "intake.case-design": [committed({"artifacts": []}, _RECEIPT)],
+            "intake.case-review": [committed(_review("needs_fix"), _RECEIPT)],
+        },
+        budgets={"review_rounds": 0},
     )
-    assert (
-        route_human_review(_review_state(action="request_rework", rounds_used=2, rounds_budget=2))
-        == "exhausted"
-    )
+    assert result["calls"] == ["intake.case-design", "intake.case-review"]
+    assert result["terminal"]["status"] == "exhausted"
 
 
-def test_review_round_sends_automatic_fix_to_repair_and_human_rework_to_full_design() -> None:
-    budget_spent_by_advance = _review_state(
-        decision="needs_fix", auto_fix_allowed=True, rounds_used=2, rounds_budget=2
+async def test_case_design_failure_is_failed() -> None:
+    result = await _run({"intake.case-design": [RejectedTaskResult(reason="case design failed")]})
+    assert result["calls"] == ["intake.case-design"]
+    assert result["terminal"]["status"] == "failed"
+    assert result["terminal"].get("reviewed_case") is None
+
+
+async def test_case_review_failure_is_exhausted() -> None:
+    result = await _run(
+        {
+            "intake.case-design": [committed({"artifacts": []}, _RECEIPT)],
+            "intake.case-review": [RejectedTaskResult(reason="review failed")],
+        }
     )
-    assert route_review_round(budget_spent_by_advance) == "case-repair"
-    assert (
-        route_review_round(
-            _review_state(
-                decision="needs_fix",
-                auto_fix_allowed=True,
-                human_review_required=True,
-                action="request_rework",
-            )
-        )
-        == "case-design"
+    assert result["calls"] == ["intake.case-design", "intake.case-review"]
+    assert result["terminal"]["status"] == "exhausted"
+
+
+async def test_case_repair_failure_is_exhausted() -> None:
+    result = await _run(
+        {
+            "intake.case-design": [committed({"artifacts": []}, _RECEIPT)],
+            "intake.case-review": [committed(_review("needs_fix"), _RECEIPT)],
+            "intake.case-repair": [RejectedTaskResult(reason="repair failed")],
+        }
     )
-    assert (
-        route_review_round(_review_state(decision="needs_human_review", action="request_rework"))
-        == "case-design"
-    )
-    assert route_review_round(_review_state(decision="needs_fix", action="request_rework")) == "case-design"
+    assert result["calls"] == ["intake.case-design", "intake.case-review", "intake.case-repair"]
+    assert result["terminal"]["status"] == "exhausted"

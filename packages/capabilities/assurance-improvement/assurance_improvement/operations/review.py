@@ -7,24 +7,22 @@ from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_runtime_contracts.ops import InputError, failed_input
+from assurance_intake.contracts import EvidenceArtifactRefV1
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.improvements import (
-    ImprovementLedgerProjection,
     ImprovementProjection,
-    ImprovementReviewAdvice,
-    ImprovementReviewContext,
     ImprovementState,
     LastAutoReview,
 )
 from assurance_improvement.contracts.review import (
     AppliedAutoReviewV1,
-    AutoReviewBatchError,
+    ApplyReviewPublishedV1,
     ImprovementAutoReviewAssessment,
-    ImprovementAutoReviewAssessmentAuthoring,
-    ImprovementAutoReviewBatchSummary,
     ImprovementAutoReviewStatus,
-    ImprovementReviewSubject,
+    auto_review_route,
+    human_review_route,
+    projection_state_name,
 )
 from assurance_improvement.contracts.delivery import artifact_digest
 from assurance_improvement.contracts.decisions import AUTO_REVIEW_DECISIONS
@@ -100,21 +98,6 @@ def assert_improvement_transition(current: ImprovementState, target: Improvement
         raise InputError(f"transition {current.value} -> {target.value} is not allowed")
 
 
-class LoadReviewSubjectInput(BaseModel):
-    model_config = _FROZEN
-
-    subject: ImprovementReviewSubject
-
-
-class ValidateAssessmentInput(BaseModel):
-    model_config = _FROZEN
-
-    assessment: ImprovementAutoReviewAssessmentAuthoring
-    subject: ImprovementReviewSubject
-    current: ImprovementProjection
-    review_id: str = Field(min_length=1)
-
-
 class ApplyAutoReviewInput(BaseModel):
     model_config = _FROZEN
 
@@ -122,54 +105,19 @@ class ApplyAutoReviewInput(BaseModel):
     current: ImprovementProjection
 
 
-class AutoReviewErrorInput(BaseModel):
-    model_config = _FROZEN
-
-    review_id: str = Field(min_length=1)
-    improvement_id: str = Field(min_length=1)
-    error_kind: str = Field(min_length=1)
-
-
-class OrchestrationErrorInput(BaseModel):
-    model_config = _FROZEN
-
-    retro_id: str = Field(min_length=1)
-    stage: Literal["selector", "fan_out", "summarize"]
-    error_kind: str = Field(min_length=1)
-
-
-class SelectAutoReviewInput(BaseModel):
-    model_config = _FROZEN
-
-    retro_id: str = Field(min_length=1)
-    ledger: ImprovementLedgerProjection
-
-
-class SummarizeBatchInput(BaseModel):
-    model_config = _FROZEN
-
-    retro_id: str = Field(min_length=1)
-    statuses: tuple[ImprovementAutoReviewStatus, ...] = ()
-    orchestration_errors: tuple[AutoReviewBatchError, ...] = ()
-
-
-class LoadReviewContextInput(BaseModel):
-    model_config = _FROZEN
-
-    projection: ImprovementProjection
-    allowed_actions: tuple[str, ...] = ()
-
-
 class ApplyReviewInput(BaseModel):
     model_config = _FROZEN
 
-    projection: ImprovementProjection
+    projection: ImprovementProjection | None = None
+    projection_ref: EvidenceArtifactRefV1 | None = None
     action: str
     review_id: str = Field(min_length=1)
-    expected_improvement_version: int = Field(ge=1)
+    expected_improvement_version: int | None = Field(default=None, ge=1)
 
 
 def apply_review(payload: ApplyReviewInput) -> ImprovementProjection:
+    if payload.projection is None or payload.expected_improvement_version is None:
+        raise InputError("review requires the current projection")
     if payload.action not in REVIEW_ACTIONS:
         raise InputError(f"unsupported review action: {payload.action}")
     if payload.expected_improvement_version != payload.projection.version:
@@ -185,37 +133,6 @@ def apply_review(payload: ApplyReviewInput) -> ImprovementProjection:
             "approval_source": "human" if payload.action == "approve" else "none",
         }
     )
-
-
-class LoadReviewSubjectHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(LoadReviewSubjectInput, request.input)
-            return succeeded(cast(dict[str, object], payload.subject.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class ValidateImprovementReviewAssessmentHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(ValidateAssessmentInput, request.input)
-            if payload.subject.improvement_id != payload.current.improvement_id:
-                raise InputError("assessment subject does not match the current improvement")
-            bound = ImprovementAutoReviewAssessment.model_validate(
-                {
-                    **payload.assessment.model_dump(mode="json"),
-                    "review_id": payload.review_id,
-                    "improvement_id": payload.subject.improvement_id,
-                    "expected_improvement_version": payload.current.version,
-                    "subject_sha256": payload.subject.provenance.context_sha256,
-                }
-            )
-            return succeeded(cast(dict[str, object], bound.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
 
 
 def apply_auto_review(
@@ -255,118 +172,51 @@ def apply_auto_review(
 
 class ApplyImprovementAutoReviewHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
+        from assurance_improvement.contracts.handoff import PROJECTION
+        from assurance_improvement.operations.files import stage_named
+
         try:
             payload = validate_input(ApplyAutoReviewInput, request.input)
             status, updated = apply_auto_review(payload)
-            result = AppliedAutoReviewV1(status=status, projection=updated)
+            stage_named(context, PROJECTION, updated)
+            result = AppliedAutoReviewV1(
+                status=status,
+                projection=updated,
+                route=auto_review_route(projection_state_name(updated)),
+            )
             return succeeded(cast(dict[str, object], result.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class RecordImprovementAutoReviewErrorHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(AutoReviewErrorInput, request.input)
-            status = ImprovementAutoReviewStatus(
-                review_id=payload.review_id,
-                improvement_id=payload.improvement_id,
-                result="review_error",
-            )
-            return succeeded(cast(dict[str, object], status.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class RecordAutoReviewOrchestrationErrorHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(OrchestrationErrorInput, request.input)
-            return succeeded(
-                {
-                    "retro_id": payload.retro_id,
-                    "error": AutoReviewBatchError(
-                        stage=payload.stage, error_kind=payload.error_kind
-                    ).model_dump(mode="json"),
-                }
-            )
-        except InputError as error:
-            return failed_input(error)
-
-
-class SelectCurrentRetroAutoReviewItemsHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(SelectAutoReviewInput, request.input)
-            selected = tuple(
-                item.improvement_id
-                for item in payload.ledger.improvements.values()
-                if payload.retro_id in item.proposed_by_retro_ids and item.state is ImprovementState.PROPOSED
-            )
-            return succeeded({"improvement_ids": list(selected)})
-        except InputError as error:
-            return failed_input(error)
-
-
-class SummarizeAutoReviewBatchHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(SummarizeBatchInput, request.input)
-            counts = {"approved": 0, "escalated": 0, "review_error": 0, "stale": 0}
-            for status in payload.statuses:
-                counts[status.result] += 1
-            summary = ImprovementAutoReviewBatchSummary(
-                retro_id=payload.retro_id,
-                review_ids=tuple(item.review_id for item in payload.statuses),
-                approved=counts["approved"],
-                escalated=counts["escalated"],
-                errors=counts["review_error"],
-                stale=counts["stale"],
-                orchestration_errors=payload.orchestration_errors,
-            )
-            return succeeded(cast(dict[str, object], summary.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class LoadImprovementReviewContextHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(LoadReviewContextInput, request.input)
-            allowed = payload.allowed_actions or tuple(sorted(REVIEW_ACTIONS))
-            review_context = ImprovementReviewContext(
-                improvement_id=payload.projection.improvement_id,
-                expected_improvement_version=payload.projection.version,
-                state=payload.projection.state,
-                kind=payload.projection.kind,
-                delivery=payload.projection.delivery,
-                source_refs=payload.projection.source_refs,
-                target=payload.projection.target,
-                proposed_change=payload.projection.proposed_change,
-                verification=payload.projection.verification,
-                risk=payload.projection.risk,
-                confidence=payload.projection.confidence,
-                allowed_actions=allowed,
-                advice=ImprovementReviewAdvice(delivery=payload.projection.delivery),
-            )
-            return succeeded(cast(dict[str, object], review_context.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
 
 
 class ApplyImprovementReviewHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
+        from assurance_improvement.contracts.handoff import PROJECTION
+        from assurance_improvement.operations.files import load_named, stage_named
+
         try:
             payload = validate_input(ApplyReviewInput, request.input)
-            updated = apply_review(payload)
-            return succeeded(cast(dict[str, object], updated.model_dump(mode="json")))
+            projection = (
+                load_named(context, payload.projection_ref, ImprovementProjection)
+                if payload.projection_ref is not None
+                else payload.projection
+            )
+            version = (
+                payload.expected_improvement_version
+                if payload.expected_improvement_version is not None
+                else None
+                if projection is None
+                else projection.version
+            )
+            updated = apply_review(
+                payload.model_copy(update={"projection": projection, "expected_improvement_version": version})
+            )
+            stage_named(context, PROJECTION, updated)
+            published = ApplyReviewPublishedV1(
+                projection=updated,
+                route=human_review_route(projection_state_name(updated)),
+            )
+            return succeeded(cast(dict[str, object], published.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
 
@@ -374,13 +224,6 @@ class ApplyImprovementReviewHandler:
 __all__ = [
     "ApplyImprovementAutoReviewHandler",
     "ApplyImprovementReviewHandler",
-    "LoadImprovementReviewContextHandler",
-    "LoadReviewSubjectHandler",
-    "RecordAutoReviewOrchestrationErrorHandler",
-    "RecordImprovementAutoReviewErrorHandler",
-    "SelectCurrentRetroAutoReviewItemsHandler",
-    "SummarizeAutoReviewBatchHandler",
-    "ValidateImprovementReviewAssessmentHandler",
     "apply_auto_review",
     "apply_review",
     "assert_improvement_transition",

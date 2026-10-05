@@ -7,7 +7,7 @@ import pytest
 
 from graph_engine.attempts.events import EffectApplied, EffectIntentRecorded
 from graph_engine.attempts.resolutions import CommittedTaskResult, IndeterminateTaskResult
-from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS, effect_idempotency_key
+from graph_engine.effects.contracts import effect_idempotency_key
 from graph_engine.plugin_api import EffectApplyResult, EffectPolicy, EffectReconcileResult, TaskFailure
 
 
@@ -56,7 +56,7 @@ class _CrashAfterEffectJournal:
         await self.inner.ensure_durable(attempt_key)  # type: ignore[misc]
 
 
-@pytest.mark.parametrize("kind", sorted(EXPECTED_EFFECT_KINDS))
+@pytest.mark.parametrize("kind", sorted(_HELPERS.REGISTERED_EFFECT_KINDS))
 @pytest.mark.parametrize(
     "fault",
     [
@@ -118,7 +118,7 @@ async def test_crash_after_promotion_reconciles_without_repeating_promotion(
         store.close()
 
 
-@pytest.mark.parametrize("kind", sorted(EXPECTED_EFFECT_KINDS))
+@pytest.mark.parametrize("kind", sorted(_HELPERS.REGISTERED_EFFECT_KINDS))
 async def test_crash_after_intent_applies_once_without_repeating_promotion(tmp_path: Path, kind: str) -> None:
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
     kernel, key, resolved, validated, context, writer, workspace, project, store, _effects, _schemas = (
@@ -140,7 +140,7 @@ async def test_crash_after_intent_applies_once_without_repeating_promotion(tmp_p
         store.close()
 
 
-@pytest.mark.parametrize("kind", sorted(EXPECTED_EFFECT_KINDS))
+@pytest.mark.parametrize("kind", sorted(_HELPERS.REGISTERED_EFFECT_KINDS))
 async def test_transient_then_reconcile_applied_does_not_repeat_promotion(tmp_path: Path, kind: str) -> None:
     handler = RecordingEffectHandler(
         apply_result=EffectApplyResult(

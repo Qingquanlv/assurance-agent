@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import ast
-import asyncio
 import hashlib
 import json
 import tempfile
@@ -12,78 +10,42 @@ from typing import Any, cast
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.state import CompiledStateGraph
 
 from assurance_execution.contracts.evidence import FamilyExecutionOutcomeV1
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
-from assurance_execution.graphs.factory import ExecutionGraphs
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
-from assurance_generation.graphs.factory import GenerationGraphs
 from assurance_healing.contracts.application import AppliedTestRepairV1
-from assurance_healing.graphs.factory import HealingGraphs
-from assurance_improvement.graphs.factory import ImprovementGraphs
 from assurance_intake.contracts.workflow import (
     CaseFlowResultV1,
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
 )
-from assurance_intake.graphs.factory import IntakeGraphs
 from assurance_product.graphs.factory import (
     ProductGraphs,
     build_product_graphs,
     build_thin_entrypoint_graphs,
-    invoke_product_root,
 )
-from assurance_product.graphs.full import route_case_result, route_full_tail
-from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
-from assurance_product.graphs.routes import (
-    PRODUCT_EXCLUSIVE_ROUTES,
-    applied_repair_named_matches,
-    execute_named_matches,
-    prepare_named_matches,
-    quality_named_matches,
-    route_applied_repair,
-    route_execute,
-    route_prepare,
-    route_quality,
-    route_run,
-    run_named_matches,
+from assurance_product.graphs.revisions import ENTRYPOINT_RECURSION_LIMITS
+from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1
+from assurance_quality.contracts.assessment import (
+    InspectionOutcomeV1,
+    ReportOutcomeV1,
 )
-from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
-from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1, ProductPublicOutput
-from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
 from assurance_quality.contracts.surface import (
     API_DISCOVERY_PATH,
     UI_EXPLORATION_PATH,
     ApiDiscoveryDocument,
     UiExplorationDocument,
 )
-from assurance_quality.graphs.factory import QualityGraphs
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.boot.boot import EngineGraphBuildContext
-from graph_engine.canonical import canonical_digest
-from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
-
-from tests.architecture.exclusive_route_inventory import ExclusiveRouteRow, EXCLUSIVE_ROUTE_INVENTORY
+from tests.architecture.exclusive_route_inventory import EXCLUSIVE_ROUTE_INVENTORY
 from tests.product.test_product_input import valid_product_input
-from tests.product.test_stategraph_entrypoints import _real_features, _stub_features
+from tests.product.test_stategraph_entrypoints import _real_features
 
 _SHA = "a" * 64
 _PLAN_DIGEST = "b" * 64
 _CASE_DELTA = "qa/cases/system/dept/case.yaml"
-_GRAPHS_ROOT = (
-    Path(__file__).resolve().parents[2] / "packages/products/assurance-product/assurance_product/graphs"
-)
-_ROUTES_PATH = _GRAPHS_ROOT / "routes.py"
-
-_NAMED_MATCHES = {
-    "prepare": prepare_named_matches,
-    "execute": execute_named_matches,
-    "run": run_named_matches,
-    "quality": quality_named_matches,
-    "fix-proposal": applied_repair_named_matches,
-}
 
 
 def _ref(path: str, digest: str = _SHA) -> EvidenceArtifactRefV1:
@@ -140,6 +102,7 @@ def _case(epoch: int = 0) -> dict[str, object]:
 def _fact_baseline() -> dict[str, object]:
     return {
         "fact_baseline_ref": _ref("qa/results/facts/fact-baseline.json").model_dump(mode="json"),
+        "status": "done",
     }
 
 
@@ -190,6 +153,7 @@ def _surface_baseline() -> dict[str, object]:
         "api_discovery_ref": refs[API_DISCOVERY_PATH],
         "ui_exploration_source": ui.source,
         "api_discovery_source": api.source,
+        "status": "ready",
     }
 
 
@@ -225,11 +189,18 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
         receipt=_receipt(f"execution-{epoch}-{repair_round}"),
         family_outcomes=(FamilyExecutionOutcomeV1(family="api", state="executed"),),
     )
-    return {"execution_result": result.model_dump(mode="json"), "status": "passed"}
+    return {"execution_result": result.model_dump(mode="json"), "status": "committed"}
 
 
-def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, object]:
-    execution = ExecutionCycleResultV1.model_validate(_execution(epoch)["execution_result"])
+def _inspection(
+    epoch: int = 0,
+    disposition: str = "satisfied",
+    *,
+    repair_round: int = 0,
+) -> dict[str, object]:
+    execution = ExecutionCycleResultV1.model_validate(
+        _execution(epoch, repair_round=repair_round)["execution_result"]
+    )
     gaps = _ref(f"qa/results/inspect/epochs/{epoch}/gaps.json")
     observations = _ref(f"qa/results/inspect/epochs/{epoch}/batches/{execution.batch_id}/observations.json")
     issue_manifest = _ref(
@@ -238,6 +209,24 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
     trace = _ref(f"qa/results/inspect/epochs/{epoch}/trace.json")
     metrics = _ref(f"qa/results/inspect/epochs/{epoch}/metrics.json")
     sufficiency = _ref(f"qa/results/inspect/epochs/{epoch}/trace-sufficiency.json")
+    obligation = _ref(f"qa/results/inspect/epochs/{epoch}/batches/B-1/obligation-assessment.json")
+    fact = _ref("qa/results/facts/fact-baseline.json")
+    assessment_refs = tuple(
+        sorted(
+            (
+                trace,
+                gaps,
+                metrics,
+                sufficiency,
+                execution.evidence_ref,
+                observations,
+                obligation,
+                issue_manifest,
+                fact,
+            ),
+            key=lambda item: (item.path, item.digest),
+        )
+    )
     coverage_state = {
         "satisfied": "satisfied",
         "coverage_insufficient": "repair_required",
@@ -252,7 +241,7 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
         inspection_receipt=_receipt(f"inspect-{epoch}"),
         reviewed_case=_reviewed(epoch),
         mapping_ref=execution.mapping_ref,
-        assessment_refs=(gaps,),
+        assessment_refs=assessment_refs,
         reason_codes=(f"inspection.{disposition}",),
         coverage_state=coverage_state,  # type: ignore[arg-type]
     )
@@ -288,10 +277,7 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
             "sufficiency_ref": sufficiency.model_dump(mode="json"),
             "execution_ref": execution.evidence_ref.model_dump(mode="json"),
             "observations_ref": observations.model_dump(mode="json"),
-            "obligation_assessment_ref": {
-                "path": f"qa/results/inspect/epochs/{epoch}/batches/B-1/obligation-assessment.json",
-                "digest": _SHA,
-            },
+            "obligation_assessment_ref": obligation.model_dump(mode="json"),
             "obligation_gate_facts": {
                 "required_count": 1,
                 "supported_count": 1,
@@ -311,12 +297,14 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
         "observations_ref": observations.model_dump(mode="json"),
         "issue_evidence_manifest_ref": issue_manifest.model_dump(mode="json"),
         "coverage_state": coverage_state or "",
-        "status": "passed",
+        "status": disposition,
     }
 
 
-def _report(epoch: int = 0) -> dict[str, object]:
-    inspection = InspectionOutcomeV1.model_validate(_inspection(epoch)["inspection_outcome"])
+def _report(epoch: int = 0, *, repair_round: int = 0) -> dict[str, object]:
+    inspection = InspectionOutcomeV1.model_validate(
+        _inspection(epoch, repair_round=repair_round)["inspection_outcome"]
+    )
     ref = _ref(f"qa/results/report/epochs/{epoch}/report.json")
     receipt = _receipt(f"report-{epoch}")
     outcome = ReportOutcomeV1(
@@ -399,10 +387,19 @@ def _applied(epoch: int = 0, repair_round: int = 1) -> dict[str, object]:
         mapping_ref=_ref(f"qa/results/generation/epochs/{epoch}/mapping.json"),
         receipt=_receipt(f"repair-{epoch}-{repair_round}"),
     )
+    dumped = result.model_dump(mode="json")
     return {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": epoch,
-        "repair_result": result.model_dump(mode="json"),
+        "repair_result": dumped,
+        "applied_change_id": dumped["change_id"],
+        "applied_plan_digest": dumped["plan_digest"],
+        "applied_plan_ref": dumped["plan_ref"],
+        "applied_coverage_epoch": dumped["coverage_epoch"],
+        "applied_repair_round": dumped["repair_round"],
+        "changed_test_refs": dumped["changed_test_refs"],
+        "applied_mapping_ref": dumped["mapping_ref"],
+        "apply_receipt": dumped["receipt"],
         "rounds_used": repair_round,
         "healing_rounds_used": repair_round,
         "status": "applied",
@@ -424,142 +421,24 @@ def _public_input(entrypoint: str, **overrides: object) -> dict[str, object]:
     payload = valid_product_input(
         **values,
     )
-    return ProductInputV1.model_validate(payload).model_dump(mode="json")
-
-
-def _echo(update: Mapping[str, object]) -> CompiledStateGraph:
-    builder = StateGraph(cast(Any, dict))
-
-    def node(state: object) -> dict[str, object]:
-        del state
-        return dict(update)
-
-    builder.add_node("echo", node)
-    builder.add_edge(START, "echo")
-    builder.add_edge("echo", END)
-    return builder.compile(checkpointer=None)
-
-
-def _sequenced(updates: tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
-    builder = StateGraph(cast(Any, dict))
-    calls = {"n": 0}
-
-    def node(state: object) -> dict[str, object]:
-        del state
-        index = min(calls["n"], len(updates) - 1)
-        calls["n"] += 1
-        return dict(updates[index])
-
-    builder.add_node("echo", node)
-    builder.add_edge(START, "echo")
-    builder.add_edge("echo", END)
-    return builder.compile(checkpointer=None)
-
-
-def _graph(value: Mapping[str, object] | tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
-    return _sequenced(value) if isinstance(value, tuple) else _echo(value)
-
-
-def _flow_features(
-    *,
-    prepare: Mapping[str, object] | None = None,
-    case: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
-    generation: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
-    execute: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
-    run: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
-    assess: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
-    issue_analyze: Mapping[str, object] | None = None,
-    issue_reconcile: Mapping[str, object] | None = None,
-    repair_failure: Mapping[str, object] | None = None,
-    repair_coverage: Mapping[str, object] | None = None,
-    report: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
-    retro: Mapping[str, object] | None = None,
-    apply: Mapping[str, object] | None = None,
-    init: Mapping[str, object] | None = None,
-) -> dict[str, object]:
-    del repair_coverage
-    features = _stub_features()
-    features["assurance.intake"] = IntakeGraphs(
-        prepare=_echo(
-            prepare
-            or {
-                **_plan_update(),
-                "status": "prepared",
-                "preparation_refs": [_ref("qa/results/preparation/context.json").model_dump(mode="json")],
-            }
-        ),
-        case=_graph(case or _case()),
-    )
-    features["assurance.generation"] = GenerationGraphs(
-        generation=_graph(generation or _generation()),
-        api=_echo({"status": "passed"}),
-        e2e=_echo({"status": "skipped"}),
-        fuzz=_echo({"status": "skipped"}),
-        performance=_echo({"status": "skipped"}),
-        init_runtime=_echo(init or {"status": "completed"}),
-        resolve_inputs=_echo({"reviewed_case": _reviewed().model_dump(mode="json")}),
-    )
-    features["assurance.execution"] = ExecutionGraphs(
-        execute=_graph(execute or _execution()),
-        rerun=_graph(run or _execution(repair_round=1)),
-    )
-    features["assurance.quality"] = QualityGraphs(
-        assess=_graph(assess or _inspection()),
-        issue_review=_echo({"classification": "test", "fix_eligible": True}),
-        issue_analyze=_echo(issue_analyze or {"classification": "test", "fix_eligible": True}),
-        issue_reconcile=_echo(
-            issue_reconcile
-            or {
-                "classification": "test",
-                "fix_eligible": True,
-                "issue_snapshot_ref": {
-                    "path": "qa/results/issues/snapshot.json",
-                    "digest": _SHA,
-                },
-            }
-        ),
-        report=_graph(report or _report()),
-        fact_baseline=_graph(_fact_baseline()),
-        surface_baseline=_graph(_surface_baseline()),
-    )
-    features["assurance.healing"] = HealingGraphs(
-        repair_failure=_echo(repair_failure or _applied()),
-        repair_coverage=_echo({"status": "failed", "kind": "coverage"}),
-    )
-    features["assurance.improvement"] = ImprovementGraphs(
-        archive=_echo({"status": "done"}),
-        retro=_echo(
-            retro
-            or {
-                "status": "done",
-                "receipt_refs": [{"receipt_id": "retro", "receipt_digest": _SHA}],
-            }
-        ),
-        review=_echo({"status": "done"}),
-        evaluate=_echo({"status": "done"}),
-        export=_echo({"status": "done"}),
-        apply=_echo(
-            apply
-            or {
-                "status": "done",
-                "receipt_refs": [{"receipt_id": "apply", "receipt_digest": _SHA}],
-            }
-        ),
-        rollback=_echo({"status": "done"}),
-    )
-    return features
+    dumped = ProductInputV1.model_validate(payload).model_dump(mode="json")
+    if entrypoint == "full":
+        dumped["family_policy"] = {"required": ["api"], "allowed": ["api"]}
+    return dumped
 
 
 def _product_graphs(features: Mapping[str, object] | None = None) -> ProductGraphs:
-    return build_product_graphs(context=_build_context(), features=features or _flow_features())
+    return build_product_graphs(context=_build_context(), features=features or _real_features())
 
 
-def test_build_product_graphs_merges_twelve_thin_roots_plus_full() -> None:
+def test_build_product_graphs_merges_six_thin_roots_plus_full() -> None:
+    from assurance_product.graphs.factory import entrypoint_contracts
+
     graphs = build_product_graphs(context=_build_context(), features=_real_features())
     assert isinstance(graphs, ProductGraphs)
     assert set(graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS)
-    assert len(graphs.entrypoints) == 13
-    assert graphs.contracts is ENTRYPOINT_CONTRACTS
+    assert len(graphs.entrypoints) == 7
+    assert graphs.contracts == entrypoint_contracts()
     assert set(graphs.entrypoints) - {"full"} == set(
         build_thin_entrypoint_graphs(context=_build_context(), features=_real_features()).entrypoints
     )
@@ -568,7 +447,7 @@ def test_build_product_graphs_merges_twelve_thin_roots_plus_full() -> None:
 def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return() -> None:
     from assurance_product.graphs.factory import _closed_entrypoints
 
-    thin = build_thin_entrypoint_graphs(context=_build_context(), features=_flow_features())
+    thin = build_thin_entrypoint_graphs(context=_build_context(), features=_real_features())
     placeholder = next(iter(thin.entrypoints.values()))
     closed = {**dict(thin.entrypoints), "full": placeholder}
     with pytest.raises(ValueError, match="missing"):
@@ -594,258 +473,184 @@ def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return(
 
 
 def test_full_composes_generation_execution_inspect_and_report() -> None:
-    result = invoke_product_root(_product_graphs(), "full", _public_input("full"))
-    assert ProductPublicOutput.model_validate(result["output"]).status == "completed"
-    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
-    assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "reported"
+    import asyncio
+
+    from tests.product.test_full_flow import _case, _front, _invoke, _reported, _tail_until_inspect
+
+    async def run() -> None:
+        script: dict[str, list[object]] = {}
+        _front(script)
+        _case(script)
+        _tail_until_inspect(script, ("satisfied", 0))
+        _reported(script)
+        done = await _invoke(script)
+        assert done.outcome == "achieved"
+        assert done.result["terminal"] == {"status": "completed", "reason": "achieved"}  # type: ignore[index]
+        names = [name for name, _item in done.captured]
+        assert "generation.publish-cycle" in names
+        assert "execution.execute" in names
+        assert "quality.inspect" in names
+        assert "quality.report" in names
+
+    asyncio.run(run())
 
 
 def test_repairable_inspection_requires_applied_repair_before_rerun() -> None:
-    features = _flow_features(
-        assess=(_inspection(disposition="repairable_execution_failure"), _inspection()),
-        repair_failure=_applied(),
-    )
-    result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
-    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
-    assert ExecutionCycleResultV1.model_validate(result["execution_result"]).repair_round == 1
+    from tests.product.test_issue_healing_flow import test_applied_test_repair_is_the_only_path_to_rerun
+
+    test_applied_test_repair_is_the_only_path_to_rerun()
 
 
 def test_proposal_only_does_not_enter_rerun() -> None:
-    result = invoke_product_root(
-        _product_graphs(
-            _flow_features(
-                assess=_inspection(disposition="repairable_execution_failure"),
-                repair_failure={"proposal_result": {"change_id": "CH-DEMO-001"}, "status": "passed"},
-            )
-        ),
-        "full",
-        _public_input("full"),
-    )
-    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
-    assert ExecutionCycleResultV1.model_validate(result["execution_result"]).repair_round == 0
+    from tests.product.test_issue_healing_flow import test_fix_proposal_output_cannot_parse_as_applied_repair
 
-
-def test_quality_adapter_uses_committed_time_for_hashed_execution_batch() -> None:
-    from assurance_product.graphs.execute import adapt_quality_assess
-
-    execution = ExecutionCycleResultV1.model_validate(_execution()["execution_result"])
-    execution = execution.model_copy(update={"batch_id": "d" * 64})
-    state = {
-        **_public_input("full"),
-        **_generation(),
-        "execution_result": execution.model_dump(mode="json"),
-        "reviewed_case": _reviewed().model_dump(mode="json"),
-    }
-    adapted = adapt_quality_assess(cast(Any, state))
-    assert adapted["batch_id"] == "d" * 64
-    assert adapted["execution_at"] == execution.executed_at.isoformat()
-    assert adapted["activation"] == {
-        "kind": "trigger",
-        "value": f"inspect.0.{canonical_digest('d' * 64)[:16]}.0",
-    }
+    test_fix_proposal_output_cannot_parse_as_applied_repair()
 
 
 def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
-    calls = {"prepare": 0, "init": 0, "case": 0}
+    from tests.product.test_coverage_loop import test_coverage_insufficient_reenters_the_shared_case_flow
 
-    def counted(name: str, updates: tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
-        builder = StateGraph(cast(Any, dict))
-
-        def node(state: object) -> dict[str, object]:
-            del state
-            index = min(calls[name], len(updates) - 1)
-            calls[name] += 1
-            return dict(updates[index])
-
-        builder.add_node("echo", node)
-        builder.add_edge(START, "echo")
-        builder.add_edge("echo", END)
-        return builder.compile()
-
-    features = _flow_features(
-        case=(_case(0), _case(1)),
-        generation=(_generation(0), _generation(1)),
-        execute=(_execution(0), _execution(1)),
-        assess=(_inspection(0, "coverage_insufficient"), _inspection(1)),
-        report=_report(1),
-    )
-    intake = cast(IntakeGraphs, features["assurance.intake"])
-    features["assurance.intake"] = IntakeGraphs(
-        prepare=counted(
-            "prepare",
-            (
-                {
-                    **_plan_update(),
-                    "status": "prepared",
-                    "preparation_refs": [_ref("qa/results/preparation/context.json").model_dump(mode="json")],
-                },
-            ),
-        ),
-        case=counted("case", (_case(0), _case(1))),
-    )
-    generation = cast(GenerationGraphs, features["assurance.generation"])
-    features["assurance.generation"] = GenerationGraphs(
-        generation=generation.generation,
-        api=generation.api,
-        e2e=generation.e2e,
-        fuzz=generation.fuzz,
-        performance=generation.performance,
-        init_runtime=counted("init", ({"status": "completed"},)),
-        resolve_inputs=generation.resolve_inputs,
-    )
-    del intake
-    del generation
-    result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
-    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
-    assert result["coverage_epoch"] == 1
-    assert calls == {"prepare": 1, "init": 1, "case": 2}
+    test_coverage_insufficient_reenters_the_shared_case_flow()
 
 
 def test_full_init_failure_does_not_enter_case() -> None:
-    calls = {"case": 0}
+    import asyncio
 
-    def counted(name: str, updates: tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
-        builder = StateGraph(cast(Any, dict))
+    from tests.product.test_full_flow import _failure, _front, _invoke
 
-        def node(state: object) -> dict[str, object]:
-            del state
-            index = min(calls[name], len(updates) - 1)
-            calls[name] += 1
-            return dict(updates[index])
+    async def run() -> None:
+        script: dict[str, list[object]] = {}
+        _front(script)
+        script["generation.init-test-runtime"] = [_failure()]
+        done = await _invoke(script)
+        names = [name for name, _item in done.captured]
+        assert done.outcome == "not_achieved"
+        assert "intake.case-design" not in names
 
-        builder.add_node("echo", node)
-        builder.add_edge(START, "echo")
-        builder.add_edge("echo", END)
-        return builder.compile()
-
-    features = _flow_features(init={"status": "failed", "attempt_failure": {"kind": "runtime"}})
-    intake = cast(IntakeGraphs, features["assurance.intake"])
-    features["assurance.intake"] = IntakeGraphs(
-        prepare=intake.prepare,
-        case=counted("case", (_case(),)),
-    )
-    del intake
-    result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
-    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
-    assert calls == {"case": 0}
+    asyncio.run(run())
 
 
 def test_full_retains_case_and_generation_history_across_nested_graphs() -> None:
-    case_ref = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
-    generation_ref = {
-        "path": "qa/results/codegen/api/reviews/epochs/0/rounds/0.json",
-        "digest": "b" * 64,
-    }
-    result = invoke_product_root(
-        _product_graphs(
-            _flow_features(
-                case={**_case(), "history_refs": [case_ref]},
-                generation={**_generation(), "history_refs": [generation_ref]},
-            )
-        ),
-        "full",
-        _public_input("full"),
-    )
-    assert result["history_refs"] == [case_ref, generation_ref]
+    import asyncio
+
+    from graph_engine.flow.declare import SubflowNode
+    from graph_engine.flow.sources import LedgerRefs
+
+    from assurance_intake.ops.case_review import op as case_review
+    from assurance_product.graphs.execute_tail import build_execute_tail_flow
+    from tests.product.test_execute_tail_flow import _bundles, _features
+    from tests.product.test_full_flow import _case, _front, _invoke, _reported, _tail_until_inspect
+    from graph_engine.testing.graph_harness import GraphHarness
+
+    flow = build_execute_tail_flow(_bundles(_features(GraphHarness())))
+    retro = next(node for node in flow.nodes if getattr(node, "name", None) == "retro")
+    assert isinstance(retro, SubflowNode)
+    history = retro.inputs["history_refs"]
+    assert isinstance(history, LedgerRefs)
+    assert history.key == case_review.artifact("history").ledger_key
+    assert history.many is True
+
+    async def run() -> None:
+        script: dict[str, list[object]] = {}
+        _front(script)
+        _case(script)
+        _tail_until_inspect(script, ("satisfied", 0))
+        _reported(script)
+        done = await _invoke(script)
+        names = [name for name, _item in done.captured]
+        assert "intake.case-review" in names
+        assert "generation.publish-cycle" in names
+
+    asyncio.run(run())
 
 
-def test_diagnostic_full_snapshots_runtime_before_retro() -> None:
-    runtime_ref = {
-        "path": "qa/results/workflow/" + "a" * 64 + "/pre-retro/workflow-evidence.json",
-        "digest": "b" * 64,
-    }
-    snapshots = 0
+def test_full_does_not_invoke_optional_post_report_work() -> None:
+    import asyncio
 
-    async def snapshot():
-        nonlocal snapshots
-        snapshots += 1
-        return EvidenceArtifactRefV1.model_validate(runtime_ref)
+    from tests.product.test_full_flow import _case, _front, _invoke, _reported, _tail_until_inspect
 
-    graphs = build_product_graphs(
-        context=_build_context(),
-        features=_flow_features(
-            assess=_inspection(disposition="blocked"),
-            issue_analyze=_analysis_result("product_bug"),
-            report=_diagnostic_report(),
-        ),
-        runtime_snapshot=snapshot,
-    )
-    result = asyncio.run(graphs.entrypoints["full"].ainvoke(_public_input("full")))
-    assert snapshots == 1
-    assert runtime_ref in result["source_refs"]
+    async def run() -> None:
+        script: dict[str, list[object]] = {}
+        _front(script)
+        _case(script)
+        _tail_until_inspect(script, ("satisfied", 0))
+        _reported(script)
+        done = await _invoke(script)
+        names = [name for name, _item in done.captured]
+        assert done.outcome == "achieved"
+        assert "improvement.retro" not in names
+        assert "improvement.apply" not in names
 
-
-@pytest.mark.parametrize("feature", ["retro", "apply"])
-def test_full_does_not_invoke_optional_post_report_work(feature: str) -> None:
-    update = {"status": "failed", "attempt_failure": {"kind": "invalid_input"}}
-    result = invoke_product_root(
-        _product_graphs(
-            _flow_features(
-                retro=update if feature == "retro" else None,
-                apply=update if feature == "apply" else None,
-            )
-        ),
-        "full",
-        _public_input("full"),
-    )
-    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
+    asyncio.run(run())
 
 
 def test_full_case_rejection_does_not_enter_generation() -> None:
-    result = invoke_product_root(
-        _product_graphs(_flow_features(case={"status": "rejected", "decision": "reject"})),
-        "full",
-        _public_input("full"),
-    )
-    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
-    assert "generation_result" not in result
+    import asyncio
+
+    from tests.product.test_full_flow import _case, _front, _invoke
+
+    async def run() -> None:
+        script: dict[str, list[object]] = {}
+        _front(script)
+        _case(script, "reject")
+        done = await _invoke(script)
+        names = [name for name, _item in done.captured]
+        assert done.outcome == "not_achieved"
+        assert "generation.publish-cycle" not in names
+        assert "generation.resolve-inputs" not in names
+
+    asyncio.run(run())
 
 
 def test_failed_report_never_enters_retro_or_achieved() -> None:
-    result = invoke_product_root(
-        _product_graphs(_flow_features(report={"status": "failed", "attempt_failure": {"kind": "runtime"}})),
-        "full",
-        _public_input("full"),
-    )
-    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
-    assert result.get("report_outcome") in (None, {})
+    import asyncio
+
+    from tests.product.test_full_flow import _case, _failure, _front, _invoke, _tail_until_inspect
+
+    async def run() -> None:
+        script: dict[str, list[object]] = {}
+        _front(script)
+        _case(script)
+        _tail_until_inspect(script, ("satisfied", 0))
+        script["quality.report"] = [_failure()]
+        done = await _invoke(script)
+        names = [name for name, _item in done.captured]
+        assert done.outcome == "not_achieved"
+        assert "improvement.retro" not in names
+        assert done.result["terminal"] == {"status": "failed", "reason": "not_achieved"}  # type: ignore[index]
+
+    asyncio.run(run())
 
 
 def test_full_preserves_internal_execute_tail_without_standalone_entrypoints() -> None:
-    graphs = _product_graphs()
+    graphs = build_product_graphs(context=_build_context(), features=_real_features())
     assert {"case", "execute"}.isdisjoint(graphs.entrypoints)
-    assert {"adapt-init", "init", "adapt-case", "advance-coverage", "execute-tail"} <= set(
-        graphs.entrypoints["full"].nodes
+    nodes = set(graphs.entrypoints["full"].nodes)
+    assert {"surface", "prepare", "init", "case", "tail", "coverage-rework"} <= nodes
+    assert nodes.isdisjoint(
+        {
+            "adapt-init",
+            "adapt-prepare",
+            "advance-coverage",
+            "execute-tail",
+            "coverage-repair",
+            "coverage-repair-brief",
+            "quality-recheck",
+            "coverage-needed",
+        }
     )
-    tail = graphs.entrypoints["full"].nodes["execute-tail"]
-    runnable = getattr(tail, "runnable", tail)
-    nested = getattr(runnable, "bound", runnable)
-    nested_nodes = getattr(nested, "nodes", None)
-    if nested_nodes is None:
-        inner = getattr(runnable, "afunc", None) or getattr(runnable, "func", None)
-        nested_nodes = getattr(inner, "nodes", {})
-    forbidden = {"coverage-repair", "coverage-repair-brief", "quality-recheck", "coverage-needed"}
-    assert not forbidden.intersection(nested_nodes)
-    assert {
-        "fact-baseline",
-        "generation",
-        "execute",
-        "quality",
-        "fix-proposal",
-        "run",
-        "report",
-        "issue-reconcile",
-        "retro",
-    } <= set(nested_nodes)
 
 
 def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runtime() -> None:
+    from assurance_product.graphs.factory import entrypoint_contracts
+
     features = _real_features()
     dry = build_product_graphs(context=_build_context(None), features=features)
     runtime = build_product_graphs(context=_build_context(InMemorySaver()), features=features)
     assert set(dry.entrypoints) == set(runtime.entrypoints) == set(PRODUCT_ENTRYPOINTS)
     assert set(dry.contracts) == set(runtime.contracts) == set(PRODUCT_ENTRYPOINTS)
-    assert len(dry.entrypoints) == 13
+    assert len(dry.entrypoints) == 7
+    contracts = entrypoint_contracts()
     for name in PRODUCT_ENTRYPOINTS:
         assert set(dry.entrypoints[name].nodes) == set(runtime.entrypoints[name].nodes)
         assert {(edge.source, edge.target) for edge in dry.entrypoints[name].get_graph().edges} == {
@@ -853,78 +658,7 @@ def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runt
         }
         assert dry.entrypoints[name].checkpointer is None
         assert runtime.entrypoints[name].checkpointer is not None
-        assert ENTRYPOINT_CONTRACTS[name].recursion_limit == ENTRYPOINT_RECURSION_LIMITS[name]
-
-
-def test_routes_use_select_exclusive_route_without_priority_if_elif() -> None:
-    source = _ROUTES_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(_ROUTES_PATH))
-    assert "select_exclusive_route" in source
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If) and node.orelse:
-            assert not any(isinstance(child, ast.If) for child in node.orelse)
-
-
-@pytest.mark.parametrize(
-    "row",
-    [item for item in EXCLUSIVE_ROUTE_INVENTORY if item.owner == "product"],
-    ids=lambda row: f"{row.graph_id}/{row.node_id}",
-)
-def test_exclusive_route(row: ExclusiveRouteRow) -> None:
-    builder = _NAMED_MATCHES[row.node_id]
-    empty = builder({})
-    assert select_exclusive_route(empty, otherwise=row.otherwise_target) == row.otherwise_target
-    assert PRODUCT_EXCLUSIVE_ROUTES[row.node_id]({}) == row.otherwise_target
-    with pytest.raises(AmbiguousRouteMatch):
-        select_exclusive_route(
-            {"first": row.otherwise_target, "second": f"{row.otherwise_target}-alt"},
-            otherwise=row.otherwise_target,
-        )
-
-
-def test_product_exclusive_routes_have_fixed_evidence_driven_targets() -> None:
-    execution = _execution()["execution_result"]
-    assert route_prepare({"status": "prepared"}) == "prepared"
-    assert (
-        route_execute({"change_id": "CH-DEMO-001", "coverage_epoch": 0, "execution_result": execution})
-        == "quality"
-    )
-    assert (
-        route_run({"change_id": "CH-DEMO-001", "coverage_epoch": 0, "execution_result": execution})
-        == "quality"
-    )
-    for disposition, target in {
-        "satisfied": "quality-report",
-        "coverage_insufficient": "coverage-insufficient",
-        "repairable_execution_failure": "fix-proposal",
-        "needs_human": "needs-human",
-        "blocked": "diagnostic",
-    }.items():
-        assert route_quality(_inspection(disposition=disposition)) == target
-    assert route_applied_repair(_applied()) == "rerun"
-    assert route_applied_repair({"proposal_result": {"change_id": "CH-DEMO-001"}}) == "blocked"
-
-
-def test_full_routes_require_current_typed_case_and_tail_results() -> None:
-    case = _case()
-    assert route_case_result({"change_id": "CH-DEMO-001", "coverage_epoch": 0, **case}) == "reviewed"
-    assert route_case_result({"status": "passed", "decision": "pass"}) == "failed"
-    insufficient = ExecuteTailResultV1(
-        status="coverage_insufficient",
-        plan_digest=_PLAN_DIGEST,
-        plan_ref=_plan_ref(),
-        inspection=InspectionOutcomeV1.model_validate(
-            _inspection(disposition="coverage_insufficient")["inspection_outcome"]
-        ),
-    )
-    state = {
-        "coverage_epoch": 0,
-        "budgets": {"review_rounds": 1, "coverage_rounds": 1, "healing_rounds": 1, "execution_retries": 1},
-        "tail_result": insufficient.model_dump(mode="json"),
-    }
-    assert route_full_tail(state) == "advance-coverage"
-    state["budgets"] = {**cast(dict[str, int], state["budgets"]), "coverage_rounds": 0}
-    assert route_full_tail(state) == "not-achieved"
+        assert contracts[name].recursion_limit == ENTRYPOINT_RECURSION_LIMITS[name]
 
 
 def test_product_owned_inventory_has_no_pending_rows() -> None:

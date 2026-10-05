@@ -80,14 +80,14 @@ def test_small_composition_has_literal_revision_fields_and_fresh_package_version
 
     from assurance_product import product
     from assurance_product import graph_factories
-    from assurance_product.graphs import revisions
+    from assurance_product.graphs import factory
     from graph_engine.boot.boot import CHECKPOINT_CONTRACT_VERSION
 
     composition, lock, _entries = _small_composition()
     monkeypatch.setattr(
         graph_factories, "FEATURE_GRAPH_FACTORIES", (SimpleNamespace(symbol="example:feature"),)
     )
-    monkeypatch.setattr(revisions, "ENTRYPOINT_CONTRACTS", {"sample": _Contract("v7")})
+    monkeypatch.setattr(factory, "entrypoint_contracts", lambda: {"sample": _Contract("v7")})
     monkeypatch.setattr(metadata, "version", lambda _name: "revision-test-1")
 
     revision = product.product_graph_revision(composition, lock)  # type: ignore[arg-type]
@@ -143,7 +143,7 @@ def test_revision_query_skips_live_attempt_projection_but_full_manifest_runs_it(
             schema_version="1",
             phase="initializing",
             invocation_id="inv-revision-query",
-            entrypoint="improvement-evaluate",
+            entrypoint="init",
             root_input_digest="f" * 64,
             product_lock_digest=lock.digest,
             revision_id=revision.revision_id,
@@ -191,14 +191,14 @@ def test_full_manifest_keeps_source_factory_observation_before_schema_callbacks(
 ) -> None:
     from assurance_product import product
     from assurance_product import graph_factories
-    from assurance_product.graphs import revisions
+    from assurance_product.graphs import factory
 
     composition, lock, entries = _small_composition()
     before_factory = SimpleNamespace(symbol="example:before")
     after_factory = SimpleNamespace(symbol="example:after")
     monkeypatch.setattr(graph_factories, "FEATURE_GRAPH_FACTORIES", (before_factory,))
     version_contracts = {"sample": _Contract("before")}
-    monkeypatch.setattr(revisions, "ENTRYPOINT_CONTRACTS", version_contracts)
+    monkeypatch.setattr(factory, "entrypoint_contracts", lambda: version_contracts)
     contract_id, resolved = next(iter(opencode_composition.semantic_attempt_contracts.items()))
     input_model = resolved.contract.input_model
     original_schema = input_model.model_json_schema
@@ -235,18 +235,18 @@ def test_full_manifest_uses_entrypoint_and_checkpoint_bindings_captured_before_c
     monkeypatch,
 ) -> None:
     from assurance_product import product
-    from assurance_product.graphs import revisions
+    from assurance_product.graphs import factory
     from graph_engine.boot import boot as boot_module
     from graph_engine.canonical import canonical_digest
 
     composition, lock, _entries = _small_composition()
     captured_contract = _Contract("captured")
     rebound_contract = _Contract("rebound")
-    monkeypatch.setattr(revisions, "ENTRYPOINT_CONTRACTS", {"sample": captured_contract})
+    monkeypatch.setattr(factory, "entrypoint_contracts", lambda: {"sample": captured_contract})
     captured_checkpoint = boot_module.CHECKPOINT_CONTRACT_VERSION
 
     def rebind_modules() -> None:
-        monkeypatch.setattr(revisions, "ENTRYPOINT_CONTRACTS", {"sample": rebound_contract})
+        monkeypatch.setattr(factory, "entrypoint_contracts", lambda: {"sample": rebound_contract})
         monkeypatch.setattr(boot_module, "CHECKPOINT_CONTRACT_VERSION", "rebound-checkpoint")
 
     composition.semantic_attempt_contracts = {"trigger": _Contract("unused", rebind_modules)}
@@ -297,7 +297,7 @@ def test_bad_live_model_fails_full_gates_before_start_identity_or_checkpoint(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-broken-schema",
-        entrypoint="improvement-evaluate",
+        entrypoint="init",
     )
     input_path = Path(args[args.index("--input") + 1])
     workspace = prepare_change_workspace(project, change_id)
@@ -308,7 +308,7 @@ def test_bad_live_model_fails_full_gates_before_start_identity_or_checkpoint(
             invocation_id="inv-broken-schema",
             composition=composition,
             authorization=lifecycle_authorization(),
-            entrypoint="improvement-evaluate",
+            entrypoint="init",
             input_path=input_path,
             workspace=workspace,
         )

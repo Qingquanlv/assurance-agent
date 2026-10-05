@@ -7,23 +7,15 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
-from graph_engine.plugin_api import TaskHandler
-from assurance_healing.ops.fix_proposal import finalize as fix_proposal_finalize
 from assurance_healing.contracts.agent import FixProposalInputV1
-from assurance_healing.contracts.coverage_repair import CoverageRepairBrief
-from assurance_quality.operations.coverage import coverage_gap_to_repair_brief
 from tests.capabilities.cross_wheel import (
     CAPABILITY_CATALOG,
     CATALOG_PATH,
-    _healing_finalize_payload,
-    _run,
     all_capability_leaf_validators,
     consume_handoff,
     encode_handoff,
-    forbidden_imports,
     handoff_seams,
     load_capability_catalog,
-    quality_gap_fixture,
     validate_catalog_document,
 )
 
@@ -40,12 +32,6 @@ def test_every_contract_rejects_prefix_valid_unknown_leaf(value: str) -> None:
     for validator in all_capability_leaf_validators():
         with pytest.raises((ValidationError, ValueError), match="unknown|typed leaf"):
             validator(value, catalog=CAPABILITY_CATALOG)
-
-
-def test_quality_gap_converts_to_healing_contract_without_reverse_import() -> None:
-    brief = coverage_gap_to_repair_brief(quality_gap_fixture())
-    assert isinstance(brief, CoverageRepairBrief)
-    assert forbidden_imports("assurance_healing", prefix="assurance_quality") == set()
 
 
 def test_capability_catalog_is_canonical_and_exact() -> None:
@@ -151,12 +137,6 @@ def test_execution_evidence_handoff_binds_healing_proposal_digest() -> None:
     )
     assert isinstance(consumed, FixProposalInputV1)
     assert consumed.execution_evidence_digest == digest
-
-    finalize = _healing_finalize_payload("entities.item.create", CAPABILITY_CATALOG, evidence_digest=digest)
-    finalize["execution_evidence_digest"] = "0" * 64
-    outcome = _run(cast(TaskHandler, fix_proposal_finalize), finalize)
-    assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_input"
 
 
 def _replace_leafs(document: dict[str, Any], leafs: list[str]) -> dict[str, Any]:

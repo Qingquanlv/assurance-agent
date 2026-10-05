@@ -16,7 +16,7 @@ from tests.product.conformance import ALL_BINDING_IDS
 def test_binding_coverage_is_the_authenticated_opencode_projection(opencode_composition):
     projection = project_binding_coverage(opencode_composition)
     assert set(projection) == set(ALL_BINDING_IDS)
-    assert len(projection) == 27
+    assert len(projection) == 26
     assert not any(item.endswith(".finalize") for item in projection)
     assert not any(item.startswith("assurance.product.agent.") for item in projection)
     assert SHADOW_VALIDATOR_CLONE_ID not in projection

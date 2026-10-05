@@ -113,13 +113,6 @@ routes:
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.healing.agent.coverage-repair.v1:
-    provider_model: fixture-model
-    worker_profile: assurance-worker
-    permission_profile_id: assurance.product.agent.permission.default
-    request_policy_id: assurance.product.agent.request.default
-    limits:
-      max_seconds: 900
   assurance.healing.agent.fix-proposal.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker

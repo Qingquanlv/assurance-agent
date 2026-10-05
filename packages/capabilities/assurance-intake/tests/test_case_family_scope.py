@@ -19,7 +19,7 @@ from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.cases import MinimumCoverageMatrixAuthoring
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.ops.case_review.hooks import case_review_outputs
+from assurance_intake.ops.case_review import op as case_review_op
 from assurance_intake.ops.case_review.hooks.seal import (
     collect_selected_cases,
     expected_case_selection,
@@ -273,6 +273,17 @@ async def _finalize(
     input_refs: list[dict[str, str]] | None = None,
     write_runtime_seal: bool = False,
 ) -> TaskOutcome:
+    # The declared, eagerly authenticated preparation inputs live in the
+    # project even when this test's candidate outputs live in the stage.
+    if phase == "design":
+        for relative in outputs:
+            source = stage / relative
+            target = project / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+    requirement = project / "qa/requirement.md"
+    requirement.parent.mkdir(parents=True, exist_ok=True)
+    requirement.write_text("# Menu requirements\n", encoding="utf-8")
     if phase == "design":
         structured: dict[str, Any] = {"output_files": list(outputs)}
         artifacts = outputs
@@ -306,14 +317,7 @@ async def _finalize(
             "qa/results/review/case-review-summary.md",
             "qa/results/review/case-review.json",
         )
-        artifacts = (
-            case_review_outputs(_CHANGE, coverage_epoch=coverage_epoch)
-            if write_runtime_seal
-            else (
-                "qa/results/review/case-review-summary.md",
-                "qa/results/review/case-review.json",
-            )
-        )
+        artifacts = case_review_op.agent.files()
         review_path = stage / "qa/results/review/case-review.json"
         review_path.parent.mkdir(parents=True, exist_ok=True)
         review_path.write_text(json.dumps(structured), encoding="utf-8")

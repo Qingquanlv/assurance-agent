@@ -230,6 +230,14 @@ class ObligationSemanticReviewV1(BaseModel):
     expectation_reviews: tuple[ExpectationReviewV1, ...] = Field(min_length=1)
 
 
+class HumanReviewDecision(BaseModel):
+    """Gate decision for a codegen lane. The action values are the route branches."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action: Literal["approve", "reject", "request_rework"]
+
+
 class PlanReview(Review):
     """Strong cross-skill contract for API, E2E, Fuzz, and Performance plans."""
 
@@ -243,6 +251,8 @@ class PlanReview(Review):
             ]
         },
     )
+
+    route: PlanReviewRoute  # pyright: ignore[reportGeneralTypeIssues, reportIncompatibleVariableOverride]
 
     @model_validator(mode="before")
     @classmethod
@@ -306,8 +316,6 @@ class PlanReviewAuthoring(BaseModel):
     required_capabilities: list[NonEmptyStr]
     semantic_reviews: tuple[ObligationSemanticReviewV1, ...] = ()
     public_outcome: PublicReviewOutcome | None = None
-    rounds_used: int | None = None
-    rounds_budget: int | None = None
 
     @model_validator(mode="before")
     @classmethod

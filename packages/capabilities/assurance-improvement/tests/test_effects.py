@@ -154,7 +154,7 @@ async def test_regressed_eval_effect_does_not_store_passed(tmp_path: Path) -> No
         tmp_path,
     )
     assert outcome.status == "succeeded"
-    assert as_object(outcome.output)["outcome"] == "regressed"
+    assert as_object(as_object(outcome.output)["memory_eval"])["outcome"] == "regressed"
     applied = await ImprovementDeliveryEffect().apply(
         outcome.effects[0],
         _context(DELIVERY_KIND),

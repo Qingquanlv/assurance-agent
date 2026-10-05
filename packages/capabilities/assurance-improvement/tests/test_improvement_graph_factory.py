@@ -4,15 +4,25 @@ import ast
 from collections.abc import Iterator
 from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_improvement.graphs.factory import ImprovementGraphs, build_improvement_graphs
+from assurance_improvement.graphs.factory import (
+    ImprovementGraphs,
+    build_improvement_graphs as _build_improvement_graphs,
+)
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_improvement_graphs(*args, **kwargs):
+    return compile_bundle(_build_improvement_graphs(*args, **kwargs))
+
 
 _SHA = "a" * 64
 _RECEIPT_ID = "receipt-1"
@@ -39,6 +49,7 @@ TASK_EVALUATE_ID = "assurance.improvement.task.evaluate-memory-improvement"
 TASK_EXPORT_ID = "assurance.improvement.task.export-change-improvement"
 TASK_APPLY_ID = "assurance.improvement.task.apply-memory-improvement"
 TASK_ROLLBACK_ID = "assurance.improvement.task.rollback-memory-improvement"
+TASK_SNAPSHOT_ID = "assurance.improvement.task.retro-runtime-snapshot"
 TASK_IDS = (
     TASK_BUILD_SLICES_ID,
     TASK_COLLECT_ID,
@@ -49,6 +60,7 @@ TASK_IDS = (
     TASK_EXPORT_ID,
     TASK_APPLY_ID,
     TASK_ROLLBACK_ID,
+    TASK_SNAPSHOT_ID,
 )
 EFFECT_IDS = (
     "assurance.improvement.effect.archive.v1",
@@ -143,6 +155,7 @@ def test_improvement_factory_exports_seven_public_graphs(recording_context) -> N
         "export",
         "apply",
         "rollback",
+        "runtime_snapshot",
     )
     assert tuple(ImprovementGraphs.__dataclass_fields__) == (
         "archive",
@@ -152,20 +165,21 @@ def test_improvement_factory_exports_seven_public_graphs(recording_context) -> N
         "export",
         "apply",
         "rollback",
+        "runtime_snapshot",
     )
     assert isinstance(bundle, ImprovementGraphs)
     assert not hasattr(bundle, "nodes")
     for name in _FORBIDDEN_GRAPHS:
         assert not hasattr(bundle, name)
     bound = recording_context.bound_contract_ids
-    assert len(bound) == 16
+    assert len(bound) == 18
     assert bound.count("assurance.improvement.retro-build-slices") == 1
     assert set(bound) >= set(AGENT_IDS)
     assert set(bound) >= set(TASK_IDS)
     assert len({item for item in bound if item in AGENT_IDS}) == 6
-    assert len({item for item in bound if item in TASK_IDS}) == 9
+    assert len({item for item in bound if item in TASK_IDS}) == 10
     assert bound.count(TASK_EVALUATE_ID) == 2
-    assert sum(1 for item in bound if item in TASK_IDS) == 10
+    assert sum(1 for item in bound if item in TASK_IDS) == 11
     for agent_id in AGENT_IDS:
         assert bound.count(agent_id) == 1
     assert "assurance.improvement.graph.benchmark-eval" not in bound
@@ -258,6 +272,9 @@ def archive_agent_output() -> dict[str, object]:
         "artifact_paths": ["qa/results/archive-summary.md"],
         "invocation_id": "inv-archive-1",
         "archive_digest": _SHA,
+        "lifecycle_state": None,
+        "evidence_refs": [],
+        "effect_refs": [],
     }
 
 
@@ -268,16 +285,15 @@ async def test_archive_export_is_independent_of_retro() -> None:
         contracts=improvement_contracts(),
     )
     bundle = build_improvement_graphs(context)
+    output = archive_agent_output()
     result = await harness.run(
         bundle.archive,
         input=archive_graph_input(),
-        script={"improvement.archive": [committed(archive_agent_output(), _receipt())]},
+        script={"improvement.archive": [committed(output, _receipt())]},
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == ["improvement.archive"]
     assert [call.contract_id for call in result.semantic_calls] == [_ARCHIVE_ID]
     assert result.terminal is not None
     assert all("retro" not in call.semantic_node_id for call in result.semantic_calls)
-    published = result.published_update
-    assert published is not None
-    assert published["change_id"] == "CH-DEMO-001"
-    assert published["archive_status"] == "archived"
+    assert output["archive_status"] == "archived"
+    assert cast(dict[str, object], result.terminal)["status"] == "done"

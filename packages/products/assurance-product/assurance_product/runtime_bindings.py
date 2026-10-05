@@ -14,6 +14,7 @@ from agent_runtime_contracts import (
     AgentRunResult,
     AgentRuntimeBinding,
     AgentRuntimePolicy,
+    PreparedAgentRun,
     RawAgentRuntimeBindingProjectionV1,
     RawAgentRuntimeOutcome,
     RawFinalizeBundle,
@@ -302,6 +303,7 @@ def _task_context(scope: AuthorizedAttemptScope) -> TaskContext:
         heartbeat=lambda: None,
         cancel_requested=lambda: False,
         invocation=invocation,
+        runtime_evidence=scope.runtime_evidence,
     )
 
 
@@ -483,7 +485,7 @@ class InstalledPreparePhase(_HostBackedInstalledPhase):
         self,
         validated_input: BaseModel,
         scope: AuthorizedAttemptScope,
-    ) -> AgentRunRequest | PermanentTaskFailure:
+    ) -> PreparedAgentRun | AgentRunRequest | PermanentTaskFailure:
         request = _task_request(
             capability_id=self.handler_id,
             payload=validated_input.model_dump(mode="json"),
@@ -496,6 +498,10 @@ class InstalledPreparePhase(_HostBackedInstalledPhase):
         failure = _outcome_failure(outcome)
         if failure is not None:
             return failure
+        if isinstance(outcome.output, Mapping) and (
+            "run_request" in outcome.output or "prepared_business" in outcome.output
+        ):
+            return PreparedAgentRun.model_validate(outcome.output)
         return AgentRunRequest.model_validate(outcome.output)
 
 
@@ -522,12 +528,14 @@ class InstalledRuntimePhase(_HostBackedInstalledPhase):
 
     async def execute(
         self,
-        prepared: AgentRunRequest,
+        prepared: PreparedAgentRun | AgentRunRequest,
         scope: AuthorizedAttemptScope,
     ) -> RawAgentRuntimeOutcome | PermanentTaskFailure:
         request = _task_request(
             capability_id=self.handler_id,
-            payload=prepared.model_dump(mode="json"),
+            payload=(prepared.run_request if isinstance(prepared, PreparedAgentRun) else prepared).model_dump(
+                mode="json"
+            ),
             scope=scope,
             binding_data=self._binding_data,
             task_id=phase_task_id(scope.execution.attempt_key, "runtime", self.handler_id),
@@ -580,7 +588,13 @@ class InstalledFinalizePhase(_HostBackedInstalledPhase, Generic[_FinalOutputT]):
         locked_input = bundle.validated_input.model_dump(mode="json")
         prepared_business: dict[str, object] = {}
         whole_business = issubclass(input_model, AgentOpFinalizeInputV1)
-        if isinstance(bundle.prepared, AgentRunRequest):
+        if isinstance(bundle.prepared, PreparedAgentRun) or (
+            isinstance(bundle.prepared, Mapping) and "run_request" in bundle.prepared
+        ):
+            prepared_business = cast(
+                dict[str, object], PreparedAgentRun.model_validate(bundle.prepared).prepared_business
+            )
+        elif isinstance(bundle.prepared, AgentRunRequest):
             for instruction in bundle.prepared.instructions:
                 raw = thaw_frozen(instruction.json_content)
                 if not isinstance(raw, Mapping):
@@ -771,8 +785,8 @@ def boot_semantic_attempt_contracts(
             composition,
             validation_context,
         )
-    if len(resolved) != 45:
-        raise ValueError(f"semantic attempt registry must contain 45 contracts, got {len(resolved)}")
+    if len(resolved) != 47:
+        raise ValueError(f"semantic attempt registry must contain 47 contracts, got {len(resolved)}")
     return MappingProxyType(resolved)
 
 

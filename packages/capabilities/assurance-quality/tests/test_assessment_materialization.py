@@ -353,11 +353,66 @@ def _workspace_input(
 _DURABLE_SELECTOR = "qa/tests/api/test_items.py::test_create_item"
 
 
+def _bound_materialize(root: Path, request: dict[str, Any]) -> dict[str, Any]:
+    """Stage the producer files and return the ref input the task validates."""
+
+    from graph_engine.artifacts import stage_json_artifact
+    from graph_engine.attempts.resolutions import ReceiptRef
+
+    from assurance_execution.contracts.workflow import ExecutionCycleDocumentV1
+    from assurance_generation.contracts.workflow import GenerationCycleResultV1
+    from assurance_intake.contracts.workflow import ReviewedCaseV1
+    from assurance_quality.contracts.assessment import MaterializeAssessmentBoundV1
+
+    def _plain(value: object) -> object:
+        dump = getattr(value, "model_dump", None)
+        return dump(mode="json") if callable(dump) else value
+
+    execution_raw = _plain(request["execution"])
+    assert isinstance(execution_raw, dict)
+    execution = dict(execution_raw)
+    receipt = execution.pop("receipt")
+    reviewed = stage_json_artifact(
+        root, "qa/cases/reviewed-case.json", ReviewedCaseV1.model_validate(_plain(request["reviewed_case"]))
+    )
+    generation = stage_json_artifact(
+        root,
+        "qa/results/codegen/generation-cycle.json",
+        GenerationCycleResultV1.model_validate(_plain(request["generation"])),
+    )
+    document = stage_json_artifact(
+        root, "qa/results/execution/execution-cycle.json", ExecutionCycleDocumentV1.model_validate(execution)
+    )
+
+    return MaterializeAssessmentBoundV1.model_validate(
+        {
+            "plan_digest": request["plan_digest"],
+            "plan_ref": _plain(request["plan_ref"]),
+            "reviewed_case_ref": {"path": reviewed.path, "digest": reviewed.digest},
+            "generation_ref": {"path": generation.path, "digest": generation.digest},
+            "execution_ref": {"path": document.path, "digest": document.digest},
+            "execution_receipt": _plain(ReceiptRef.model_validate(receipt)),
+            "product_policy": {
+                "resource_id": request["policy_resource_id"],
+                "sha256": request["policy_sha256"],
+            },
+            "repair_round": int(execution["repair_round"]),
+            "coverage_epoch": int(execution["coverage_epoch"]),
+            "healing_ref": _plain(request.get("healing_ref")),
+            "issue_ref": _plain(request.get("issue_ref")),
+        }
+    ).model_dump(mode="json", exclude={"coverage_epoch_token", "repair_round_token"})
+
+
+async def _run_materialize(request: dict[str, Any], root: Path):
+    return await execute_task(MaterializeAssessmentHandler(), _bound_materialize(root, request), root)
+
+
 @pytest.mark.asyncio
 async def test_materialize_accepts_durable_qa_tests_mapping(tmp_path: Path) -> None:
     request = _workspace_input(tmp_path, selector=_DURABLE_SELECTOR)
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
 
@@ -370,7 +425,7 @@ async def test_materialize_rejects_view_mapping_against_durable_generation(tmp_p
         evidence_selector=TEST_SELECTOR,
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "failed"
     assert result.failure is not None
@@ -382,7 +437,7 @@ async def test_materialize_rejects_view_mapping_against_durable_generation(tmp_p
 async def test_materializes_authenticated_case_mapping_execution_and_policy(tmp_path: Path) -> None:
     request = _workspace_input(tmp_path)
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -438,7 +493,7 @@ async def test_materializes_owned_observations_and_evidence_bundle_for_failed_ex
         result_message="500 internal server error",
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -495,7 +550,7 @@ async def test_unmapped_required_api_operation_remains_a_repairable_evidence_gap
         matrix_rows=[_matrix_row("create_item", 1)],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -549,7 +604,7 @@ async def test_unrelated_passing_case_cannot_cover_a_second_closed_obligation(
         matrix_rows=[_matrix_row(first_key, 1), _matrix_row(second_key, 2)],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -585,7 +640,7 @@ async def test_reviewed_required_operation_addition_retains_its_execution_gap(tm
         ],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -614,7 +669,7 @@ async def test_reviewed_case_trace_additions_cannot_disappear_without_matrix_row
         matrix_rows=[_matrix_row("create_item", 1)],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -638,7 +693,7 @@ async def test_reviewed_trace_cannot_introduce_an_unknown_closed_key(tmp_path: P
         matrix_rows=[_matrix_row(CAPABILITY, 1)],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "failed"
     assert result.failure is not None
@@ -660,7 +715,7 @@ async def test_reviewed_closed_category_cannot_introduce_a_free_form_operation(
         ],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "failed"
     assert result.failure is not None
@@ -669,7 +724,7 @@ async def test_reviewed_closed_category_cannot_introduce_a_free_form_operation(
 
 @pytest.mark.asyncio
 async def test_coverage_gap_mrc_diagnostics_must_belong_to_the_same_change(tmp_path: Path) -> None:
-    result = await execute_task(MaterializeAssessmentHandler(), _workspace_input(tmp_path), tmp_path)
+    result = await _run_materialize(_workspace_input(tmp_path), tmp_path)
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
     gaps = json.loads(result.workspace_bytes[output.gaps_ref.path])
@@ -699,7 +754,7 @@ async def test_reviewed_e2e_case_requires_a_known_journey_mapping(tmp_path: Path
         matrix_rows=[matrix],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "failed"
     assert result.failure is not None
@@ -730,7 +785,7 @@ async def test_known_journey_is_one_obligation_but_each_required_e2e_case_needs_
         ],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -771,7 +826,7 @@ async def test_passing_e2e_trace_cannot_override_reviewed_api_obligation_layer(t
         matrix_rows=[_matrix_row("checkout", 1, category="e2e"), api_row],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -812,7 +867,7 @@ async def test_api_obligation_accepts_fuzz_as_supplemental_case_evidence(tmp_pat
         ],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -847,7 +902,7 @@ async def test_optional_empty_matrix_row_cannot_hide_reviewed_trace_obligation(t
         ],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -937,7 +992,7 @@ async def test_both_layer_obligation_needs_evidence_from_each_layer(
 ) -> None:
     request = _both_layer_input(tmp_path, key, e2e_evidence)
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -969,7 +1024,7 @@ async def test_numeric_mrc_obligations_retain_the_authenticated_risk_floor(tmp_p
         matrix_rows=[_matrix_row(key, index) for index, key in enumerate(keys, start=1)],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -998,7 +1053,7 @@ async def test_covered_free_form_api_obligation_can_satisfy_without_numeric_goal
         matrix_rows=[_matrix_row("create_item", 1)],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -1020,7 +1075,7 @@ async def test_covered_free_form_api_obligation_can_satisfy_without_numeric_goal
 async def test_applicability_preserves_authenticated_goal_sources(tmp_path: Path) -> None:
     request = _workspace_input(tmp_path)
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -1059,7 +1114,7 @@ async def test_materialize_accepts_sealed_prepared_exploration_obligations(tmp_p
         ],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
 
@@ -1097,7 +1152,7 @@ async def test_plan_bound_draft_obligations_outrank_supplemental_goals(tmp_path:
     )
     request["generation"]["reviewed_case"] = request["reviewed_case"]
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -1170,7 +1225,7 @@ async def test_materialize_keeps_unresolved_obligation_as_explicit_gap(
     )
     request["generation"]["reviewed_case"] = request["reviewed_case"]
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     if matrix_mode != "valid":
         assert result.status == "failed"
@@ -1229,7 +1284,7 @@ async def test_api_matrix_null_key_keeps_the_normalized_operation(tmp_path: Path
         ],
     )
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
@@ -1246,7 +1301,7 @@ def test_materializer_claims_allow_reading_frozen_goal_sources() -> None:
         {
             "reviewed_case": {"change_id": CHANGE_ID},
             "coverage_epoch_token": "3",
-            "execution": {"batch_id": BATCH_ID},
+            "repair_round_token": "0",
         }
     )
 
@@ -1260,7 +1315,7 @@ async def test_rejects_batch_identity_mismatch(tmp_path: Path) -> None:
     evidence["batch_id"] = "OTHER"
     request["execution"]["evidence_ref"] = _write_json(tmp_path, EVIDENCE_PATH, evidence)
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "failed"
     assert result.failure is not None
@@ -1280,7 +1335,7 @@ async def test_rejects_locked_source_digest_drift(tmp_path: Path, source: str) -
     with (tmp_path / paths[source]).open("ab") as stream:
         stream.write(b"\n# drift\n")
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "failed"
     assert result.failure is not None
@@ -1293,7 +1348,7 @@ async def test_rejects_missing_locked_mapping(tmp_path: Path) -> None:
     request = _workspace_input(tmp_path)
     (tmp_path / MAPPING_PATH).unlink()
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "failed"
     assert result.failure is not None
@@ -1317,7 +1372,7 @@ async def test_optional_healing_and_issue_evidence_are_digest_authenticated(tmp_
     with (tmp_path / "issues/snapshot.json").open("ab") as stream:
         stream.write(b"\n")
 
-    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+    result = await _run_materialize(request, tmp_path)
 
     assert result.status == "failed"
     assert result.failure is not None

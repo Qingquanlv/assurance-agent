@@ -13,6 +13,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_intake.contracts import PolicyResourceV1
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
@@ -51,6 +52,7 @@ class MaterializeAssessmentInputV1(FrozenModel):
     execution_at: AwareDatetime
     healing_ref: EvidenceArtifactRefV1 | None = None
     issue_ref: EvidenceArtifactRefV1 | None = None
+    repair_round: int = Field(default=0, ge=0)
 
     @computed_field
     @property
@@ -76,6 +78,32 @@ class MaterializeAssessmentInputV1(FrozenModel):
         ):
             require_same_plan(self.plan_digest, self.plan_ref, digest, ref)
         return self
+
+
+class MaterializeAssessmentBoundV1(FrozenModel):
+    """Refs the materialize task opens. The loaded documents stay inside the handler."""
+
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
+    reviewed_case_ref: EvidenceArtifactRefV1
+    generation_ref: EvidenceArtifactRefV1
+    execution_ref: EvidenceArtifactRefV1
+    execution_receipt: ReceiptRef
+    product_policy: PolicyResourceV1
+    repair_round: int = Field(ge=0)
+    coverage_epoch: int = Field(ge=0)
+    healing_ref: EvidenceArtifactRefV1 | None = None
+    issue_ref: EvidenceArtifactRefV1 | None = None
+
+    @computed_field
+    @property
+    def coverage_epoch_token(self) -> str:
+        return str(self.coverage_epoch)
+
+    @computed_field
+    @property
+    def repair_round_token(self) -> str:
+        return str(self.repair_round)
 
 
 class AssessmentInputsV1(FrozenModel):
@@ -109,6 +137,19 @@ class AssessmentInputsV1(FrozenModel):
         return self
 
 
+class FactBaselineBoundInputV1(FrozenModel):
+    """What the fact-baseline flow can project before prepare opens the reviewed case."""
+
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
+    capability_leafs: tuple[str, ...]
+    artifact_paths: tuple[str, ...]
+    reviewed_case_ref: EvidenceArtifactRefV1
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
+
+
 class FactBaselineSkillInputV1(FrozenModel):
     """The authenticated projection shown to the fact-baseline agent after case-review."""
 
@@ -140,17 +181,43 @@ class FactBaselineFinalizeInputV1(FactBaselineSkillInputV1):
     agent_result: AgentRunResult
 
 
+ASSESSMENT_INPUTS_PATH = "qa/results/inspect/assessment-inputs.json"
+
+
+class InspectBoundInputV1(FrozenModel):
+    """What the assess flow can project before Inspect opens the producer files."""
+
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
+    capability_leafs: tuple[str, ...] = ()
+    artifact_paths: tuple[str, ...] = ()
+    product_policy: PolicyResourceV1
+    assessment_ref: EvidenceArtifactRefV1
+    reviewed_case_ref: EvidenceArtifactRefV1
+    generation_ref: EvidenceArtifactRefV1
+    execution_ref: EvidenceArtifactRefV1
+    execution_receipt: ReceiptRef
+    fact_baseline_ref: EvidenceArtifactRefV1 | None = None
+    repair_round: int = Field(default=0, ge=0)
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
+
+
 class AssessmentSkillInputV1(FrozenModel):
     """The authenticated projection shown to Inspect agents."""
 
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
+    repair_round: int = Field(ge=0)
     batch_id: str = Field(min_length=1)
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     plan_ref: EvidenceArtifactRefV1
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
-    assessment: AssessmentInputsV1
+    policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    assessment_ref: EvidenceArtifactRefV1 | None = None
+    assessment: AssessmentInputsV1 | None = None
     reviewed_case: ReviewedCaseV1
     mapping_ref: EvidenceArtifactRefV1
     fact_baseline_ref: EvidenceArtifactRefV1 | None = None
@@ -158,12 +225,18 @@ class AssessmentSkillInputV1(FrozenModel):
 
     @model_validator(mode="after")
     def _identity_is_closed(self) -> Self:
+        if self.assessment is None:
+            if self.assessment_ref is None:
+                raise ValueError("assessment is missing")
+            return self
         if self.assessment.change_id != self.change_id:
             raise ValueError("assessment change_id must match the skill input")
         if self.assessment.coverage_epoch != self.coverage_epoch:
             raise ValueError("assessment epoch must match the skill input")
         if self.assessment.batch_id != self.batch_id:
             raise ValueError("assessment batch_id must match the skill input")
+        if self.policy_sha256 != self.assessment.scope.policy_digest:
+            raise ValueError("inspection identity no longer matches the active assessment cycle")
         if self.reviewed_case.change_id != self.change_id:
             raise ValueError("Reviewed Case change_id must match the skill input")
         if self.reviewed_case.coverage_epoch != self.coverage_epoch:
@@ -259,6 +332,62 @@ class FinalizedInspectionV1(FrozenModel):
         return self
 
 
+def _close_inspection(document: InspectionDocumentV1 | InspectionOutcomeV1) -> None:
+    if document.reviewed_case.change_id != document.change_id:
+        raise ValueError("inspection Reviewed Case change_id must match")
+    if document.reviewed_case.coverage_epoch != document.coverage_epoch:
+        raise ValueError("inspection Reviewed Case epoch must match")
+    require_same_plan(
+        document.plan_digest,
+        document.plan_ref,
+        document.reviewed_case.plan_digest,
+        document.reviewed_case.plan_ref,
+    )
+    if document.disposition == "satisfied" and document.coverage_state != "satisfied":
+        raise ValueError("satisfied inspection requires satisfied coverage")
+    if document.disposition == "coverage_insufficient" and document.coverage_state not in {
+        "repair_required",
+        "exhausted",
+    }:
+        raise ValueError("coverage insufficiency requires an insufficient coverage state")
+    if (
+        document.disposition in {"repairable_execution_failure", "analysis_required", "needs_human"}
+        and document.coverage_state is not None
+    ):
+        raise ValueError("execution failure disposition cannot also publish a coverage state")
+    ordered_refs = tuple(sorted(document.assessment_refs, key=lambda item: (item.path, item.digest)))
+    if document.assessment_refs != ordered_refs or len(set(document.assessment_refs)) != len(
+        document.assessment_refs
+    ):
+        raise ValueError("inspection assessment_refs must be sorted and unique")
+    if tuple(sorted(set(document.reason_codes))) != document.reason_codes:
+        raise ValueError("inspection reason_codes must be sorted and unique")
+
+
+INSPECTION_OUTCOME_PATH = "qa/results/inspect/inspection-outcome.json"
+
+
+class InspectionDocumentV1(FrozenModel):
+    """Sealed inspection facts. The commit receipt is attached by the parent."""
+
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    batch_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
+    disposition: InspectionDisposition
+    reviewed_case: ReviewedCaseV1
+    mapping_ref: EvidenceArtifactRefV1
+    assessment_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
+    reason_codes: tuple[str, ...]
+    coverage_state: CoverageState | None = None
+
+    @model_validator(mode="after")
+    def _identity_and_disposition_are_closed(self) -> Self:
+        _close_inspection(self)
+        return self
+
+
 class InspectionOutcomeV1(FrozenModel):
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
@@ -275,36 +404,23 @@ class InspectionOutcomeV1(FrozenModel):
 
     @model_validator(mode="after")
     def _identity_and_disposition_are_closed(self) -> Self:
-        if self.reviewed_case.change_id != self.change_id:
-            raise ValueError("inspection Reviewed Case change_id must match")
-        if self.reviewed_case.coverage_epoch != self.coverage_epoch:
-            raise ValueError("inspection Reviewed Case epoch must match")
-        require_same_plan(
-            self.plan_digest,
-            self.plan_ref,
-            self.reviewed_case.plan_digest,
-            self.reviewed_case.plan_ref,
-        )
-        if self.disposition == "satisfied" and self.coverage_state != "satisfied":
-            raise ValueError("satisfied inspection requires satisfied coverage")
-        if self.disposition == "coverage_insufficient" and self.coverage_state not in {
-            "repair_required",
-            "exhausted",
-        }:
-            raise ValueError("coverage insufficiency requires an insufficient coverage state")
-        if (
-            self.disposition in {"repairable_execution_failure", "analysis_required", "needs_human"}
-            and self.coverage_state is not None
-        ):
-            raise ValueError("execution failure disposition cannot also publish a coverage state")
-        ordered_refs = tuple(sorted(self.assessment_refs, key=lambda item: (item.path, item.digest)))
-        if self.assessment_refs != ordered_refs or len(set(self.assessment_refs)) != len(
-            self.assessment_refs
-        ):
-            raise ValueError("inspection assessment_refs must be sorted and unique")
-        if tuple(sorted(set(self.reason_codes))) != self.reason_codes:
-            raise ValueError("inspection reason_codes must be sorted and unique")
+        _close_inspection(self)
         return self
+
+
+class InspectPublishedV1(FrozenModel):
+    """Inspect's routed result. The commit receipt is exported beside this document."""
+
+    disposition: InspectionDisposition
+    coverage_state: CoverageState | None = None
+    inspection_outcome: InspectionDocumentV1
+    evidence_refs: tuple[EvidenceArtifactRefV1, ...]
+    observations_ref: EvidenceArtifactRefV1
+    issue_evidence_manifest_ref: EvidenceArtifactRefV1
+    owned_evidence_ids: tuple[str, ...]
+    evidence_bundle_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    assessment: AssessmentInputsV1
+    finalized: FinalizedInspectionV1
 
 
 def _canonical_report_refs(
@@ -316,6 +432,24 @@ def _canonical_report_refs(
     if values != ordered or len({item.path for item in values}) != len(values):
         raise ValueError("report refs must be sorted with one digest per path")
     return values
+
+
+class ReportBoundInputV1(FrozenModel):
+    """Refs the report op opens. The skill documents are assembled in prepare."""
+
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    purpose: ReportPurpose
+    capability_leafs: tuple[str, ...]
+    fact_baseline_ref: EvidenceArtifactRefV1
+    issue_analysis_ref: EvidenceArtifactRefV1 | None = None
+    artifact_paths: tuple[str, ...] = ()
+    inspection_ref: EvidenceArtifactRefV1
+    assessment_ref: EvidenceArtifactRefV1
+    generation_ref: EvidenceArtifactRefV1
+    execution_ref: EvidenceArtifactRefV1
+    execution_receipt: ReceiptRef
+    inspection_receipt: ReceiptRef
 
 
 class ReportSkillInputV1(QualitySkillInputV1):
@@ -434,7 +568,22 @@ class FinalizedReportV1(FrozenModel):
         return self
 
 
-class ReportOutcomeV1(FrozenModel):
+class ReportPublishedV1(FrozenModel):
+    """Report flow output. The commit receipt is exported beside this document."""
+
+    publication: Literal["reported", "diagnostic", "failed"]
+    report_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    coverage_state: CoverageState | None = None
+    report_outcome: dict[str, object] | None = None
+    finalized: FinalizedReportV1 | None = None
+
+
+REPORT_OUTCOME_PATH = "qa/results/report/report-outcome.json"
+
+
+class ReportOutcomeDocumentV1(FrozenModel):
+    """Published report outcome. This attempt's commit receipt stays on the ledger."""
+
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
     batch_id: str = Field(min_length=1)
@@ -442,7 +591,6 @@ class ReportOutcomeV1(FrozenModel):
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     plan_ref: EvidenceArtifactRefV1
     report_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
-    report_receipt: ReceiptRef
 
     @field_validator("report_refs")
     @classmethod
@@ -457,6 +605,10 @@ class ReportOutcomeV1(FrozenModel):
         return self
 
 
+class ReportOutcomeV1(ReportOutcomeDocumentV1):
+    report_receipt: ReceiptRef
+
+
 __all__ = [
     "AssessmentInputsV1",
     "AssessmentSkillInputV1",
@@ -464,9 +616,17 @@ __all__ = [
     "FinalizedFactBaselineV1",
     "FinalizedInspectionV1",
     "FinalizedReportV1",
+    "ReportPublishedV1",
+    "ASSESSMENT_INPUTS_PATH",
     "InspectionDisposition",
+    "INSPECTION_OUTCOME_PATH",
+    "InspectionDocumentV1",
     "InspectionOutcomeV1",
+    "InspectPublishedV1",
+    "MaterializeAssessmentBoundV1",
     "MaterializeAssessmentInputV1",
+    "REPORT_OUTCOME_PATH",
+    "ReportOutcomeDocumentV1",
     "ReportOutcomeV1",
     "ReportPurpose",
     "ReportSkillInputV1",

@@ -14,6 +14,7 @@ from graph_engine.plugin_api import (
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
 from assurance_intake import ops
+from assurance_intake.validators import SEALED_ARTIFACT_REFS_VALIDATOR_ID, SealedArtifactRefsValidator
 
 INTAKE_SOURCE = ProviderSource(
     distribution="assurance-intake",
@@ -57,6 +58,7 @@ class IntakePlugin(CapabilityPlugin):
         schema_files=_SCHEMA_FILES,
         resource_files=dict(ops.router.resource_files()),
         task_handlers=dict(ops.router.handlers(cast(TaskHandler, ops))),
+        commit_validators={SEALED_ARTIFACT_REFS_VALIDATOR_ID: SealedArtifactRefsValidator()},
     )
 
     @classmethod

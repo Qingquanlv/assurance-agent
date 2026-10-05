@@ -5,14 +5,16 @@ from dataclasses import replace
 import pytest
 from pydantic import ValidationError
 
-from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, STATE_SCHEMA_VERSION, digest
 from assurance_quality.contracts.assessment import AssessmentInputsV1
 
 
 def test_current_revision_rejects_the_previous_state_schema() -> None:
-    assert STATE_SCHEMA_VERSION == "4"
-    for contract in ENTRYPOINT_CONTRACTS.values():
-        assert contract.state_schema_version == "4"
+    from assurance_product.graphs.factory import entrypoint_contracts
+    from assurance_product.graphs.revisions import STATE_SCHEMA_VERSION, digest
+
+    assert STATE_SCHEMA_VERSION == "6"
+    for contract in entrypoint_contracts().values():
+        assert contract.state_schema_version == "6"
         previous = replace(contract, state_schema_version="3")
         assert digest(previous) != digest(contract)
 

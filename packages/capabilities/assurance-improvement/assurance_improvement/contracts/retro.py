@@ -685,6 +685,28 @@ class RetroCollectInput(BaseModel):
     coverage_gap_slice: CoverageGapEvidenceSlice | None = None
 
 
+class RetroCollectAttemptInput(BaseModel):
+    """Collect reads the five slice files. It does not receive them as flow fields."""
+
+    model_config = _FROZEN
+
+    retro_id: str = Field(min_length=1)
+    window: RetroWindow
+    issue_slice_ref: EvidenceArtifactRefV1
+    workflow_slice_ref: EvidenceArtifactRefV1
+    eval_slice_ref: EvidenceArtifactRefV1
+    discovery_slice_ref: EvidenceArtifactRefV1 | None = None
+    coverage_gap_slice_ref: EvidenceArtifactRefV1 | None = None
+
+
+class RetroCollectedStamp(BaseModel):
+    """The timestamp collect hands to synthesize."""
+
+    model_config = _FROZEN
+
+    generated_at: str = Field(min_length=1)
+
+
 class RetroCollectedV1(RetroCollectInput):
     generated_at: str = Field(min_length=1)
 
@@ -694,7 +716,17 @@ class RetroReconcileInputV1(BaseModel):
 
     change_id: str = Field(min_length=1)
     context: RetroContextV3
-    candidates: tuple[ImprovementCandidateV3, ...]
+    candidates: tuple[ImprovementCandidateV3, ...] = ()
+
+
+class RetroReconcileAttemptInput(BaseModel):
+    """Reconcile reads the context and candidate files."""
+
+    model_config = _FROZEN
+
+    change_id: str = Field(min_length=1)
+    context_ref: EvidenceArtifactRefV1
+    candidates_ref: EvidenceArtifactRefV1 | None = None
 
 
 class RetroReconcileResultV1(BaseModel):
@@ -703,6 +735,60 @@ class RetroReconcileResultV1(BaseModel):
     reconciliation: ReconcileResultV1
     status: RetroRunStatus
     artifact_refs: tuple[EvidenceArtifactRefV1, ...]
+
+
+class RetroSynthesizeInputV1(BaseModel):
+    """Collected slices plus the three analysis files. The route is computed here."""
+
+    model_config = _FROZEN
+
+    generated_at: str = Field(min_length=1)
+    dry_run: bool = False
+    retro_id: str = Field(min_length=1)
+    window: RetroWindow
+    issue_slice: IssueEvidenceSlice
+    workflow_slice: WorkflowEvidenceSlice
+    eval_slice: EvalEvidenceSlice
+    discovery_slice: DiscoveryEvidenceSlice | None = None
+    coverage_gap_slice: CoverageGapEvidenceSlice | None = None
+    issue_analysis_ref: EvidenceArtifactRefV1
+    workflow_analysis_ref: EvidenceArtifactRefV1
+    eval_analysis_ref: EvidenceArtifactRefV1
+
+
+class RetroSynthesizeAttemptInput(BaseModel):
+    """Synthesize reads slice files, the collect stamp, and the analysis files."""
+
+    model_config = _FROZEN
+
+    generated_at_ref: EvidenceArtifactRefV1
+    dry_run: bool = False
+    retro_id: str = Field(min_length=1)
+    window: RetroWindow
+    issue_slice_ref: EvidenceArtifactRefV1
+    workflow_slice_ref: EvidenceArtifactRefV1
+    eval_slice_ref: EvidenceArtifactRefV1
+    discovery_slice_ref: EvidenceArtifactRefV1 | None = None
+    coverage_gap_slice_ref: EvidenceArtifactRefV1 | None = None
+    issue_analysis_ref: EvidenceArtifactRefV1
+    workflow_analysis_ref: EvidenceArtifactRefV1
+    eval_analysis_ref: EvidenceArtifactRefV1
+
+
+class RetroCandidatesFile(BaseModel):
+    """Candidates retro writes for reconcile. Reconcile replaces this with the sealed document."""
+
+    model_config = _FROZEN
+
+    candidates: tuple[ImprovementCandidateV3, ...] = ()
+
+
+class RetroSynthesizeV1(BaseModel):
+    model_config = _FROZEN
+
+    route: Literal["synthesize", "empty"]
+    context: RetroContextV3
+    candidates: tuple[ImprovementCandidateV3, ...] = ()
 
 
 class ImprovementCandidateDocumentDraftV3(BaseModel):

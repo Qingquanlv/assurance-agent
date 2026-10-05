@@ -152,7 +152,25 @@ CALLABLE_OWNER_OVERRIDES: dict[str, str] = {
 
 OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
     "assurance.execution": ("operation:run-tests",),
-    "assurance.healing": (
+    "assurance.quality": ("operation:reconcile-issues",),
+    "assurance.improvement": (
+        "operation:retro-collect-v3",
+        "operation:retro-synthesize",
+        "operation:reconcile-improvements",
+        "operation:apply-improvement-auto-review",
+        "operation:apply-improvement-review",
+        "operation:evaluate-memory-improvement",
+        "operation:apply-memory-improvement",
+        "operation:rollback-memory-improvement",
+        "operation:export-change-improvement",
+    ),
+}
+
+REPLACED_OPERATIONS = frozenset({"operation:no-op", "operation:stop", "operation:skill-registry-check"})
+DELETED_OPERATIONS = frozenset(
+    {
+        "operation:retro-accept",
+        "operation:run-tests-and-collect-pr-metrics",
         "operation:allocate-healing-attempt",
         "operation:fixer-authority-ready",
         "operation:record-fixer-approval",
@@ -163,8 +181,6 @@ OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
         "operation:compute-coverage-repair-safety",
         "operation:allocate-coverage-repair-attempt",
         "operation:record-coverage-repair-status",
-    ),
-    "assurance.quality": (
         "operation:derive-plan-layer-applicability",
         "operation:inspect",
         "operation:generate-report",
@@ -194,12 +210,8 @@ OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
         "operation:record-empty-issue-analysis",
         "operation:record-issue-analysis-failure",
         "operation:record-project-sync-pending",
-        "operation:reconcile-issues",
         "operation:load-problem-review-context",
         "operation:apply-problem-review",
-    ),
-    "assurance.improvement": (
-        "operation:retro-collect-v3",
         "operation:assemble-retro-context-v3",
         "operation:drain-improvement-outbox",
         "operation:finalize-retro-status",
@@ -207,29 +219,19 @@ OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
         "operation:retro-evidence-gap-fallback",
         "operation:record-analysis-failed",
         "operation:materialize-empty-retro-analysis",
-        "operation:reconcile-improvements",
         "operation:load-review-subject",
         "operation:validate-improvement-review-assessment",
-        "operation:apply-improvement-auto-review",
         "operation:record-improvement-auto-review-error",
         "operation:record-auto-review-orchestration-error",
         "operation:select-current-retro-auto-review-items",
         "operation:summarize-auto-review-batch",
         "operation:load-improvement-review-context",
-        "operation:apply-improvement-review",
         "operation:load-improvement-delivery",
-        "operation:evaluate-memory-improvement",
-        "operation:apply-memory-improvement",
-        "operation:rollback-memory-improvement",
-        "operation:export-change-improvement",
         "operation:record-change-improvement-applied",
         "operation:export-knowledge-improvement",
         "operation:record-knowledge-improvement-applied",
-    ),
-}
-
-REPLACED_OPERATIONS = frozenset({"operation:no-op", "operation:stop", "operation:skill-registry-check"})
-DELETED_OPERATIONS = frozenset({"operation:retro-accept", "operation:run-tests-and-collect-pr-metrics"})
+    }
+)
 # Operations that migrated onto a task attempt contract. The contract keeps the
 # bare slug and the live handler carries the `.execute` suffix.
 TASK_HANDLER_OPERATIONS = frozenset({"operation:reconcile-issues"})
@@ -247,14 +249,13 @@ SKILL_OWNERS: dict[str, tuple[str, ...]] = {
         "aa-performance-codegen-reviewer",
     ),
     "assurance.execution": ("aa-execute", "aa-run"),
-    "assurance.healing": ("aa-fix-proposal", "aa-coverage-repair"),
+    "assurance.healing": ("aa-fix-proposal",),
     "assurance.quality": (
         "aa-fact-baseline",
         "aa-inspect",
         "aa-issue-analyzer",
         "aa-issue-triage-advisor",
         "aa-report-generator",
-        "aa-dashboard",
     ),
     "assurance.improvement": (
         "aa-retro",
@@ -277,6 +278,8 @@ SKILL_DISPOSITIONS: dict[str, Disposition] = {
     "aa-performance-plan-reviewer": "delete_phase6",
     "aa-api-codegen-fixer": "delete_phase6",
     "aa-e2e-codegen-fixer": "delete_phase6",
+    "aa-coverage-repair": "delete_phase6",
+    "aa-dashboard": "delete_phase6",
     "aa-workflow": "replace_phase5",
     "writing-skills": "retain_harness",
 }
@@ -301,13 +304,16 @@ PERSONA_NEW_IDS: dict[str, str] = {
     "aa-archiver": "assurance.improvement.persona.archiver.v1",
 }
 
-VALIDATOR_NEW_IDS: dict[str, str] = {
-    "generated_files_candidate/v1": "assurance.generation.validator.generated-files.v1",
-    "plan_mechanical_candidate/v1": "assurance.generation.validator.plan-mechanical.v1",
-    "archive_integrity/v1": "assurance.improvement.validator.archive-integrity.v1",
-    "problem_apply_candidate/v1": "assurance.quality.validator.problem-apply.v1",
-    "cross_artifact_invariants/v1": "assurance.quality.validator.cross-artifact.v1",
-}
+VALIDATOR_NEW_IDS: dict[str, str] = {}
+DELETED_VALIDATORS = frozenset(
+    {
+        "generated_files_candidate/v1",
+        "plan_mechanical_candidate/v1",
+        "archive_integrity/v1",
+        "problem_apply_candidate/v1",
+        "cross_artifact_invariants/v1",
+    }
+)
 
 EFFECT_NEW_IDS: dict[str, str] = {
     "healing_allocation/v2": "assurance.healing.effect.allocation.v2",
@@ -484,6 +490,11 @@ RESOURCE_LEFTOVER_OVERRIDES: dict[str, tuple[Disposition, str | None]] = {
 ARTIFACT_LEFTOVER_TYPES = frozenset(
     {
         "advisory",
+        "coverage_repair_apply_summary",
+        "coverage_repair_baseline",
+        "coverage_repair_brief",
+        "coverage_repair_safety_check",
+        "coverage_repair_status",
         "discovery_generated_manifest",
         "discovery_oracle_set",
         "discovery_promotion_manifest",
@@ -706,7 +717,7 @@ def legacy_persona_ids() -> frozenset[str]:
 
 
 def legacy_validator_ids() -> frozenset[str]:
-    return frozenset(VALIDATOR_NEW_IDS)
+    return frozenset(VALIDATOR_NEW_IDS) | DELETED_VALIDATORS
 
 
 def legacy_effect_kinds() -> frozenset[str]:
@@ -1025,6 +1036,9 @@ def seed_ownership_items() -> tuple[OwnershipItem, ...]:
         items.append(_item("persona", persona_id, "migrate", owner, PERSONA_NEW_IDS[persona_id]))
 
     for validator_id in sorted(legacy_validator_ids()):
+        if validator_id in DELETED_VALIDATORS:
+            items.append(_item("validator", validator_id, "delete_phase6", None, None))
+            continue
         new_id = VALIDATOR_NEW_IDS[validator_id]
         owner = ".".join(new_id.split(".")[:2])
         items.append(_item("validator", validator_id, "migrate", owner, new_id))
