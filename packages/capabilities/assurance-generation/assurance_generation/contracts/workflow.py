@@ -61,19 +61,44 @@ class ResolveGenerationInputV1(FrozenModel):
     coverage_epoch: int = Field(ge=0)
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     plan_ref: EvidenceArtifactRefV1
-    reviewed_case: ReviewedCaseV1 | None = None
+    reviewed_case_ref: EvidenceArtifactRefV1 | None = None
     source_artifacts: tuple[EvidenceArtifactRefV1, ...] = ()
 
-    @model_validator(mode="after")
-    def _plan_matches_inline_case(self) -> Self:
-        if self.reviewed_case is not None:
-            require_same_plan(
-                self.plan_digest,
-                self.plan_ref,
-                self.reviewed_case.plan_digest,
-                self.reviewed_case.plan_ref,
-            )
-        return self
+
+class PublishCycleInputV1(FrozenModel):
+    """Identity for one cycle, plus optional per-family artifact refs.
+
+    Unselected families leave their refs empty. The publish task reads the
+    refs that the selected lanes actually wrote.
+    """
+
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    reviewed_case_ref: EvidenceArtifactRefV1
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
+    selected_test_families: tuple[LayerName, ...] = Field(min_length=1)
+    capability_leafs: tuple[str, ...]
+    api_files: EvidenceArtifactRefV1 | None = None
+    api_summary: EvidenceArtifactRefV1 | None = None
+    api_review: EvidenceArtifactRefV1 | None = None
+    e2e_files: EvidenceArtifactRefV1 | None = None
+    e2e_summary: EvidenceArtifactRefV1 | None = None
+    e2e_review: EvidenceArtifactRefV1 | None = None
+    fuzz_files: EvidenceArtifactRefV1 | None = None
+    fuzz_summary: EvidenceArtifactRefV1 | None = None
+    fuzz_review: EvidenceArtifactRefV1 | None = None
+    performance_files: EvidenceArtifactRefV1 | None = None
+    performance_summary: EvidenceArtifactRefV1 | None = None
+    performance_review: EvidenceArtifactRefV1 | None = None
+
+    @computed_field
+    @property
+    def coverage_epoch_token(self) -> str:
+        return str(self.coverage_epoch)
+
+
+GENERATION_CYCLE_PATH = "qa/results/codegen/generation-cycle.json"
 
 
 class GenerationCycleResultV1(FrozenModel):
@@ -102,9 +127,16 @@ class GenerationCycleResultV1(FrozenModel):
         return self
 
 
+class GenerationCyclePublishedV1(FrozenModel):
+    generation_result: GenerationCycleResultV1
+
+
 __all__ = [
     "CompleteGenerationInputV1",
     "GeneratedFamilyV1",
+    "GENERATION_CYCLE_PATH",
+    "GenerationCyclePublishedV1",
     "GenerationCycleResultV1",
+    "PublishCycleInputV1",
     "ResolveGenerationInputV1",
 ]

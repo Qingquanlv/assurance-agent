@@ -6,10 +6,28 @@ import os
 import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
+from pydantic import BaseModel
+
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.workflow import (
+    ExecutionCycleDocumentV1,
+    execution_evidence_path,
+    execution_semantic_node,
+)
+from assurance_quality.contracts.assessment import (
+    InspectionDocumentV1,
+    InspectionOutcomeV1,
+    ReportOutcomeDocumentV1,
+    ReportOutcomeV1,
+)
+from assurance_quality.ops.inspect import op as inspect_op
+from assurance_quality.ops.report import op as report_op
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.stategraph.ledger import ledger_entry_receipt, ledger_refs
 
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.generated_merge import merge_generated
@@ -36,6 +54,7 @@ def render_status_from_langgraph(
     status: str,
     snapshot: object | None = None,
     journal_events: Sequence[object] = (),
+    project_root: Path,
 ) -> StatusV1:
     mapped = "completed" if status in {"succeeded", "completed"} else status
     if mapped not in {"running", "blocked", "interrupted", "stopped", "failed", "completed"}:
@@ -47,8 +66,8 @@ def render_status_from_langgraph(
         change_state = "stopped"
     active_hierarchy, active_nodes, pending = _langgraph_snapshot_fields(invocation_id, snapshot)
     journal_hierarchy, journal_nodes = _journal_attempt_fields(invocation_id, journal_events)
-    execution_gate = _execution_gate_from_snapshot(snapshot)
-    quality_gate = _quality_gate_from_snapshot(snapshot, change_id)
+    execution_gate = _execution_gate_from_snapshot(snapshot, project_root)
+    quality_gate = _quality_gate_from_snapshot(snapshot, change_id, project_root, execution_gate)
     return StatusV1.model_validate(
         {
             "schema_version": "1",
@@ -60,7 +79,7 @@ def render_status_from_langgraph(
             "graph_hierarchy": journal_hierarchy + active_hierarchy,
             "node_states": journal_nodes + active_nodes,
             "selected_test_families": _selected_test_families_from_snapshot(snapshot),
-            "coverage_progress": _coverage_progress_from_snapshot(snapshot),
+            "coverage_progress": _coverage_progress_from_snapshot(snapshot, project_root),
             "durable_effects": (),
             "adapter_evidence": _journal_adapter_evidence(invocation_id, journal_events),
             "execution_gate": execution_gate,
@@ -120,10 +139,6 @@ def _langgraph_snapshot_fields(
         actions: tuple[str, ...] = ()
         reason = "system"
         if isinstance(value, Mapping):
-            if not node_id:
-                raw_node = value.get("node_id")
-                if isinstance(raw_node, str) and raw_node:
-                    node_id = raw_node
             raw_actions = value.get("actions")
             if isinstance(raw_actions, list | tuple):
                 actions = tuple(str(item) for item in raw_actions)
@@ -268,24 +283,90 @@ def _terminal_projection(entrypoint: str, snapshot: object | None) -> tuple[str 
     return reason, entrypoint == "full" and status == "completed" and reason == "achieved"
 
 
-def _coverage_progress_from_snapshot(snapshot: object | None) -> Mapping[str, object] | None:
-    from assurance_quality.contracts.assessment import InspectionOutcomeV1
+def _coverage_round(values: Mapping[str, object]) -> int:
+    from graph_engine.flow.control import control_table, read_round
 
+    return read_round(control_table(values, "loops"), "coverage")
+
+
+_EXECUTION_CYCLE_KEY = TASK_ATTEMPT_CONTRACTS["execute"].artifact("cycle").ledger_key
+_INSPECTION_KEY = inspect_op.artifact("inspection-outcome").ledger_key
+_REPORT_OUTCOME_KEY = report_op.artifact("report-outcome").ledger_key
+
+
+def _snapshot_values(snapshot: object | None) -> Mapping[str, object] | None:
     values = getattr(snapshot, "values", None)
-    if not isinstance(values, Mapping) or not values.get("coverage_state"):
+    return values if isinstance(values, Mapping) else None
+
+
+def _one_ledger_ref(ledger: object, key: str) -> dict[str, str] | None:
+    refs = ledger_refs(ledger, key)
+    if not refs:
+        return None
+    if len(refs) != 1:
+        raise ValueError(f"ledger key {key} must have one ref")
+    return refs[0]
+
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+
+def _open_status_artifact(
+    project: Path,
+    ref: Mapping[str, object],
+    model: type[_ModelT],
+    label: str,
+) -> _ModelT:
+    try:
+        return open_artifact(project, ref, model=model)
+    except ArtifactReadError as error:
+        path = error.path or ""
+        if error.reason == "digest":
+            raise ValueError(f"{label} digest drifted: {path}") from error
+        if error.reason in {"missing", "path", "symlink"}:
+            raise ValueError(f"{label} is missing: {path}") from error
+        raise ValueError(f"{label} is invalid: {path}") from error
+
+
+def _inspection_from_ledger(
+    values: Mapping[str, object],
+    project_root: Path,
+    *,
+    label: str,
+) -> InspectionOutcomeV1 | None:
+    ref = _one_ledger_ref(values.get("artifact_ledger"), _INSPECTION_KEY)
+    if ref is None:
+        return None
+    document = _open_status_artifact(project_root, ref, InspectionDocumentV1, label)
+    receipt = ledger_entry_receipt(values.get("artifact_ledger"), _INSPECTION_KEY)
+    if receipt is None:
+        raise ValueError(f"{label} is missing: {ref['path']}")
+    return InspectionOutcomeV1.model_validate(
+        {**document.model_dump(mode="json"), "inspection_receipt": receipt}
+    )
+
+
+def _coverage_progress_from_snapshot(
+    snapshot: object | None,
+    project_root: Path,
+) -> Mapping[str, object] | None:
+    values = _snapshot_values(snapshot)
+    if values is None:
         return None
     try:
-        inspection = InspectionOutcomeV1.model_validate(values.get("inspection_outcome"))
+        inspection = _inspection_from_ledger(values, project_root, label="terminal checkpoint inspection")
+        if inspection is None:
+            return None
+        if inspection.coverage_epoch != _coverage_round(values):
+            return None
+        if not inspection.coverage_state:
+            return None
         budgets = values.get("budgets")
         budget = budgets.get("coverage_rounds") if isinstance(budgets, Mapping) else None
         if isinstance(budget, bool) or not isinstance(budget, int) or budget < 0:
             raise ValueError("coverage budget must be a non-negative int")
-        if values.get("coverage_epoch") != inspection.coverage_epoch:
-            raise ValueError("coverage epoch must match the current inspection")
-        if values["coverage_state"] != inspection.coverage_state:
-            raise ValueError("coverage state must match the current inspection")
-    except ValueError as error:
-        raise ValueError("terminal checkpoint coverage progress is incomplete") from error
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"terminal checkpoint coverage progress is incomplete: {error}") from error
     return {
         "round": inspection.coverage_epoch,
         "maximum_rounds": budget,
@@ -365,33 +446,38 @@ def _require_terminal_full_success(invocation: Mapping[str, object] | StatusV1) 
                 raise ValueError("achieved rejects failed or exhausted state")
 
 
-def _execution_gate_from_snapshot(snapshot: object | None) -> ExecutionGateRefV1 | None:
-    values = getattr(snapshot, "values", None)
-    if not isinstance(values, Mapping):
+def _execution_gate_from_snapshot(
+    snapshot: object | None,
+    project_root: Path,
+) -> ExecutionGateRefV1 | None:
+    values = _snapshot_values(snapshot)
+    if values is None:
         return None
-    names = (
-        "execution_semantic_node_id",
-        "batch_id",
-        "execution_evidence",
-        "execution_digest",
-    )
-    present = tuple(name for name in names if name in values)
-    if not any(
-        values.get(name) for name in ("execution_semantic_node_id", "execution_evidence", "execution_digest")
-    ):
+    ref = _one_ledger_ref(values.get("artifact_ledger"), _EXECUTION_CYCLE_KEY)
+    if ref is None:
         return None
-    if len(present) != len(names):
-        raise ValueError("terminal execution checkpoint identity is incomplete")
-    evidence, document = _validated_execution_evidence(
-        values["execution_evidence"],
-        label="terminal execution checkpoint evidence",
-    )
-    digest = canonical_digest(cast(JSONValue, document))
-    if values["batch_id"] != evidence.batch_id or values["execution_digest"] != digest:
-        raise ValueError("terminal execution checkpoint evidence identity drifted")
+    try:
+        cycle = _open_status_artifact(
+            project_root, ref, ExecutionCycleDocumentV1, "terminal execution checkpoint cycle"
+        )
+        if cycle.coverage_epoch != _coverage_round(values):
+            return None
+        evidence, document = _validated_execution_evidence(
+            _open_status_artifact(
+                project_root,
+                cycle.evidence_ref.model_dump(mode="json"),
+                ExecutionEvidenceV1,
+                "terminal execution checkpoint evidence",
+            ).model_dump(mode="json"),
+            label="terminal execution checkpoint evidence",
+        )
+        digest = canonical_digest(cast(JSONValue, document))
+        semantic = execution_semantic_node(cycle.evidence_ref.path)
+    except ValueError as error:
+        raise ValueError(f"terminal execution checkpoint identity is incomplete: {error}") from error
     return ExecutionGateRefV1.model_validate(
         {
-            "semantic_node_id": values["execution_semantic_node_id"],
+            "semantic_node_id": semantic,
             "batch_id": evidence.batch_id,
             "execution_digest": digest,
         }
@@ -401,22 +487,43 @@ def _execution_gate_from_snapshot(snapshot: object | None) -> ExecutionGateRefV1
 def _quality_gate_from_snapshot(
     snapshot: object | None,
     change_id: str,
+    project_root: Path,
+    execution_gate: ExecutionGateRefV1 | None,
 ) -> QualityGateRefV1 | None:
-    values = getattr(snapshot, "values", None)
-    if not isinstance(values, Mapping) or not values.get("report_outcome"):
+    values = _snapshot_values(snapshot)
+    if values is None:
+        return None
+    report_ref = _one_ledger_ref(values.get("artifact_ledger"), _REPORT_OUTCOME_KEY)
+    if report_ref is None:
         return None
     try:
+        report_document = _open_status_artifact(
+            project_root, report_ref, ReportOutcomeDocumentV1, "terminal quality checkpoint report"
+        )
+        report_receipt = ledger_entry_receipt(values.get("artifact_ledger"), _REPORT_OUTCOME_KEY)
+        if report_receipt is None:
+            raise ValueError(f"terminal quality checkpoint report is missing: {report_ref['path']}")
+        inspection = _inspection_from_ledger(
+            values, project_root, label="terminal quality checkpoint inspection"
+        )
+        if inspection is None:
+            raise ValueError("terminal quality checkpoint is invalid")
         gate = QualityGateRefV1.model_validate(
-            {"inspection": values.get("inspection_outcome"), "report": values["report_outcome"]}
+            {
+                "inspection": inspection,
+                "report": ReportOutcomeV1.model_validate(
+                    {**report_document.model_dump(mode="json"), "report_receipt": report_receipt}
+                ),
+            }
         )
     except ValueError as error:
-        raise ValueError("terminal quality checkpoint is invalid") from error
+        raise ValueError(f"terminal quality checkpoint is invalid: {error}") from error
+    if gate.inspection.coverage_epoch != _coverage_round(values):
+        return None
     if gate.inspection.change_id != change_id:
         raise ValueError("terminal quality checkpoint identity drifted")
-    if values.get("batch_id") != gate.inspection.batch_id:
+    if execution_gate is None or execution_gate.batch_id != gate.inspection.batch_id:
         raise ValueError("terminal quality checkpoint batch drifted")
-    if values.get("coverage_epoch", 0) != gate.inspection.coverage_epoch:
-        raise ValueError("terminal quality checkpoint epoch drifted")
     return gate
 
 
@@ -481,20 +588,17 @@ def _require_execution_gate(
     invocation: Mapping[str, object] | StatusV1,
 ) -> ExecutionGateRefV1:
     gate = _execution_gate_from_invocation(invocation)
-    filename = {
-        "execution.execute": "execute-result.json",
-        "execution.run": "run-result.json",
-    }[gate.semantic_node_id]
-    execution_root = project / "qa" / "results" / "execution"
-    payload = _read_json_object(execution_root / filename, "execution evidence")
+    evidence_path = execution_evidence_path(gate.semantic_node_id)
+    payload = _read_json_object(project.joinpath(*evidence_path.split("/")), "execution evidence")
     evidence, document = _validated_execution_evidence(payload, label="execution evidence")
     if evidence.change_id != change_id or evidence.batch_id != gate.batch_id:
         raise ValueError("execution evidence identity drifted")
     if canonical_digest(cast(JSONValue, document)) != gate.execution_digest:
         raise ValueError("execution evidence digest drifted")
     if gate.semantic_node_id == "execution.run":
+        initial_path = execution_evidence_path("execution.execute")
         initial_payload = _read_json_object(
-            execution_root / "execute-result.json",
+            project.joinpath(*initial_path.split("/")),
             "initial execution evidence",
         )
         initial, _document = _validated_execution_evidence(
@@ -538,10 +642,7 @@ def _require_quality_gate(
         raise ValueError("quality inspection identity drifted")
     if inspection.disposition != "satisfied" or inspection.coverage_state != "satisfied":
         raise ValueError("quality gate failed")
-    filename = (
-        "run-result.json" if execution_gate.semantic_node_id == "execution.run" else "execute-result.json"
-    )
-    execution_path = f"qa/results/execution/{filename}"
+    execution_path = execution_evidence_path(execution_gate.semantic_node_id)
     if not any(ref.path == execution_path for ref in inspection.assessment_refs):
         raise ValueError("quality inspection execution reference is missing")
     refs = (

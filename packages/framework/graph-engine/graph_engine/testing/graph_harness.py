@@ -11,6 +11,7 @@ from langgraph.errors import GraphInterrupt
 from langgraph.graph import StateGraph
 from pydantic import BaseModel
 
+from graph_engine.artifacts import ArtifactRef, coerce_artifact_ref
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.node_factory import AttemptNodeFactory
@@ -95,8 +96,44 @@ class GraphHarnessResult:
         return json.dumps(payload, default=str, sort_keys=True)
 
 
-def committed(output: object, receipt: ReceiptRef) -> CommittedTaskResult[Any]:
-    return CommittedTaskResult(output=output, receipt=receipt)
+def committed(
+    output: object,
+    receipt: ReceiptRef,
+    *,
+    artifacts: Sequence[ArtifactRef | Mapping[str, object]] | None = None,
+) -> CommittedTaskResult[Any]:
+    """Script a commit. Artifact refs default to ``output["artifacts"]`` when present.
+
+    Production commits take those refs from the kernel seal. This helper only
+    stands in for that seal inside graph tests.
+    """
+    return CommittedTaskResult(
+        output=output,
+        receipt=receipt,
+        committed_artifacts=(
+            _scripted_artifacts(output)
+            if artifacts is None
+            else tuple(coerce_artifact_ref(item) for item in artifacts)
+        ),
+    )
+
+
+def _scripted_artifacts(output: object) -> tuple[ArtifactRef, ...]:
+    payload: object = output.model_dump(mode="json") if isinstance(output, BaseModel) else output
+    if not isinstance(payload, Mapping):
+        return ()
+    raw = payload.get("artifacts")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return ()
+    refs: list[ArtifactRef] = []
+    for item in raw:
+        if (
+            isinstance(item, Mapping)
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("digest"), str)
+        ):
+            refs.append(ArtifactRef(path=item["path"], digest=item["digest"]))
+    return tuple(refs)
 
 
 class ScriptedAttempt:

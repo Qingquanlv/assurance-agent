@@ -7,7 +7,14 @@ from collections.abc import Mapping
 from pydantic import BaseModel, ValidationError
 
 from agent_runtime_contracts import AgentRunRequest
-from agent_runtime_contracts.ops import AgentBindingDataV1, FinalizeContext, InputError, PrepareContext
+from agent_runtime_contracts.ops import (
+    AgentBindingDataV1,
+    FinalizeContext,
+    InputError,
+    OutputError,
+    PrepareContext,
+)
+from assurance_generation.operations.resolve_inputs import reviewed_case_field
 from agent_runtime_contracts.wire.models import ResultContract
 
 from assurance_generation.contracts.agent import CodegenFinalizeInputV1, CodegenInputV1
@@ -58,6 +65,7 @@ def _finalize_input(ctx: FinalizeContext) -> CodegenFinalizeInputV1:
     prepared = ctx.prepared if isinstance(ctx.prepared, Mapping) else {}
     fields = set(CodegenFinalizeInputV1.model_fields) - {"agent_result"}
     data = {key: prepared[key] for key in fields if key in prepared}
+    data.update(reviewed_case_field(ctx.project_root, prepared, OutputError))
     data["agent_result"] = ctx.agent_result.model_dump(mode="json")
     try:
         return CodegenFinalizeInputV1.model_validate(data)

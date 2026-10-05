@@ -40,7 +40,13 @@ from assurance_intake.contracts.plan import (
     ResolvedAssurancePlan,
     TestFamilyPolicyV1,
 )
-from assurance_intake.contracts.review import CaseReviewFindingV1, CaseReviewResultV1, ReviewDecision
+from assurance_intake.contracts.resources import PolicyResourceV1
+from assurance_intake.contracts.review import (
+    CaseReviewFindingV1,
+    CaseReviewOutputV1,
+    CaseReviewResultV1,
+    ReviewDecision,
+)
 from assurance_intake.contracts.workflow import (
     CaseFlowResultV1,
     CaseReworkContextV1,
@@ -56,6 +62,7 @@ __all__ = [
     "CaseReworkContextV1",
     "CaseId",
     "CaseReviewFindingV1",
+    "CaseReviewOutputV1",
     "CaseReviewResultV1",
     "CaseRisk",
     "CaseYaml",
@@ -69,6 +76,7 @@ __all__ = [
     "MrcCategory",
     "MrcLayer",
     "NonEmptyStr",
+    "PolicyResourceV1",
     "PreparedObligationV1",
     "SourceRefV1",
     "QaApproval",

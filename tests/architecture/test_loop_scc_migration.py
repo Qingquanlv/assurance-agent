@@ -19,10 +19,10 @@ def test_loop_scc_anchors_match_exactly() -> None:
     assert all(row.target_test for row in LOOP_SCC_INVENTORY)
     product = [row for row in LOOP_SCC_INVENTORY if row.graph_id.startswith("assurance.product.")]
     assert {row.anchor for row in product} == {
-        ("assurance.product.workflow.graph.product-execute", "fix-proposal"),
-        ("assurance.product.workflow.graph.product-full", "advance-coverage"),
+        ("assurance.product.workflow.graph.execute-tail", "repair"),
+        ("assurance.product.workflow.graph.product-full", "coverage-rework"),
     }
-    assert all("test_product_stategraph_flow.py" in row.target_test for row in product)
+    assert all(row.target_test.startswith("tests/product/") for row in product)
 
 
 def test_loop_scc_count_equality_alone_is_not_acceptance() -> None:

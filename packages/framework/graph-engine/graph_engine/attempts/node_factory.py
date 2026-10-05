@@ -27,6 +27,7 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.stategraph.publish import call_publish
 from graph_engine.stategraph.checkpoint_bridge import (
     CHECKPOINT_MARKERS_STATE_KEY,
     CheckpointBridgeMarker,
@@ -95,7 +96,20 @@ class AttemptNodeFactory:
         task = _task_contract(contract)
         business = _resolve_activation(activation, state)
         selected_state = omit_checkpoint_bridge_fields(state) if isinstance(state, Mapping) else state
-        validated = _validate_input(select, selected_state, task)
+        if not callable(select):
+            raise TypeError("select must be callable")
+        raw = select(selected_state)
+        try:
+            validated = _validated_selection(raw, task)
+        except ValidationError as error:
+            return {
+                "attempt_failure": {
+                    "resolution_kind": "permanent",
+                    "kind": "invalid_input",
+                    "message": str(error),
+                    "writes_promoted": False,
+                }
+            }
         if kernel is None:
             raise TypeError("attempt kernel is required")
         completions: list[tuple[AttemptKey, ActiveSystemInterrupt]] = []
@@ -287,7 +301,10 @@ def _with_latest_validation_error(validated: BaseModel, message: str) -> BaseMod
 def _validate_input(select: object, state: object, contract: TaskAttemptContract[Any, Any]) -> BaseModel:
     if not callable(select):
         raise TypeError("select must be callable")
-    raw = select(state)
+    return _validated_selection(select(state), contract)
+
+
+def _validated_selection(raw: object, contract: TaskAttemptContract[Any, Any]) -> BaseModel:
     if isinstance(raw, BaseModel) and isinstance(raw, contract.input_model):
         return raw
     # Graph bundles can be loaded from independently installed wheels.  A
@@ -353,9 +370,13 @@ def _map_resolution(
     if isinstance(resolution, CommittedTaskResult):
         if not callable(publish):
             raise TypeError("publish must be callable")
-        published = publish(state, resolution.output, resolution.receipt)
-        if not isinstance(published, Mapping):
-            raise TypeError("publish must return a mapping")
+        published = call_publish(
+            publish,
+            state if isinstance(state, Mapping) else {},
+            resolution.output,
+            resolution.receipt,
+            resolution.committed_artifacts,
+        )
         update = {str(name): value for name, value in published.items()}
         return _with_completion(update, completions)
     if isinstance(resolution, RejectedTaskResult):

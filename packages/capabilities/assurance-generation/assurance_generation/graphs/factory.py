@@ -1,194 +1,187 @@
+"""Generation root: resolve inputs, run the selected family lanes, publish the cycle."""
+
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any, cast
+from pydantic import Field
 
-from langgraph.graph import END, START
-from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Send
+from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.flow import BoundFlow, Flow
+from graph_engine.plugin_api import FrozenModel
+from graph_engine.stategraph.ledger import InputBinding, NamedWrite
 
 from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS
-from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
-from assurance_generation.feature import GenerationGraphs
-from assurance_generation.graphs.api import compile_family_pair
-from assurance_generation.graphs.init_runtime import build_init_runtime_graph, route_attempt_result
-from assurance_generation.graphs.nodes import (
-    activation_generation_cycle,
-    activation_generation_inputs,
-    complete_generation_node,
-    generation_done,
-    join_selected,
-    publish_generation_cycle,
-    publish_generation_inputs,
-    route_generation_completion,
-    select_generation_cycle,
-    select_generation_inputs,
+from assurance_generation.contracts.families import GENERATION_FAMILIES, LayerName
+from assurance_generation.contracts.reviews import HumanReviewDecision
+from assurance_generation.contracts.workflow import (
+    GENERATION_CYCLE_PATH,
+    GenerationCyclePublishedV1,
+    PublishCycleInputV1,
 )
-from assurance_generation.graphs.state import GenerationState
-from graph_engine.boot.boot import CapabilityBuildContext
-from graph_engine.errors import GraphEngineError
-from graph_engine.stategraph import AttemptGraph
+from assurance_generation.feature import GenerationGraphs
+from assurance_generation.graphs.init_runtime import build_init_runtime_graph
+from assurance_generation.ops.api_codegen import op as api_codegen
+from assurance_generation.ops.api_codegen_review import op as api_codegen_review
+from assurance_generation.ops.e2e_codegen import op as e2e_codegen
+from assurance_generation.ops.e2e_codegen_review import op as e2e_codegen_review
+from assurance_generation.ops.fuzz_codegen import op as fuzz_codegen
+from assurance_generation.ops.fuzz_codegen_review import op as fuzz_codegen_review
+from assurance_generation.ops.performance_codegen import op as performance_codegen
+from assurance_generation.ops.performance_codegen_review import op as performance_codegen_review
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+
+_CODEGEN = {
+    "api": api_codegen,
+    "e2e": e2e_codegen,
+    "fuzz": fuzz_codegen,
+    "performance": performance_codegen,
+}
+_REVIEW = {
+    "api": api_codegen_review,
+    "e2e": e2e_codegen_review,
+    "fuzz": fuzz_codegen_review,
+    "performance": performance_codegen_review,
+}
+_REVIEW_BUDGET = 3
 
 
-def _node(fn: object) -> Callable[..., Any]:
-    return cast(Callable[..., Any], fn)
+class GenerationFlowInput(FrozenModel):
+    change_id: str = Field(min_length=1)
+    plan_digest: str
+    plan_ref: EvidenceArtifactRefV1
+    coverage_epoch: int = Field(default=0, ge=0)
+    reviewed_case_ref: EvidenceArtifactRefV1 | None = None
+    source_artifacts: tuple[EvidenceArtifactRefV1, ...] = ()
+    selected_test_families: tuple[LayerName, ...]
+    capability_leafs: tuple[str, ...] = ()
+    allowed_artifact_paths: tuple[str, ...] = ()
+    ui_exploration_ref: EvidenceArtifactRefV1 | None = None
+    api_discovery_ref: EvidenceArtifactRefV1 | None = None
 
 
-class InsufficientRouteMatches(GraphEngineError):
-    """Raised when Generation fanout cannot emit all four family Sends."""
+class LaneFlowInput(FrozenModel):
+    change_id: str = Field(min_length=1)
+    plan_digest: str
+    plan_ref: EvidenceArtifactRefV1
+    coverage_epoch: int = Field(default=0, ge=0)
+    reviewed_case_ref: EvidenceArtifactRefV1 | None = None
+    capability_leafs: tuple[str, ...] = ()
+    allowed_artifact_paths: tuple[str, ...] = ()
+    ui_exploration_ref: EvidenceArtifactRefV1 | None = None
+    api_discovery_ref: EvidenceArtifactRefV1 | None = None
 
 
-def family_select_named_matches(state: Mapping[str, object], family: str) -> dict[str, str | None]:
-    selected = state.get("selected_test_families")
-    names = selected if isinstance(selected, list | tuple) else ()
-    return {"selected": family if family in names else None}
-
-
-def route_families(state: Mapping[str, object]) -> list[Send]:
-    raw = state.get("selected_test_families")
-    try:
-        if not isinstance(raw, list | tuple):
-            raise ValueError("selected_test_families is missing")
-        selected = validate_selected_families(list(raw))
-    except (TypeError, ValueError) as error:
-        raise InsufficientRouteMatches(str(error)) from error
-    destinations = GENERATION_FAMILIES
-    if len(destinations) != 4:
-        raise InsufficientRouteMatches("generation fanout requires four family destinations")
-    sends: list[Send] = []
-    for family in destinations:
-        sends.append(
-            Send(
-                family,
-                {
-                    "change_id": state.get("change_id"),
-                    "plan_digest": state.get("plan_digest"),
-                    "plan_ref": state.get("plan_ref"),
-                    "coverage_epoch": state.get("coverage_epoch", 0),
-                    "reviewed_case": state.get("reviewed_case"),
-                    "selected_test_families": list(selected),
-                    "capability_leafs": state.get("capability_leafs"),
-                    "allowed_artifact_paths": state.get("allowed_artifact_paths"),
-                    "family": family,
-                    "lane_selected": family in selected,
-                    "rounds_used": 0,
-                    "rounds_budget": 3,
-                    "review_stage": "codegen",
-                },
+def _family_bindings() -> tuple[InputBinding, ...]:
+    bindings: list[InputBinding] = []
+    for family in GENERATION_FAMILIES:
+        codegen = _CODEGEN[family]
+        review = _REVIEW[family]
+        bindings.extend(
+            (
+                InputBinding(
+                    ledger_key=codegen.artifact(f"{family}-files").ledger_key,
+                    field=f"{family}_files",
+                ),
+                InputBinding(
+                    ledger_key=codegen.artifact(f"{family}-summary").ledger_key,
+                    field=f"{family}_summary",
+                ),
+                InputBinding(
+                    ledger_key=review.artifact(f"{family}-review").ledger_key,
+                    field=f"{family}_review",
+                ),
             )
         )
-    return sends
+    return tuple(bindings)
 
 
-def _build_resolve_inputs_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
-    builder: AttemptGraph[GenerationState] = AttemptGraph(
-        GenerationState,
-        context,
-        namespace="generation",
-    )
-    builder.add_attempt(
-        "generation.resolve-inputs",
-        TASK_ATTEMPT_CONTRACTS["resolve-inputs"],
-        select=select_generation_inputs,
-        publish=publish_generation_inputs,
-        activation=activation_generation_inputs,
-        semantic_node_id="generation.resolve-inputs",
-    )
-    builder.add_node(
-        "done",
-        _node(lambda state: {"status": "failed" if state.get("attempt_failure") else "completed"}),
-    )
-    builder.add_edge(START, "generation.resolve-inputs")
-    builder.add_edge("generation.resolve-inputs", "done")
-    builder.add_edge("done", END)
-    return builder.compile_subgraph()
+class PublishCycleOp:
+    """Task view whose input slots are the family artifact handles."""
+
+    def __init__(self) -> None:
+        self._bindings = _family_bindings()
+
+    @property
+    def contract_id(self) -> str:
+        return TASK_ATTEMPT_CONTRACTS["publish-cycle"].contract_id
+
+    @property
+    def input_model(self) -> type[PublishCycleInputV1]:
+        return PublishCycleInputV1
+
+    @property
+    def output_model(self) -> type[GenerationCyclePublishedV1]:
+        return GenerationCyclePublishedV1
+
+    def ledger_namespace(self) -> str:
+        return "generation"
+
+    def ledger_writes(self) -> tuple[NamedWrite, ...]:
+        return (NamedWrite("cycle", GENERATION_CYCLE_PATH),)
+
+    def input_bindings(self) -> tuple[InputBinding, ...]:
+        return self._bindings
 
 
-def _build_root_graph(
-    context: CapabilityBuildContext,
-    *,
-    api: CompiledStateGraph,
-    e2e: CompiledStateGraph,
-    fuzz: CompiledStateGraph,
-    performance: CompiledStateGraph,
-) -> CompiledStateGraph:
-    builder: AttemptGraph[GenerationState] = AttemptGraph(
-        GenerationState,
-        context,
-        namespace="generation",
+def codegen_lane(family: str) -> Flow:
+    lane = Flow(family, input=LaneFlowInput, outcomes=("passed", "rejected", "exhausted", "failed"))
+    with lane.loop("review", budget=_REVIEW_BUDGET, on_exhausted="exhausted") as review:
+        lane.step(
+            "codegen",
+            _CODEGEN[family],
+            inputs={"local_round": review.round, "artifact_paths": "allowed_artifact_paths"},
+            then="codegen-review",
+            on_failure="failed",
+        )
+        lane.step(
+            "codegen-review",
+            _REVIEW[family],
+            inputs={"local_round": review.round, "artifact_paths": "allowed_artifact_paths"},
+            route_on="route",
+            routes={
+                "codegen": "passed",
+                "auto_fix": review.next("codegen"),
+                "human": "human-review",
+                "reject": "rejected",
+            },
+            on_failure="failed",
+        )
+        lane.gate(
+            "human-review",
+            decision=HumanReviewDecision,
+            routes={
+                "approve": "passed",
+                "reject": "rejected",
+                "request_rework": review.next("codegen"),
+            },
+        )
+    return lane
+
+
+_PUBLISH_CYCLE = PublishCycleOp()
+
+
+def build_generation_graph(context: CapabilityBuildContext) -> BoundFlow:
+    flow = Flow("generation", input=GenerationFlowInput, outcomes=("passed", "failed"))
+    flow.step(
+        "resolve-inputs", TASK_ATTEMPT_CONTRACTS["resolve-inputs"], then="families", on_failure="failed"
     )
-    builder.add_attempt(
-        "generation.resolve-inputs",
-        TASK_ATTEMPT_CONTRACTS["resolve-inputs"],
-        select=select_generation_inputs,
-        publish=publish_generation_inputs,
-        activation=activation_generation_inputs,
-        semantic_node_id="generation.resolve-inputs",
+    flow.parallel(
+        "families",
+        branches={family: codegen_lane(family) for family in GENERATION_FAMILIES},
+        select="selected_test_families",
+        require="passed",
+        then="publish-cycle",
+        on_failure="failed",
     )
-    builder.add_node("fanout", _node(lambda _state: {}))
-    builder.add_node("api", api)
-    builder.add_node("e2e", e2e)
-    builder.add_node("fuzz", fuzz)
-    builder.add_node("performance", performance)
-    builder.add_node("join-selected", _node(join_selected))
-    builder.add_node("complete", _node(complete_generation_node))
-    builder.add_attempt(
-        "generation.publish-cycle",
-        TASK_ATTEMPT_CONTRACTS["publish-cycle"],
-        select=select_generation_cycle,
-        publish=publish_generation_cycle,
-        activation=activation_generation_cycle,
-        semantic_node_id="generation.publish-cycle",
-    )
-    builder.add_node("done", _node(generation_done))
-    builder.add_edge(START, "generation.resolve-inputs")
-    builder.add_conditional_edges(
-        "generation.resolve-inputs",
-        _node(route_attempt_result),
-        {"committed": "fanout", "failed": "done"},
-    )
-    builder.add_conditional_edges("fanout", _node(route_families))
-    builder.add_edge("api", "join-selected")
-    builder.add_edge("e2e", "join-selected")
-    builder.add_edge("fuzz", "join-selected")
-    builder.add_edge("performance", "join-selected")
-    builder.add_edge("join-selected", "complete")
-    builder.add_conditional_edges(
-        "complete",
-        _node(route_generation_completion),
-        {"publish": "generation.publish-cycle", "failed": "done"},
-    )
-    builder.add_edge("generation.publish-cycle", "done")
-    builder.add_edge("done", END)
-    return builder.compile_subgraph()
+    flow.step("publish-cycle", _PUBLISH_CYCLE, then="passed", on_failure="failed")
+    return flow.bind(context)
 
 
 def build_generation_graphs(context: CapabilityBuildContext) -> GenerationGraphs:
-    api, api_lane = compile_family_pair(context, "api")
-    e2e, e2e_lane = compile_family_pair(context, "e2e")
-    fuzz, fuzz_lane = compile_family_pair(context, "fuzz")
-    performance, performance_lane = compile_family_pair(context, "performance")
     return GenerationGraphs(
-        generation=_build_root_graph(
-            context,
-            api=api_lane,
-            e2e=e2e_lane,
-            fuzz=fuzz_lane,
-            performance=performance_lane,
-        ),
-        api=api,
-        e2e=e2e,
-        fuzz=fuzz,
-        performance=performance,
+        generation=build_generation_graph(context),
         init_runtime=build_init_runtime_graph(context),
-        resolve_inputs=_build_resolve_inputs_graph(context),
     )
 
 
-__all__ = [
-    "GenerationGraphs",
-    "InsufficientRouteMatches",
-    "build_generation_graphs",
-    "family_select_named_matches",
-    "route_families",
-]
+__all__ = ["GenerationGraphs", "build_generation_graph", "build_generation_graphs", "codegen_lane"]

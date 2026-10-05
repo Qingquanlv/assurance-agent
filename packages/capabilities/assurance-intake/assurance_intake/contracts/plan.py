@@ -57,6 +57,16 @@ def _canonical_segment(value: str, label: str) -> str:
     return value
 
 
+def _resource_pin(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    resource_id = value.get("resource_id")
+    digest = value.get("sha256")
+    if not isinstance(resource_id, str) or not isinstance(digest, str):
+        return None
+    return resource_id, digest
+
+
 def _qualified_id(value: str, label: str) -> str:
     try:
         return validate_qualified_id(value)
@@ -195,16 +205,44 @@ class ResolvedAssurancePlan(FrozenModel):
 
 class ResolvePlanInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
-    requirement_digest: str = Field(pattern=SHA256_PATTERN)
+    requirement_digest: str = Field(default="", pattern=SHA256_PATTERN)
     candidate_test_families: tuple[TestFamily, ...] = Field(min_length=1)
     budgets: PlanBudgetsV1
-    policy_resource_id: str
-    policy_digest: str = Field(pattern=SHA256_PATTERN)
+    policy_resource_id: str = ""
+    policy_digest: str = Field(default="", pattern=SHA256_PATTERN)
     family_policy: TestFamilyPolicyV1
     exploration_ref: EvidenceArtifactRefV1
     impact_inventory_ref: EvidenceArtifactRefV1
-    source_resource_digests: tuple[tuple[str, str], ...]
+    source_resource_digests: tuple[tuple[str, str], ...] = ()
     capability_leafs: tuple[str, ...]
+    # Raw pins. A before-validator fills the derived digest fields when they are absent.
+    requirement: str = ""
+    product_policy: dict[str, str] | None = None
+    capability_catalog: dict[str, str] | None = None
+    data_knowledge: dict[str, str] | None = None
+    artifacts: tuple[EvidenceArtifactRefV1, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_derived_inputs(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        requirement = data.get("requirement")
+        if not data.get("requirement_digest") and isinstance(requirement, str) and requirement:
+            data["requirement_digest"] = canonical_digest(cast(JSONValue, {"requirement": requirement}))
+        policy = _resource_pin(data.get("product_policy"))
+        if policy is not None:
+            data.setdefault("policy_resource_id", policy[0])
+            if not data.get("policy_resource_id"):
+                data["policy_resource_id"] = policy[0]
+            if not data.get("policy_digest"):
+                data["policy_digest"] = policy[1]
+        catalog = _resource_pin(data.get("capability_catalog"))
+        knowledge = _resource_pin(data.get("data_knowledge"))
+        if not data.get("source_resource_digests") and catalog is not None and knowledge is not None:
+            data["source_resource_digests"] = tuple(sorted((catalog, knowledge)))
+        return data
 
     @field_validator("candidate_test_families")
     @classmethod
@@ -247,9 +285,20 @@ class ResolvePlanInputV1(FrozenModel):
         return self
 
 
+PREPARATION_REFS_PATH = "qa/results/preparation/refs.json"
+
+
+class PreparationRefsDocumentV1(FrozenModel):
+    """The preparation tuple resolve-plan already returns, sealed as one file."""
+
+    schema_version: Literal["1"] = "1"
+    preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+
+
 class ResolvePlanOutputV1(FrozenModel):
     plan: ResolvedAssurancePlan
     plan_ref: EvidenceArtifactRefV1
+    preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
 
     @model_validator(mode="after")
     def _ref_matches_plan(self) -> Self:

@@ -2,47 +2,99 @@
 
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Mapping
-from pathlib import Path, PurePosixPath
-from typing import TypeVar
+from collections.abc import Mapping, Sequence
+from pathlib import PurePosixPath
+from typing import TypeVar, cast
 
-import yaml
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from agent_runtime_contracts.ops import ArtifactListResultV1, InputError, OutputError
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 
 from assurance_intake.contracts.agent import SkillInputV1, canonical_relative_paths
-from assurance_intake.contracts.cases import QaYaml, require_impact_row_coverage
+from assurance_intake.contracts.cases import (
+    CaseYamlAuthoring,
+    MinimumCoverageMatrixAuthoring,
+    QaYaml,
+    require_impact_row_coverage,
+)
 from assurance_intake.contracts.common import SHA256_PATTERN, TestFamily, validate_family_tuple
 from assurance_intake.contracts.explore import EXPLORATION_PATH, ExploreAdvisoryV1, PreparedExploreV1
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.domain.artifacts import (
-    file_digest,
-    leafs,
-    read_regular_bytes,
-    workspace_file,
-)
+from assurance_intake.domain.artifacts import leafs
 from assurance_intake.domain.case_checks import (
     authenticated_journey_keys,
+    bound_obligations,
     load_authored_case_delta,
     load_minimum_coverage_matrix,
-    read_minimum_coverage_matrix,
     reject_endpoint_literals,
     require_frozen_unresolved_rows,
     require_selected_test_families,
 )
 from assurance_intake.domain.case_modules import infer_case_delta_paths
-from assurance_intake.domain.explore_context import load_exploration_document
-from assurance_intake.domain.plan_codec import decode_plan
-from assurance_intake.domain.prepare_evidence import authenticate_evidence_refs
 
 MARKER_PATH = "qa/.qa.yaml"
 PROPOSAL_PATH = "qa/proposal.md"
 MATRIX_PATH = "qa/results/trace/minimum-coverage-matrix.json"
+_CASE_TREE = "qa/cases"
+_NAMED_CASE_REFS = ("marker_ref", "proposal_ref", "matrix_ref")
+
+
+def _ref_mappings(value: object) -> list[dict[str, object]]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        return []
+    found: list[dict[str, object]] = []
+    for item in value:
+        if isinstance(item, EvidenceArtifactRefV1):
+            found.append(item.model_dump(mode="json"))
+        elif isinstance(item, Mapping) and isinstance(item.get("path"), str):
+            found.append(dict(item))
+    return found
+
+
+def _one_ref(value: object) -> dict[str, object] | None:
+    if isinstance(value, EvidenceArtifactRefV1):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping) and isinstance(value.get("path"), str):
+        return dict(value)
+    return None
+
+
+def _is_case_path(path: str) -> bool:
+    return path == _CASE_TREE or path.startswith(f"{_CASE_TREE}/")
+
+
+def fallback_preparation_refs(data: object) -> object:
+    """Empty preparation refs fall back to the caller artifacts."""
+    if not isinstance(data, dict) or _ref_mappings(data.get("preparation_refs")):
+        return data
+    artifacts = _ref_mappings(data.get("artifacts"))
+    if artifacts:
+        return {**data, "preparation_refs": artifacts}
+    return data
+
+
+def refresh_case_attempt_input(data: object) -> object:
+    """Derive locked case paths and preparation refs from the ledger-backed handles."""
+    if not isinstance(data, dict):
+        return data
+    updated: dict[str, object] = dict(cast(Mapping[str, object], fallback_preparation_refs(data)))
+    case_refs = _ref_mappings(updated.get("case_refs"))
+    if case_refs:
+        updated["case_delta_paths"] = sorted(str(item["path"]) for item in case_refs)
+    extras = [ref for key in _NAMED_CASE_REFS if (ref := _one_ref(updated.get(key))) is not None]
+    if not extras:
+        return updated
+    found: dict[str, dict[str, object]] = {}
+    for ref in (*_ref_mappings(updated.get("preparation_refs")), *extras):
+        path = str(ref["path"])
+        if _is_case_path(path):
+            continue
+        found[path] = ref
+    updated["preparation_refs"] = [found[path] for path in sorted(found)]
+    return updated
 
 
 def validate_case_delta_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -92,82 +144,30 @@ class CaseDeltaInputV1(SkillInputV1):
 CaseDeltaT = TypeVar("CaseDeltaT", bound=CaseDeltaInputV1)
 
 
-def _committed_inventory(
-    project_root: Path, plan: ResolvedAssurancePlan, change_id: str
-) -> ChangeImpactInventoryV1:
-    authenticate_evidence_refs(project_root, (plan.impact_inventory_ref,))
-    try:
-        inventory = ChangeImpactInventoryV1.model_validate_json(
-            project_root.joinpath(*plan.impact_inventory_ref.path.split("/")).read_bytes()
-        )
-    except (OSError, ValidationError, ValueError) as error:
-        raise InputError(f"invalid impact-inventory.json: {error}") from error
-    if inventory.change_id != change_id:
-        raise InputError("impact-inventory.json change_id does not match case-design change_id")
-    return inventory
-
-
-def _committed_exploration(project_root: Path, change_id: str) -> object | None:
-    path = project_root.joinpath(*EXPLORATION_PATH.split("/"))
-    if not path.exists() and not path.is_symlink():
-        return None
-    if not path.is_file() or path.is_symlink():
-        raise InputError("exploration.json must be a regular file")
-    try:
-        exploration = load_exploration_document(path.read_bytes())
-    except (OSError, ValidationError, ValueError) as error:
-        raise InputError(f"invalid exploration.json: {error}") from error
-    if exploration.change_id != change_id:
-        raise InputError("exploration.json change_id does not match case-design change_id")
-    if exploration.context_ref != "explore/context.json":
-        raise InputError("exploration.json context_ref must be explore/context.json")
-    return exploration
-
-
-def _surface_documents(project_root: Path, business: CaseDeltaInputV1) -> dict[str, object]:
-    # Lazy: quality.contracts.surface must not load at intake import time
-    # (generation → intake → quality → execution → generation cycle).
-    from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
-
-    updates: dict[str, object] = {}
-    if business.ui_exploration_ref is not None:
-        authenticate_evidence_refs(project_root, (business.ui_exploration_ref,))
-        try:
-            ui_exploration = UiExplorationDocument.model_validate_json(
-                project_root.joinpath(*business.ui_exploration_ref.path.split("/")).read_bytes()
-            )
-        except (OSError, ValidationError, ValueError) as error:
-            raise InputError(f"invalid ui-exploration.json: {error}") from error
-        if ui_exploration.change_id != business.change_id:
-            raise InputError("ui-exploration.json change_id does not match case-design change_id")
-        updates["ui_exploration"] = ui_exploration.model_dump(mode="json")
-    if business.api_discovery_ref is not None:
-        authenticate_evidence_refs(project_root, (business.api_discovery_ref,))
-        try:
-            api_discovery = ApiDiscoveryDocument.model_validate_json(
-                project_root.joinpath(*business.api_discovery_ref.path.split("/")).read_bytes()
-            )
-        except (OSError, ValidationError, ValueError) as error:
-            raise InputError(f"invalid api-discovery.json: {error}") from error
-        if api_discovery.change_id != business.change_id:
-            raise InputError("api-discovery.json change_id does not match case-design change_id")
-        updates["api_discovery"] = api_discovery.model_dump(mode="json")
-    return updates
-
-
 def bind_case_delta_evidence(
-    project_root: Path, business: CaseDeltaT, plan: ResolvedAssurancePlan
+    business: CaseDeltaT,
+    plan: ResolvedAssurancePlan,
+    inventory: ChangeImpactInventoryV1,
+    exploration: ExploreAdvisoryV1 | PreparedExploreV1 | None,
+    ui_exploration: BaseModel | None,
+    api_discovery: BaseModel | None,
 ) -> CaseDeltaT:
-    """Authenticate committed evidence and attach it to the business input before the run."""
+    """Apply case-design decisions to centrally authenticated evidence."""
     if business.selected_test_families != plan.selected_test_families:
         raise InputError("case selected families do not match frozen assurance plan")
-    authenticate_evidence_refs(project_root, business.preparation_refs)
-    inventory = _committed_inventory(project_root, plan, business.change_id)
-    exploration = _committed_exploration(project_root, business.change_id)
-    business = business.model_copy(update={"exploration": exploration, "impact_inventory": inventory})
-    surface = _surface_documents(project_root, business)
-    if surface:
-        business = business.model_copy(update=surface)
+    if inventory.change_id != business.change_id:
+        raise InputError("impact-inventory.json change_id does not match case-design change_id")
+    if exploration is not None:
+        if exploration.change_id != business.change_id:
+            raise InputError("exploration.json change_id does not match case-design change_id")
+        if exploration.context_ref != "explore/context.json":
+            raise InputError("exploration.json context_ref must be explore/context.json")
+    updates: dict[str, object] = {"exploration": exploration, "impact_inventory": inventory}
+    if ui_exploration is not None:
+        updates["ui_exploration"] = ui_exploration.model_dump(mode="json")
+    if api_discovery is not None:
+        updates["api_discovery"] = api_discovery.model_dump(mode="json")
+    business = business.model_copy(update=updates)
     try:
         inferred = infer_case_delta_paths(inventory)
     except ValueError:
@@ -179,106 +179,33 @@ def bind_case_delta_evidence(
     return business
 
 
-def finalize_plan(project_root: Path, business: CaseDeltaInputV1) -> ResolvedAssurancePlan:
-    try:
-        plan_path = workspace_file(project_root, business.plan_ref.path)
-        plan = decode_plan(plan_path.read_bytes(), business.plan_ref)
-    except (OSError, ValidationError, ValueError) as error:
-        raise InputError(f"invalid frozen assurance plan: {error}") from error
-    if plan.change_id != business.change_id or plan.plan_digest != business.plan_digest:
-        raise InputError("frozen assurance plan does not match case input")
-    if plan.selected_test_families != business.selected_test_families:
-        raise InputError("case selected families do not match frozen assurance plan")
-    return plan
-
-
-def finalize_inventory(
-    project_root: Path, plan: ResolvedAssurancePlan, change_id: str
-) -> ChangeImpactInventoryV1:
-    try:
-        inventory_path = workspace_file(project_root, plan.impact_inventory_ref.path)
-        inventory_bytes = inventory_path.read_bytes()
-        if hashlib.sha256(inventory_bytes).hexdigest() != plan.impact_inventory_ref.digest:
-            raise InputError("impact inventory digest changed after it was committed")
-        inventory = ChangeImpactInventoryV1.model_validate_json(inventory_bytes)
-    except InputError:
-        raise
-    except (OSError, ValidationError, ValueError) as error:
-        raise InputError(f"invalid impact-inventory.json: {error}") from error
-    if inventory.change_id != change_id:
-        raise InputError("impact inventory does not belong to the case-design change")
-    return inventory
-
-
-def require_receipt_paths(
-    receipt: ArtifactListResultV1,
-    business: CaseDeltaInputV1,
-    inventory: ChangeImpactInventoryV1,
-) -> None:
-    for relative in receipt.output_files:
-        if not relative.startswith("qa/"):
-            raise OutputError("case-design receipt may contain only current change outputs")
-    missing = sorted({MARKER_PATH, PROPOSAL_PATH, MATRIX_PATH}.difference(receipt.output_files))
-    if missing:
-        raise OutputError("case-design receipt is missing required output files: " + ", ".join(missing))
-    try:
-        inferred = infer_case_delta_paths(inventory)
-    except ValueError:
-        inferred = ()
-    if inferred:
-        expected_cases = set(inferred)
-    elif business.case_delta_paths:
-        expected_cases = set(business.case_delta_paths)
-    else:
-        raise InputError("impact inventory does not imply any case module")
-    declared_cases = {
-        relative
-        for relative in receipt.output_files
-        if relative.startswith("qa/cases/") and relative.endswith("/case.yaml")
-    }
-    if declared_cases != expected_cases:
-        missing_cases = sorted(expected_cases - declared_cases)
-        unexpected_cases = sorted(declared_cases - expected_cases)
-        raise OutputError(
-            "case-design receipt case paths do not match locked case_delta_paths; "
-            f"missing={missing_cases}, unexpected={unexpected_cases}"
-        )
-
-
 def validate_case_delta(
     *,
-    project_root: Path,
-    write_root: Path,
     business: CaseDeltaInputV1,
     plan: ResolvedAssurancePlan,
     inventory: ChangeImpactInventoryV1,
+    exploration: ExploreAdvisoryV1 | PreparedExploreV1 | None,
+    catalog: Mapping[str, object],
+    knowledge: Mapping[str, object],
     receipt: ArtifactListResultV1,
-    artifacts: list[dict[str, str]],
-    images: Mapping[str, bytes] | None,
+    captured: Mapping[str, object],
 ) -> None:
     """Check the change marker, authored delta, surface, and coverage matrix the run produced."""
-    try:
-        qa_bytes = (
-            images[MARKER_PATH]
-            if images is not None
-            else read_regular_bytes(write_root, MARKER_PATH, kind="change document")
-        )
-        qa_digest = next(item["digest"] for item in artifacts if item["path"] == MARKER_PATH)
-        if file_digest(qa_bytes) != qa_digest:
-            raise OutputError("qa/.qa.yaml changed during finalization")
-        qa = QaYaml.model_validate(yaml.safe_load(qa_bytes))
-    except (yaml.YAMLError, UnicodeError, ValidationError) as error:
-        raise OutputError(f"invalid {MARKER_PATH}: {error}") from error
+    qa = captured[MARKER_PATH]
+    assert isinstance(qa, QaYaml)
     if qa.change.change_id != business.change_id:
         raise OutputError("qa/.qa.yaml change_id does not match locked change_id")
+    documents = {
+        path: document
+        for path, document in captured.items()
+        if path in business.case_delta_paths and isinstance(document, CaseYamlAuthoring)
+    }
     authored = load_authored_case_delta(
-        write_root,
-        change_id=business.change_id,
         locked=business.artifact_paths,
         declared=receipt.output_files,
         capability_leafs=leafs(business.capability_leafs),
+        documents=documents,
         inventory=inventory,
-        images=images,
     )
     try:
         require_impact_row_coverage(authored, inventory)
@@ -313,26 +240,25 @@ def validate_case_delta(
             )
         except SurfaceMismatch as error:
             validation_errors.append(str(error))
+    obligations = bound_obligations(exploration, catalog, knowledge)
     if authored.added or authored.modified:
-        journey_keys = authenticated_journey_keys(
-            project_root,
-            plan.quality_goal.source_resource_digests,
-        )
+        journey_keys = authenticated_journey_keys(knowledge)
         try:
+            matrix = captured[MATRIX_PATH]
+            assert isinstance(matrix, MinimumCoverageMatrixAuthoring)
             matrix = load_minimum_coverage_matrix(
-                write_root,
-                relative=MATRIX_PATH,
+                document=matrix,
                 authored=authored,
                 selected=plan.selected_test_families,
                 journey_keys=journey_keys,
-                images=images,
             )
-            require_frozen_unresolved_rows(project_root, plan, matrix)
+            require_frozen_unresolved_rows(obligations, matrix)
         except OutputError as error:
             validation_errors.append(str(error))
     else:
-        matrix = read_minimum_coverage_matrix(write_root, relative=MATRIX_PATH, images=images)
-        require_frozen_unresolved_rows(project_root, plan, matrix)
+        matrix = captured[MATRIX_PATH]
+        assert isinstance(matrix, MinimumCoverageMatrixAuthoring)
+        require_frozen_unresolved_rows(obligations, matrix)
     if validation_errors:
         raise OutputError("; ".join(validation_errors))
 
@@ -345,8 +271,5 @@ __all__ = [
     "CaseDeltaInputV1",
     "bind_case_delta_evidence",
     "case_delta_outputs",
-    "finalize_inventory",
-    "finalize_plan",
-    "require_receipt_paths",
     "validate_case_delta",
 ]

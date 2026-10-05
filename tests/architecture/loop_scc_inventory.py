@@ -7,9 +7,9 @@ EXPECTED_LOOP_SCC_ANCHORS = (
     ("assurance.generation.workflow.graph.generation-e2e", "codegen-round-join"),
     ("assurance.generation.workflow.graph.generation-fuzz", "codegen-round-join"),
     ("assurance.generation.workflow.graph.generation-performance", "codegen-round-join"),
-    ("assurance.intake.workflow.graph.entry", "review-round-advance"),
-    ("assurance.product.workflow.graph.product-execute", "fix-proposal"),
-    ("assurance.product.workflow.graph.product-full", "advance-coverage"),
+    ("assurance.intake.workflow.graph.entry", "case-review"),
+    ("assurance.product.workflow.graph.execute-tail", "repair"),
+    ("assurance.product.workflow.graph.product-full", "coverage-rework"),
 )
 
 
@@ -88,9 +88,8 @@ LOOP_SCC_INVENTORY: tuple[LoopSccRow, ...] = (
     ),
     LoopSccRow(
         "assurance.intake.workflow.graph.entry",
-        "review-round-advance",
+        "case-review",
         (
-            "review-round-advance",
             "case-design",
             "case-repair",
             "case-review",
@@ -98,19 +97,19 @@ LOOP_SCC_INVENTORY: tuple[LoopSccRow, ...] = (
         ),
         (
             "packages/capabilities/assurance-intake/tests/test_graph_join_any.py"
-            "::test_case_loop_reenters_through_review_round_advance"
+            "::test_case_loop_reenters_through_the_review_cycle"
         ),
     ),
     LoopSccRow(
-        "assurance.product.workflow.graph.product-execute",
-        "fix-proposal",
-        ("fix-proposal", "adapt-rerun", "run", "adapt-quality", "quality", "adapt-repair-failure"),
-        _target_test("assurance.product.workflow.graph.product-execute", "fix-proposal"),
+        "assurance.product.workflow.graph.execute-tail",
+        "repair",
+        ("quality", "repair", "rerun", "issue-analyze"),
+        "tests/product/test_execute_tail_flow.py::test_repair_then_rerun_feeds_the_next_assess",
     ),
     LoopSccRow(
         "assurance.product.workflow.graph.product-full",
-        "advance-coverage",
-        ("advance-coverage", "adapt-case", "case", "adapt-execute-tail", "execute-tail"),
-        _target_test("assurance.product.workflow.graph.product-full", "advance-coverage"),
+        "coverage-rework",
+        ("coverage-rework", "case", "tail"),
+        "tests/product/test_coverage_loop.py::test_coverage_insufficient_reenters_the_shared_case_flow",
     ),
 )

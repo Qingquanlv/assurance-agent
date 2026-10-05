@@ -2,25 +2,34 @@
 
 from __future__ import annotations
 
-from agent_runtime_contracts.ops import Agent, Finalize, OutputError, Prepare
+from agent_runtime_contracts.ops import Agent, Finalize, Out, OutputError, Prepare
 
 from assurance_quality.contracts.agent import ReportResultV1
-from assurance_quality.contracts.assessment import FinalizedReportV1, ReportSkillInputV1
+from assurance_quality.contracts.assessment import (
+    REPORT_OUTCOME_PATH,
+    ReportPublishedV1,
+    ReportBoundInputV1,
+)
 from assurance_quality.ops import router
 from assurance_quality.ops.report import hooks
 
 op = router.agent(
     "report",
-    input=ReportSkillInputV1,
+    input=ReportBoundInputV1,
     prepare=Prepare(hook=hooks.before, errors=(OutputError,)),
     agent=Agent(
         profile="assurance-v1-reporter",
         skill="aa-report-generator",
         result=ReportResultV1,
-        writes=("qa/results/report/report.md",),
+        writes=(Out("report", hooks.PATH),),
+        strict_files=True,
     ),
-    finalize=Finalize(hook=hooks.after),
-    output=FinalizedReportV1,
+    finalize=Finalize(
+        hook=hooks.after,
+        writes=(Out("report-outcome", REPORT_OUTCOME_PATH),),
+        same=("change_id", "purpose"),
+    ),
+    output=ReportPublishedV1,
 )
 
 __all__ = ["op"]

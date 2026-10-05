@@ -6,37 +6,36 @@ import ast
 import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, cast
 
+from graph_engine.artifacts import stage_json_artifact
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
 from tests.capabilities.conformance import execute_task
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1
-from assurance_execution.operations.selection import SelectHandler
+from assurance_execution.contracts.agent import SelectInputV1
+from assurance_execution.contracts.workflow import EXECUTION_CYCLE_PATH, ExecutionCycleDocumentV1
+from assurance_execution.operations.selection import close_mappings
 from assurance_generation.contracts.codegen import CodegenMapping
 from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReviewAuthoring
+from assurance_generation.contracts.workflow import GENERATION_CYCLE_PATH, GenerationCycleResultV1
 from assurance_generation.operations.planning import validate_plan_input
 from assurance_healing.contracts.agent import FixProposalInputV1
+from assurance_healing.contracts.repair_input import RepairBoundInputV1
+from assurance_healing.operations.repair_input import opened_repair_input
 from assurance_healing.contracts.status import HealingStatusV1
-from assurance_healing.ops.fix_proposal import (
-    finalize as fix_proposal_finalize,
-    prepare as fix_proposal_prepare,
-)
-from assurance_improvement.operations.archive import (
-    ArchivePublishReceipt,
-    ProjectArchiveInput,
-    project_archive,
-)
+from assurance_healing.ops.fix_proposal import prepare as fix_proposal_prepare
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_quality.contracts.coverage import CoverageGapsDocument
 from assurance_quality.contracts.report import QualityReport
 from assurance_quality.contracts.trace import TraceProjectionV2
-from assurance_quality.operations.coverage import coverage_gap_to_repair_brief
-from assurance_quality.operations.inspect import InspectHandler, InspectInputV1, document_digest
+from assurance_quality.operations.inspect import document_digest
 from assurance_quality.operations.trace import TraceOperationInput, project_trace
 
 CapabilityValidator = Callable[..., None]
@@ -215,7 +214,6 @@ def all_capability_leaf_validators() -> tuple[CapabilityValidator, ...]:
         _execution_evidence_leaf,
         _quality_trace_leaf,
         _quality_project_trace_leaf,
-        _healing_claimed_leaf,
     )
 
 
@@ -290,14 +288,6 @@ def _quality_project_trace_leaf(value: str, *, catalog: object) -> None:
             }
         )
     )
-
-
-def _healing_claimed_leaf(value: str, *, catalog: object) -> None:
-    leafs = catalog_leafs(catalog)
-    outcome = _run(cast(TaskHandler, fix_proposal_finalize), _healing_finalize_payload(value, leafs))
-    if outcome.status != "failed" or outcome.failure is None:
-        raise ValueError("healing finalize accepted an unknown capability leaf")
-    raise ValueError(outcome.failure.message)
 
 
 def encode_handoff(schema_id: str, family: str, payload: Mapping[str, object]) -> bytes:
@@ -423,26 +413,6 @@ def _consume_planning_input(payload: dict[str, Any], leafs: frozenset[str]) -> o
     )
 
 
-def _consume_execution_selection(payload: dict[str, Any], leafs: frozenset[str]) -> object:
-    PlanResultV1.model_validate(payload["plan"], context={"capability_leafs": leafs})
-    CodegenMapping.model_validate(payload["mapping"])
-    outcome = _run(
-        SelectHandler(),
-        {
-            "change_id": _CHANGE_ID,
-            "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
-            "mappings": [payload["mapping"]],
-            "reviewed_cases": payload["reviewed_cases"],
-            "capability_leafs": list(sorted(leafs)),
-            "case_ids": [_CASE_ID],
-        },
-    )
-    if outcome.status != "succeeded":
-        message = outcome.failure.message if outcome.failure is not None else "selection failed"
-        raise ValueError(message)
-    return outcome.output
-
-
 def _consume_evidence(payload: dict[str, Any], leafs: frozenset[str]) -> object:
     evidence = ExecutionEvidenceV1.model_validate(
         payload,
@@ -470,71 +440,127 @@ def _consume_evidence(payload: dict[str, Any], leafs: frozenset[str]) -> object:
             }
         )
     )
-    proposal = FixProposalInputV1.model_validate(
-        _fix_proposal_input(leafs, canonical_digest(cast(JSONValue, payload)))
+    evidence_digest = canonical_digest(cast(JSONValue, payload))
+    plan = _PLAN_REF
+    mapping_ref = {"path": "qa/results/generated/mapping.json", "digest": _HEX}
+    generation = GenerationCycleResultV1.model_validate(
+        {
+            "change_id": _CHANGE_ID,
+            "coverage_epoch": 0,
+            "reviewed_case": {
+                "change_id": _CHANGE_ID,
+                "coverage_epoch": 0,
+                "plan_digest": _HEX,
+                "plan_ref": plan,
+                "preparation_refs": [plan],
+                "case_refs": [{"path": "qa/cases/items/case.yaml", "digest": _HEX}],
+                "review_ref": {"path": "qa/results/review/case-review.json", "digest": _HEX},
+                "selection_ref": {
+                    "path": "qa/results/cases/epochs/0/selection.json",
+                    "digest": _HEX,
+                },
+            },
+            "plan_digest": _HEX,
+            "plan_ref": plan,
+            "mapping_ref": mapping_ref,
+            "source_refs": [{"path": "tests/api/test_users.py", "digest": _HEX}],
+            "plan_refs": [plan],
+            "method_plan_ref": {
+                "path": "qa/results/generation/epochs/0/obligation-methods.json",
+                "digest": _HEX,
+            },
+        }
     )
-    outcome = _run(
-        cast(TaskHandler, fix_proposal_prepare),
-        proposal.model_dump(mode="json"),
-        binding_data=_PROPOSAL_BINDING,
+    execution = ExecutionCycleDocumentV1.model_validate(
+        {
+            "change_id": _CHANGE_ID,
+            "plan_digest": _HEX,
+            "plan_ref": plan,
+            "coverage_epoch": 0,
+            "repair_round": 1,
+            "batch_id": "batch-1",
+            "executed_at": datetime(2026, 9, 5, 12, 0, 1, tzinfo=UTC),
+            "final_status": "FAIL",
+            "evidence_ref": {
+                "path": "qa/results/execution/execute-result.json",
+                "digest": evidence_digest,
+            },
+            "mapping_ref": mapping_ref,
+            "source_refs": [{"path": "qa/tests/api/test_users.py", "digest": _HEX}],
+            "family_outcomes": [{"family": "api", "state": "executed"}],
+        }
     )
-    if outcome.status != "succeeded":
-        message = outcome.failure.message if outcome.failure is not None else "fix proposal prepare failed"
-        raise ValueError(message)
-    return proposal
+    with TemporaryDirectory(prefix="capabilities-healing-") as raw:
+        workspace = Path(raw)
+        generation_ref = stage_json_artifact(workspace, GENERATION_CYCLE_PATH, generation)
+        execution_ref = stage_json_artifact(workspace, EXECUTION_CYCLE_PATH, execution)
+        bound = RepairBoundInputV1.model_validate(
+            {
+                "change_id": _CHANGE_ID,
+                "plan_digest": _HEX,
+                "plan_ref": plan,
+                "capability_leafs": list(sorted(leafs)),
+                "coverage_epoch": 0,
+                "repair_round": 1,
+                "product_policy": {
+                    "resource_id": "assurance.product.configuration.product-policy",
+                    "sha256": "d" * 64,
+                },
+                "generation_ref": {"path": generation_ref.path, "digest": generation_ref.digest},
+                "execution_ref": {"path": execution_ref.path, "digest": execution_ref.digest},
+                "execution_receipt": {"receipt_id": "execute", "receipt_digest": "c" * 64},
+            }
+        )
+        outcome = _run(
+            cast(TaskHandler, fix_proposal_prepare),
+            bound.model_dump(mode="json"),
+            binding_data=_PROPOSAL_BINDING,
+            workspace=workspace,
+        )
+        if outcome.status != "succeeded":
+            message = (
+                outcome.failure.message if outcome.failure is not None else "fix proposal prepare failed"
+            )
+            raise ValueError(message)
+        filled = opened_repair_input(workspace, bound, ValueError)
+        fields = set(FixProposalInputV1.model_fields)
+        return FixProposalInputV1.model_validate(
+            {key: value for key, value in filled.items() if key in fields}
+        )
+
+
+def _consume_execution_selection(payload: dict[str, Any], leafs: frozenset[str]) -> object:
+    PlanResultV1.model_validate(payload["plan"], context={"capability_leafs": leafs})
+    CodegenMapping.model_validate(payload["mapping"])
+    return close_mappings(
+        SelectInputV1.model_validate(
+            {
+                "change_id": _CHANGE_ID,
+                "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+                "mappings": [payload["mapping"]],
+                "reviewed_cases": payload["reviewed_cases"],
+                "capability_leafs": list(sorted(leafs)),
+                "case_ids": [_CASE_ID],
+            }
+        )
+    )
 
 
 def _consume_healing_status(payload: dict[str, Any], leafs: frozenset[str]) -> object:
     del leafs
     status = HealingStatusV1.model_validate(payload)
-    evidence = _evidence_payload("entities.item.create")
-    inspect = {
-        "change_id": _CHANGE_ID,
-        "batch_id": _BATCH_ID,
-        "execution": evidence,
-        "healing": payload,
-        "trace": {"kind": "trace"},
-        "coverage": {"kind": "coverage"},
-        "metrics": {"kind": "metrics"},
-        "execution_digest": document_digest(ExecutionEvidenceV1.model_validate(evidence)),
-        "healing_digest": document_digest(status),
-        "trace_digest": canonical_digest({"kind": "trace"}),
-        "coverage_digest": canonical_digest({"kind": "coverage"}),
-        "metrics_digest": canonical_digest({"kind": "metrics"}),
-        "result_paths": {"api": "execution/api-result.json"},
-    }
-    InspectInputV1.model_validate(inspect)
-    outcome = _run(InspectHandler(), inspect)
-    if outcome.status != "succeeded":
-        message = outcome.failure.message if outcome.failure is not None else "inspect failed"
-        raise ValueError(message)
+    document_digest(status)
     return status
 
 
 def _consume_coverage_gap(payload: dict[str, Any], leafs: frozenset[str]) -> object:
     del leafs
-    return coverage_gap_to_repair_brief(CoverageGapsDocument.model_validate(payload))
+    return CoverageGapsDocument.model_validate(payload)
 
 
 def _consume_quality_report(payload: dict[str, Any], leafs: frozenset[str]) -> object:
     del leafs
-    report = QualityReport.model_validate(payload)
-    return project_archive(
-        ProjectArchiveInput(
-            change_id=report.change_id,
-            invocation_id="inv-archive-1",
-            archive_digest=_HEX,
-            report=report,
-            publish_receipt=ArchivePublishReceipt(
-                schema_version="1",
-                change_id=report.change_id,
-                manifest_digest=_HEX,
-                source_digest=_HEX,
-                target_baseline=_HEX,
-                final_digest=_HEX,
-            ),
-        )
-    )
+    return QualityReport.model_validate(payload)
 
 
 def _authoring_payload(leaf: str) -> dict[str, object]:
@@ -784,70 +810,11 @@ def _quality_report_payload() -> dict[str, object]:
     }
 
 
-def _fix_proposal_input(leafs: frozenset[str], evidence_digest: str) -> dict[str, Any]:
-    return {
-        "change_id": _CHANGE_ID,
-        "plan_digest": _HEX,
-        "plan_ref": _PLAN_REF,
-        "owner_id": "assurance.healing",
-        "capability_leafs": list(sorted(leafs)),
-        "allowed_paths": ["tests/api/test_users.py"],
-        "allowed_roots": ["tests/"],
-        "baseline_digest": "b" * 64,
-        "candidate_digest": "c" * 64,
-        "policy_digest": "d" * 64,
-        "mapping_paths": ["tests/api/test_users.py"],
-        "require_approval": True,
-        "execution_evidence_digest": evidence_digest,
-    }
-
-
-def _healing_finalize_payload(
-    claimed: str,
-    leafs: frozenset[str],
-    *,
-    evidence_digest: str | None = None,
-) -> dict[str, Any]:
-    from agent_runtime_contracts import AgentRunResult
-    from agent_runtime_contracts.wire.schema import canonical_digest as runtime_digest
-    from tests.capabilities.agent_harness import FakeAgentAdapter
-
-    structured = {
-        "schema_version": "1",
-        "change_id": _CHANGE_ID,
-        "summary": {"eligible_count": 1},
-        "proposals": [
-            {
-                "proposal_id": "P1",
-                "target": "api",
-                "eligible": True,
-                "risk_level": "low",
-                "needs_review": False,
-                "files_to_modify": ["tests/api/test_users.py"],
-            }
-        ],
-    }
-    prepare = _fix_proposal_input(leafs, evidence_digest or ("e" * 64))
-    result = AgentRunResult(
-        result_payload=cast(JSONValue, structured),
-        result_digest=runtime_digest(cast(JSONValue, structured)),
-        evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
-        adapter_id="test.fake",
-        adapter_version="1.0.0",
-    )
-    return {
-        "agent_result": result.model_dump(mode="json"),
-        **prepare,
-        "claimed_capabilities": [claimed],
-        "prepare": prepare,
-    }
-
-
 def _capability_values(payload: object) -> set[str]:
     found: set[str] = set()
     if isinstance(payload, Mapping):
         for key, value in payload.items():
-            if key in {"capability", "claimed_capabilities", "required_capabilities"} or key == "trace":
+            if key in {"capability", "required_capabilities"} or key == "trace":
                 if isinstance(value, str):
                     found.add(value)
                 elif isinstance(value, Mapping):
@@ -871,8 +838,21 @@ def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _run(handler: object, payload: object, *, binding_data: JSONValue = None) -> Any:
-    return asyncio.run(execute_task(handler, cast(JSONValue, payload), binding_data=binding_data))  # type: ignore[arg-type]
+def _run(
+    handler: object,
+    payload: object,
+    *,
+    binding_data: JSONValue = None,
+    workspace: Path | None = None,
+) -> Any:
+    return asyncio.run(
+        execute_task(
+            cast(TaskHandler, handler),
+            cast(JSONValue, payload),
+            workspace,
+            binding_data=binding_data,
+        )
+    )
 
 
 __all__ = [

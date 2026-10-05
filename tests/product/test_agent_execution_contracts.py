@@ -32,7 +32,6 @@ EXPECTED_AGENT_PROFILES = {
     "assurance.generation.agent.fuzz.codegen-review.v1": "assurance-v1-reviewer",
     "assurance.generation.agent.performance.codegen.v1": "assurance-v1-test-author",
     "assurance.generation.agent.performance.codegen-review.v1": "assurance-v1-reviewer",
-    "assurance.healing.agent.coverage-repair.v1": "assurance-v1-test-author",
     "assurance.healing.agent.fix-proposal.v1": "assurance-v1-doc-author",
     "assurance.healing.agent.apply-test-repair.v1": "assurance-v1-test-author",
     "assurance.quality.agent.fact-baseline.v1": "assurance-v1-doc-author",
@@ -324,8 +323,8 @@ def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
     from assurance_product.models import all_binding_ids
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
-    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 27
-    assert len(all_feature_agent_contracts()) == 27
+    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 26
+    assert len(all_feature_agent_contracts()) == 26
     assert set(all_feature_agent_contracts()) == set(all_binding_ids())
     assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
     assert all(
@@ -421,7 +420,24 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         if feature == "generation" and job == "codegen-review":
             extra = (*extra, f"qa/results/codegen/{family}/reviews")
         if contract_id == "assurance.healing.agent.apply-test-repair.v1":
-            extra = (*extra, "qa/results/healing/epochs")
+            extra = (
+                *extra,
+                "qa/results/healing/applied-repair.json",
+                "qa/results/healing/epochs",
+                "qa/results/healing/verified-repair.json",
+            )
+        if contract_id == "assurance.quality.agent.inspect.v1":
+            extra = (
+                *extra,
+                "qa/results/inspect/coverage-rework-handoff.json",
+                "qa/results/inspect/inspection-outcome.json",
+            )
+        if contract_id == "assurance.quality.agent.report.v1":
+            extra = (*extra, "qa/results/report/report-outcome.json")
+        if contract_id == "assurance.quality.agent.issue-analysis.v1":
+            extra = (*extra, "qa/results/healing/issue-analysis-handoff.json")
+        if contract_id == "assurance.improvement.agent.retro.v1":
+            extra = (*extra, "qa/results/retro/candidates.json")
         if feature == "execution":
             extra = (*extra, "qa/.staging/execution")
         extra_set = set(extra)
@@ -564,7 +580,8 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
         )
 
         assert outcome.status == "succeeded"
-        agent_request = AgentRunRequest.model_validate(outcome.output)
+        assert isinstance(outcome.output, dict)
+        agent_request = AgentRunRequest.model_validate(outcome.output["run_request"])
         assert agent_request.workspace.scope_id == current_id
         staged_context = binding.write_root / context_claim
         document = json.loads(staged_context.read_bytes())

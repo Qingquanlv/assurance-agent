@@ -8,9 +8,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.stategraph import AttemptGraph
+from graph_engine.stategraph.ledger import AttemptLedgerState
 
 
-class _State(TypedDict, total=False):
+class _State(AttemptLedgerState, total=False):
     value: str
 
 
@@ -204,11 +205,33 @@ def test_add_route_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_output_schema_reaches_state_graph() -> None:
-    class _Output(TypedDict, total=False):
+    class _Output(AttemptLedgerState, total=False):
         value: str
 
     graph = AttemptGraph(_State, _Context(), namespace="generation", output_schema=_Output)
     assert graph.output_schema is _Output
+
+
+def test_schema_must_declare_artifact_ledger() -> None:
+    class _Bare(TypedDict, total=False):
+        value: str
+
+    class _Local(TypedDict, total=False):
+        artifact_ledger: dict[str, list[dict[str, str]]]
+
+    class _Inherited(AttemptLedgerState, total=False):
+        value: str
+
+    with pytest.raises(TypeError, match="state_schema _Bare must declare artifact_ledger"):
+        AttemptGraph(_Bare, _Context(), namespace="intake")
+    with pytest.raises(TypeError, match="input_schema _Bare must declare artifact_ledger"):
+        AttemptGraph(_State, _Context(), namespace="intake", input_schema=_Bare)
+    with pytest.raises(TypeError, match="output_schema _Bare must declare artifact_ledger"):
+        AttemptGraph(_State, _Context(), namespace="intake", output_schema=_Bare)
+    local = AttemptGraph(_Local, _Context(), namespace="intake")
+    assert local.state_schema is _Local
+    inherited = AttemptGraph(_Inherited, _Context(), namespace="intake", output_schema=_Inherited)
+    assert inherited.output_schema is _Inherited
 
 
 def test_compile_subgraph_passes_the_same_builder() -> None:

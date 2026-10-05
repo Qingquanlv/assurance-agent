@@ -1,17 +1,66 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
 
-from assurance_intake.ops.explore.models import EXPLORE_AGENT_OUTPUT_PATHS
-from assurance_intake.ops.explore.hooks.context import build_explore_context
+from graph_engine.artifacts import ArtifactReadError, read_workspace_file
+
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.ops.explore.models import (
+    CHANGE_EVIDENCE_PATH,
+    EXPLORE_AGENT_OUTPUT_PATHS,
+    ChangeEvidenceV1,
+)
+from assurance_intake.ops.explore.hooks.context import build_explore_context as _build_explore_context
 
 _LEAFS = (
     "capabilities.domain_factories.dept.make_dept",
     "entities.dept.constraints.name_unique",
 )
+
+
+def build_explore_context(workspace: Path, *, change_id: str, capability_leafs: tuple[str, ...]):
+    def optional(relative: str) -> bytes | None:
+        try:
+            return read_workspace_file(workspace, relative)
+        except ArtifactReadError as error:
+            if error.reason == "missing":
+                return None
+            raise
+
+    requirement = optional("qa/requirement.md")
+    snapshot = optional("qa/results/intake/sources/run-spec.effective.yaml")
+    evidence_bytes = optional(CHANGE_EVIDENCE_PATH)
+    try:
+        evidence = (
+            ChangeEvidenceV1.model_validate_json(evidence_bytes) if evidence_bytes is not None else None
+        )
+    except ValueError as error:
+        raise ValueError(f"invalid change-evidence.json: {error}") from error
+    return _build_explore_context(
+        workspace,
+        change_id=change_id,
+        capability_leafs=capability_leafs,
+        requirement_data=requirement,
+        snapshot_data=snapshot,
+        evidence=evidence,
+        requirement_ref=(
+            EvidenceArtifactRefV1(path="qa/requirement.md", digest=hashlib.sha256(requirement).hexdigest())
+            if requirement is not None
+            else None
+        ),
+        snapshot_ref=(
+            EvidenceArtifactRefV1(
+                path="qa/results/intake/sources/run-spec.effective.yaml",
+                digest=hashlib.sha256(snapshot).hexdigest(),
+            )
+            if snapshot is not None
+            else None
+        ),
+    )
 
 
 def _write(root: Path, relative: str, text: str) -> None:

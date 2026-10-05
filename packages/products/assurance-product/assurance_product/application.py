@@ -48,8 +48,6 @@ from assurance_product.status import (
     render_status_from_langgraph,
 )
 from assurance_generation.ops.api_codegen import op as api_codegen
-from assurance_improvement.ops.archive import op as archive
-from assurance_improvement.ops.improvement_review import op as improvement_review
 from assurance_improvement.ops.retro import op as retro
 from assurance_improvement.ops.retro_eval_analysis import op as retro_eval_analysis
 from assurance_improvement.ops.retro_issue_analysis import op as retro_issue_analysis
@@ -69,18 +67,11 @@ _TEST_CRASH_AT: str | None = None
 
 ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingProxyType(
     {
-        "archive": (archive.contract_id,),
         "full": (
             api_codegen.contract_id,
-            archive.contract_id,
             intake.contract_id,
             report.contract_id,
         ),
-        "improvement-apply": (),
-        "improvement-evaluate": (),
-        "improvement-export": (),
-        "improvement-review": (improvement_review.contract_id,),
-        "improvement-rollback": (),
         "init": (),
         "intake": (
             intake.contract_id,
@@ -186,6 +177,28 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
     return dict(pairs)
 
 
+def _pending_graph_interrupt_ids(snapshot: object) -> tuple[str, ...]:
+    """LangGraph interrupt ids on the root snapshot.
+
+    Nested flow gates already surface on ``snapshot.interrupts`` with the same
+    id as ``snapshot.tasks[*].interrupts``. Status and resume use that id.
+    """
+    seen: set[str] = set()
+    ids: list[str] = []
+    for item in getattr(snapshot, "interrupts", ()) or ():
+        graph_id = getattr(item, "id", None)
+        if isinstance(graph_id, str) and graph_id not in seen:
+            seen.add(graph_id)
+            ids.append(graph_id)
+    return tuple(ids)
+
+
+def _action_payload(value: object) -> object:
+    if isinstance(value, Mapping) and "interrupt_id" in value:
+        return {key: item for key, item in value.items() if key != "interrupt_id"}
+    return value
+
+
 def parse_resume_file(path: Path, pending_ids: Sequence[str] = ()) -> object:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
@@ -208,12 +221,12 @@ def parse_resume_file(path: Path, pending_ids: Sequence[str] = ()) -> object:
             raise ValueError("duplicate interrupt ids")
         if pending and set(mapping) != set(pending):
             raise ValueError("unknown or missing interrupt ids")
-        return mapping
+        return {key: _action_payload(value) for key, value in mapping.items()}
     interrupt_id = payload.get("interrupt_id")
     if isinstance(interrupt_id, str):
         if pending and interrupt_id not in pending:
             raise ValueError("unknown interrupt id")
-        return {interrupt_id: payload}
+        return {interrupt_id: _action_payload(payload)}
     if "wakeup" in payload or "reconciliation" in payload or "action" in payload:
         return payload
     raise ValueError("resume file is missing a validated envelope")
@@ -529,6 +542,7 @@ class AssuranceProductApplication:
             status=observed,
             snapshot=snapshot,
             journal_events=journal_events,
+            project_root=workspace.paths.project_root,
         )
         if not rendered.selected_test_families:
             raise ValueError("terminal full snapshot is missing selected test families")
@@ -577,6 +591,7 @@ class AssuranceProductApplication:
             status=status_name,
             snapshot=snapshot,
             journal_events=journal_events,
+            project_root=workspace.paths.project_root,
         )
         if record.entrypoint != "full" or status_name != "completed":
             return rendered
@@ -894,11 +909,7 @@ class AssuranceProductApplication:
                 root_input_digest=record.root_input_digest,
             )
             snapshot = await _graph_snapshot(bound.artifact, record.entrypoint, invocation_id)
-        return tuple(
-            str(getattr(item, "id"))
-            for item in getattr(snapshot, "interrupts", ())
-            if getattr(item, "id", None)
-        )
+        return _pending_graph_interrupt_ids(snapshot)
 
 
 @dataclass(frozen=True, slots=True)

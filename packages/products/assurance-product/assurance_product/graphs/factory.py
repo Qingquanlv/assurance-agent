@@ -1,44 +1,29 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from types import MappingProxyType
 from typing import Any, cast, get_type_hints
 
 from langchain_core.runnables.config import RunnableConfig
-from langgraph.graph.state import CompiledStateGraph
+
+from graph_engine.boot.boot import EngineGraphBuildContext, GraphBuildContext
+from graph_engine.flow import CompiledFlow, Flow
 
 from assurance_execution.feature import ExecutionGraphs
 from assurance_generation.feature import GenerationGraphs
 from assurance_healing.feature import HealingGraphs
 from assurance_improvement.feature import ImprovementGraphs
 from assurance_intake.feature import IntakeGraphs
-from assurance_product.graphs.entrypoints import (
-    build_archive_root,
-    build_improvement_apply_root,
-    build_improvement_evaluate_root,
-    build_improvement_export_root,
-    build_improvement_review_root,
-    build_improvement_rollback_root,
-    build_init_root,
-    build_intake_root,
-    build_issue_analyze_root,
-    build_issue_reconcile_root,
-    build_issue_review_root,
-    build_retro_root,
-)
+from assurance_product.graphs.entrypoints import thin_root_flows
 from assurance_product.feature_set import CAPABILITY_OWNERS
 from assurance_product.features import FEATURES
-from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
+from assurance_product.graphs.revisions import ENTRYPOINT_RECURSION_LIMITS, contracts_from_roots
+from assurance_product.graph_factories import build_feature_graphs
 from assurance_product.models import PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
 from assurance_quality.feature import QualityGraphs
-from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.boot.graph_revision import EntrypointGraphContract
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-
-_FORBIDDEN_PRODUCT_TAIL_NODES = frozenset(
-    {"coverage-repair", "coverage-repair-brief", "quality-recheck", "coverage-needed"}
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +46,7 @@ if _DECLARED_BUNDLE_TYPES != _INSTALLED_BUNDLE_TYPES:
 
 @dataclass(frozen=True, slots=True)
 class ThinEntrypointGraphs:
-    entrypoints: Mapping[str, CompiledStateGraph]
+    entrypoints: Mapping[str, CompiledFlow]
 
 
 def coerce_feature_bundles(features: Mapping[str, object]) -> ProductFeatureBundles:
@@ -92,40 +77,45 @@ def coerce_feature_bundles(features: Mapping[str, object]) -> ProductFeatureBund
     )
 
 
+def product_root_flows(bundles: ProductFeatureBundles) -> dict[str, Flow]:
+    from assurance_product.graphs.full import build_full_flow
+
+    flows = dict(thin_root_flows(bundles))
+    flows["full"] = build_full_flow(bundles)
+    if set(flows) != set(PRODUCT_ENTRYPOINTS):
+        raise ValueError("product root flows must match the declared entrypoints")
+    return flows
+
+
+def declared_root_flows() -> dict[str, Flow]:
+    context = EngineGraphBuildContext(contracts={}, checkpointer=None, approved_source_roots=())
+    return product_root_flows(coerce_feature_bundles(build_feature_graphs(context)))
+
+
+@cache
+def entrypoint_contracts() -> Mapping[str, EntrypointGraphContract]:
+    return contracts_from_roots(declared_root_flows())
+
+
 def build_thin_entrypoint_graphs(
     *,
     context: GraphBuildContext,
     features: Mapping[str, object],
 ) -> ThinEntrypointGraphs:
-    bundles = coerce_feature_bundles(features)
-    entrypoints = {
-        "intake": build_intake_root(
-            context, bundles.intake.prepare, bundles.generation.init_runtime, bundles.intake.case
-        ),
-        "init": build_init_root(context, bundles.generation.init_runtime),
-        "archive": build_archive_root(context, bundles.improvement.archive),
-        "retro": build_retro_root(context, bundles.improvement.retro),
-        "issue-review": build_issue_review_root(context, bundles.quality.issue_review),
-        "issue-analyze": build_issue_analyze_root(context, bundles.quality.issue_analyze),
-        "issue-reconcile": build_issue_reconcile_root(context, bundles.quality.issue_reconcile),
-        "improvement-review": build_improvement_review_root(context, bundles.improvement.review),
-        "improvement-evaluate": build_improvement_evaluate_root(context, bundles.improvement.evaluate),
-        "improvement-export": build_improvement_export_root(context, bundles.improvement.export),
-        "improvement-apply": build_improvement_apply_root(context, bundles.improvement.apply),
-        "improvement-rollback": build_improvement_rollback_root(context, bundles.improvement.rollback),
-    }
-    if set(entrypoints) != set(THIN_ENTRYPOINTS):
+    flows = thin_root_flows(coerce_feature_bundles(features))
+    if set(flows) != set(THIN_ENTRYPOINTS):
         raise ValueError("thin roots must match the declared entrypoints")
+    entrypoints = {name: flow.compile(context) for name, flow in flows.items()}
     return ThinEntrypointGraphs(entrypoints=MappingProxyType(entrypoints))
 
 
 @dataclass(frozen=True, slots=True)
 class ProductGraphs:
-    entrypoints: Mapping[str, CompiledStateGraph]
+    entrypoints: Mapping[str, CompiledFlow]
     contracts: Mapping[str, EntrypointGraphContract]
 
 
-def _closed_entrypoints(entrypoints: Mapping[str, CompiledStateGraph]) -> Mapping[str, CompiledStateGraph]:
+def _closed_entrypoints(entrypoints: Mapping[str, CompiledFlow]) -> Mapping[str, CompiledFlow]:
     names = tuple(entrypoints)
     if len(names) != len(set(names)):
         raise ValueError("duplicate product roots")
@@ -144,26 +134,16 @@ def build_product_graphs(
     *,
     context: GraphBuildContext,
     features: Mapping[str, object],
-    runtime_snapshot: Callable[[], Awaitable[EvidenceArtifactRefV1]] | None = None,
 ) -> ProductGraphs:
-    from assurance_product.graphs.execute import build_execute_tail
-    from assurance_product.graphs.full import build_full_root
-
-    bundles = coerce_feature_bundles(features)
-    thin = build_thin_entrypoint_graphs(context=context, features=features)
-    thin_names = tuple(thin.entrypoints)
-    if len(thin_names) != len(set(thin_names)):
+    flows = product_root_flows(coerce_feature_bundles(features))
+    names = tuple(flows)
+    if len(names) != len(set(names)):
         raise ValueError("duplicate product roots")
-    execute_tail = build_execute_tail(bundles, runtime_snapshot=runtime_snapshot)
-    stale_tail_nodes = _FORBIDDEN_PRODUCT_TAIL_NODES.intersection(execute_tail.nodes)
-    if stale_tail_nodes:
-        raise ValueError(f"obsolete Product coverage nodes are reachable: {sorted(stale_tail_nodes)}")
-    full = build_full_root(context, bundles, execute_tail)
-    entrypoints = {
-        **dict(thin.entrypoints),
-        "full": full,
-    }
-    return ProductGraphs(entrypoints=_closed_entrypoints(entrypoints), contracts=ENTRYPOINT_CONTRACTS)
+    entrypoints = {name: flow.compile(context) for name, flow in flows.items()}
+    return ProductGraphs(
+        entrypoints=_closed_entrypoints(entrypoints),
+        contracts=contracts_from_roots(flows),
+    )
 
 
 def product_invoke_config(name: str) -> RunnableConfig:
@@ -196,6 +176,9 @@ __all__ = [
     "build_product_graphs",
     "build_thin_entrypoint_graphs",
     "coerce_feature_bundles",
+    "declared_root_flows",
+    "entrypoint_contracts",
+    "product_root_flows",
     "invoke_product_root",
     "product_invoke_config",
 ]

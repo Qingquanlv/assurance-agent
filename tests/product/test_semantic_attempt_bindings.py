@@ -31,9 +31,9 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract(opencode_com
     contracts = all_feature_agent_contracts()
     composition = opencode_composition
     bindings = runtime_bindings_from_composition(composition)
-    assert len(contracts) == 27
+    assert len(contracts) == 26
     assert set(bindings) == set(contracts)
-    assert len(bindings) == 27
+    assert len(bindings) == 26
     assert all(
         binding.model != "fixture-model" or binding.provider == "opencode" for binding in bindings.values()
     )
@@ -42,8 +42,8 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract(opencode_com
 def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) -> None:
     from assurance_product.agent_contracts import is_agent_contract
 
-    assert len(runtime_registry) == 45
-    assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 27
+    assert len(runtime_registry) == 47
+    assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 26
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
 
@@ -70,8 +70,8 @@ def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> 
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     composition = opencode_composition
-    assert len(composition.semantic_attempt_contracts) == 45
-    assert len(AGENT_EXECUTION_CONTRACTS) == 27
+    assert len(composition.semantic_attempt_contracts) == 47
+    assert len(AGENT_EXECUTION_CONTRACTS) == 26
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
 
@@ -124,9 +124,17 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
 
     composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
-    assert len(resolved) == 45
+    assert len(resolved) == 47
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
-    assert all(item.contract.validators == () for item in resolved.values())
+    assert all(
+        item.contract.validators
+        == (
+            ("assurance.intake.validator.sealed-artifact-refs.v1",)
+            if item.contract.owner_id == "assurance.intake"
+            else ()
+        )
+        for item in resolved.values()
+    )
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
 
 
@@ -140,7 +148,7 @@ def test_raw_runtime_rows_are_canonical_and_digest_locked(opencode_composition) 
     contracts = all_feature_agent_contracts()
     composition = opencode_composition
     rows = raw_agent_runtime_binding_rows(composition)
-    assert len(rows) == 27
+    assert len(rows) == 26
     assert tuple(row.contract_id for row in rows) == tuple(sorted(contracts))
     assert all(isinstance(row, RawAgentRuntimeBindingProjectionV1) for row in rows)
     assert all(row.schema_version == "raw-agent-runtime-binding-v1" for row in rows)
@@ -170,8 +178,8 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     agents = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
-    assert len(agents) == 27
-    assert len(tasks) == 18
+    assert len(agents) == 26
+    assert len(tasks) == 21
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)
     for contract_id in agents:
@@ -260,9 +268,11 @@ class _CapturingFailingHandler(_FailingHandler):
     def __init__(self) -> None:
         super().__init__()
         self.binding_data: object = None
+        self.input: object = None
 
     async def execute(self, request: object, context: object) -> object:
         self.binding_data = request.binding_data  # type: ignore[attr-defined]
+        self.input = request.input  # type: ignore[attr-defined]
         return await super().execute(request, context)
 
 
@@ -415,6 +425,24 @@ def test_installed_runtime_returns_permanent_failure_on_invalid_outcome(tmp_path
     assert result.kind == "invalid_output"
     assert result.message == "phase rejected"
     assert result.retryable is True
+
+
+def test_installed_runtime_keeps_prepared_business_off_agent_request(tmp_path: Path) -> None:
+    from agent_runtime_contracts import PreparedAgentRun
+    from agent_runtime_fixture.contracts import frozen_run_request
+    from assurance_product.runtime_bindings import InstalledRuntimePhase
+
+    request = frozen_run_request()
+    prepared = PreparedAgentRun(
+        run_request=request,
+        prepared_business={"host_only": "never send to Agent"},
+    )
+    handler = _CapturingFailingHandler()
+    phase = InstalledRuntimePhase("runtime.opencode.execute", handler, _adapter_binding())
+
+    asyncio.run(phase.execute(prepared, _phase_scope(tmp_path)))
+
+    assert handler.input == request.model_dump(mode="json")
 
 
 def test_installed_runtime_passes_complete_authenticated_adapter_binding(
@@ -812,6 +840,30 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
     projected = _PreparedBusinessFinalizeInput.model_validate(handler.input)
     assert projected.batch_id == "batch-1"
     assert projected.execution_view_root.endswith("/.staging/execution/batch-1")
+
+
+def test_installed_finalize_uses_explicit_prepared_business_over_instructions(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from assurance_product.runtime_bindings import InstalledFinalizePhase
+
+    bundle = _prepared_finalize_bundle(tmp_path, {"change_id": "CH-2", "batch_id": "wrong"})
+    explicit = {
+        "run_request": bundle.prepared.model_dump(mode="json"),
+        "prepared_business": {
+            "change_id": "CH-1",
+            "batch_id": "batch-1",
+            "execution_view_root": "qa/.staging/task/attempt-1/qa/.staging/execution/batch-1",
+        },
+    }
+    handler = _CapturingFinalizeHandler(_PreparedBusinessFinalizeInput)
+    phase = InstalledFinalizePhase("assurance.execution.execute.finalize", handler, _PhaseOutput)
+
+    result = asyncio.run(phase.execute(replace(bundle, prepared=explicit), _phase_scope(tmp_path)))
+
+    assert result == {"status": "ok"}
+    projected = _PreparedBusinessFinalizeInput.model_validate(handler.input)
+    assert projected.batch_id == "batch-1"
 
 
 def test_whole_business_finalize_merges_documents_with_distinct_version_tags(tmp_path: Path) -> None:

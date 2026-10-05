@@ -4,13 +4,20 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, cast
 
-from agent_runtime_contracts.qa_paths import qa_route
+from agent_runtime_contracts.qa_paths import qa_join, qa_route
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
 
-from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
-from assurance_quality.contracts.issues import ReconcileIssuesInputV1, ReconcileIssuesResultV1
+from graph_engine.stategraph.ledger import NamedWrite
+
+from assurance_quality.contracts.assessment import (
+    ASSESSMENT_INPUTS_PATH,
+    AssessmentInputsV1,
+    MaterializeAssessmentBoundV1,
+)
+from assurance_quality.contracts.agent import ReconcileBoundInputV1
+from assurance_quality.contracts.issues import ReconcileIssuesResultV1
 from assurance_quality.contracts.surface import SurfaceProbeInputV1, SurfaceProbeResultV1
 
 _TASK_RETRY = AttemptRetryPolicy(max_attempts=1)
@@ -30,16 +37,16 @@ def _agent_catalog() -> tuple[
     return router.agent_contracts(), router.output_routes()
 
 
-AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES = _agent_catalog()
 _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
     contract_id="assurance.quality.materialize-assessment-inputs",
     owner_id="assurance.quality",
     handler_id="assurance.quality.materialize-assessment-inputs.execute",
-    input_model=MaterializeAssessmentInputV1,
+    input_model=MaterializeAssessmentBoundV1,
     output_model=AssessmentInputsV1,
+    writes=(NamedWrite("assessment", ASSESSMENT_INPUTS_PATH),),
     resources=ResourceClaimTemplate(
         parameters={
-            "batch_id": "/execution/batch_id",
+            "repair_round": "/repair_round_token",
             "coverage_epoch": "/coverage_epoch_token",
         },
         reads=(
@@ -50,28 +57,33 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
             "qa",
         ),
         writes=_paths(
-            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/coverage-gaps.json",
-            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",
-            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/observations.json",
-            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/obligation-assessment.json",
-            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/issue-evidence-manifest.json",
-            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace-sufficiency.json",
-            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace.json",
+            "inspect/epochs/{coverage_epoch}/rounds/{repair_round}/coverage-gaps.json",
+            "inspect/epochs/{coverage_epoch}/rounds/{repair_round}/metrics.json",
+            "inspect/epochs/{coverage_epoch}/rounds/{repair_round}/observations.json",
+            "inspect/epochs/{coverage_epoch}/rounds/{repair_round}/obligation-assessment.json",
+            "inspect/epochs/{coverage_epoch}/rounds/{repair_round}/issue-evidence-manifest.json",
+            "inspect/epochs/{coverage_epoch}/rounds/{repair_round}/trace-sufficiency.json",
+            "inspect/epochs/{coverage_epoch}/rounds/{repair_round}/trace.json",
+            "inspect/assessment-inputs.json",
         ),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,
     validators=(),
 )
+_SNAPSHOT_PATH = qa_join("issues/snapshot.json")
+_UI_EXPLORATION_PATH = qa_join("facts/ui-exploration.json")
+_API_DISCOVERY_PATH = qa_join("facts/api-discovery.json")
 _RECONCILE_ISSUES = TaskAttemptContract(
     contract_id="assurance.quality.reconcile-issues",
     owner_id="assurance.quality",
     handler_id="assurance.quality.reconcile-issues.execute",
-    input_model=ReconcileIssuesInputV1,
+    input_model=ReconcileBoundInputV1,
     output_model=ReconcileIssuesResultV1,
+    writes=(NamedWrite("snapshot", _SNAPSHOT_PATH),),
     resources=ResourceClaims(
         reads=("qa",),
-        writes=_paths("issues/snapshot.json"),
+        writes=(_SNAPSHOT_PATH,),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,
@@ -83,9 +95,13 @@ _SURFACE_BASELINE = TaskAttemptContract(
     handler_id="assurance.quality.surface-baseline.execute",
     input_model=SurfaceProbeInputV1,
     output_model=SurfaceProbeResultV1,
+    writes=(
+        NamedWrite("ui-exploration", _UI_EXPLORATION_PATH),
+        NamedWrite("api-discovery", _API_DISCOVERY_PATH),
+    ),
     resources=ResourceClaims(
         reads=("qa",),
-        writes=_paths("facts/ui-exploration.json", "facts/api-discovery.json"),
+        writes=qa_route("facts/ui-exploration.json", "facts/api-discovery.json"),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,
@@ -98,6 +114,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
         "surface-baseline": _SURFACE_BASELINE,
     }
 )
+AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES = _agent_catalog()
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:

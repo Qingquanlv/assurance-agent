@@ -163,7 +163,7 @@ def test_identity_drift_and_phase_regression_fail_closed(tmp_path: Path) -> None
     workspace = _workspace(tmp_path)
     write_initializing(workspace, _record(phase="initializing"))
     with pytest.raises(RuntimeSelectionError):
-        write_initializing(workspace, _record(phase="initializing", entrypoint="archive"))
+        write_initializing(workspace, _record(phase="initializing", entrypoint="init"))
     with pytest.raises(RuntimeSelectionError):
         complete_initialized(workspace, _record(phase="initialized", revision_id="d" * 64))
     completed = complete_initialized(workspace, _record(phase="initialized"))

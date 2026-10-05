@@ -10,8 +10,8 @@ from graph_engine.canonical import JSONValue, canonical_digest
 
 from tests.product.test_achieved_terminal import (
     CHANGE_ID,
-    _canonical,
     _ready_change,
+    _status_snapshot,
 )
 
 
@@ -49,7 +49,7 @@ def _permanent_failure():
     )
 
 
-def test_terminal_status_projects_only_committed_attempts_as_completed_steps() -> None:
+def test_terminal_status_projects_only_committed_attempts_as_completed_steps(tmp_path: Path) -> None:
     from assurance_product.status import render_status_from_langgraph
 
     status = render_status_from_langgraph(
@@ -79,6 +79,7 @@ def test_terminal_status_projects_only_committed_attempts_as_completed_steps() -
             _opened("quality.inspect"),
             _permanent_failure(),
         ),
+        project_root=tmp_path,
     )
 
     assert {node.node_id for node in status.node_states if node.state in {"succeeded", "stopped"}} == {
@@ -87,7 +88,7 @@ def test_terminal_status_projects_only_committed_attempts_as_completed_steps() -
     }
 
 
-def test_terminal_status_does_not_treat_intake_review_rounds_as_coverage_progress() -> None:
+def test_terminal_status_does_not_treat_intake_review_rounds_as_coverage_progress(tmp_path: Path) -> None:
     from assurance_product.status import render_status_from_langgraph
 
     status = render_status_from_langgraph(
@@ -106,6 +107,7 @@ def test_terminal_status_does_not_treat_intake_review_rounds_as_coverage_progres
                 "terminal": {"status": "stopped", "reason": "not_achieved"},
             },
         ),
+        project_root=tmp_path,
     )
 
     assert status.coverage_progress is None
@@ -113,9 +115,10 @@ def test_terminal_status_does_not_treat_intake_review_rounds_as_coverage_progres
     assert status.change.state == "stopped"
 
 
-def test_terminal_status_rejects_quality_coverage_without_round_progress() -> None:
+def test_terminal_status_rejects_quality_coverage_without_round_progress(tmp_path: Path) -> None:
     from assurance_product.status import render_status_from_langgraph
 
+    project = _ready_change(tmp_path)
     with pytest.raises(ValueError, match="coverage progress is incomplete"):
         render_status_from_langgraph(
             invocation_id="inv-terminal-full-001",
@@ -124,18 +127,12 @@ def test_terminal_status_rejects_quality_coverage_without_round_progress() -> No
             entrypoint="full",
             change_id=CHANGE_ID,
             status="completed",
-            snapshot=SimpleNamespace(
-                next=(),
-                interrupts=(),
-                values={
-                    "coverage_state": "repair_required",
-                    "terminal": {"status": "stopped", "reason": "not_achieved"},
-                },
-            ),
+            snapshot=_status_snapshot(project, extra={"budgets": {}}),
+            project_root=project,
         )
 
 
-def test_status_projects_the_bound_opencode_session_as_adapter_evidence() -> None:
+def test_status_projects_the_bound_opencode_session_as_adapter_evidence(tmp_path: Path) -> None:
     from graph_engine.attempts.events import ActivityBound, WorkspacePromoted
 
     from assurance_product.status import render_status_from_langgraph
@@ -175,6 +172,7 @@ def test_status_projects_the_bound_opencode_session_as_adapter_evidence() -> Non
             ),
             _committed(),
         ),
+        project_root=tmp_path,
     )
 
     assert tuple(item.model_dump(mode="json") for item in status.adapter_evidence) == (
@@ -185,28 +183,6 @@ def test_status_projects_the_bound_opencode_session_as_adapter_evidence() -> Non
             "terminal_receipt_digest": None,
         },
     )
-
-
-def test_product_terminal_nodes_emit_framework_terminal_envelopes() -> None:
-    from assurance_product.graphs.execute import _finish_reported, blocked
-    from assurance_product.graphs.full import _terminal_achieved, _terminal_not_achieved
-    from graph_engine.application.application import _status_from_snapshot
-    from tests.product.test_product_stategraph_flow import _inspection, _report
-
-    state = {"change_id": CHANGE_ID, **_inspection(), **_report()}
-    cases = (
-        (_terminal_achieved, "completed", "achieved"),
-        (_terminal_not_achieved, "failed", "not_achieved"),
-        (_finish_reported, "completed", "done"),
-        (blocked, "failed", "blocked"),
-    )
-    for node, expected_status, expected_reason in cases:
-        update = node(state)  # type: ignore[arg-type]
-        normalized = _status_from_snapshot(
-            SimpleNamespace(values={"terminal": update["terminal"]}, next=(), interrupts=())
-        )
-        assert normalized.status == expected_status
-        assert normalized.reason == expected_reason
 
 
 def test_completed_full_run_fails_closed_without_achieved_terminal_envelope(
@@ -271,30 +247,9 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
     from assurance_product.invocation_identity import InvocationIdentityRecord
 
     project = _ready_change(tmp_path)
-    from tests.product.test_quality_achieved_gate import _install_quality
-
-    quality_ref, _report = _install_quality(project)
     workspace = ChangeWorkspace.open(project.resolve(), CHANGE_ID)
     workspace.initialize()
-    execution = json.loads(
-        (project / "qa" / "results/execution" / "execute-result.json").read_text(encoding="utf-8")
-    )
-    snapshot = SimpleNamespace(
-        next=(),
-        interrupts=(),
-        values={
-            "terminal": {"status": "completed", "reason": "achieved"},
-            "selected_test_families": ["api"],
-            "execution_semantic_node_id": "execution.execute",
-            "batch_id": execution["batch_id"],
-            "execution_evidence": execution,
-            "execution_digest": _canonical(execution),
-            "inspection_outcome": quality_ref["inspection"],
-            "report_outcome": quality_ref["report"],
-            "rounds_used": 0,
-            "rounds_budget": 2,
-        },
-    )
+    snapshot = _status_snapshot(project)
     identity = InvocationIdentityRecord(
         schema_version="1",
         phase="initialized",

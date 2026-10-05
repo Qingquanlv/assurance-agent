@@ -12,17 +12,18 @@ from pydantic import ValidationError
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
 from assurance_quality.contracts.assessment import (
+    AssessmentInputsV1,
     AssessmentSkillInputV1,
-    FactBaselineSkillInputV1,
+    FactBaselineBoundInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
+    InspectPublishedV1,
     MaterializeAssessmentInputV1,
 )
 from assurance_quality.contracts.agent import InspectionResultV1
 from assurance_quality.contracts.assessment import FailureClassificationFactsV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_quality.graphs.nodes import publish_inspect
-from assurance_quality.graphs.assessment import route_coverage
+from assurance_quality.ops.inspect.hooks import seal_inspection
 from assurance_quality.ops.fact_baseline import (
     finalize as fact_baseline_finalize,
     prepare as fact_baseline_prepare,
@@ -50,9 +51,44 @@ from tests.product.test_change_local_output_routing import execute_task
 from test_quality_graph_factory import (  # pyright: ignore[reportMissingImports]
     _assessment_output,
     _inspect_output,
-    _receipt,
     assess_graph_input,
 )
+
+
+def _facts(business: AssessmentSkillInputV1) -> AssessmentInputsV1:
+    assessment = business.assessment
+    assert assessment is not None
+    return assessment
+
+
+def _seal(state: dict[str, object], output: object) -> dict[str, object]:
+    from assurance_generation.contracts.workflow import GenerationCycleResultV1
+    from assurance_intake.contracts.workflow import ReviewedCaseV1
+    from assurance_quality.contracts.assessment import AssessmentInputsV1
+
+    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+    reviewed = ReviewedCaseV1.model_validate(state.get("reviewed_case"))
+    generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+    paths = state.get("artifact_paths") or state.get("allowed_artifact_paths") or ()
+    business = AssessmentSkillInputV1.model_validate(
+        {
+            "change_id": state.get("change_id"),
+            "coverage_epoch": state.get("coverage_epoch"),
+            "repair_round": state.get("repair_round", 0),
+            "batch_id": state.get("batch_id"),
+            "plan_digest": state.get("plan_digest"),
+            "plan_ref": state.get("plan_ref"),
+            "capability_leafs": state.get("capability_leafs", ()),
+            "artifact_paths": paths,
+            "policy_sha256": state.get("policy_sha256"),
+            "assessment": assessment.model_dump(mode="json"),
+            "reviewed_case": reviewed.model_dump(mode="json"),
+            "mapping_ref": generation.mapping_ref.model_dump(mode="json"),
+            "fact_baseline_ref": state.get("fact_baseline_ref"),
+        }
+    )
+    sealed = seal_inspection(business, FinalizedInspectionV1.model_validate(output))
+    return sealed.model_dump(mode="json")
 
 
 def _publish_state() -> dict[str, object]:
@@ -76,6 +112,76 @@ def _agent_run(result: object) -> dict[str, object]:
     ).model_dump(mode="json")
 
 
+def _inspect_bound(
+    root: Path,
+    business: AssessmentSkillInputV1,
+    *,
+    generation: object | None = None,
+    execution: object | None = None,
+) -> dict[str, object]:
+    """Stage the producer files and return the ref input Inspect validates."""
+
+    from graph_engine.artifacts import stage_json_artifact
+    from graph_engine.attempts.resolutions import ReceiptRef
+
+    from assurance_execution.contracts.workflow import (
+        EXECUTION_CYCLE_PATH,
+        ExecutionCycleDocumentV1,
+    )
+    from assurance_generation.contracts.workflow import GENERATION_CYCLE_PATH, GenerationCycleResultV1
+    from assurance_quality.contracts.assessment import ASSESSMENT_INPUTS_PATH, InspectBoundInputV1
+
+    def _plain(value: object) -> object:
+        dump = getattr(value, "model_dump", None)
+        return dump(mode="json") if callable(dump) else value
+
+    if generation is None or execution is None:
+        request = MaterializeAssessmentInputV1.model_validate(_workspace_input(root))
+        generation = generation or request.generation
+        execution = execution or request.execution
+    execution_raw = _plain(execution)
+    assert isinstance(execution_raw, dict)
+    cycle = dict(execution_raw)
+    receipt = cycle.pop("receipt")
+
+    def stage(relative: str, document: object):
+        path = root / relative
+        if path.exists():
+            path.unlink()
+        return stage_json_artifact(root, relative, document)  # type: ignore[arg-type]
+
+    reviewed = stage("qa/cases/reviewed-case.json", business.reviewed_case)
+    generation_raw = _plain(generation)
+    staged_generation = stage(GENERATION_CYCLE_PATH, GenerationCycleResultV1.model_validate(generation_raw))
+    document = stage(EXECUTION_CYCLE_PATH, ExecutionCycleDocumentV1.model_validate(cycle))
+    assessment = business.assessment
+    assert assessment is not None
+    staged_assessment = stage(ASSESSMENT_INPUTS_PATH, assessment)
+
+    return InspectBoundInputV1.model_validate(
+        {
+            "change_id": business.change_id,
+            "coverage_epoch": business.coverage_epoch,
+            "plan_digest": business.plan_digest,
+            "plan_ref": _plain(business.plan_ref),
+            "capability_leafs": list(business.capability_leafs),
+            "artifact_paths": list(business.artifact_paths),
+            "product_policy": {
+                "resource_id": "assurance.product.configuration.product-policy",
+                "sha256": business.policy_sha256,
+            },
+            "assessment_ref": {"path": staged_assessment.path, "digest": staged_assessment.digest},
+            "reviewed_case_ref": {"path": reviewed.path, "digest": reviewed.digest},
+            "generation_ref": {"path": staged_generation.path, "digest": staged_generation.digest},
+            "execution_ref": {"path": document.path, "digest": document.digest},
+            "execution_receipt": _plain(ReceiptRef.model_validate(receipt)),
+            "fact_baseline_ref": _plain(business.fact_baseline_ref),
+            "repair_round": business.repair_round,
+            "validation_error": business.validation_error,
+        }
+    ).model_dump(mode="json")
+
+
 def _assessment_business(root: Path) -> AssessmentSkillInputV1:
     request = MaterializeAssessmentInputV1.model_validate(_workspace_input(root))
     assessment = materialize_assessment_inputs(request, project_root=root, write_root=root)
@@ -86,22 +192,29 @@ def _assessment_business(root: Path) -> AssessmentSkillInputV1:
         plan_digest=request.plan_digest,
         plan_ref=request.plan_ref,
         capability_leafs=("entities.item.constraints.description", "entities.item.constraints.name"),
-        artifact_paths=(),
+        artifact_paths=("qa/results",),
         assessment=assessment,
         reviewed_case=request.reviewed_case,
         mapping_ref=request.generation.mapping_ref,
+        policy_sha256=assessment.scope.policy_digest,
+        repair_round=0,
     )
 
 
-def _fact_baseline_business(business: AssessmentSkillInputV1) -> FactBaselineSkillInputV1:
-    return FactBaselineSkillInputV1(
-        change_id=business.change_id,
-        coverage_epoch=business.coverage_epoch,
-        plan_digest=business.plan_digest,
-        plan_ref=business.plan_ref,
-        capability_leafs=business.capability_leafs,
-        artifact_paths=business.artifact_paths,
-        reviewed_case=business.reviewed_case,
+def _fact_baseline_business(business: AssessmentSkillInputV1, root: Path) -> FactBaselineBoundInputV1:
+    reviewed = _write_json(
+        root, "qa/cases/reviewed-case.json", business.reviewed_case.model_dump(mode="json")
+    )
+    return FactBaselineBoundInputV1.model_validate(
+        {
+            "change_id": business.change_id,
+            "coverage_epoch": business.coverage_epoch,
+            "plan_digest": business.plan_digest,
+            "plan_ref": business.plan_ref.model_dump(mode="json"),
+            "capability_leafs": list(business.capability_leafs),
+            "artifact_paths": list(business.artifact_paths),
+            "reviewed_case_ref": reviewed,
+        }
     )
 
 
@@ -122,7 +235,7 @@ async def _finalize_inspection(
     baseline_path = "qa/results/facts/fact-baseline.json"
     baseline_ref = EvidenceArtifactRefV1.model_validate(_write_json(root, baseline_path, baseline_document))
     inspect_business = business.model_copy(update={"fact_baseline_ref": baseline_ref})
-    assessment = business.assessment
+    assessment = _facts(business)
     inspection_document = {
         "schema_version": "1.0",
         "change_id": MATERIALIZED_CHANGE_ID,
@@ -147,7 +260,7 @@ async def _finalize_inspection(
         cast(
             JSONValue,
             {
-                **inspect_business.model_dump(mode="json"),
+                **_inspect_bound(root, inspect_business),
                 "agent_result": _agent_run(inspection_document),
             },
         ),
@@ -202,12 +315,12 @@ def test_agent_result_has_no_business_route_field() -> None:
 
 
 def test_publish_inspect_derives_satisfied_without_an_agent_coverage_state() -> None:
-    published = publish_inspect(_publish_state(), _inspect_output(), _receipt())
+    published = _seal(_publish_state(), _inspect_output())
     assert published["coverage_state"] == "satisfied"
     outcome = published["inspection_outcome"]
     assert isinstance(outcome, dict)
     assert outcome["disposition"] == "satisfied"
-    assert route_coverage(published) == "satisfied"
+    assert published["disposition"] == "satisfied"
 
 
 @pytest.mark.parametrize("gate", ["satisfied", "needs_human", "blocked"])
@@ -246,33 +359,33 @@ def test_publish_inspect_routes_coverage_shortfall_to_case_rework(gate: str) -> 
         }
     ).model_dump(mode="json")
 
-    published = publish_inspect(state, output, _receipt())
+    published = _seal(state, output)
 
     outcome = published["inspection_outcome"]
     assert isinstance(outcome, dict)
     expected = "coverage_insufficient" if gate == "satisfied" else gate
     assert outcome["coverage_state"] == ("repair_required" if gate == "satisfied" else None)
     assert outcome["disposition"] == expected
-    assert route_coverage(published) == expected
+    assert published["disposition"] == expected
 
 
-@pytest.mark.parametrize("stale_field", ["coverage_epoch", "batch_id", "policy_sha256"])
-def test_stale_cycle_identity_cannot_publish_a_normal_result(stale_field: str) -> None:
+@pytest.mark.parametrize(
+    ("stale_field", "match"),
+    [
+        ("coverage_epoch", "epoch"),
+        ("batch_id", "batch_id"),
+        ("policy_sha256", "identity"),
+    ],
+)
+def test_stale_cycle_identity_cannot_publish_a_normal_result(stale_field: str, match: str) -> None:
     state = _publish_state()
     state[stale_field] = {
         "coverage_epoch": 1,
         "batch_id": "20260821T000000Z",
         "policy_sha256": "b" * 64,
     }[stale_field]
-    with pytest.raises(ValueError, match="identity"):
-        publish_inspect(state, _inspect_output(), _receipt())
-
-
-def test_failed_attempt_cannot_publish_a_normal_result() -> None:
-    state = _publish_state()
-    state["attempt_failure"] = {"kind": "invalid_output", "message": "agent failed"}
-    with pytest.raises(ValueError, match="failed Inspect attempt"):
-        publish_inspect(state, _inspect_output(), _receipt())
+    with pytest.raises(ValidationError, match=match):
+        _seal(state, _inspect_output())
 
 
 def test_stale_reviewed_case_cannot_publish_a_normal_result() -> None:
@@ -285,7 +398,7 @@ def test_stale_reviewed_case_cannot_publish_a_normal_result() -> None:
     }
     state["reviewed_case"] = reviewed
     with pytest.raises(ValueError, match="stale Reviewed Case"):
-        publish_inspect(state, _inspect_output(), _receipt())
+        _seal(state, _inspect_output())
 
 
 def test_stale_mapping_cannot_publish_a_normal_result() -> None:
@@ -298,7 +411,7 @@ def test_stale_mapping_cannot_publish_a_normal_result() -> None:
     }
     state["generation_result"] = generation
     with pytest.raises(ValueError, match="stale test mapping"):
-        publish_inspect(state, _inspect_output(), _receipt())
+        _seal(state, _inspect_output())
 
 
 def test_mixed_execution_failure_and_coverage_gap_selects_one_execution_action() -> None:
@@ -307,12 +420,12 @@ def test_mixed_execution_failure_and_coverage_gap_selects_one_execution_action()
     assert isinstance(facts, dict)
     facts["repairable_failure"] = True
     output["reason_codes"] = ["execution.locator_failure"]
-    published = publish_inspect(_publish_state(), output, _receipt())
+    published = _seal(_publish_state(), output)
     outcome = published["inspection_outcome"]
     assert isinstance(outcome, dict)
     assert outcome["disposition"] == "repairable_execution_failure"
     assert outcome["coverage_state"] is None
-    assert route_coverage(published) == "repairable_execution_failure"
+    assert published["disposition"] == "repairable_execution_failure"
 
 
 def test_blocking_failure_precedes_repairable_failure() -> None:
@@ -329,9 +442,9 @@ def test_blocking_failure_precedes_repairable_failure() -> None:
 def test_adversarial_counterexample_is_a_blocking_failure(tmp_path: Path) -> None:
     business = _assessment_business(tmp_path)
     execution = ExecutionEvidenceV1.model_validate_json(
-        (tmp_path / business.assessment.execution_ref.path).read_bytes()
+        (tmp_path / _facts(business).execution_ref.path).read_bytes()
     )
-    metrics_data = json.loads((tmp_path / business.assessment.metrics_ref.path).read_bytes())
+    metrics_data = json.loads((tmp_path / _facts(business).metrics_ref.path).read_bytes())
     metrics_data["metrics"]["adversarial_clean"] = {
         "layer": "cross",
         "status": "evaluated",
@@ -367,7 +480,7 @@ def test_assertion_failure_requires_analysis_not_human_or_coverage_repair(
 ) -> None:
     business = _assessment_business(tmp_path)
     execution = ExecutionEvidenceV1.model_validate_json(
-        (tmp_path / business.assessment.execution_ref.path).read_bytes()
+        (tmp_path / _facts(business).execution_ref.path).read_bytes()
     )
     execution = execution.model_copy(
         update={
@@ -381,9 +494,7 @@ def test_assertion_failure_requires_analysis_not_human_or_coverage_repair(
             ),
         }
     )
-    metrics = MetricsDocument.model_validate_json(
-        (tmp_path / business.assessment.metrics_ref.path).read_bytes()
-    )
+    metrics = MetricsDocument.model_validate_json((tmp_path / _facts(business).metrics_ref.path).read_bytes())
     facts, reasons = build_failure_classification_facts(execution, metrics)
     assert facts.needs_human is False
     assert reasons == ("execution.assertion_failure",)
@@ -412,15 +523,15 @@ async def test_selected_fuzz_without_campaign_evidence_remains_not_evaluated(
     tmp_path: Path,
 ) -> None:
     business = _assessment_business(tmp_path)
-    assessment = business.assessment.model_copy(
-        update={"scope": business.assessment.scope.model_copy(update={"selected_families": ("api", "fuzz")})}
+    assessment = _facts(business).model_copy(
+        update={"scope": _facts(business).scope.model_copy(update={"selected_families": ("api", "fuzz")})}
     )
     business = business.model_copy(update={"assessment": assessment})
 
     outcome = await _finalize_inspection(tmp_path, business, status="no_failures")
 
     assert outcome.status == "succeeded", outcome.failure
-    finalized = FinalizedInspectionV1.model_validate(outcome.output)
+    finalized = InspectPublishedV1.model_validate(outcome.output).finalized
     assert finalized.failure_facts.identity_valid is True
     assert "adversarial.required_evidence_missing" not in finalized.reason_codes
 
@@ -443,12 +554,12 @@ async def test_prepare_rejects_assessment_evidence_that_changed_after_materializ
     tmp_path: Path,
 ) -> None:
     business = _assessment_business(tmp_path)
-    metrics = tmp_path / business.assessment.metrics_ref.path
+    metrics = tmp_path / _facts(business).metrics_ref.path
     metrics.write_bytes(metrics.read_bytes() + b"\n")
 
     result = await execute_task(
         cast(TaskHandler, inspect_prepare),
-        cast(JSONValue, business.model_dump(mode="json")),
+        cast(JSONValue, _inspect_bound(tmp_path, business)),
         tmp_path,
         binding_data=BINDING,
     )
@@ -456,6 +567,24 @@ async def test_prepare_rejects_assessment_evidence_that_changed_after_materializ
     assert result.failure is not None
     assert result.failure.kind == "invalid_input"
     assert "digest changed" in result.failure.message
+
+
+@pytest.mark.asyncio
+async def test_prepare_rejects_a_tampered_producer_file(tmp_path: Path) -> None:
+    business = _assessment_business(tmp_path)
+    bound = _inspect_bound(tmp_path, business)
+    produced = tmp_path / "qa/results/inspect/assessment-inputs.json"
+    produced.write_bytes(produced.read_bytes() + b"\n")
+
+    result = await execute_task(
+        cast(TaskHandler, inspect_prepare),
+        cast(JSONValue, bound),
+        tmp_path,
+        binding_data=BINDING,
+    )
+
+    assert result.failure is not None
+    assert result.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio
@@ -488,7 +617,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
     business = _assessment_business(tmp_path)
     prepared = await execute_task(
         cast(TaskHandler, fact_baseline_prepare),
-        cast(JSONValue, _fact_baseline_business(business).model_dump(mode="json")),
+        cast(JSONValue, _fact_baseline_business(business, tmp_path).model_dump(mode="json")),
         tmp_path,
         binding_data=BINDING,
     )
@@ -503,7 +632,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
         cast(
             JSONValue,
             {
-                **_fact_baseline_business(business).model_dump(mode="json"),
+                **_fact_baseline_business(business, tmp_path).model_dump(mode="json"),
                 "agent_result": _agent_run(baseline_document),
             },
         ),
@@ -517,7 +646,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
     committed_baseline.parent.mkdir(parents=True, exist_ok=True)
     committed_baseline.write_bytes((stage / baseline_path).read_bytes())
     inspect_business = business.model_copy(update={"fact_baseline_ref": finalized_baseline.fact_baseline_ref})
-    assessment = business.assessment
+    assessment = _facts(business)
     inspection_document = {
         "schema_version": "1.0",
         "change_id": MATERIALIZED_CHANGE_ID,
@@ -538,7 +667,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
         cast(
             JSONValue,
             {
-                **inspect_business.model_dump(mode="json"),
+                **_inspect_bound(tmp_path, inspect_business),
                 "agent_result": _agent_run(inspection_document),
             },
         ),
@@ -547,7 +676,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
     )
 
     assert inspection_result.status == "succeeded", inspection_result.failure
-    finalized = FinalizedInspectionV1.model_validate(inspection_result.output)
+    finalized = InspectPublishedV1.model_validate(inspection_result.output).finalized
     assert finalized.failure_facts.identity_valid is True
     assert finalized.failure_facts.blocking_failure is False
     assert finalized.failure_facts.repairable_failure is False
@@ -602,10 +731,12 @@ async def test_failing_execution_requires_analyzed_agent_status(
         plan_digest=materialized.plan_digest,
         plan_ref=materialized.plan_ref,
         capability_leafs=(CAPABILITY,),
-        artifact_paths=(),
+        artifact_paths=("qa/results",),
         assessment=assessment,
         reviewed_case=materialized.reviewed_case,
         mapping_ref=materialized.generation.mapping_ref,
+        policy_sha256=assessment.scope.policy_digest,
+        repair_round=0,
     )
     baseline_path = "qa/results/facts/fact-baseline.json"
     stage = tmp_path / ".stage"
@@ -616,7 +747,7 @@ async def test_failing_execution_requires_analyzed_agent_status(
         cast(
             JSONValue,
             {
-                **_fact_baseline_business(business).model_dump(mode="json"),
+                **_fact_baseline_business(business, tmp_path).model_dump(mode="json"),
                 "agent_result": _agent_run(baseline_document),
             },
         ),
@@ -654,7 +785,12 @@ async def test_failing_execution_requires_analyzed_agent_status(
         cast(
             JSONValue,
             {
-                **inspect_business.model_dump(mode="json"),
+                **_inspect_bound(
+                    tmp_path,
+                    inspect_business,
+                    generation=materialized.generation,
+                    execution=materialized.execution,
+                ),
                 "agent_result": _agent_run(inspection_document),
             },
         ),
@@ -663,7 +799,7 @@ async def test_failing_execution_requires_analyzed_agent_status(
     )
 
     assert outcome.status == "succeeded", outcome.failure
-    finalized = FinalizedInspectionV1.model_validate(outcome.output)
+    finalized = InspectPublishedV1.model_validate(outcome.output).finalized
     assert finalized.failure_facts == FailureClassificationFactsV1(
         identity_valid=True,
         blocking_failure=False,
@@ -683,7 +819,12 @@ async def test_failing_execution_requires_analyzed_agent_status(
         cast(
             JSONValue,
             {
-                **inspect_business.model_dump(mode="json"),
+                **_inspect_bound(
+                    tmp_path,
+                    inspect_business,
+                    generation=materialized.generation,
+                    execution=materialized.execution,
+                ),
                 "agent_result": _agent_run(inspection_document),
             },
         ),

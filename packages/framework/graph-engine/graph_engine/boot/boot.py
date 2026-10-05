@@ -106,6 +106,8 @@ class GraphBuildContext(Protocol):
 
     def compile_root(self, builder: StateGraph[Any]) -> CompiledStateGraph: ...
 
+    def compile_subgraph(self, builder: StateGraph[Any]) -> CompiledStateGraph: ...
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimePorts:
@@ -212,6 +214,10 @@ class EngineCapabilityBuildContext:
 
 
 class EngineGraphBuildContext:
+    """Product build context. Only ``compile_root`` installs the checkpointer."""
+
+    product_context = True
+
     def __init__(
         self,
         *,
@@ -238,6 +244,9 @@ class EngineGraphBuildContext:
 
     def compile_root(self, builder: StateGraph[Any]) -> CompiledStateGraph:
         return builder.compile(checkpointer=self._checkpointer)
+
+    def compile_subgraph(self, builder: StateGraph[Any]) -> CompiledStateGraph:
+        return builder.compile(checkpointer=None)
 
     def read_source(self, path: Path) -> bytes:
         return _read_approved_source(path, self._approved_source_roots)

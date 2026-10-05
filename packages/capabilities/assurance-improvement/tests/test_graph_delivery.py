@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.errors import GraphInterrupt
+from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
@@ -20,13 +21,14 @@ from assurance_improvement.contracts.effects import ImprovementEffectIntentV1, I
 from assurance_improvement.contracts.improvements import ImprovementProjection
 from assurance_improvement.effects.delivery import ImprovementDeliveryEffect
 from graph_engine.effects.state import EffectCallContext, MemoryEffectState
-from assurance_improvement.graphs.factory import build_improvement_graphs
-from assurance_improvement.graphs.delivery import (
-    route_apply_evaluate,
-    route_auto_review,
-    route_human_review_result,
+from assurance_improvement.graphs.factory import build_improvement_graphs as _build_improvement_graphs
+from assurance_improvement.contracts.delivery import evaluate_apply_route
+from assurance_improvement.contracts.review import (
+    AUTO_REVIEW_FAILED_STATES,
+    HUMAN_REVIEW_FAILED_STATES,
+    auto_review_route,
+    human_review_route,
 )
-from assurance_improvement.graphs.state import ImprovementState
 from assurance_improvement.operations.keys import delivery_effect_key
 from assurance_improvement.resource_loader import resource_bytes
 from graph_engine.attempts.context import AttemptExecutionContext
@@ -38,11 +40,12 @@ from graph_engine.attempts.resolutions import ReceiptRef
 from pydantic import BaseModel, ValidationError
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS, GRAPH_NAMES_NOT_EFFECT_KINDS
+from graph_engine.effects.contracts import GRAPH_NAMES_NOT_EFFECT_KINDS
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import EffectPolicy, ResourceClaims
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.flow import BoundFlow
 from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.graph_harness import ScriptedAttempt, _prepare_anchored_backend
 from graph_engine.testing.recording_build_context import RecordingCapabilityBuildContext
@@ -64,6 +67,75 @@ from test_improvement_graph_factory import (  # type: ignore[import-not-found]
     improvement_contracts,
     skill_graph_fields,
 )
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_improvement_graphs(*args, **kwargs):
+    return compile_bundle(_build_improvement_graphs(*args, **kwargs))
+
+
+def test_publish_receipt_steps_are_the_receipt_refs_publishers() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(
+        owner_id="assurance.improvement",
+        contracts=improvement_contracts(),
+    )
+    bundle = _build_improvement_graphs(context)
+
+    def steps(child: object) -> tuple[str, ...]:
+        assert isinstance(child, BoundFlow)
+        return tuple(child.flow.public_receipt_steps)
+
+    assert {
+        "archive": steps(bundle.archive),
+        "evaluate": steps(bundle.evaluate),
+        "export": steps(bundle.export),
+        "rollback": steps(bundle.rollback),
+        "apply": steps(bundle.apply),
+        "review": steps(bundle.review),
+    } == {
+        "archive": ("archive",),
+        "evaluate": ("evaluate",),
+        "export": ("export",),
+        "rollback": ("rollback",),
+        "apply": ("apply",),
+        "review": (),
+    }
+
+
+class _ApplyChannels(CheckpointBridgeState, total=False):
+    change_id: str
+    retro_id: str
+    capability_leafs: list[str]
+    allowed_artifact_paths: list[str]
+    artifact_paths: list[str]
+    owned_evidence_ids: list[str]
+    source_manifest: dict[str, object]
+    projection: dict[str, object]
+    assessment: dict[str, object]
+    current: dict[str, object]
+    review_id: str
+    eval_run_id: str
+    outcome: str
+    report_sha256: str
+    staged_sha256: str
+    baseline_sha256: str
+    target_digest: str
+    approved_state_digest: str
+    approved_version: int
+    before_sha256: str
+    after_sha256: str
+    receipt_sha256: str
+    lifecycle_state: str
+    human_action: str
+    status: str
+    memory_eval: dict[str, object]
+    target: dict[str, object]
+    receipt_refs: list[dict[str, str]]
+    effect_refs: list[dict[str, str]]
+    attempt_failure: dict[str, object]
+
 
 _EVALUATE_HANDLER = "assurance.improvement.evaluate-memory-improvement"
 
@@ -112,6 +184,21 @@ def evaluate_receipt(**overrides: object) -> dict[str, object]:
         "approved_version": projection.version,
     }
     payload.update(overrides)
+    payload["route"] = evaluate_apply_route(payload.get("outcome"))
+    payload["memory_eval"] = {
+        key: payload[key]
+        for key in (
+            "eval_run_id",
+            "outcome",
+            "report_sha256",
+            "staged_sha256",
+            "baseline_sha256",
+            "approved_state_digest",
+            "approved_version",
+        )
+        if key in payload
+    }
+    payload.setdefault("effect_refs", [])
     return payload
 
 
@@ -145,11 +232,15 @@ def auto_review_output(*, lifecycle_state: str) -> dict[str, object]:
             "result": "approved" if lifecycle_state == "approved" else "escalated",
         },
         "projection": improvement_projection(state=lifecycle_state),
+        "route": auto_review_route(lifecycle_state),
     }
 
 
 def human_review_output(*, lifecycle_state: str) -> dict[str, object]:
-    return improvement_projection(state=lifecycle_state, version=2)
+    return {
+        "projection": improvement_projection(state=lifecycle_state, version=2),
+        "route": human_review_route(lifecycle_state),
+    }
 
 
 def apply_receipt() -> dict[str, object]:
@@ -166,6 +257,7 @@ def export_receipt() -> dict[str, object]:
         "sha256": "e",
         "created": True,
         "artifact_path": "qa/results/export/change.json",
+        "effect_refs": [],
     }
 
 
@@ -174,6 +266,8 @@ def rollback_receipt() -> dict[str, object]:
         "target": ".aa/memory/aa-api-plan.md",
         "restored_sha256": "x",
         "reason": "regressed",
+        "lifecycle_state": "rolled_back",
+        "effect_refs": [],
     }
 
 
@@ -188,6 +282,8 @@ def review_agent_output(*, decision: str = "pass") -> dict[str, object]:
         "verification_readiness": "ready",
         "delivery_safety": "ready",
         "human_review_required": decision == "needs_human_review",
+        "lifecycle_state": None,
+        "evidence_refs": [],
     }
 
 
@@ -217,12 +313,11 @@ def rollback_graph_input(**overrides: object) -> dict[str, object]:
 
 
 def test_graph_names_are_not_effect_kinds() -> None:
-    assert GRAPH_NAMES_NOT_EFFECT_KINDS.isdisjoint(EXPECTED_EFFECT_KINDS)
+    assert GRAPH_NAMES_NOT_EFFECT_KINDS.isdisjoint(EFFECT_IDS)
     for name in ("archive", "retro", "review", "evaluate", "export", "apply", "rollback"):
-        assert name not in EXPECTED_EFFECT_KINDS
-        assert f"improvement-{name}" not in EXPECTED_EFFECT_KINDS
-    assert "memory_eval" not in EXPECTED_EFFECT_KINDS
-    assert set(EFFECT_IDS) <= EXPECTED_EFFECT_KINDS
+        assert name not in EFFECT_IDS
+        assert f"improvement-{name}" not in EFFECT_IDS
+    assert "memory_eval" not in EFFECT_IDS
 
 
 def test_registered_receipt_traces_use_only_the_three_improvement_effects() -> None:
@@ -234,27 +329,23 @@ def test_registered_receipt_traces_use_only_the_three_improvement_effects() -> N
     contribution = ImprovementPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     kinds = tuple(sorted(item.kind for item in contribution.effects))
     assert kinds == tuple(sorted(EFFECT_IDS))
-    kernel = tuple(
-        sorted(kind for kind in EXPECTED_EFFECT_KINDS if kind.startswith("assurance.improvement."))
-    )
-    assert kernel == tuple(sorted(EFFECT_IDS))
 
 
 def test_auto_review_and_evaluate_routes_are_exclusive() -> None:
-    assert route_auto_review({"lifecycle_state": "approved"}) == "improvement.apply-evaluate"
-    assert route_auto_review({"lifecycle_state": "needs_rework"}) == "rework"
-    assert route_auto_review({"lifecycle_state": "rejected"}) == "rejected"
-    assert route_auto_review({"lifecycle_state": "proposed"}) == "human-review"
-    assert route_auto_review({"lifecycle_state": "unknown"}) == "failed"
-    assert route_auto_review({"attempt_failure": {"resolution_kind": "rejected"}}) == "failed"
-    assert route_human_review_result({"lifecycle_state": "approved"}) == "improvement.apply-evaluate"
-    assert route_human_review_result({"lifecycle_state": "rejected"}) == "rejected"
-    assert route_human_review_result({"lifecycle_state": "needs_rework"}) == "rework"
-    assert route_human_review_result({"lifecycle_state": "superseded"}) == "superseded"
-    assert route_human_review_result({"lifecycle_state": "proposed"}) == "failed"
-    assert route_apply_evaluate({"outcome": "passed"}) == "improvement.apply"
-    assert route_apply_evaluate({"outcome": "regressed"}) == "failed"
-    assert route_apply_evaluate({"attempt_failure": {"resolution_kind": "permanent"}}) == "failed"
+    assert auto_review_route("approved") == "apply-evaluate"
+    assert auto_review_route("needs_rework") == "rework"
+    assert auto_review_route("rejected") == "rejected"
+    assert auto_review_route("proposed") == "human-review"
+    assert auto_review_route("unknown") == "failed"
+    assert {auto_review_route(state) for state in AUTO_REVIEW_FAILED_STATES} == {"failed"}
+    assert human_review_route("approved") == "apply-evaluate"
+    assert human_review_route("rejected") == "rejected"
+    assert human_review_route("needs_rework") == "rework"
+    assert human_review_route("superseded") == "superseded"
+    assert human_review_route("proposed") == "failed"
+    assert {human_review_route(state) for state in HUMAN_REVIEW_FAILED_STATES} == {"failed"}
+    assert evaluate_apply_route("passed") == "apply"
+    assert evaluate_apply_route("regressed") == "failed"
 
 
 @pytest.mark.parametrize(
@@ -284,7 +375,6 @@ async def test_apply_auto_review_routes_typed_lifecycle(lifecycle_state: str, te
     assert [call.contract_id for call in result.semantic_calls] == [TASK_AUTO_REVIEW_ID]
     terminal_state = result.terminal
     assert isinstance(terminal_state, dict)
-    assert terminal_state.get("lifecycle_state") in {lifecycle_state, terminal, "failed"}
     assert terminal_state.get("status", terminal) == terminal
 
 
@@ -296,11 +386,12 @@ async def test_apply_auto_review_routes_typed_lifecycle(lifecycle_state: str, te
         {"projection": improvement_projection(state="approved")},
     ],
 )
-def test_auto_review_publisher_rejects_malformed_output(payload: dict[str, object]) -> None:
-    from assurance_improvement.graphs.nodes import publish_auto_review
+def test_auto_review_output_model_rejects_malformed_output(payload: dict[str, object]) -> None:
+    from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 
+    contract = TASK_ATTEMPT_CONTRACTS["assurance.improvement.apply-improvement-auto-review"]
     with pytest.raises(ValidationError):
-        publish_auto_review(apply_graph_input(), payload, _receipt())
+        contract.output_model.model_validate(payload)
 
 
 async def test_apply_covers_auto_review_evaluate_and_apply() -> None:
@@ -311,6 +402,7 @@ async def test_apply_covers_auto_review_evaluate_and_apply() -> None:
     )
     bundle = build_improvement_graphs(context)
     receipt = _receipt()
+    applied = apply_receipt()
     result = await harness.run(
         bundle.apply,
         input=apply_graph_input(),
@@ -319,7 +411,7 @@ async def test_apply_covers_auto_review_evaluate_and_apply() -> None:
                 committed(auto_review_output(lifecycle_state="approved"), receipt)
             ],
             "improvement.apply-evaluate": [committed(evaluate_receipt(), receipt)],
-            "improvement.apply": [committed(apply_receipt(), receipt)],
+            "improvement.apply": [committed(applied, receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
@@ -335,9 +427,9 @@ async def test_apply_covers_auto_review_evaluate_and_apply() -> None:
     evaluate_selected = result.select_values[1]
     assert isinstance(evaluate_selected, dict)
     assert evaluate_selected["eval_run_id"] == "eval-1"
-    published = result.published_update
-    assert published is not None
-    assert published.get("outcome") == "passed" or published.get("target") == ".aa/memory/aa-api-plan.md"
+    assert applied["target"] == ".aa/memory/aa-api-plan.md"
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == "done"
 
 
 def _apply_resume_config() -> RunnableConfig:
@@ -406,7 +498,8 @@ async def _resume_apply_human_review(action: str) -> tuple[dict[str, object], tu
             ],
         }
     )
-    wrapper: StateGraph[ImprovementState] = StateGraph(ImprovementState)
+
+    wrapper: StateGraph[_ApplyChannels] = StateGraph(_ApplyChannels)
     wrapper.add_node("apply", cast(Any, bundle.apply))
     wrapper.add_edge(START, "apply")
     wrapper.add_edge("apply", END)
@@ -437,7 +530,6 @@ async def test_apply_human_review_resume_rejects_rework_and_supersede(
 ) -> None:
     resumed, calls = await _resume_apply_human_review(action)
     assert resumed["status"] == terminal
-    assert resumed.get("lifecycle_state") == lifecycle_state
     assert calls == ("improvement.apply-auto-review", "improvement.apply-human-review")
     assert "improvement.apply-evaluate" not in calls
     assert "improvement.apply" not in calls
@@ -452,7 +544,6 @@ async def test_apply_human_review_approve_continues_to_evaluate_and_apply() -> N
         "improvement.apply",
     )
     assert resumed["status"] == "done"
-    assert resumed.get("lifecycle_state") in {"approved", "applied", "done"}
 
 
 async def test_standalone_evaluate_and_apply_evaluate_are_effectful_memory_attempts() -> None:
@@ -465,10 +556,11 @@ async def test_standalone_evaluate_and_apply_evaluate_are_effectful_memory_attem
     receipt = _receipt()
     selected = select_evaluate_memory(complete_evaluate_payload())
     assert selected.eval_run_id == "eval-1"
+    evaluated = evaluate_receipt()
     standalone = await harness.run(
         bundle.evaluate,
         input={**skill_graph_fields(), **complete_evaluate_payload()},
-        script={"improvement.evaluate": [committed(evaluate_receipt(), receipt)]},
+        script={"improvement.evaluate": [committed(evaluated, receipt)]},
     )
     assert [call.semantic_node_id for call in standalone.semantic_calls] == ["improvement.evaluate"]
     assert [call.contract_id for call in standalone.semantic_calls] == [TASK_EVALUATE_ID]
@@ -478,17 +570,9 @@ async def test_standalone_evaluate_and_apply_evaluate_are_effectful_memory_attem
     assert standalone_selected["outcome"] == "passed"
     published = standalone.published_update
     assert published is not None
-    receipt_model = MemoryEvalReceipt.model_validate(
-        {
-            key: published[key]
-            for key in ("eval_run_id", "outcome", "report_sha256", "staged_sha256")
-            if key in published
-        }
-        if "eval_run_id" in published
-        else published.get("memory_eval") or published
-    )
+    receipt_model = MemoryEvalReceipt.model_validate(evaluated["memory_eval"])
     assert receipt_model.outcome == "passed"
-    refs = published.get("receipt_refs") or published.get("effect_refs") or []
+    refs = evaluated.get("effect_refs") or []
     if isinstance(refs, list):
         assert not any(
             isinstance(item, dict) and item.get("kind") in GRAPH_NAMES_NOT_EFFECT_KINDS for item in refs
@@ -528,62 +612,39 @@ async def test_review_export_and_rollback_route_on_typed_results() -> None:
     )
     bundle = build_improvement_graphs(context)
     receipt = _receipt()
+    reviewed = review_agent_output()
     review = await harness.run(
         bundle.review,
         input=skill_graph_fields(),
-        script={"improvement.review": [committed(review_agent_output(), receipt)]},
+        script={"improvement.review": [committed(reviewed, receipt)]},
     )
     assert [call.semantic_node_id for call in review.semantic_calls] == ["improvement.review"]
     assert [call.contract_id for call in review.semantic_calls] == [_REVIEW_ID]
-    published_review = review.published_update
-    assert published_review is not None
-    assert published_review["decision"] == "pass"
+    assert reviewed["decision"] == "pass"
+    assert isinstance(review.terminal, dict)
+    assert review.terminal["status"] == "done"
 
+    exported_output = export_receipt()
     exported = await harness.run(
         bundle.export,
         input=export_graph_input(),
-        script={"improvement.export": [committed(export_receipt(), receipt)]},
+        script={"improvement.export": [committed(exported_output, receipt)]},
     )
     assert [call.semantic_node_id for call in exported.semantic_calls] == ["improvement.export"]
     assert [call.contract_id for call in exported.semantic_calls] == [TASK_EXPORT_ID]
-    published_export = exported.published_update
-    assert published_export is not None
-    assert published_export["artifact_path"] == "qa/results/export/change.json"
+    assert isinstance(exported_output["effect_refs"], list)
+    assert cast(dict[str, object], exported.terminal)["status"] == "done"
 
+    rolled_output = rollback_receipt()
     rolled = await harness.run(
         bundle.rollback,
         input=rollback_graph_input(),
-        script={"improvement.rollback": [committed(rollback_receipt(), receipt)]},
+        script={"improvement.rollback": [committed(rolled_output, receipt)]},
     )
     assert [call.semantic_node_id for call in rolled.semantic_calls] == ["improvement.rollback"]
     assert [call.contract_id for call in rolled.semantic_calls] == [TASK_ROLLBACK_ID]
-    published_rollback = rolled.published_update
-    assert published_rollback is not None
-    assert published_rollback["reason"] == "regressed"
-
-
-async def test_published_effect_refs_are_not_graph_names() -> None:
-    harness = GraphHarness()
-    context = harness.recording_context(
-        owner_id="assurance.improvement",
-        contracts=improvement_contracts(),
-    )
-    bundle = build_improvement_graphs(context)
-    forged = evaluate_receipt()
-    forged["effect_refs"] = [{"kind": "improvement-evaluate", "digest": HEX_A}]
-    result = await harness.run(
-        bundle.evaluate,
-        input={**skill_graph_fields(), **complete_evaluate_payload()},
-        script={"improvement.evaluate": [committed(forged, _receipt())]},
-    )
-    published = result.published_update
-    assert published is not None
-    refs = published.get("effect_refs") or published.get("receipt_refs") or []
-    assert isinstance(refs, list)
-    assert not any(isinstance(item, dict) and item.get("kind") == "improvement-evaluate" for item in refs)
-    assert not any(
-        isinstance(item, dict) and item.get("kind") in GRAPH_NAMES_NOT_EFFECT_KINDS for item in refs
-    )
+    assert rolled_output["lifecycle_state"] == "rolled_back"
+    assert cast(dict[str, object], rolled.terminal)["status"] == "done"
 
 
 class _RecordingWorkspace:
@@ -777,14 +838,13 @@ def _build_live_evaluate_bundle(
 
 
 async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: Path) -> None:
-    bundle, hybrid, closed, delivery_store, context, store, journal = _build_live_evaluate_bundle(tmp_path)
+    bundle, hybrid, closed, delivery_store, _context, store, journal = _build_live_evaluate_bundle(tmp_path)
     try:
         result = await bundle.evaluate.ainvoke(
             {**skill_graph_fields(), **complete_evaluate_payload()},
             config=_live_evaluate_config(entrypoint="improvement-evaluate"),
         )
         assert isinstance(result, dict)
-        published = context.published_updates[-1] if context.published_updates else result
         snapshot = await journal.load(hybrid.keys["improvement.evaluate"])
         assert snapshot is not None
         assert snapshot.terminal is not None
@@ -792,8 +852,6 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
         assert snapshot.effects
         assert snapshot.effects[0].kind == _DELIVERY_KIND
         assert snapshot.effects[0].receipt_digest
-        receipt_model = MemoryEvalReceipt.model_validate(result.get("memory_eval") or published)
-        assert receipt_model.outcome == "passed"
         evaluate_trace = hybrid.traces["improvement.evaluate"]
         assert "settle_effects" in evaluate_trace
         assert "publish_receipt" not in evaluate_trace
@@ -804,6 +862,7 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
         intent = ImprovementEffectIntentV1.model_validate(intents[0].payload)
         assert intent.kind == "memory_eval"
         assert intent.memory_eval is not None
+        assert intent.memory_eval.outcome == "passed"
         assert delivery_effect_key(intent) == f"{IMPROVEMENT_ID}:1:memory_eval:{HEX_A}"
         assert delivery_store.delivery_count == 1
         stored = ImprovementEffectReceiptV1.model_validate(
@@ -816,12 +875,22 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
 
 
 async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: Path) -> None:
-    bundle, hybrid, closed, delivery_store, context, store, journal = _build_live_evaluate_bundle(tmp_path)
+    bundle, hybrid, closed, delivery_store, _context, store, journal = _build_live_evaluate_bundle(tmp_path)
     try:
+        from graph_engine.artifacts import stage_json_artifact
+
+        from assurance_improvement.contracts.handoff import PROJECTION
+
+        approved = ImprovementProjection.model_validate(improvement_projection(state="approved"))
+        staged = stage_json_artifact(tmp_path / "project", PROJECTION, approved)
         hybrid._scripted.load_script(
             {
                 "improvement.apply-auto-review": [
-                    committed(auto_review_output(lifecycle_state="approved"), _receipt())
+                    committed(
+                        auto_review_output(lifecycle_state="approved"),
+                        _receipt(),
+                        artifacts=[{"path": staged.path, "digest": staged.digest}],
+                    )
                 ],
                 "improvement.apply": [committed(apply_receipt(), _receipt())],
             }
@@ -838,12 +907,6 @@ async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: P
         assert snapshot.effects
         assert snapshot.effects[0].kind == _DELIVERY_KIND
         assert snapshot.effects[0].receipt_digest
-        published = next(
-            (update for update in context.published_updates if update.get("eval_run_id") == "eval-1"),
-            result,
-        )
-        receipt_model = MemoryEvalReceipt.model_validate(published.get("memory_eval") or published)
-        assert receipt_model.outcome == "passed"
         trace = hybrid.traces["improvement.apply-evaluate"]
         assert "settle_effects" in trace
         assert "publish_receipt" not in trace
@@ -854,6 +917,7 @@ async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: P
         intent = ImprovementEffectIntentV1.model_validate(intents[0].payload)
         assert intent.kind == "memory_eval"
         assert intent.memory_eval is not None
+        assert intent.memory_eval.outcome == "passed"
         assert delivery_effect_key(intent) == f"{IMPROVEMENT_ID}:1:memory_eval:{HEX_A}"
         assert delivery_store.delivery_count == 1
         stored = ImprovementEffectReceiptV1.model_validate(

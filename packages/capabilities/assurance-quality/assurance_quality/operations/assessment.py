@@ -14,12 +14,14 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from agent_runtime_contracts.ops import InputError
-from graph_engine.attempts.context import AuthorizedAttemptScope
-from graph_engine.attempts.contracts import ExecutedAttemptResult
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from graph_engine.stategraph.ledger import merge_refs_by_path
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.workflow import ExecutionCycleDocumentV1, ExecutionCycleResultV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_execution.contracts.selection import ClosedMappingV1
 from assurance_generation.contracts.families import LayerName
 from assurance_intake.contracts.cases import (
@@ -35,11 +37,13 @@ from assurance_intake.contracts.quality_goals import (
     PreparedObligationV1,
 )
 from assurance_intake.domain.obligations import journey_keys_from_document, normalize_goal_obligations
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.domain.plan_codec import decode_plan
 from assurance_quality.contracts.assessment import (
+    ASSESSMENT_INPUTS_PATH,
     AssessmentInputsV1,
+    MaterializeAssessmentBoundV1,
     MaterializeAssessmentInputV1,
 )
 from assurance_quality.contracts.decisions import classify_inspection_disposition
@@ -140,22 +144,12 @@ _GOAL_RESOURCE_PATHS = {
 
 
 def _read_ref(root: Path, ref: EvidenceArtifactRefV1) -> bytes:
-    path = root
-    for part in PurePosixPath(ref.path).parts:
-        path = path / part
-        if path.is_symlink():
-            raise AssessmentInputError(f"assessment input must not contain a symlink: {ref.path}")
     try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(root.resolve())
-    except (OSError, ValueError) as error:
-        raise AssessmentInputError(f"assessment input is missing: {ref.path}") from error
-    if resolved != path or not path.is_file() or path.stat().st_nlink != 1:
-        raise AssessmentInputError(f"assessment input must be a regular single-link file: {ref.path}")
-    data = path.read_bytes()
-    if hashlib.sha256(data).hexdigest() != ref.digest:
-        raise AssessmentInputError(f"assessment input digest changed: {ref.path}")
-    return data
+        return open_artifact(root, ref)
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise AssessmentInputError(f"assessment input digest changed: {error.path}") from error
+        raise AssessmentInputError(str(error)) from error
 
 
 def _load_json(root: Path, ref: EvidenceArtifactRefV1) -> object:
@@ -605,12 +599,16 @@ def _issue_evidence_manifest(
     batch_id: str,
     refs: tuple[EvidenceArtifactRefV1, ...],
 ) -> IssueEvidenceManifest:
-    refs_by_path = {ref.path: ref for ref in refs}
-    if any(ref.digest != refs_by_path[ref.path].digest for ref in refs):
-        raise AssessmentInputError("conflicting issue evidence digests")
+    try:
+        unique = merge_refs_by_path(
+            (),
+            [ref.model_dump(mode="json") for ref in refs],
+            on_conflict="error",
+        )
+    except ValueError as error:
+        raise AssessmentInputError("conflicting issue evidence digests") from error
     entries = [
-        IssueEvidenceManifestEntry(path=path, digest=f"sha256:{refs_by_path[path].digest}")
-        for path in sorted(refs_by_path)
+        IssueEvidenceManifestEntry(path=item["path"], digest=f"sha256:{item['digest']}") for item in unique
     ]
     projection = [entry.model_dump(mode="json") for entry in entries]
     return IssueEvidenceManifest(
@@ -845,10 +843,7 @@ def materialize_assessment_inputs(
             "policy_digest": request.policy_sha256,
         }
     )
-    base = (
-        f"qa/results/inspect/epochs/"
-        f"{request.reviewed_case.coverage_epoch}/batches/{request.execution.batch_id}"
-    )
+    base = f"qa/results/inspect/epochs/{request.reviewed_case.coverage_epoch}/rounds/{request.repair_round}"
     trace_ref = _write_document(write_root, f"{base}/trace.json", projection)
     gaps_ref = _write_document(write_root, f"{base}/coverage-gaps.json", gaps)
     metrics_ref = _write_document(write_root, f"{base}/metrics.json", metrics)
@@ -901,7 +896,7 @@ def materialize_assessment_inputs(
         f"{base}/issue-evidence-manifest.json",
         issue_manifest,
     )
-    return AssessmentInputsV1(
+    assessment = AssessmentInputsV1(
         change_id=request.reviewed_case.change_id,
         coverage_epoch=request.reviewed_case.coverage_epoch,
         batch_id=request.execution.batch_id,
@@ -923,40 +918,58 @@ def materialize_assessment_inputs(
         healing_ref=request.healing_ref,
         issue_ref=request.issue_ref,
     )
+    _write_document(write_root, ASSESSMENT_INPUTS_PATH, assessment)
+    return assessment
 
 
-class MaterializeAssessmentExecutor:
-    async def execute(
-        self,
-        validated_input: MaterializeAssessmentInputV1,
-        scope: AuthorizedAttemptScope,
-    ) -> ExecutedAttemptResult[AssessmentInputsV1]:
-        output = materialize_assessment_inputs(
-            validated_input,
-            project_root=scope.workspace.project_root,
-            write_root=scope.workspace.write_root,
-        )
-        return ExecutedAttemptResult(output=output)
+def load_materialize_request(root: Path, bound: MaterializeAssessmentBoundV1) -> MaterializeAssessmentInputV1:
+    """Open the three producer files and splice this commit's execution receipt."""
+
+    try:
+        reviewed = open_artifact(root, bound.reviewed_case_ref, model=ReviewedCaseV1)
+        generation = open_artifact(root, bound.generation_ref, model=GenerationCycleResultV1)
+        document = open_artifact(root, bound.execution_ref, model=ExecutionCycleDocumentV1)
+    except ArtifactReadError as error:
+        raise AssessmentInputError(str(error)) from error
+    execution = ExecutionCycleResultV1.model_validate(
+        {**document.model_dump(mode="json"), "receipt": bound.execution_receipt.model_dump(mode="json")}
+    )
+    if execution.repair_round != bound.repair_round or execution.coverage_epoch != bound.coverage_epoch:
+        raise InputError("execution repair_round does not match")
+    return MaterializeAssessmentInputV1(
+        plan_digest=bound.plan_digest,
+        plan_ref=bound.plan_ref,
+        reviewed_case=reviewed,
+        generation=generation,
+        execution=execution,
+        policy_resource_id=bound.product_policy.resource_id,
+        policy_sha256=bound.product_policy.sha256,
+        execution_at=execution.executed_at,
+        healing_ref=bound.healing_ref,
+        issue_ref=bound.issue_ref,
+        repair_round=execution.repair_round,
+    )
 
 
 class MaterializeAssessmentHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            validated = MaterializeAssessmentInputV1.model_validate(request.input)
+            bound = MaterializeAssessmentBoundV1.model_validate(request.input)
+            validated = load_materialize_request(context.project_root, bound)
             output = materialize_assessment_inputs(
                 validated,
                 project_root=context.project_root,
                 write_root=context.write_root,
             )
-        except (AssessmentInputError, ValidationError, OSError) as error:
+        except (AssessmentInputError, InputError, ValidationError, OSError) as error:
             return TaskOutcome.failed("invalid_input", str(error), retryable=True)
         return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
 
 
 __all__ = [
     "AssessmentInputError",
-    "MaterializeAssessmentExecutor",
     "MaterializeAssessmentHandler",
     "classify_inspection_disposition",
+    "load_materialize_request",
     "materialize_assessment_inputs",
 ]

@@ -99,15 +99,6 @@
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
-                "assurance.healing.agent.coverage-repair.v1": {
-                    "limits": {
-                        "max_seconds": 3600
-                    },
-                    "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-flash",
-                    "request_policy_id": "assurance.product.agent.request.default",
-                    "worker_profile": "max"
-                },
                 "assurance.healing.agent.fix-proposal.v1": {
                     "limits": {
                         "max_seconds": 3600
@@ -353,15 +344,6 @@
                     "worker_profile": "max"
                 },
                 "assurance.healing.agent.apply-test-repair.v1": {
-                    "limits": {
-                        "max_seconds": 3600
-                    },
-                    "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-flash",
-                    "request_policy_id": "assurance.product.agent.request.default",
-                    "worker_profile": "max"
-                },
-                "assurance.healing.agent.coverage-repair.v1": {
                     "limits": {
                         "max_seconds": 3600
                     },
@@ -644,15 +626,6 @@
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
-                "assurance.healing.agent.coverage-repair.v1": {
-                    "limits": {
-                        "max_seconds": 3600
-                    },
-                    "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-flash",
-                    "request_policy_id": "assurance.product.agent.request.default",
-                    "worker_profile": "max"
-                },
                 "assurance.healing.agent.fix-proposal.v1": {
                     "limits": {
                         "max_seconds": 3600
@@ -898,15 +871,6 @@
                     "worker_profile": "max"
                 },
                 "assurance.healing.agent.apply-test-repair.v1": {
-                    "limits": {
-                        "max_seconds": 3600
-                    },
-                    "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-flash",
-                    "request_policy_id": "assurance.product.agent.request.default",
-                    "worker_profile": "max"
-                },
-                "assurance.healing.agent.coverage-repair.v1": {
                     "limits": {
                         "max_seconds": 3600
                     },
@@ -1189,15 +1153,6 @@
                     "request_policy_id": "assurance.product.agent.request.default",
                     "worker_profile": "max"
                 },
-                "assurance.healing.agent.coverage-repair.v1": {
-                    "limits": {
-                        "max_seconds": 3600
-                    },
-                    "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-flash",
-                    "request_policy_id": "assurance.product.agent.request.default",
-                    "worker_profile": "max"
-                },
                 "assurance.healing.agent.fix-proposal.v1": {
                     "limits": {
                         "max_seconds": 3600
@@ -1443,15 +1398,6 @@
                     "worker_profile": "max"
                 },
                 "assurance.healing.agent.apply-test-repair.v1": {
-                    "limits": {
-                        "max_seconds": 3600
-                    },
-                    "permission_profile_id": "assurance.product.agent.permission.default",
-                    "provider_model": "deepseek/deepseek-flash",
-                    "request_policy_id": "assurance.product.agent.request.default",
-                    "worker_profile": "max"
-                },
-                "assurance.healing.agent.coverage-repair.v1": {
                     "limits": {
                         "max_seconds": 3600
                     },

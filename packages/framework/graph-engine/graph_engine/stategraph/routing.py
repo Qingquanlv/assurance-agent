@@ -34,6 +34,22 @@ def select_exclusive_route(
 ATTEMPT_FAILURE_KEY = "attempt_failure"
 
 
+def route_on(channel: str, *, otherwise: str) -> Callable[[Mapping[str, object]], str]:
+    if not channel:
+        raise ValueError("channel must be nonempty")
+    if not otherwise:
+        raise ValueError("otherwise must be nonempty")
+
+    def route(state: Mapping[str, object]) -> str:
+        value = state.get(channel)
+        if isinstance(value, str) and value:
+            return value
+        return otherwise
+
+    route.__name__ = "route_on"
+    return route
+
+
 def add_attempt_edge(builder: StateGraph[Any], source: str, target: str, *, on_failure: str) -> None:
     def route_attempt(state: Mapping[str, object]) -> str:
         return on_failure if state.get(ATTEMPT_FAILURE_KEY) else target
@@ -67,5 +83,6 @@ __all__ = [
     "AmbiguousRouteMatch",
     "add_attempt_edge",
     "add_route",
+    "route_on",
     "select_exclusive_route",
 ]

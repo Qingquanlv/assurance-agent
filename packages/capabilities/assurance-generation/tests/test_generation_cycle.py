@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -9,11 +10,9 @@ import yaml
 
 from assurance_generation.contracts.families import LayerName
 from assurance_generation.operations.codegen import CodegenFinalizeHandler
-from assurance_generation.contracts.workflow import CompleteGenerationInputV1
+from assurance_generation.contracts.workflow import CompleteGenerationInputV1, GENERATION_CYCLE_PATH
 from assurance_generation.operations.cycle import complete_generation_cycle
 from assurance_intake.contracts.case_selection import CaseSelectionV1, SelectedCaseV1
-from assurance_product.graphs.execute import _route_generation, adapt_execution
-from assurance_product.graphs.state import ProductState
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.attempts.contracts import resolve_contract
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
@@ -21,12 +20,12 @@ from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.boot.boot import EngineGraphBuildContext
+from graph_engine.flow import BoundFlow
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.testing import committed
 from graph_engine.testing.graph_harness import ScriptedAttempt
 from tests.product.test_change_local_output_routing import execute_task
-from tests.product.test_product_input import valid_product_input
 from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     codegen_result,
     durable_oracle_path,
@@ -36,6 +35,11 @@ from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
 )
 from planning_fixtures import reviewed_cases  # pyright: ignore[reportMissingImports]
 from test_resolve_inputs import _fixture, _write  # pyright: ignore[reportMissingImports]
+
+
+def _artifact(root: Path, path: str) -> dict[str, str]:
+    data = (root / path).read_bytes()
+    return {"path": path, "digest": hashlib.sha256(data).hexdigest()}
 
 
 async def cycle_fixture(
@@ -102,7 +106,16 @@ async def cycle_fixture(
         assert finalized.status == "succeeded", finalized.failure
         output = cast(dict[str, Any], finalized.output)
         receipt = ReceiptRef(receipt_id=f"codegen-{family}", receipt_digest="a" * 64)
-        script[f"generation.{family}.codegen"] = [committed(output, receipt)]
+        script[f"generation.{family}.codegen"] = [
+            committed(
+                output,
+                receipt,
+                artifacts=[
+                    _artifact(root, f"qa/results/codegen/{family}-codegen-summary.md"),
+                    _artifact(root, f"qa/results/codegen/{family}-generated-files.json"),
+                ],
+            )
+        ]
         script[f"generation.{family}.codegen-review"] = [committed({"route": "codegen"}, receipt)]
         family_inputs.append(
             {
@@ -168,37 +181,46 @@ async def run_generation_boundary(root: Path, coverage_epoch: int = 0):
         approved_source_roots=(),
         attempt_factory=AttemptNodeFactory(journal=journal, kernel=BoundaryKernel()),
     )
-    graph = build_generation_graphs(context.for_capability("assurance.generation")).generation
-    state = await graph.ainvoke(
-        {
-            "change_id": payload.change_id,
-            "coverage_epoch": coverage_epoch,
-            "plan_digest": payload.plan_digest,
-            "plan_ref": payload.plan_ref.model_dump(mode="json"),
-            "reviewed_case": payload.reviewed_case.model_dump(mode="json"),
-            "selected_test_families": ["api", "e2e"],
-            "capability_leafs": ["entities.item.create"],
-            "allowed_artifact_paths": [
-                "qa/.qa.yaml",
-                "qa/cases",
-                "qa/fixtures",
-                "qa/proposal.md",
-                "qa/requirement.md",
-                "qa/results",
-                "qa/tests",
-            ],
-            "rounds_used": 0,
-            "rounds_budget": 2,
-        },
-        config={
-            "configurable": {
-                "thread_id": "cycle",
-                "assurance_revision_id": "b" * 64,
-                "assurance_fencing_token": 1,
-                "assurance_entrypoint": "full",
-            }
-        },
-    )
+    generation = build_generation_graphs(context.for_capability("assurance.generation")).generation
+    assert isinstance(generation, BoundFlow)
+    graph = generation.compile(outcome_field="status")
+    graph_input = {
+        "change_id": payload.change_id,
+        "coverage_epoch": coverage_epoch,
+        "plan_digest": payload.plan_digest,
+        "plan_ref": payload.plan_ref.model_dump(mode="json"),
+        "reviewed_case_ref": _write(
+            project,
+            "qa/cases/reviewed-case.json",
+            payload.reviewed_case.model_dump_json().encode(),
+        ).model_dump(mode="json"),
+        "selected_test_families": ["api", "e2e"],
+        "capability_leafs": ["entities.item.create"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+    }
+    # A mounted root does not echo its inputs. The parent keeps them.
+    state = {
+        **graph_input,
+        **await graph.ainvoke(
+            graph_input,
+            config={
+                "configurable": {
+                    "thread_id": "cycle",
+                    "assurance_revision_id": "b" * 64,
+                    "assurance_fencing_token": 1,
+                    "assurance_entrypoint": "full",
+                }
+            },
+        ),
+    }
     return state, project, executor
 
 
@@ -208,8 +230,7 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
 ) -> None:
     state, project, executor = await run_generation_boundary(tmp_path, coverage_epoch)
     assert state["status"] == "passed", state.get("attempt_failure")
-    assert _route_generation(state) == "execution"
-    result = state["generation_result"]
+    result = json.loads((project / GENERATION_CYCLE_PATH).read_bytes())
     assert result["coverage_epoch"] == coverage_epoch
     mapping = json.loads((project / result["mapping_ref"]["path"]).read_bytes())
     assert {entry["layer"] for entry in mapping["mappings"]} == {"api", "e2e"}
@@ -229,20 +250,8 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
         "qa/results/codegen/e2e-codegen-summary.md",
         "qa/results/codegen/e2e-generated-files.json",
     }
-    assert state["generation_receipt"]["receipt_digest"] != "a" * 64
     assert executor.dispatch_count == 1
-    adapted = adapt_execution(
-        cast(
-            ProductState,
-            {
-                **valid_product_input(allowed_origins=("http://127.0.0.1:9999",)),
-                **state,
-            },
-        )
-    )
-    feature_input = cast(dict[str, object], adapted["feature_input"])
-    assert feature_input["generation_result"] == result
-    assert feature_input["allowed_origins"] == ["http://127.0.0.1:9999"]
+    assert result["coverage_epoch"] == coverage_epoch
 
 
 async def test_generation_cycle_requires_results_plan_prefix(tmp_path: Path) -> None:

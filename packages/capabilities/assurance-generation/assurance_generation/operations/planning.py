@@ -22,6 +22,7 @@ from agent_runtime_contracts.ops import (
     result_contract_from,
 )
 from agent_runtime_contracts.ops.request import WorkspaceRoots
+from graph_engine.artifacts import ArtifactReadError, read_workspace_file
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
@@ -34,7 +35,7 @@ from assurance_generation.contracts.agent import (
 )
 from assurance_generation.contracts.codegen import CodegenMapping, family_allows_target
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
-from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
+from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReviewAuthoring
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import (
@@ -544,12 +545,16 @@ def planning_facts_for(
     targets: tuple[str, ...] = ()
     mapping_path = f"qa/results/plans/{family}-codegen-mapping.json"
     try:
-        mapping = CodegenMapping.model_validate_json(_workspace_file(workspace, mapping_path).read_bytes())
-        targets = tuple(entry.target_file for entry in mapping.entries)
-    except (OSError, ValidationError):
-        pass
-    except OutputError as error:
-        raise InputError(f"invalid planning index input: {error}") from error
+        data = read_workspace_file(workspace, mapping_path)
+    except ArtifactReadError as error:
+        if error.reason != "missing":
+            raise InputError(f"invalid planning index input: {error}") from error
+    else:
+        try:
+            mapping = CodegenMapping.model_validate_json(data)
+            targets = tuple(entry.target_file for entry in mapping.entries)
+        except ValidationError:
+            pass
     return build_planning_facts(
         workspace,
         change_id=change_id,
@@ -633,21 +638,11 @@ def _structured(payload: AgentFinalizeInputV1) -> object:
     return thaw_json(payload.agent_result.result_payload)
 
 
-def _workspace_file(workspace: Path, relative: str) -> Path:
+def _workspace_file(workspace: Path, relative: str) -> bytes:
     try:
-        canonical_relative_path(relative)
-    except ValueError as error:
+        return read_workspace_file(workspace, relative)
+    except ArtifactReadError as error:
         raise OutputError(str(error)) from error
-    path = workspace.joinpath(*PurePosixPath(relative).parts)
-    if path.is_symlink():
-        raise OutputError(f"declared output file is missing: {relative}")
-    try:
-        path.resolve().relative_to(workspace.resolve())
-    except ValueError as error:
-        raise OutputError(f"output file path must be canonical and relative: {relative}") from error
-    if path.is_file() and not path.is_symlink() and path.stat().st_nlink != 1:
-        raise OutputError(f"declared output file is not a regular single-link file: {relative}")
-    return path
 
 
 def _authenticate_files(
@@ -661,17 +656,12 @@ def _authenticate_files(
     for relative in declared:
         if not under_write_root(relative, locked):
             raise OutputError(f"undeclared output file: {relative}")
-        path = _workspace_file(workspace, relative)
-        if not path.is_file() or path.is_symlink():
-            if fallback_workspace is None:
-                raise OutputError(f"declared output file is missing: {relative}")
-            path = _workspace_file(fallback_workspace, relative)
-            if not path.is_file() or path.is_symlink():
-                raise OutputError(f"declared output file is missing: {relative}")
         try:
-            images[relative] = path.read_bytes()
-        except OSError as error:
-            raise OutputError(f"declared output file is unreadable: {relative}: {error}") from error
+            images[relative] = read_workspace_file(workspace, relative)
+        except ArtifactReadError as error:
+            if fallback_workspace is None or error.reason != "missing":
+                raise OutputError(str(error)) from error
+            images[relative] = _workspace_file(fallback_workspace, relative)
     return images
 
 

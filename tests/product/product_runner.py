@@ -356,9 +356,6 @@ class _ScriptedTaskHost:
                 self._public_fields({"change_id": change_id, **echoed}),
             )
         extra = {"change_id": change_id, **echoed}
-        if capability_id == "assurance.healing.agent.coverage-repair.v1":
-            extra.setdefault("kind", "coverage")
-            extra.setdefault("status", "repaired")
         return TaskOutcome.succeeded(self._public_fields(extra))
 
     def _next_execution(self) -> str:
@@ -483,7 +480,6 @@ class ProductRun:
         coverage_rounds = self._resolved_coverage_rounds()
         if self._coverage_sequence:
             states: list[str] = []
-            repairs: list[str] = []
             last_measured = self._coverage_sequence[-1]
             for index, measured in enumerate(self._coverage_sequence):
                 last_measured = measured
@@ -494,11 +490,8 @@ class ProductRun:
                     states.append("exhausted")
                     break
                 states.append("repair_required")
-                if index + 1 < len(self._coverage_sequence):
-                    repairs.append("repaired")
             loop = drive_coverage_loop(
                 coverage_states=tuple(states),
-                repair_statuses=tuple(repairs),
                 coverage_rounds=coverage_rounds,
                 measured_sequence=self._coverage_sequence,
                 threshold=self._threshold,
@@ -515,18 +508,13 @@ class ProductRun:
                 coverage_rounds=coverage_rounds,
             )
             last_measured = 1.0
-        repair_count = loop.public_exports.count("healing.repair-coverage")
-        if "healing.repair-coverage" in loop.public_exports:
-            repair_count = sum(
-                1 for item in loop.task_capabilities if item.endswith("coverage-repair.finalize")
-            )
         return FlowTrace(
             status=loop.status
             if loop.status == "interrupted"
             else ("stopped" if loop.terminal == "not-achieved" else "succeeded"),
             report=ReportTrace(exists="quality.report" in loop.public_exports, coverage=last_measured),
             logical_steps=loop.public_exports,
-            _activation_counts={"assurance.healing.coverage-repair": repair_count},
+            _activation_counts={},
         )
 
 

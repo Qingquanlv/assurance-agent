@@ -1047,4 +1047,39 @@ def test_boot_binds_factory_to_kernel_journal() -> None:
 def test_port_only_kernel_fails_closed_without_ephemeral_journal() -> None:
     with pytest.raises(BootValidationError, match="journal"):
         bind_attempt_factory(object())
+
+
+async def test_mapping_select_is_validated_and_a_missing_field_fails_closed() -> None:
+    kernel = ScriptedKernel(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    factory = _factory(kernel)
+
+    def select_mapping(state: dict[str, object]) -> dict[str, object]:
+        return {"change_id": state["change_id"]}
+
+    node = factory.attempt(
+        _resolved(),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_mapping,
+        publish=publish_output,
+    )
+    update = await node(_state(), runtime=_runtime(kernel))
+    assert kernel.calls == 1
+    assert kernel.seen_inputs == [RunInput(change_id="chg-1")]
+    assert update["execution"] == OUTPUT
+
+    def select_missing(_state: dict[str, object]) -> dict[str, object]:
+        return {}
+
+    failing = factory.attempt(
+        _resolved(),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_missing,
+        publish=publish_output,
+    )
+    failed = await failing(_state(), runtime=_runtime(kernel))
+    assert kernel.calls == 1
+    assert failed["attempt_failure"]["kind"] == "invalid_input"
+    assert failed["attempt_failure"]["writes_promoted"] is False
     assert bind_attempt_factory(None) is None

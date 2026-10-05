@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from agent_runtime_contracts.ops import FinalizeContext, InputError, OutputError
 
-from assurance_improvement.contracts.agent import ImprovementReviewResultV1, ImprovementSkillInputV1
+from assurance_improvement.contracts.agent import (
+    ImprovementReviewResultV1,
+    ImprovementSkillInputV1,
+    ReviewPublishedV1,
+)
 from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
 from assurance_improvement.contracts.improvements import ImprovementProjection
 from assurance_improvement.contracts.review import ImprovementReviewSubject
@@ -12,7 +16,7 @@ from assurance_improvement.contracts.review import ImprovementReviewSubject
 
 def after(
     ctx: FinalizeContext, business: ImprovementSkillInputV1, result: ImprovementReviewResultV1
-) -> ImprovementReviewResultV1:
+) -> ReviewPublishedV1:
     subject_raw = ctx.prepared.get("subject")
     projection_raw = ctx.prepared.get("projection")
     if subject_raw is None or projection_raw is None:
@@ -29,4 +33,8 @@ def after(
         raise OutputError("review subject digest does not match")
     if result.decision == "pass" and result.evidence_traceability != "complete":
         raise OutputError("pass review requires complete evidence traceability")
-    return result
+    return ReviewPublishedV1(
+        decision=result.decision,
+        human_review_required=result.human_review_required,
+        result=result,
+    )

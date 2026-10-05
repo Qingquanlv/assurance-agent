@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult
+from assurance_intake.contracts import EvidenceArtifactRefV1
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_quality.contracts.report import QualityReport
@@ -52,16 +53,21 @@ def _canonical_relative_paths(values: tuple[str, ...]) -> tuple[str, ...]:
 class RetroAnalysisInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
-    evidence_slice: Annotated[
-        IssueEvidenceSlice | WorkflowEvidenceSlice | EvalEvidenceSlice,
-        Field(discriminator="domain"),
-    ]
+    evidence_slice_ref: EvidenceArtifactRefV1 | None = None
+    evidence_slice: (
+        Annotated[
+            IssueEvidenceSlice | WorkflowEvidenceSlice | EvalEvidenceSlice,
+            Field(discriminator="domain"),
+        ]
+        | None
+    ) = None
 
 
 class RetroSynthesisInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
-    context: RetroContextV3
+    context_ref: EvidenceArtifactRefV1 | None = None
+    context: RetroContextV3 | None = None
 
 
 class RetroAnalysisFinalizeInputV1(RetroAnalysisInputV1):
@@ -146,6 +152,16 @@ class ImprovementReviewResultV1(FrozenModel):
     human_review_required: bool
 
 
+class ReviewPublishedV1(FrozenModel):
+    """Review fields the flow exports. ``result`` keeps the agent document."""
+
+    decision: Literal["pass", "changes_requested", "needs_human_review", "reject"]
+    human_review_required: bool
+    lifecycle_state: str | None = None
+    evidence_refs: tuple[dict[str, str], ...] = ()
+    result: ImprovementReviewResultV1
+
+
 class ArchiveResultV1(FrozenModel):
     schema_version: Literal["1"] = "1"
     change_id: str = Field(min_length=1)
@@ -163,10 +179,22 @@ class ArchiveResultV1(FrozenModel):
         return _canonical_relative_paths(value) if value else ()
 
 
+class ArchivePublishedV1(FrozenModel):
+    """Archive fields the flow exports. ``result`` keeps the agent document."""
+
+    archive_status: Literal["archived", "archived_with_warnings"]
+    lifecycle_state: str | None = None
+    evidence_refs: tuple[dict[str, str], ...] = ()
+    effect_refs: tuple[dict[str, str], ...] = ()
+    result: ArchiveResultV1
+
+
 __all__ = [
     "AgentFinalizeInputV1",
+    "ArchivePublishedV1",
     "ArchiveResultV1",
     "ImprovementReviewResultV1",
+    "ReviewPublishedV1",
     "ImprovementSkillInputV1",
     "RetroAnalysisResultV3",
 ]

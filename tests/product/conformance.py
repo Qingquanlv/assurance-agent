@@ -54,7 +54,6 @@ HISTORICAL_PREPARE_IDS = (
     "assurance.generation.performance.codegen-review.prepare",
     "assurance.execution.execute.prepare",
     "assurance.execution.run.prepare",
-    "assurance.healing.coverage-repair.prepare",
     "assurance.healing.fix-proposal.prepare",
     "assurance.quality.fact-baseline.prepare",
     "assurance.quality.inspect.prepare",

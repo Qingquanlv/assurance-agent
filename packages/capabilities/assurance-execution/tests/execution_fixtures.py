@@ -90,6 +90,8 @@ def run_request(
 
 def executed_paths(outcome: Any) -> tuple[str, ...]:
     output = outcome.output
+    if isinstance(output, Mapping) and isinstance(output.get("execution_evidence"), Mapping):
+        output = output["execution_evidence"]
     if not isinstance(output, Mapping):
         return ()
     executed = output.get("executed")

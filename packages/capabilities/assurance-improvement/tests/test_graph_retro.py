@@ -19,14 +19,10 @@ from assurance_improvement.contracts.retro import (
     RetroContextV3,
     WorkflowEvidenceSlice,
 )
-from assurance_improvement.graphs.factory import build_improvement_graphs
-from assurance_improvement.graphs.nodes import select_reconcile, select_retro
-from assurance_improvement.graphs.state import (
-    replace_eval_analysis,
-    replace_issue_analysis,
-    replace_workflow_analysis,
-)
-from graph_engine.attempts.resolutions import RejectedTaskResult
+from assurance_improvement.contracts.agent import RetroAnalysisInputV1, RetroSynthesisInputV1
+from assurance_improvement.contracts.retro import RetroReconcileInputV1
+from assurance_improvement.graphs.factory import build_improvement_graphs as _build_improvement_graphs
+from graph_engine.attempts.resolutions import AttemptResolution, ReceiptRef, RejectedTaskResult
 from graph_engine.testing import GraphHarness, committed
 
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -48,6 +44,13 @@ from test_improvement_graph_factory import (  # type: ignore[import-not-found]
     improvement_contracts,
     skill_graph_fields,
 )
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_improvement_graphs(*args, **kwargs):
+    return compile_bundle(_build_improvement_graphs(*args, **kwargs))
+
 
 _WINDOW = {"selection": {"mode": "last", "requested_last": 1}, "change_ids": ["CH-DEMO-001"]}
 _TS = "2026-08-22T00:00:00Z"
@@ -150,6 +153,36 @@ def retro_graph_input(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def _slice_artifacts() -> list[dict[str, str]]:
+    return [
+        {"path": "qa/results/retro/issue-slice.json", "digest": "b" * 64},
+        {"path": "qa/results/retro/workflow-slice.json", "digest": "b" * 64},
+        {"path": "qa/results/retro/eval-slice.json", "digest": "b" * 64},
+    ]
+
+
+def _slices(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        **complete_collect_payload(),
+        "discovery_slice": None,
+        "coverage_gap_slice": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _analysis_ref(domain: str) -> dict[str, str]:
+    return {"path": f"qa/results/retro/retro-{domain}-analysis.json", "digest": "a" * 64}
+
+
+def _analysis_commit(
+    domain: Literal["issue", "workflow", "eval"],
+    receipt: ReceiptRef,
+    output: dict[str, object] | None = None,
+) -> AttemptResolution:
+    return committed(output or analysis_agent_output(domain), receipt, artifacts=[_analysis_ref(domain)])
+
+
 def analysis_agent_output(domain: Literal["issue", "workflow", "eval"]) -> dict[str, object]:
     return {
         "schema_version": "3",
@@ -177,6 +210,45 @@ def _task_failure_signal(*, signal_id: str, node_id: str) -> dict[str, object]:
         "node_id": node_id,
         "error_kind": "timeout",
         "message_fingerprint": "fp-1",
+    }
+
+
+def _flow_script(
+    receipt: ReceiptRef,
+    *,
+    retro: dict[str, object] | None = None,
+    eval_resolution: AttemptResolution | None = None,
+    synthesize_route: str = "synthesize",
+) -> dict[str, list[AttemptResolution]]:
+    return {
+        "improvement.retro-build-slices": [committed(_slices(), receipt, artifacts=_slice_artifacts())],
+        "improvement.retro-collect": [
+            committed(
+                {**_slices(), "generated_at": _TS},
+                receipt,
+                artifacts=[{"path": "qa/results/retro/collected.json", "digest": "c" * 64}],
+            )
+        ],
+        "improvement.retro-eval-analysis": [
+            eval_resolution if eval_resolution is not None else _analysis_commit("eval", receipt)
+        ],
+        "improvement.retro-issue-analysis": [_analysis_commit("issue", receipt)],
+        "improvement.retro-workflow-analysis": [_analysis_commit("workflow", receipt)],
+        "improvement.retro-synthesize": [
+            committed(
+                {"route": synthesize_route, "context": retro_context_payload(), "candidates": []},
+                receipt,
+                artifacts=[{"path": "qa/results/retro/context.json", "digest": "d" * 64}],
+            )
+        ],
+        "improvement.retro": [
+            committed(
+                retro if retro is not None else retro_agent_output(),
+                receipt,
+                artifacts=[{"path": "qa/results/retro/candidates.json", "digest": "e" * 64}],
+            )
+        ],
+        "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
     }
 
 
@@ -213,7 +285,6 @@ def reconcile_result() -> dict[str, object]:
 
 def test_reconcile_output_retains_events_and_publishes_only_typed_ledger() -> None:
     from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
-    from assurance_improvement.graphs.nodes import publish_reconcile
 
     contract = TASK_ATTEMPT_CONTRACTS["assurance.improvement.reconcile-improvements"]
     payload = {
@@ -222,68 +293,11 @@ def test_reconcile_output_retains_events_and_publishes_only_typed_ledger() -> No
     }
     result = contract.output_model.model_validate({**reconcile_result(), "reconciliation": payload})
     assert result.reconciliation.model_dump(mode="json")["events"] == payload["events"]
-    ledger = ImprovementLedgerProjection.model_validate(reconciled_ledger())
-    assert publish_reconcile({}, result, _receipt())["ledger"] == ledger.model_dump(mode="json")
     with pytest.raises(ValidationError):
         contract.output_model.model_validate(reconciled_ledger())
 
 
-def test_named_analysis_reducers_are_deterministic_and_not_a_token_list() -> None:
-    first = analysis_agent_output("eval")
-    second = {**analysis_agent_output("eval"), "analysis_status": "ok"}
-    assert replace_eval_analysis(None, first) == first
-    assert replace_eval_analysis(first, None) == first
-    assert replace_eval_analysis(first, second) == second
-    assert replace_eval_analysis(replace_eval_analysis(None, first), second) == replace_eval_analysis(
-        first, second
-    )
-    issue = replace_issue_analysis(None, analysis_agent_output("issue"))
-    workflow = replace_workflow_analysis(None, analysis_agent_output("workflow"))
-    assert isinstance(issue, dict)
-    assert isinstance(workflow, dict)
-    assert issue["domain"] == "issue"
-    assert workflow["domain"] == "workflow"
-    from assurance_improvement.graphs.state import ImprovementState
-
-    hints = getattr(ImprovementState, "__annotations__", {})
-    assert "eval_analysis" in hints
-    assert "issue_analysis" in hints
-    assert "workflow_analysis" in hints
-    assert "analyses" not in hints
-    assert "analysis_tokens" not in hints
-    assert "analysis_results" not in hints
-
-
-def test_collect_selector_rejects_lifecycle_only_public_payload() -> None:
-    from assurance_improvement.graphs.nodes import select_collect
-
-    with pytest.raises((ValidationError, ValueError)):
-        select_collect(
-            {
-                "change_id": "CH-RETRO-002",
-                "capability_leafs": ["auth.session.create"],
-                "allowed_artifact_paths": [
-                    "qa/.qa.yaml",
-                    "qa/cases",
-                    "qa/fixtures",
-                    "qa/proposal.md",
-                    "qa/requirement.md",
-                    "qa/results",
-                    "qa/tests",
-                ],
-                "evidence_refs": [{"path": "qa/results/x.json", "digest": "b" * 64}],
-                "lifecycle_state": "evaluating",
-            }
-        )
-
-
-def test_analysis_selects_receive_only_matching_authenticated_slices() -> None:
-    from assurance_improvement.graphs.nodes import (
-        select_eval_analysis,
-        select_issue_analysis,
-        select_workflow_analysis,
-    )
-
+def test_analysis_inputs_receive_only_matching_authenticated_slices() -> None:
     collected = select_retro_collect(complete_collect_payload())
     state = retro_graph_input()
     eval_slice = select_analysis_slice(collected, domain="eval")
@@ -292,21 +306,29 @@ def test_analysis_selects_receive_only_matching_authenticated_slices() -> None:
     assert isinstance(eval_slice, EvalEvidenceSlice)
     assert isinstance(issue_slice, IssueEvidenceSlice)
     assert isinstance(workflow_slice, WorkflowEvidenceSlice)
-    selected_eval = select_eval_analysis(state)
-    selected_issue = select_issue_analysis(state)
-    selected_workflow = select_workflow_analysis(state)
+    selected_eval = RetroAnalysisInputV1.model_validate(
+        {"change_id": state["change_id"], "evidence_slice": eval_slice}
+    )
+    selected_issue = RetroAnalysisInputV1.model_validate(
+        {"change_id": state["change_id"], "evidence_slice": issue_slice}
+    )
+    selected_workflow = RetroAnalysisInputV1.model_validate(
+        {"change_id": state["change_id"], "evidence_slice": workflow_slice}
+    )
     assert selected_eval.change_id == "CH-DEMO-001"
-    assert selected_issue.change_id == "CH-DEMO-001"
-    assert selected_workflow.change_id == "CH-DEMO-001"
-    missing = dict(state)
-    del missing["eval_slice"]
-    with pytest.raises((ValidationError, ValueError, TypeError, KeyError)):
-        select_eval_analysis(missing)
+    assert selected_issue.evidence_slice == issue_slice
+    assert selected_workflow.evidence_slice == workflow_slice
 
 
 def test_reconcile_and_retro_agent_receive_typed_values() -> None:
     state = retro_graph_input(candidates=(candidate_payload(),))
-    selected = select_reconcile(state)
+    selected = RetroReconcileInputV1.model_validate(
+        {
+            "change_id": state["change_id"],
+            "context": state["context"],
+            "candidates": state["candidates"],
+        }
+    )
     expected = select_retro_reconcile(
         context=RetroContextV3.model_validate(state["context"]),
         candidates=(candidate_payload(),),
@@ -319,7 +341,10 @@ def test_reconcile_and_retro_agent_receive_typed_values() -> None:
     received = select_retro_agent(ledger)
     assert received == ledger
     retro_state = {**state, "ledger": ledger.model_dump(mode="json")}
-    skill = select_retro(retro_state)
+    skill = RetroSynthesisInputV1.model_validate(
+        {"change_id": retro_state["change_id"], "context": retro_state["context"]}
+    )
+    assert skill.context is not None
     assert skill.change_id == "CH-DEMO-001"
     assert skill.context.retro_id == RETRO_ID
 
@@ -335,17 +360,7 @@ async def test_retro_traces_collect_three_analyses_synthesis_then_reconcile() ->
     result = await harness.run(
         bundle.retro,
         input=retro_graph_input(),
-        script={
-            "improvement.retro-build-slices": [committed(complete_collect_payload(), receipt)],
-            "improvement.retro-collect": [
-                committed({**complete_collect_payload(), "generated_at": _TS}, receipt)
-            ],
-            "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
-            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
-            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
-            "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
-            "improvement.retro": [committed(retro_agent_output(), receipt)],
-        },
+        script=_flow_script(receipt),
     )
     calls = [call.semantic_node_id for call in result.semantic_calls]
     assert calls[:2] == ["improvement.retro-build-slices", "improvement.retro-collect"]
@@ -354,31 +369,37 @@ async def test_retro_traces_collect_three_analyses_synthesis_then_reconcile() ->
         "improvement.retro-issue-analysis",
         "improvement.retro-workflow-analysis",
     }
-    assert calls[5] == "improvement.retro"
-    assert calls[6] == "improvement.retro-reconcile"
-    assert [call.contract_id for call in result.semantic_calls][1] == TASK_COLLECT_ID
-    assert [call.contract_id for call in result.semantic_calls][6] == TASK_RECONCILE_ID
-    assert [call.contract_id for call in result.semantic_calls][5] == _RETRO_ID
+    assert calls[5:] == [
+        "improvement.retro-synthesize",
+        "improvement.retro",
+        "improvement.retro-reconcile",
+    ]
+    by_id = {call.semantic_node_id: call.contract_id for call in result.semantic_calls}
+    assert by_id["improvement.retro-collect"] == TASK_COLLECT_ID
+    assert by_id["improvement.retro-reconcile"] == TASK_RECONCILE_ID
+    assert by_id["improvement.retro"] == _RETRO_ID
+    assert by_id["improvement.retro-synthesize"] == "assurance.improvement.task.retro-synthesize"
     analysis_ids = [call.contract_id for call in result.semantic_calls[2:5]]
     assert set(analysis_ids) == {_RETRO_EVAL_ID, _RETRO_ISSUE_ID, _RETRO_WORKFLOW_ID}
     collect_selected = result.select_values[1]
     assert isinstance(collect_selected, dict)
     assert collect_selected["retro_id"] == RETRO_ID
-    assert "issue_slice" in collect_selected
-    assert "workflow_slice" in collect_selected
-    assert "eval_slice" in collect_selected
-    reconcile_selected = result.select_values[6]
+    assert collect_selected["issue_slice_ref"]["path"] == "qa/results/retro/issue-slice.json"
+    assert collect_selected["workflow_slice_ref"]["path"] == "qa/results/retro/workflow-slice.json"
+    assert collect_selected["eval_slice_ref"]["path"] == "qa/results/retro/eval-slice.json"
+    reconcile_selected = result.select_values[calls.index("improvement.retro-reconcile")]
     assert isinstance(reconcile_selected, dict)
-    assert reconcile_selected["context"]["retro_id"] == RETRO_ID
-    assert "candidates" in reconcile_selected
+    assert reconcile_selected["context_ref"]["path"] == "qa/results/retro/context.json"
+    assert reconcile_selected["candidates_ref"]["path"] == "qa/results/retro/candidates.json"
+    assert "context" not in reconcile_selected
     assert "current" not in reconcile_selected
-    assert [item["candidate_id"] for item in reconcile_selected["candidates"]] == ["C-1"]
     terminal = result.terminal
     assert terminal is not None
     assert isinstance(terminal, dict)
-    assert terminal["eval_analysis"]["domain"] == "eval"
-    assert terminal["issue_analysis"]["domain"] == "issue"
-    assert terminal["workflow_analysis"]["domain"] == "workflow"
+    assert terminal["status"] == "done"
+    assert "issue_analysis" not in terminal
+    assert "eval_analysis" not in terminal
+    assert "workflow_analysis" not in terminal
     assert "analyses" not in terminal
 
 
@@ -397,17 +418,7 @@ async def test_archive_remains_an_independent_graph() -> None:
     retro = await harness.run(
         bundle.retro,
         input=retro_graph_input(),
-        script={
-            "improvement.retro-build-slices": [committed(complete_collect_payload(), _receipt())],
-            "improvement.retro-collect": [
-                committed({**complete_collect_payload(), "generated_at": _TS}, _receipt())
-            ],
-            "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), _receipt())],
-            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), _receipt())],
-            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), _receipt())],
-            "improvement.retro-reconcile": [committed(reconcile_result(), _receipt())],
-            "improvement.retro": [committed(retro_agent_output(), _receipt())],
-        },
+        script=_flow_script(_receipt()),
     )
     assert [call.semantic_node_id for call in archive.semantic_calls] == ["improvement.archive"]
     assert all(call.semantic_node_id != "improvement.archive" for call in retro.semantic_calls)
@@ -421,27 +432,16 @@ async def test_failed_synthesis_does_not_reconcile_when_signals_exist() -> None:
     result = await harness.run(
         build_improvement_graphs(context).retro,
         input=retro_graph_input(),
-        script={
-            "improvement.retro-build-slices": [committed(complete_collect_payload(), _receipt())],
-            "improvement.retro-collect": [
-                committed({**complete_collect_payload(), "generated_at": _TS}, _receipt())
-            ],
-            "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), _receipt())],
-            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), _receipt())],
-            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), _receipt())],
-            "improvement.retro": [
-                committed(
-                    {
-                        "retro_id": RETRO_ID,
-                        "analysis_status": "failed",
-                        "failure_reason": "cannot synthesize",
-                        "signals": [],
-                        "candidates": [],
-                    },
-                    _receipt(),
-                )
-            ],
-        },
+        script=_flow_script(
+            _receipt(),
+            retro={
+                "retro_id": RETRO_ID,
+                "analysis_status": "failed",
+                "failure_reason": "cannot synthesize",
+                "signals": [],
+                "candidates": [],
+            },
+        ),
     )
     assert result.semantic_calls[-1].semantic_node_id == "improvement.retro"
     assert isinstance(result.terminal, dict)
@@ -454,15 +454,44 @@ def _forged_caller_context() -> dict[str, object]:
     return forged
 
 
+def _routed(state: dict[str, object]):
+    from assurance_improvement.contracts.retro import RetroSynthesizeInputV1
+    from assurance_improvement.operations.retro import route_retro_synthesis
+
+    payload = RetroSynthesizeInputV1.model_validate(
+        {
+            "generated_at": state["ts"],
+            "dry_run": bool(state.get("dry_run") or False),
+            "retro_id": state["retro_id"],
+            "window": state["window"],
+            "issue_slice": state["issue_slice"],
+            "workflow_slice": state["workflow_slice"],
+            "eval_slice": state["eval_slice"],
+            "discovery_slice": state.get("discovery_slice"),
+            "coverage_gap_slice": state.get("coverage_gap_slice"),
+            "issue_analysis_ref": _analysis_ref("issue"),
+            "workflow_analysis_ref": _analysis_ref("workflow"),
+            "eval_analysis_ref": _analysis_ref("eval"),
+        }
+    )
+    return route_retro_synthesis(
+        payload,
+        {
+            "issue": cast(dict[str, object], state["issue_analysis"]),
+            "workflow": cast(dict[str, object], state["workflow_analysis"]),
+            "eval": cast(dict[str, object], state["eval_analysis"]),
+        },
+    )
+
+
 def test_assemble_builds_repaired_context_from_collect_and_named_analyses() -> None:
     from assurance_improvement.contracts.delivery import artifact_digest
-    from assurance_improvement.graphs.nodes import assemble_analyses
 
     collected = select_retro_collect(complete_collect_payload())
     issue = select_analysis_slice(collected, domain="issue")
     workflow = select_analysis_slice(collected, domain="workflow")
     evaluation = select_analysis_slice(collected, domain="eval")
-    assembled = assemble_analyses(
+    assembled = _routed(
         retro_graph_input(
             context=_forged_caller_context(),
             eval_analysis=analysis_agent_output("eval"),
@@ -470,13 +499,13 @@ def test_assemble_builds_repaired_context_from_collect_and_named_analyses() -> N
             workflow_analysis=analysis_agent_output("workflow"),
         )
     )
-    context = RetroContextV3.model_validate(assembled["context"])
+    context = assembled.context
     assert context.retro_id == RETRO_ID
     assert context.retro_id != "FORGED-CALLER-CONTEXT"
     assert context.source_manifest.issue_slice_sha256 == artifact_digest(issue)
     assert context.source_manifest.workflow_slice_sha256 == artifact_digest(workflow)
     assert context.source_manifest.eval_slice_sha256 == artifact_digest(evaluation)
-    assert assembled["candidates"] == []
+    assert assembled.candidates == ()
 
 
 async def test_reconcile_receives_assembled_context_not_caller_supplied() -> None:
@@ -490,28 +519,14 @@ async def test_reconcile_receives_assembled_context_not_caller_supplied() -> Non
     result = await harness.run(
         bundle.retro,
         input=retro_graph_input(context=_forged_caller_context()),
-        script={
-            "improvement.retro-build-slices": [committed(complete_collect_payload(), receipt)],
-            "improvement.retro-collect": [
-                committed({**complete_collect_payload(), "generated_at": _TS}, receipt)
-            ],
-            "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
-            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
-            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
-            "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
-            "improvement.retro": [committed(retro_agent_output(), receipt)],
-        },
+        script=_flow_script(receipt),
     )
-    reconcile_selected = result.select_values[6]
+    calls = [call.semantic_node_id for call in result.semantic_calls]
+    reconcile_selected = result.select_values[calls.index("improvement.retro-reconcile")]
     assert isinstance(reconcile_selected, dict)
-    assert reconcile_selected["context"]["retro_id"] == RETRO_ID
-    assert reconcile_selected["context"]["retro_id"] != "FORGED-CALLER-CONTEXT"
-    collected = select_retro_collect(complete_collect_payload())
-    from assurance_improvement.contracts.delivery import artifact_digest
-
-    assert reconcile_selected["context"]["source_manifest"]["issue_slice_sha256"] == artifact_digest(
-        select_analysis_slice(collected, domain="issue")
-    )
+    assert reconcile_selected["context_ref"]["path"] == "qa/results/retro/context.json"
+    assert "context" not in reconcile_selected
+    assert "FORGED-CALLER-CONTEXT" not in str(reconcile_selected)
 
 
 async def test_rejected_collect_fail_closes_without_later_agents() -> None:
@@ -526,13 +541,10 @@ async def test_rejected_collect_fail_closes_without_later_agents() -> None:
         bundle.retro,
         input=retro_graph_input(),
         script={
-            "improvement.retro-build-slices": [committed(complete_collect_payload(), receipt)],
-            "improvement.retro-collect": [RejectedTaskResult(reason="invalid collect")],
-            "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
-            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
-            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
-            "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
-            "improvement.retro": [committed(retro_agent_output(), receipt)],
+            **_flow_script(receipt),
+            "improvement.retro-collect": [
+                cast(AttemptResolution, RejectedTaskResult(reason="invalid collect"))
+            ],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
@@ -575,23 +587,13 @@ async def test_rejected_analysis_fail_closes_without_later_agents() -> None:
     result = await harness.run(
         bundle.retro,
         input=retro_graph_input(),
-        script={
-            "improvement.retro-build-slices": [committed(complete_collect_payload(), receipt)],
-            "improvement.retro-collect": [
-                committed({**complete_collect_payload(), "generated_at": _TS}, receipt)
-            ],
-            "improvement.retro-eval-analysis": [RejectedTaskResult(reason="eval analysis rejected")],
-            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
-            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
-            "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
-            "improvement.retro": [committed(retro_agent_output(), receipt)],
-        },
+        script=_flow_script(receipt, eval_resolution=RejectedTaskResult(reason="eval analysis rejected")),
     )
-    assert [call.semantic_node_id for call in result.semantic_calls] == [
-        "improvement.retro-build-slices",
-        "improvement.retro-collect",
-        "improvement.retro-eval-analysis",
-    ]
+    calls = [call.semantic_node_id for call in result.semantic_calls]
+    assert calls[:2] == ["improvement.retro-build-slices", "improvement.retro-collect"]
+    assert "improvement.retro-eval-analysis" in calls
+    assert "improvement.retro-synthesize" not in calls
+    assert "improvement.retro" not in calls
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "failed"
@@ -613,34 +615,28 @@ def _coverage_gap_slice(*, reasons: tuple[str, ...] = ()) -> dict[str, object]:
     return payload
 
 
-def test_assemble_surfaces_coverage_gap_slice_integrity_reasons() -> None:
-    from assurance_improvement.graphs.nodes import assemble_analyses
-
-    assembled = assemble_analyses(
-        retro_graph_input(
-            coverage_gap_slice=_coverage_gap_slice(reasons=("coverage_gap_evidence_corrupt",)),
-            eval_analysis=analysis_agent_output("eval"),
-            issue_analysis=analysis_agent_output("issue"),
-            workflow_analysis=analysis_agent_output("workflow"),
-        )
+def _analysis_state(**overrides: object) -> dict[str, object]:
+    state = retro_graph_input(
+        eval_analysis=analysis_agent_output("eval"),
+        issue_analysis=analysis_agent_output("issue"),
+        workflow_analysis=analysis_agent_output("workflow"),
     )
-    context = RetroContextV3.model_validate(assembled["context"])
+    state.update(overrides)
+    return state
+
+
+def test_assemble_surfaces_coverage_gap_slice_integrity_reasons() -> None:
+    assembled = _routed(
+        _analysis_state(coverage_gap_slice=_coverage_gap_slice(reasons=("coverage_gap_evidence_corrupt",)))
+    )
+    context = assembled.context
     assert "coverage_gap_evidence_corrupt" in context.integrity.reasons
     assert context.integrity.status == "incomplete"
 
 
 def test_assemble_marks_collected_coverage_gap_domain_skipped_not_absent() -> None:
-    from assurance_improvement.graphs.nodes import assemble_analyses
-
-    assembled = assemble_analyses(
-        retro_graph_input(
-            coverage_gap_slice=_coverage_gap_slice(),
-            eval_analysis=analysis_agent_output("eval"),
-            issue_analysis=analysis_agent_output("issue"),
-            workflow_analysis=analysis_agent_output("workflow"),
-        )
-    )
-    context = RetroContextV3.model_validate(assembled["context"])
+    assembled = _routed(_analysis_state(coverage_gap_slice=_coverage_gap_slice()))
+    context = assembled.context
     assert context.source_manifest.coverage_gap_slice_sha256 is not None
     assert len(context.source_manifest.coverage_gap_sources) == 1
     status = context.domain_status.coverage_gap
@@ -649,48 +645,23 @@ def test_assemble_marks_collected_coverage_gap_domain_skipped_not_absent() -> No
 
 
 def test_assemble_leaves_coverage_gap_domain_absent_without_a_slice() -> None:
-    from assurance_improvement.graphs.nodes import assemble_analyses
-
-    assembled = assemble_analyses(
-        retro_graph_input(
-            eval_analysis=analysis_agent_output("eval"),
-            issue_analysis=analysis_agent_output("issue"),
-            workflow_analysis=analysis_agent_output("workflow"),
-        )
-    )
-    context = RetroContextV3.model_validate(assembled["context"])
+    assembled = _routed(_analysis_state())
+    context = assembled.context
     assert context.domain_status.coverage_gap is None
     assert context.source_manifest.coverage_gap_slice_sha256 is None
     assert context.source_manifest.coverage_gap_sources == ()
 
 
 def test_assemble_fail_closes_on_wrong_analysis_domain() -> None:
-    from assurance_improvement.graphs.nodes import assemble_analyses
-
     wrong_domain = analysis_agent_output("eval")
     with pytest.raises(ValueError, match="issue signal domain does not match"):
-        assemble_analyses(
-            retro_graph_input(
-                eval_analysis=analysis_agent_output("eval"),
-                issue_analysis=wrong_domain,
-                workflow_analysis=analysis_agent_output("workflow"),
-            )
-        )
+        _routed(_analysis_state(issue_analysis=wrong_domain))
 
 
 def test_assemble_fail_closes_on_conflicting_signal_id() -> None:
-    from assurance_improvement.graphs.nodes import assemble_analyses
-
     issue_slice = _empty_slice("issue")
     issue_slice["deterministic_signals"] = [_task_failure_signal(signal_id="SIG-1", node_id="node-a")]
     conflicting = analysis_agent_output("issue")
     conflicting["signals"] = [_task_failure_signal(signal_id="SIG-1", node_id="node-b")]
     with pytest.raises(ValueError, match="conflicting signal_id 'SIG-1' in issue signals"):
-        assemble_analyses(
-            retro_graph_input(
-                issue_slice=issue_slice,
-                eval_analysis=analysis_agent_output("eval"),
-                issue_analysis=conflicting,
-                workflow_analysis=analysis_agent_output("workflow"),
-            )
-        )
+        _routed(_analysis_state(issue_slice=issue_slice, issue_analysis=conflicting))

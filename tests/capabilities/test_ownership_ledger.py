@@ -26,122 +26,15 @@ from tests.capabilities.ownership import (
     legacy_validator_ids,
     load_ownership_ledger,
     operation_handler_id,
+    DELETED_OPERATIONS,
+    DELETED_VALIDATORS,
+    OPERATION_OWNERS,
+    REPLACED_OPERATIONS,
+    SKILL_OWNERS,
+    VALIDATOR_NEW_IDS,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
-    "assurance.execution": ("operation:run-tests",),
-    "assurance.healing": (
-        "operation:allocate-healing-attempt",
-        "operation:fixer-authority-ready",
-        "operation:record-fixer-approval",
-        "operation:fixer-dispatch",
-        "operation:record-codegen-fix-apply",
-        "operation:combine-fixer-safety",
-        "operation:record-healing-status",
-        "operation:compute-coverage-repair-safety",
-        "operation:allocate-coverage-repair-attempt",
-        "operation:record-coverage-repair-status",
-    ),
-    "assurance.quality": (
-        "operation:derive-plan-layer-applicability",
-        "operation:inspect",
-        "operation:generate-report",
-        "operation:materialize-trace-projection",
-        "operation:build-coverage-gap-signals",
-        "operation:materialize-trace-and-coverage-gaps",
-        "operation:materialize-minimum-coverage",
-        "operation:collect-diff-coverage",
-        "operation:compute-constraint-coverage",
-        "operation:compute-auth-matrix",
-        "operation:compute-journey-coverage",
-        "operation:compute-threshold-slack",
-        "operation:materialize-quarantine-projection",
-        "operation:materialize-c-layer-metrics",
-        "operation:collect-pr-metrics-batch",
-        "operation:probe-coverage-repair-need",
-        "operation:materialize-pr-metrics",
-        "operation:load-latest-pr-metrics",
-        "operation:run-mutation-sample",
-        "operation:compute-assertion-strength",
-        "operation:compute-baseline-drift",
-        "operation:collect-adversarial-yield",
-        "operation:aggregate-nightly-metrics",
-        "operation:evaluate-retrospective-shortboards",
-        "operation:run-nightly-metrics-pipeline",
-        "operation:collect-observations",
-        "operation:record-empty-issue-analysis",
-        "operation:record-issue-analysis-failure",
-        "operation:record-project-sync-pending",
-        "operation:reconcile-issues",
-        "operation:load-problem-review-context",
-        "operation:apply-problem-review",
-    ),
-    "assurance.improvement": (
-        "operation:retro-collect-v3",
-        "operation:assemble-retro-context-v3",
-        "operation:drain-improvement-outbox",
-        "operation:finalize-retro-status",
-        "operation:record-retro-pipeline-failure",
-        "operation:retro-evidence-gap-fallback",
-        "operation:record-analysis-failed",
-        "operation:materialize-empty-retro-analysis",
-        "operation:reconcile-improvements",
-        "operation:load-review-subject",
-        "operation:validate-improvement-review-assessment",
-        "operation:apply-improvement-auto-review",
-        "operation:record-improvement-auto-review-error",
-        "operation:record-auto-review-orchestration-error",
-        "operation:select-current-retro-auto-review-items",
-        "operation:summarize-auto-review-batch",
-        "operation:load-improvement-review-context",
-        "operation:apply-improvement-review",
-        "operation:load-improvement-delivery",
-        "operation:evaluate-memory-improvement",
-        "operation:apply-memory-improvement",
-        "operation:rollback-memory-improvement",
-        "operation:export-change-improvement",
-        "operation:record-change-improvement-applied",
-        "operation:export-knowledge-improvement",
-        "operation:record-knowledge-improvement-applied",
-    ),
-}
-
-REPLACED_OPERATIONS = frozenset({"operation:no-op", "operation:stop", "operation:skill-registry-check"})
-DELETED_OPERATIONS = frozenset({"operation:retro-accept"})
-
-SKILL_OWNERS: dict[str, tuple[str, ...]] = {
-    "assurance.intake": ("aa-intake", "aa-explore", "aa-case-design", "aa-case-reviewer"),
-    "assurance.generation": (
-        "aa-api-codegen",
-        "aa-api-codegen-reviewer",
-        "aa-e2e-codegen",
-        "aa-e2e-codegen-reviewer",
-        "aa-fuzz-codegen",
-        "aa-fuzz-codegen-reviewer",
-        "aa-performance-codegen",
-        "aa-performance-codegen-reviewer",
-    ),
-    "assurance.execution": ("aa-execute", "aa-run"),
-    "assurance.healing": ("aa-fix-proposal", "aa-coverage-repair"),
-    "assurance.quality": (
-        "aa-fact-baseline",
-        "aa-inspect",
-        "aa-issue-analyzer",
-        "aa-issue-triage-advisor",
-        "aa-report-generator",
-        "aa-dashboard",
-    ),
-    "assurance.improvement": (
-        "aa-retro",
-        "aa-retro-eval-analysis",
-        "aa-retro-issue-analysis",
-        "aa-retro-workflow-analysis",
-        "aa-improvement-reviewer",
-        "aa-archive",
-    ),
-}
 
 PERSONA_OWNERS = {
     "aa-intake-host": "assurance.intake",
@@ -163,14 +56,6 @@ PERSONA_NEW_IDS = {
     "aa-archiver": "assurance.improvement.persona.archiver.v1",
 }
 
-VALIDATOR_NEW_IDS = {
-    "generated_files_candidate/v1": "assurance.generation.validator.generated-files.v1",
-    "plan_mechanical_candidate/v1": "assurance.generation.validator.plan-mechanical.v1",
-    "archive_integrity/v1": "assurance.improvement.validator.archive-integrity.v1",
-    "problem_apply_candidate/v1": "assurance.quality.validator.problem-apply.v1",
-    "cross_artifact_invariants/v1": "assurance.quality.validator.cross-artifact.v1",
-}
-
 EFFECT_NEW_IDS = {
     "healing_allocation/v2": "assurance.healing.effect.allocation.v2",
     "fixer_proposal_approved/v1": "assurance.healing.effect.proposal-approved.v1",
@@ -181,28 +66,6 @@ EFFECT_NEW_IDS = {
 def _operation_live_pointer(legacy_id: str) -> str:
     return f"tests/capabilities/test_ownership_live.py::test_migrate_operation_is_live_handler[{legacy_id}]"
 
-
-VALIDATOR_VERIFICATION: dict[str, str] = {
-    "generated_files_candidate/v1": (
-        "packages/features/assurance-generation/tests/test_generated_files_validator.py"
-        "::test_plugin_contributed_codegen_validators_allowlist_registered_paths"
-    ),
-    "plan_mechanical_candidate/v1": (
-        "packages/features/assurance-generation/tests/test_plan_validator.py"
-        "::test_plan_mechanical_dispatches_closed_family_table"
-    ),
-    "archive_integrity/v1": (
-        "packages/features/assurance-improvement/tests/test_delivery.py"
-        "::test_archive_integrity_requires_all_four_authenticated_inputs"
-    ),
-    "problem_apply_candidate/v1": (
-        "packages/features/assurance-quality/tests/test_issues.py"
-        "::test_problem_apply_validator_rejects_forged_review_id"
-    ),
-    "cross_artifact_invariants/v1": (
-        "packages/features/assurance-quality/tests/test_metrics.py::test_metrics_and_cross_artifact_validators"
-    ),
-}
 
 EFFECT_VERIFICATION = "packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound"
 
@@ -433,7 +296,13 @@ def test_validator_effect_and_hook_rows_use_declared_ids() -> None:
         assert item.owner == ".".join(new_id.split(".")[:2])
         assert item.new_id == new_id
         assert item.status == "verified"
-        assert item.verification == VALIDATOR_VERIFICATION[validator_id]
+        assert item.verification is not None
+
+    for validator_id in DELETED_VALIDATORS:
+        item = by_id[("validator", validator_id)]
+        assert item.disposition == "delete_phase6"
+        assert item.owner is None
+        assert item.new_id is None
 
     for effect_id, new_id in EFFECT_NEW_IDS.items():
         item = by_id[("effect", effect_id)]

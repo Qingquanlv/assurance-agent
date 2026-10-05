@@ -7,7 +7,10 @@ from typing import Any, Generic, Protocol, TypeAlias, TypeVar
 
 from pydantic import BaseModel, Field, model_serializer
 
+from graph_engine.stategraph.ledger import InputBinding, LedgerArtifact, NamedWrite, ledger_key
+
 from graph_engine.attempts.context import AuthorizedAttemptScope
+from graph_engine.attempts.runtime_evidence import RUNTIME_EVIDENCE
 from graph_engine.attempts.resolutions import (
     IndeterminateTaskResult,
     PendingTaskResult,
@@ -93,6 +96,9 @@ class TaskAttemptContract(Generic[InputT, OutputT]):
     retry: AttemptRetryPolicy
     timeout: AttemptTimeoutPolicy
     validators: tuple[str, ...]
+    writes: tuple[NamedWrite, ...] = ()
+    bindings: tuple[InputBinding, ...] = ()
+    capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         validate_qualified_id(self.contract_id)
@@ -102,9 +108,14 @@ class TaskAttemptContract(Generic[InputT, OutputT]):
             raise TypeError("validators must be an explicit tuple")
         for validator_id in self.validators:
             validate_qualified_id(validator_id)
+        if not isinstance(self.capabilities, tuple):
+            raise TypeError("capabilities must be an explicit tuple")
+        unknown = [name for name in self.capabilities if name != RUNTIME_EVIDENCE]
+        if unknown:
+            raise ValueError(f"unknown task capability: {unknown[0]}")
 
     def canonical_projection(self) -> dict[str, JSONValue]:
-        return {
+        projection: dict[str, JSONValue] = {
             "contract_id": self.contract_id,
             "owner_id": self.owner_id,
             "handler_id": self.handler_id,
@@ -117,6 +128,29 @@ class TaskAttemptContract(Generic[InputT, OutputT]):
             "timeout": self.timeout.model_dump(mode="json"),
             "validators": list(self.validators),
         }
+        if self.capabilities:
+            projection["capabilities"] = list(self.capabilities)
+        return projection
+
+    def ledger_namespace(self) -> str:
+        return self.owner_id.rsplit(".", 1)[-1]
+
+    def ledger_writes(self) -> tuple[NamedWrite, ...]:
+        return self.writes
+
+    def input_bindings(self) -> tuple[InputBinding, ...]:
+        return self.bindings
+
+    def artifact(self, name: str, *, slot: str | None = None) -> LedgerArtifact:
+        """Handle for a named write. The ledger key is ``{namespace}.{name}``."""
+        spec = next((item for item in self.writes if item.name == name), None)
+        if spec is None:
+            raise ValueError(f"{self.contract_id} does not write {name}")
+        return LedgerArtifact(
+            ledger_key=ledger_key(self.ledger_namespace(), name),
+            slot=slot,
+            many=spec.many,
+        )
 
 
 @dataclass(frozen=True, slots=True)

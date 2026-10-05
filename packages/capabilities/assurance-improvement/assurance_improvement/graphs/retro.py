@@ -1,164 +1,153 @@
+"""Retro root: slice files, three parallel analyses, then synthesize."""
+
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any, cast
+from collections.abc import Mapping
+from dataclasses import replace
+from typing import Any, Self
 
-from langgraph.graph import END, START
-from langgraph.graph.state import CompiledStateGraph
+from pydantic import Field, model_validator
 
+from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.boot.boot import CapabilityBuildContext
-from graph_engine.stategraph import AttemptGraph
+from graph_engine.flow import BoundFlow, Flow
+from graph_engine.plugin_api import FrozenModel
+from graph_engine.stategraph.ledger import InputBinding
 
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
-from assurance_improvement.contracts.retro import RetroContextV3
-from assurance_improvement.graphs.delivery import route_committed
-from assurance_improvement.graphs.nodes import (
-    activation_one_shot,
-    assemble_analyses,
-    publish_build_slices,
-    publish_collect,
-    publish_eval_analysis,
-    publish_issue_analysis,
-    publish_reconcile,
-    publish_retro,
-    publish_workflow_analysis,
-    select_build_slices,
-    select_collect,
-    select_eval_analysis,
-    select_issue_analysis,
-    select_reconcile,
-    select_retro,
-    select_workflow_analysis,
-    terminal_done,
-    terminal_failed,
-)
-from assurance_improvement.graphs.state import ImprovementState
+from assurance_improvement.contracts.retro import RetroWindow
 from assurance_improvement.ops.retro import op as retro
+from assurance_improvement.contracts.retro_identity import (
+    collect_retro_source_refs,
+    prepare_retro_identity,
+)
 from assurance_improvement.ops.retro_eval_analysis import op as retro_eval_analysis
 from assurance_improvement.ops.retro_issue_analysis import op as retro_issue_analysis
 from assurance_improvement.ops.retro_workflow_analysis import op as retro_workflow_analysis
+from assurance_intake.contracts import EvidenceArtifactRefV1
 
 _COLLECT = TASK_ATTEMPT_CONTRACTS["assurance.improvement.retro-collect-v3"]
 _BUILD_SLICES = TASK_ATTEMPT_CONTRACTS["assurance.improvement.retro-build-slices"]
-_RECONCILE = TASK_ATTEMPT_CONTRACTS["assurance.improvement.reconcile-improvements"]
-_FAILED = "failed"
-_COMMITTED_TARGETS = ("done", _FAILED)
-_RETRO_NODE = "improvement.retro"
-_RECONCILE_NODE = "improvement.retro-reconcile"
-_ASSEMBLED_TARGETS = (_RETRO_NODE, _RECONCILE_NODE)
-_SYNTHESIS_TARGETS = (_RECONCILE_NODE, _FAILED)
 
 
-def _node(fn: object) -> Callable[..., Any]:
-    return cast(Callable[..., Any], fn)
+def _extra(producer: object, name: str, field: str) -> InputBinding:
+    handle = producer.artifact(name)  # type: ignore[attr-defined]
+    return InputBinding(ledger_key=handle.ledger_key, field=field, many=False)
 
 
-def _route_assembled(state: Mapping[str, object]) -> str:
-    context = RetroContextV3.model_validate(state["context"])
-    return _RETRO_NODE if context.signal_count else _RECONCILE_NODE
+def _with(contract_id: str, extra: tuple[InputBinding, ...]) -> TaskAttemptContract[Any, Any]:
+    current = TASK_ATTEMPT_CONTRACTS[contract_id]
+    return replace(current, bindings=(*current.bindings, *extra))
 
 
-def _route_synthesis(state: Mapping[str, object]) -> str:
-    if state.get("analysis_status") != "ok":
-        return _FAILED
-    return _RECONCILE_NODE if route_committed(state) == "done" else _FAILED
+_SYNTHESIZE = _with(
+    "assurance.improvement.retro-synthesize",
+    (
+        _extra(retro_issue_analysis, "issue-analysis", "issue_analysis_ref"),
+        _extra(retro_workflow_analysis, "workflow-analysis", "workflow_analysis_ref"),
+        _extra(retro_eval_analysis, "eval-analysis", "eval_analysis_ref"),
+    ),
+)
+_RECONCILE = _with(
+    "assurance.improvement.reconcile-improvements",
+    (_extra(retro, "candidates", "candidates_ref"),),
+)
 
 
-def build_retro_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
-    builder: AttemptGraph[ImprovementState] = AttemptGraph(
-        ImprovementState,
-        context,
-        namespace="improvement",
-        activation=activation_one_shot,
+class RetroFlowInput(FrozenModel):
+    change_id: str = Field(min_length=1)
+    retro_id: str | None = None
+    window: RetroWindow | None = None
+    source_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    runtime_ref: EvidenceArtifactRefV1 | None = None
+    report_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    history_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    issue_snapshot_ref: EvidenceArtifactRefV1 | None = None
+    inspection_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    reviewed_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    inspection_outcome: dict[str, Any] | None = None
+    carried_evidence_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    allowed_artifact_paths: tuple[str, ...] = ()
+    artifact_paths: tuple[str, ...] = ()
+    dry_run: bool = False
+    report_receipt: ReceiptRef | None = None
+
+    @model_validator(mode="after")
+    def _prepare_identity(self) -> Self:
+        inspection_refs = self.inspection_refs
+        if "inspection_refs" not in self.model_fields_set:
+            inspection_refs = (*inspection_refs, *_inspection_candidates(self.inspection_outcome))
+        collected = collect_retro_source_refs(
+            source_refs=(*self.source_refs, *self.carried_evidence_refs),
+            runtime_ref=self.runtime_ref,
+            report_refs=self.report_refs,
+            history_refs=self.history_refs,
+            issue_snapshot_ref=self.issue_snapshot_ref,
+            inspection_refs=inspection_refs,
+            preparation_refs=self.preparation_refs,
+            reviewed_refs=self.reviewed_refs,
+        )
+        receipt_digest = None if self.report_receipt is None else self.report_receipt.receipt_digest
+        filled = prepare_retro_identity(
+            change_id=self.change_id,
+            window=self.window,
+            source_refs=collected,
+            report_receipt_digest=receipt_digest,
+            retro_id=self.retro_id,
+        )
+        return self.model_copy(
+            update={
+                "retro_id": filled.retro_id,
+                "window": filled.window,
+                "source_refs": filled.source_refs,
+            }
+        )
+
+
+def _inspection_candidates(raw: object) -> tuple[object, ...]:
+    if not isinstance(raw, Mapping):
+        return ()
+    found: list[object] = list(raw.get("assessment_refs") or ())
+    for name in ("mapping_ref", "plan_ref"):
+        if raw.get(name) is not None:
+            found.append(raw[name])
+    return tuple(found)
+
+
+def build_retro_graph(context: CapabilityBuildContext) -> BoundFlow:
+    flow = Flow("retro", input=RetroFlowInput, outcomes=("done", "failed"))
+    flow.step("retro-build-slices", _BUILD_SLICES, then="retro-collect", on_failure="failed")
+    flow.step("retro-collect", _COLLECT, then="analyses", on_failure="failed")
+    flow.parallel(
+        "analyses",
+        branches={
+            "retro-eval-analysis": retro_eval_analysis,
+            "retro-issue-analysis": retro_issue_analysis,
+            "retro-workflow-analysis": retro_workflow_analysis,
+        },
+        select=None,
+        require="succeeded",
+        then="retro-synthesize",
+        on_failure="failed",
     )
-    builder.add_attempt(
-        "improvement.retro-build-slices",
-        _BUILD_SLICES,
-        select=select_build_slices,
-        publish=publish_build_slices,
-        semantic_node_id="improvement.retro-build-slices",
+    flow.step(
+        "retro-synthesize",
+        _SYNTHESIZE,
+        route_on="route",
+        routes={"synthesize": "retro", "empty": "retro-reconcile"},
+        on_failure="failed",
     )
-    builder.add_attempt(
-        "improvement.retro-collect",
-        _COLLECT,
-        select=select_collect,
-        publish=publish_collect,
-        semantic_node_id="improvement.retro-collect",
-    )
-    builder.add_attempt(
-        "improvement.retro-eval-analysis",
-        retro_eval_analysis,
-        select=select_eval_analysis,
-        publish=publish_eval_analysis,
-        semantic_node_id="improvement.retro-eval-analysis",
-    )
-    builder.add_attempt(
-        "improvement.retro-issue-analysis",
-        retro_issue_analysis,
-        select=select_issue_analysis,
-        publish=publish_issue_analysis,
-        semantic_node_id="improvement.retro-issue-analysis",
-    )
-    builder.add_attempt(
-        "improvement.retro-workflow-analysis",
-        retro_workflow_analysis,
-        select=select_workflow_analysis,
-        publish=publish_workflow_analysis,
-        semantic_node_id="improvement.retro-workflow-analysis",
-    )
-    builder.add_node("assemble", _node(assemble_analyses))
-    builder.add_attempt(
-        "improvement.retro-reconcile",
-        _RECONCILE,
-        select=select_reconcile,
-        publish=publish_reconcile,
-        semantic_node_id="improvement.retro-reconcile",
-    )
-    builder.add_attempt(
-        "improvement.retro",
+    flow.step(
+        "retro",
         retro,
-        select=select_retro,
-        publish=publish_retro,
-        semantic_node_id="improvement.retro",
+        route_on="analysis_status",
+        routes={"ok": "retro-reconcile", "failed": "failed"},
+        on_failure="failed",
     )
-    builder.add_node("done", _node(terminal_done))
-    builder.add_node("failed", _node(terminal_failed))
-    builder.add_edge(START, "improvement.retro-build-slices")
-    builder.add_attempt_edge(
-        "improvement.retro-build-slices",
-        "improvement.retro-collect",
-        on_failure=_FAILED,
-    )
-    builder.add_attempt_edge(
-        "improvement.retro-collect",
-        "improvement.retro-eval-analysis",
-        on_failure=_FAILED,
-    )
-    builder.add_attempt_edge(
-        "improvement.retro-eval-analysis",
-        "improvement.retro-issue-analysis",
-        on_failure=_FAILED,
-    )
-    builder.add_attempt_edge(
-        "improvement.retro-issue-analysis",
-        "improvement.retro-workflow-analysis",
-        on_failure=_FAILED,
-    )
-    builder.add_attempt_edge(
-        "improvement.retro-workflow-analysis",
-        "assemble",
-        on_failure=_FAILED,
-    )
-    builder.add_route("assemble", _route_assembled, targets=_ASSEMBLED_TARGETS)
-    builder.add_route(
-        "improvement.retro-reconcile",
-        route_committed,
-        targets=_COMMITTED_TARGETS,
-    )
-    builder.add_route("improvement.retro", _route_synthesis, targets=_SYNTHESIS_TARGETS)
-    builder.add_edge("done", END)
-    builder.add_edge("failed", END)
-    return builder.compile_subgraph()
+    flow.step("retro-reconcile", _RECONCILE, then="done", on_failure="failed")
+    return flow.bind(context)
 
 
-__all__ = ["build_retro_graph"]
+__all__ = ["RetroFlowInput", "build_retro_graph"]

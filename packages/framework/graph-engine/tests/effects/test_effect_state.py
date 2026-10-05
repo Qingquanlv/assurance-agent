@@ -8,7 +8,7 @@ from graph_engine.composition.models import EffectRegistry
 from graph_engine.effects.state import MemoryEffectState, bind_effect_call
 from graph_engine.persistence.runner_lease import StaleFencingToken
 
-_DELIVERY = "assurance.improvement.effect.delivery.v1"
+_DELIVERY = "example.beta.effect.delivery.v1"
 _SETTLEMENT = "a" * 64
 _DIGEST = "b" * 64
 _BUSINESS = "delivery:IMP-1"
@@ -29,7 +29,7 @@ def composition() -> SimpleNamespace:
 async def test_context_prevents_settlement_key_substitution(memory_effect_state) -> None:
     context = bind_effect_call(
         state=memory_effect_state,
-        effect_kind="assurance.improvement.effect.delivery.v1",
+        effect_kind="example.beta.effect.delivery.v1",
         settlement_key="a" * 64,
         fencing_token=7,
     )
@@ -40,7 +40,7 @@ async def test_context_prevents_settlement_key_substitution(memory_effect_state)
         receipt={"idempotency_key": "delivery:IMP-1", "settlement_key": "a" * 64},
     )
     record = await memory_effect_state.observe(
-        effect_kind="assurance.improvement.effect.delivery.v1",
+        effect_kind="example.beta.effect.delivery.v1",
         settlement_key="a" * 64,
         business_key="delivery:IMP-1",
         intent_digest="b" * 64,

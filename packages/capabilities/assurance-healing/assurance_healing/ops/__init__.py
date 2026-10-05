@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
-from agent_runtime_contracts.ops import AgentOpFinalizeInputV1, OpRouter
+from agent_runtime_contracts.ops import AgentOpFinalizeInputV1, ArtifactHandle, OpRouter, Out
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+
+PROPOSAL_WRITE = Out("proposal", "qa/results/healing/fix-proposal.json")
+
+
+def proposal_artifact(*, slot: str) -> ArtifactHandle[object]:
+    """Handle for the proposal file ``fix-proposal`` writes. The key uses that write's name."""
+
+    return ArtifactHandle(
+        ledger_key=f"{router.owner.rsplit('.', 1)[-1]}.{PROPOSAL_WRITE.name}",
+        slot=slot,
+    )
+
 
 router = OpRouter(
     "assurance.healing",
@@ -22,4 +34,4 @@ async def execute(request: TaskRequest, context: TaskContext) -> TaskOutcome:
     return await router.execute(request, context)
 
 
-__all__ = ["execute", "input_model", "router"]
+__all__ = ["PROPOSAL_WRITE", "execute", "input_model", "proposal_artifact", "router"]

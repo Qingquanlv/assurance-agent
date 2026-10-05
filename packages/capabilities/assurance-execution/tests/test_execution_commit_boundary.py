@@ -5,7 +5,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import cast
 
 import pytest
@@ -14,6 +14,8 @@ from pydantic import BaseModel
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.operations.runner import ConfinedExecutionProcessHost, RunTestsHandler
 from graph_engine.canonical import canonical_digest
+from graph_engine.flow import BoundFlow
+from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     execute_task,
     fake_pytest_host,
@@ -22,6 +24,39 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     codegen_mapping,
     reviewed_cases,
 )
+
+
+class _ExecutionChannels(CheckpointBridgeState, total=False):
+    change_id: str
+    plan_digest: str
+    plan_ref: dict[str, str]
+    selected_test_families: list[str]
+    capability_leafs: list[str]
+    coverage_epoch: int
+    coverage_epoch_token: str
+    repair_round: int
+    execution_kind: str
+    generation_result: dict[str, object]
+    generation_ref: dict[str, str]
+    allowed_origins: list[str]
+    timeout_seconds: int
+    batch_id: str
+    case_ids: list[str]
+    artifact_paths: list[str]
+    mapping: dict[str, object]
+    selected_targets: dict[str, bool]
+    baseline_tree_id: str
+    runner_profile_digest: str
+    rounds_budget: int
+    rounds_used: int
+    status: str
+    execution_evidence: dict[str, object]
+    execution_digest: str
+    execution_semantic_node_id: str
+    execution_result: dict[str, object]
+    execution_receipt: dict[str, str]
+    family_outcomes: list[dict[str, object]]
+    attempt_failure: dict[str, object]
 
 
 @pytest.mark.parametrize("existing_evidence", [False, True])
@@ -45,7 +80,7 @@ async def test_handler_stages_evidence_without_changing_project(
     else:
         assert not previous.exists()
     staged = tmp_path / "qa/.staging/attempt-1" / relative
-    evidence = ExecutionEvidenceV1.model_validate(result.outcome.output)
+    evidence = ExecutionEvidenceV1.model_validate(result.outcome.output["execution_evidence"])
     assert evidence.executed_at is not None
     assert evidence.receipt_digest == canonical_digest(evidence.receipt.model_dump(mode="json"))
     assert json.loads(staged.read_bytes()) == evidence.model_dump(mode="json")
@@ -74,9 +109,10 @@ def test_unsupported_family_stages_its_diagnostic(tmp_path: Path) -> None:
 
 
 def test_publisher_preserves_typed_observation_reference() -> None:
-    from assurance_execution.graphs.nodes import publish_execution
+    from assurance_execution.contracts.evidence import ExecutionEvidenceV1 as FreshEvidence
+    from assurance_execution.operations.cycle import seal_execution
+    from assurance_generation.contracts.workflow import GenerationCycleResultV1
     from test_execution_graph_factory import (  # pyright: ignore[reportMissingImports]
-        _RECEIPT,
         execution_evidence,
         generation_result,
     )
@@ -85,19 +121,27 @@ def test_publisher_preserves_typed_observation_reference() -> None:
         "path": "qa/results/execution/epochs/2/batches/b/runtime-observations.json",
         "digest": "c" * 64,
     }
-    evidence = ExecutionEvidenceV1.model_validate(
-        {**execution_evidence().model_dump(mode="json"), "observations_ref": reference}
+    raw_evidence = execution_evidence().model_dump(mode="json")
+    raw_evidence["observations_ref"] = reference
+    evidence = FreshEvidence.model_validate(raw_evidence)
+    raw_generation = generation_result()
+    generation_payload = (
+        raw_generation.model_dump(mode="json") if isinstance(raw_generation, BaseModel) else raw_generation
     )
-    published = publish_execution(
-        {"rounds_budget": 2, "rounds_used": 0, "generation_result": generation_result()},
+    published = seal_execution(
         evidence,
-        _RECEIPT,
+        change_id=evidence.change_id,
+        coverage_epoch=2,
+        repair_round=0,
+        execution_kind="execute",
+        generation=GenerationCycleResultV1.model_validate(generation_payload),
     )
-    cycle = published["execution_result"]
-    assert isinstance(cycle, dict)
-    assert cycle["observations_ref"] == reference
+    cycle = published.execution_result
+    assert cycle is not None
+    assert cycle.observations_ref is not None
+    assert cycle.observations_ref.model_dump(mode="json") == reference
     encoded = (json.dumps(evidence.model_dump(mode="json"), indent=2) + "\n").encode()
-    assert cycle["evidence_ref"]["digest"] == hashlib.sha256(encoded).hexdigest()
+    assert cycle.evidence_ref.digest == hashlib.sha256(encoded).hexdigest()
 
 
 def _prepared_project(project: Path, *, passing: bool) -> dict[str, object]:
@@ -181,7 +225,7 @@ def _prepared_project(project: Path, *, passing: bool) -> dict[str, object]:
         "coverage_epoch": 0,
         "rounds_budget": 2,
         "rounds_used": 0,
-        "generation_result": generation,
+        "generation_ref": write("qa/results/codegen/generation-cycle.json", generation),
     }
 
 
@@ -211,6 +255,8 @@ class _HandlerExecutor:
     async def execute(self, validated_input: BaseModel, scope):
         from graph_engine.attempts.contracts import ExecutedAttemptResult
         from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskRequest
+
+        from assurance_execution.operations.runner import RunTestsHandler
 
         self.calls += 1
         binding = scope.workspace
@@ -244,7 +290,9 @@ class _HandlerExecutor:
         assert outcome.status == "succeeded", outcome
         # Kernel has not sealed/promoted yet. The handler must leave the project untouched.
         assert not (binding.project_root / "qa/results/execution").exists()
-        return ExecutedAttemptResult(output=ExecutionEvidenceV1.model_validate(outcome.output))
+        from assurance_execution.contracts.workflow import ExecutionAttemptOutputV1
+
+        return ExecutedAttemptResult(output=ExecutionAttemptOutputV1.model_validate(outcome.output))
 
 
 @pytest.mark.parametrize("passing", [True, False])
@@ -253,8 +301,6 @@ async def test_real_execution_commits_and_recovers_without_replaying_tests(
 ) -> None:
     from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
     from assurance_execution.graphs.factory import build_execution_graphs
-    from assurance_execution.graphs.state import ExecutionState
-    from assurance_product.graphs.routes import route_execute
     from graph_engine.attempts.contracts import resolve_contract
     from graph_engine.attempts.kernel import AssuranceAttemptKernel
     from graph_engine.attempts.node_factory import AttemptNodeFactory
@@ -296,32 +342,44 @@ async def test_real_execution_commits_and_recovers_without_replaying_tests(
     try:
         reached_quality: list[str] = []
 
+        def route_committed(state):
+            return (
+                "quality" if isinstance(state, Mapping) and state.get("status") == "committed" else "blocked"
+            )
+
         def quality_boundary(state):
-            reached_quality.append(route_execute(state))
+            reached_quality.append(route_committed(state))
             return {}
 
         # Only the root owns a checkpointer, just as in the product composition.
         # The execution subgraph and its Task/Kernel are the production implementations.
-        root = StateGraph(ExecutionState)
-        root.add_node("execute", build_execution_graphs(context).execute)
+        root: StateGraph[_ExecutionChannels] = StateGraph(_ExecutionChannels)
+        execute = build_execution_graphs(context).execute
+        assert isinstance(execute, BoundFlow)
+        root.add_node("execute", execute.compile(outcome_field="status"))
         root.add_node("quality", quality_boundary)
         root.add_edge(START, "execute")
-        root.add_conditional_edges("execute", route_execute, {"quality": "quality", "blocked": END})
+        root.add_conditional_edges("execute", route_committed, {"quality": "quality", "blocked": END})
         root.add_edge("quality", END)
         graph = root.compile(checkpointer=InMemorySaver())
         with pytest.raises(RuntimeError, match="crash after promotion"):
-            await graph.ainvoke(cast(ExecutionState, payload), config=_invoke_config(entrypoint="execute"))
+            await graph.ainvoke(
+                cast(_ExecutionChannels, payload), config=_invoke_config(entrypoint="execute")
+            )
         assert reached_quality == []
         # Resume the saved root task, do not manufacture a second graph input.
         result = await graph.ainvoke(None, config=_invoke_config(entrypoint="execute"))
         assert executor.calls == 1
         assert reached_quality == ["quality"]
-        assert result["status"] == ("passed" if passing else "failed")
-        assert route_execute(result) == "quality"
-        cycle = result["execution_result"]
+        assert result["status"] == "committed"
+        assert route_committed(result) == "quality"
+        from assurance_execution.contracts.workflow import EXECUTION_CYCLE_PATH
+
+        cycle = json.loads((project / EXECUTION_CYCLE_PATH).read_text(encoding="utf-8"))
         evidence_bytes = (project / cycle["evidence_ref"]["path"]).read_bytes()
         assert hashlib.sha256(evidence_bytes).hexdigest() == cycle["evidence_ref"]["digest"]
         evidence = ExecutionEvidenceV1.model_validate_json(evidence_bytes)
+        assert evidence.status == ("passed" if passing else "failed")
         assert evidence.executed_at == datetime.fromisoformat(cycle["executed_at"])
         assert evidence.receipt.commands
         assert evidence.receipt_digest == canonical_digest(evidence.receipt.model_dump(mode="json"))

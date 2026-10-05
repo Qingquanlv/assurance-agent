@@ -397,7 +397,9 @@ def test_improvement_agent_job_catalog_is_feature_owned() -> None:
         assert contract.contract_id == f"assurance.improvement.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
-        assert contract.resources.writes == writes
+        assert contract.resources.writes == (
+            ("qa/results/retro/candidates.json", "qa/results/retro/retro.json") if base == "retro" else writes
+        )
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped

@@ -63,11 +63,10 @@ do not broaden the edit.
 
 ## Result
 
-After all bounded edits, return structured JSON only:
+After all bounded edits, return structured JSON only. This run's JSON instruction
+includes `outputs`, mapping `marker`, `proposal`, `matrix`, and `case` to the
+paths authorized for this repair.
 
-```json
-{"output_files":["qa/.qa.yaml","qa/cases/<module>/case.yaml","qa/proposal.md","qa/results/trace/minimum-coverage-matrix.json"]}
-```
-
-`output_files` must contain exactly every graph-declared case-design output,
+`output_files` must contain exactly the path in `outputs.marker`, every path in
+`outputs.case`, the path in `outputs.proposal`, and the path in `outputs.matrix`,
 sorted lexicographically. Do not duplicate artifact contents in the response.

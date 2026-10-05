@@ -25,8 +25,11 @@ from tests.op_handlers import op_handler
 
 from assurance_generation.operations.planning import PlanFinalizeHandler
 from assurance_healing.ops.fix_proposal import finalize as fix_proposal_finalize
+from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_improvement.ops.retro import finalize as retro_finalize
 from assurance_quality.ops.inspect import finalize as inspect_finalize
+
+assert "assurance.improvement.retro-synthesize" in TASK_ATTEMPT_CONTRACTS
 
 AGENT_CUTS = (
     "prepare-complete",
@@ -125,17 +128,16 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
             "change_id": "CH-DEMO-001",
             "plan_digest": _HEX,
             "plan_ref": _PLAN_REF,
-            "owner_id": "assurance.healing",
             "capability_leafs": list(base["capability_leafs"]),
-            "allowed_paths": ["tests/api/test_users.py"],
-            "allowed_roots": ["tests/"],
-            "baseline_digest": _HEX,
-            "candidate_digest": _HEX,
-            "policy_digest": _HEX,
-            "mapping_paths": ["tests/api/test_users.py"],
-            "require_approval": False,
-            "execution_evidence_digest": _HEX,
-            "claimed_capabilities": [],
+            "coverage_epoch": 0,
+            "repair_round": 1,
+            "product_policy": {
+                "resource_id": "assurance.product.configuration.product-policy",
+                "sha256": _HEX,
+            },
+            "generation_ref": {"path": "qa/results/codegen/generation-cycle.json", "digest": _HEX},
+            "execution_ref": {"path": "qa/results/execution/execution-cycle.json", "digest": _HEX},
+            "execution_receipt": {"receipt_id": "execute", "receipt_digest": _HEX},
         }
         base = {**prepare, "prepare": prepare}
     if wheel == "quality":
@@ -143,7 +145,17 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
             {
                 "change_id": "CH-DEMO-001",
                 "coverage_epoch": 0,
+                "repair_round": 0,
                 "batch_id": "batch-1",
+                "product_policy": {
+                    "resource_id": "assurance.product.configuration.product-policy",
+                    "sha256": _HEX,
+                },
+                "assessment_ref": {"path": "qa/results/inspect/assessment-inputs.json", "digest": _HEX},
+                "reviewed_case_ref": {"path": "qa/cases/reviewed-case.json", "digest": _HEX},
+                "generation_ref": {"path": "qa/results/codegen/generation-cycle.json", "digest": _HEX},
+                "execution_ref": {"path": "qa/results/execution/execution-cycle.json", "digest": _HEX},
+                "execution_receipt": {"receipt_id": "execution", "receipt_digest": _HEX},
                 "assessment": {
                     "change_id": "CH-DEMO-001",
                     "coverage_epoch": 0,

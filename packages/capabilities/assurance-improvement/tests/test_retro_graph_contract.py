@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import pytest
 from pydantic import ValidationError
@@ -9,24 +9,19 @@ from assurance_improvement.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS,
     close_improvement_task,
     select_analysis_slice,
-    select_retro_agent,
     select_retro_collect,
-    select_retro_reconcile,
 )
 from assurance_improvement.contracts.delivery import artifact_digest
-from assurance_improvement.contracts.improvements import ImprovementLedgerProjection
 from assurance_improvement.contracts.retro import (
     EvalEvidenceSlice,
     IssueEvidenceSlice,
     RetroBuildSlicesInputV1,
+    RetroCollectAttemptInput,
     RetroCollectInput,
     SignalDocumentV3,
     WorkflowEvidenceSlice,
 )
 from assurance_improvement.operations.retro import (
-    AssembleRetroContextHandler,
-    reconcile_improvements,
-    ReconcileImprovementsHandler,
     RetroCollectHandler,
 )
 from tests.product.test_change_local_output_routing import execute_task
@@ -34,8 +29,6 @@ from tests.product.test_change_local_output_routing import execute_task
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     HEX_A,
     RETRO_ID,
-    as_object,
-    candidate_payload,
     json_value,
 )
 
@@ -130,27 +123,6 @@ async def test_lifecycle_only_public_payload_fails_production_collect() -> None:
     assert outcome.failure.kind == "invalid_input"
 
 
-@pytest.mark.asyncio
-async def test_lifecycle_only_payload_fails_analyses_and_reconcile() -> None:
-    assemble = await execute_task(AssembleRetroContextHandler(), json_value(_LIFECYCLE_ONLY))
-    assert assemble.status == "failed"
-    assert assemble.failure is not None
-    assert assemble.failure.kind == "invalid_input"
-    reconcile = await execute_task(ReconcileImprovementsHandler(), json_value(_LIFECYCLE_ONLY))
-    assert reconcile.status == "failed"
-    assert reconcile.failure is not None
-    assert reconcile.failure.kind == "invalid_input"
-    with pytest.raises((ValidationError, ValueError)):
-        select_analysis_slice(cast(Any, _LIFECYCLE_ONLY), domain="eval")
-    with pytest.raises((ValidationError, ValueError)):
-        select_retro_reconcile(
-            context=cast(Any, _LIFECYCLE_ONLY),
-            candidates=(),
-            current=cast(Any, _LIFECYCLE_ONLY),
-            ts="2026-08-22T00:00:00Z",
-        )
-
-
 def test_collect_requires_authenticated_window_and_all_three_slices() -> None:
     collected = select_retro_collect(complete_collect_payload())
     assert collected.retro_id == RETRO_ID
@@ -191,144 +163,6 @@ def test_issue_and_workflow_analyses_receive_matching_slices() -> None:
     assert "eval_slice" not in workflow.model_dump(mode="json")
 
 
-@pytest.mark.asyncio
-async def test_three_analyses_assemble_context_before_reconcile() -> None:
-    collected = select_retro_collect(complete_collect_payload())
-    issue = select_analysis_slice(collected, domain="issue")
-    workflow = select_analysis_slice(collected, domain="workflow")
-    evaluation = select_analysis_slice(collected, domain="eval")
-    issue_digest = artifact_digest(issue)
-    workflow_digest = artifact_digest(workflow)
-    eval_digest = artifact_digest(evaluation)
-    assert issue_digest != HEX_A
-    assemble = await execute_task(
-        AssembleRetroContextHandler(),
-        json_value(
-            {
-                "generated_at": "2026-08-22T00:00:00Z",
-                "window": _WINDOW,
-                "issue_slice": issue.model_dump(mode="json"),
-                "workflow_slice": workflow.model_dump(mode="json"),
-                "eval_slice": evaluation.model_dump(mode="json"),
-                "issue_signals": _ok_signals("issue", issue_digest),
-                "workflow_signals": _ok_signals("workflow", workflow_digest),
-                "eval_signals": _ok_signals("eval", eval_digest),
-                "issue_slice_sha256": issue_digest,
-                "workflow_slice_sha256": workflow_digest,
-                "eval_slice_sha256": eval_digest,
-            }
-        ),
-    )
-    assert assemble.status == "succeeded"
-    context = as_object(assemble.output)
-    assert context["retro_id"] == RETRO_ID
-    assert context["source_manifest"]["issue_slice_sha256"] == issue_digest
-    assert context["source_manifest"]["workflow_slice_sha256"] == workflow_digest
-    assert context["source_manifest"]["eval_slice_sha256"] == eval_digest
-    empty = ImprovementLedgerProjection.model_validate(
-        {"schema_version": "1", "last_seq": 0, "improvements": {}, "by_fingerprint": {}}
-    )
-    reconcile_input = select_retro_reconcile(
-        context=context,
-        candidates=(),
-        current=empty,
-        ts="2026-08-22T00:00:00Z",
-    )
-    reconcile = reconcile_improvements(reconcile_input)
-    assert reconcile["last_seq"] == 0
-
-
-@pytest.mark.asyncio
-async def test_reconcile_receives_context_candidates_and_current_projection() -> None:
-    collected = select_retro_collect(complete_collect_payload())
-    issue = select_analysis_slice(collected, domain="issue")
-    workflow = select_analysis_slice(collected, domain="workflow")
-    evaluation = select_analysis_slice(collected, domain="eval")
-    assemble = await execute_task(
-        AssembleRetroContextHandler(),
-        json_value(
-            {
-                "generated_at": "2026-08-22T00:00:00Z",
-                "window": _WINDOW,
-                "issue_slice": issue.model_dump(mode="json"),
-                "workflow_slice": workflow.model_dump(mode="json"),
-                "eval_slice": evaluation.model_dump(mode="json"),
-                "issue_signals": _ok_signals("issue", artifact_digest(issue)),
-                "workflow_signals": _ok_signals("workflow", artifact_digest(workflow)),
-                "eval_signals": _ok_signals("eval", artifact_digest(evaluation)),
-                "issue_slice_sha256": artifact_digest(issue),
-                "workflow_slice_sha256": artifact_digest(workflow),
-                "eval_slice_sha256": artifact_digest(evaluation),
-            }
-        ),
-    )
-    assert assemble.status == "succeeded"
-    current = ImprovementLedgerProjection.model_validate(
-        {"schema_version": "1", "last_seq": 0, "improvements": {}, "by_fingerprint": {}}
-    )
-    candidate = candidate_payload()
-    selected = select_retro_reconcile(
-        context=as_object(assemble.output),
-        candidates=(candidate,),
-        current=current,
-        ts="2026-08-22T00:00:00Z",
-    )
-    assert selected.context.retro_id == RETRO_ID
-    assert len(selected.candidates) == 1
-    assert selected.current.last_seq == 0
-    payload = reconcile_improvements(selected)
-    assert as_object(payload)["last_seq"] >= 1
-    assert payload["improvements"]
-
-
-@pytest.mark.asyncio
-async def test_reconciliation_returns_a_complete_typed_projection() -> None:
-    collected = select_retro_collect(complete_collect_payload())
-    issue = select_analysis_slice(collected, domain="issue")
-    workflow = select_analysis_slice(collected, domain="workflow")
-    evaluation = select_analysis_slice(collected, domain="eval")
-    assemble = await execute_task(
-        AssembleRetroContextHandler(),
-        json_value(
-            {
-                "generated_at": "2026-08-22T00:00:00Z",
-                "window": _WINDOW,
-                "issue_slice": issue.model_dump(mode="json"),
-                "workflow_slice": workflow.model_dump(mode="json"),
-                "eval_slice": evaluation.model_dump(mode="json"),
-                "issue_signals": _ok_signals("issue", artifact_digest(issue)),
-                "workflow_signals": _ok_signals("workflow", artifact_digest(workflow)),
-                "eval_signals": _ok_signals("eval", artifact_digest(evaluation)),
-                "issue_slice_sha256": artifact_digest(issue),
-                "workflow_slice_sha256": artifact_digest(workflow),
-                "eval_slice_sha256": artifact_digest(evaluation),
-            }
-        ),
-    )
-    selected = select_retro_reconcile(
-        context=as_object(assemble.output),
-        candidates=(candidate_payload(),),
-        current=ImprovementLedgerProjection.model_validate(
-            {"schema_version": "1", "last_seq": 0, "improvements": {}, "by_fingerprint": {}}
-        ),
-        ts="2026-08-22T00:00:00Z",
-    )
-    payload = reconcile_improvements(selected)
-    ledger = ImprovementLedgerProjection.model_validate(
-        {
-            "schema_version": payload["schema_version"],
-            "last_seq": payload["last_seq"],
-            "improvements": payload["improvements"],
-            "by_fingerprint": payload["by_fingerprint"],
-        }
-    )
-    received = select_retro_agent(ledger)
-    assert received == ledger
-    assert received.last_seq >= 1
-    assert received.improvements
-    assert artifact_digest(received) == artifact_digest(ledger)
-
-
 def test_digests_originate_from_authenticated_receipt_state_not_filesystem() -> None:
     collected = select_retro_collect(complete_collect_payload())
     for domain in ("issue", "workflow", "eval"):
@@ -349,7 +183,7 @@ def test_collect_and_reconcile_contracts_stay_unbound() -> None:
     reconcile = TASK_ATTEMPT_CONTRACTS["assurance.improvement.reconcile-improvements"]
     assert collect.validators == ()
     assert reconcile.validators == ()
-    assert collect.input_model is RetroCollectInput
+    assert collect.input_model is RetroCollectAttemptInput
     assert build.contract_id == "assurance.improvement.retro-build-slices"
     assert build.input_model is RetroBuildSlicesInputV1
     assert build.output_model is RetroCollectInput

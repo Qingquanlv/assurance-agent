@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import inspect
-from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.plugin_api import AttemptContractRef, TaskContext
+from graph_engine.plugin_api import AttemptContractRef
 
 from agent_runtime_contracts import AgentExecutionContract
-from assurance_generation.contracts.agent import CodegenInputV1
+from assurance_generation.contracts.agent import CodegenBoundInputV1
 from assurance_generation.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
     TASK_ATTEMPT_CONTRACTS,
@@ -20,19 +18,9 @@ from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
     CodegenResultV1,
 )
-from assurance_generation.contracts.decisions import (
-    GenerationCompletionOutput,
-    GenerationReviewRoundAdvanceOutput,
-    advance_review_round,
-    complete_generation,
-)
+from assurance_generation.contracts.decisions import complete_generation
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
-from assurance_generation.operations.workflow_state import (
-    GenerationCompleteHandler,
-    GenerationReviewRoundAdvanceHandler,
-)
 from assurance_generation.plugin import GenerationPlugin
-from tests.product.test_change_local_output_routing import execute_task
 
 _FAMILIES = ("api", "e2e", "fuzz", "performance")
 _PLAN_REVIEW_PROFILE = "assurance-v1-reviewer"
@@ -96,13 +84,13 @@ def test_generation_agent_catalog_preserves_semantic_ids_and_models() -> None:
         assert contract.prepare_handler_id == f"assurance.generation.{base}.prepare"
         assert contract.finalize_handler_id == f"assurance.generation.{base}.finalize"
         if stage == "codegen-review":
-            assert contract.input_model is CodegenInputV1
+            assert contract.input_model is CodegenBoundInputV1
             assert contract.agent_result_model is PlanReviewAuthoring
             assert contract.output_model is PlanReview
             assert contract.agent_profile == _PLAN_REVIEW_PROFILE
             assert contract.skill_id == f"aa-{family}-codegen-reviewer"
         elif stage == "codegen":
-            assert contract.input_model is CodegenInputV1
+            assert contract.input_model is CodegenBoundInputV1
             assert contract.agent_result_model is CodegenAuthoringV1
             assert contract.output_model is CodegenResultV1
             assert contract.agent_profile == _CODEGEN_PROFILE
@@ -116,30 +104,8 @@ def test_generation_plugin_projects_authenticated_attempt_contracts() -> None:
     contribution = GenerationPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     assert refs == contribution.attempt_contracts == GenerationPlugin.descriptor().attempt_contracts
     assert all(isinstance(item, AttemptContractRef) for item in refs)
-    assert len(contribution.commit_validators) == 2
+    assert contribution.commit_validators == {}
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
-
-
-def test_generation_pure_ids_are_not_task_contracts() -> None:
-    published = {contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()}
-    assert "assurance.generation.complete" not in published
-    assert "assurance.generation.review-round.advance" not in published
-    assert "context" not in inspect.signature(complete_generation).parameters
-    assert "context" not in inspect.signature(advance_review_round).parameters
-
-
-async def test_complete_generation_matches_legacy_handler_without_touching_context() -> None:
-    payload = {"completed": [{"value": True}] * 4, "selected_families": ["api", "fuzz"]}
-    spy = MagicMock(spec=TaskContext)
-    executed = await execute_task(
-        GenerationCompleteHandler(),
-        payload,
-        capability_id="assurance.generation.complete",
-    )
-    output = complete_generation(payload)
-    assert isinstance(output, GenerationCompletionOutput)
-    assert output.model_dump(mode="json") == executed.outcome.output
-    assert spy.mock_calls == []
 
 
 @pytest.mark.parametrize(
@@ -154,33 +120,3 @@ async def test_complete_generation_matches_legacy_handler_without_touching_conte
 def test_complete_generation_rejects_invalid_inputs(payload: dict[str, object]) -> None:
     with pytest.raises((ValidationError, ValueError)):
         complete_generation(payload)
-
-
-@pytest.mark.parametrize("family", _FAMILIES)
-@pytest.mark.parametrize("stage", ("codegen",))
-async def test_advance_generation_review_round_matches_legacy_handler(family: str, stage: str) -> None:
-    payload = {"family": family, "stage": stage, "rounds_used": 0, "rounds_budget": 2}
-    spy = MagicMock(spec=TaskContext)
-    executed = await execute_task(
-        GenerationReviewRoundAdvanceHandler(),
-        payload,
-        capability_id="assurance.generation.review-round.advance",
-    )
-    output = advance_review_round(payload)
-    assert isinstance(output, GenerationReviewRoundAdvanceOutput)
-    assert output.model_dump(mode="json") == executed.outcome.output
-    assert spy.mock_calls == []
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"family": "api", "stage": "codegen", "rounds_used": 2, "rounds_budget": 2},
-        {"family": "unknown", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2},
-        {"family": "api", "stage": "review", "rounds_used": 0, "rounds_budget": 2},
-        {"family": "api", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2, "extra": True},
-    ],
-)
-def test_advance_generation_review_round_rejects_invalid_inputs(payload: dict[str, object]) -> None:
-    with pytest.raises((ValidationError, ValueError)):
-        advance_review_round(payload)

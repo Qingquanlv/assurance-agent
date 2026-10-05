@@ -963,14 +963,14 @@ def operator_resume(
 @click.option("--change-id")
 @click.option("--plan-digest")
 @click.option("--coverage-epoch")
-@click.option("--batch-id")
+@click.option("--repair-round")
 @click.option("--json", "as_json", is_flag=True)
 def operator_assessment(
     project_dir: str | None,
     change_id: str | None,
     plan_digest: str | None,
     coverage_epoch: str | None,
-    batch_id: str | None,
+    repair_round: str | None,
     as_json: bool,
 ) -> None:
     _require_options(
@@ -979,17 +979,17 @@ def operator_assessment(
             "change_id": change_id,
             "plan_digest": plan_digest,
             "coverage_epoch": coverage_epoch,
-            "batch_id": batch_id,
+            "repair_round": repair_round,
             "json": as_json,
         },
-        ("project_dir", "change_id", "plan_digest", "coverage_epoch", "batch_id", "json"),
+        ("project_dir", "change_id", "plan_digest", "coverage_epoch", "repair_round", "json"),
     )
     payload = AssuranceOperator().assessment(
         project_dir=Path(cast(str, project_dir)),
         change_id=cast(str, change_id),
         plan_digest=cast(str, plan_digest),
         coverage_epoch=cast(str, coverage_epoch),
-        batch_id=cast(str, batch_id),
+        repair_round=cast(str, repair_round),
     )
     _operator_result(payload)
 
@@ -1212,7 +1212,7 @@ def _authorize_secrets(
 
 def _project_for_run(project_dir: Path, change_id: str) -> Path:
     try:
-        return ensure_run_worktree(project_dir, change_id)
+        return ensure_run_worktree(require_real_directory(project_dir), change_id)
     except ValueError as error:
         raise CommandError(str(error)) from error
 

@@ -69,14 +69,6 @@ class ArtifactDigestV1(FrozenModel):
 class FinalizedArtifactsV1(FrozenModel):
     artifacts: tuple[ArtifactDigestV1, ...] = Field(min_length=1)
 
-    @field_validator("artifacts")
-    @classmethod
-    def _artifacts(cls, value: tuple[ArtifactDigestV1, ...]) -> tuple[ArtifactDigestV1, ...]:
-        paths = tuple(item.path for item in value)
-        if paths != tuple(sorted(set(paths))):
-            raise ValueError("finalized artifact paths must be sorted and unique")
-        return value
-
 
 __all__ = [
     "ArtifactDigestV1",

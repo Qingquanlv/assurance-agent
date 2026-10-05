@@ -68,10 +68,11 @@ def test_quality_source_identity() -> None:
     assert len(descriptor.schemas) == 23
     assert descriptor.task_handlers == tuple(sorted(descriptor.task_handlers))
     assert descriptor.commit_validators == tuple(sorted(descriptor.commit_validators))
-    assert "assurance.quality.inspect" in descriptor.task_handlers
-    assert "assurance.quality.generate-report" in descriptor.task_handlers
-    assert "assurance.quality.dashboard" in descriptor.task_handlers
-    assert "assurance.quality.validator.report.v1" in descriptor.commit_validators
+    assert "assurance.quality.inspect.prepare" in descriptor.task_handlers
+    assert "assurance.quality.inspect.finalize" in descriptor.task_handlers
+    assert "assurance.quality.report.prepare" in descriptor.task_handlers
+    assert "assurance.quality.report.finalize" in descriptor.task_handlers
+    assert descriptor.commit_validators == ()
     assert descriptor.resources
     assert descriptor.effects == ()
     assert descriptor.bindings == ()

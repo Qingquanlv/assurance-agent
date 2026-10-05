@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
+    CommitValidator,
     PluginContribution,
     PluginDependency,
     PluginDescriptor,
@@ -15,7 +16,6 @@ from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 from assurance_execution.contracts.attempts import attempt_contract_refs
 from assurance_execution.operations import execution_handlers
 from assurance_execution.resource_loader import resource_bytes
-from assurance_execution.validators import ClosedMappingValidator, ExecutionEvidenceValidator
 
 EXECUTION_SOURCE = ProviderSource(
     distribution="assurance-execution",
@@ -60,10 +60,7 @@ _GENERATED_SCHEMAS: dict[str, str] = {
 
 _HANDLERS = execution_handlers()
 
-_VALIDATORS = {
-    "assurance.execution.validator.closed-mapping.v1": ClosedMappingValidator(require_mapping=False),
-    "assurance.execution.validator.evidence.v1": ExecutionEvidenceValidator(require_mapping=False),
-}
+_VALIDATORS: dict[str, CommitValidator] = {}
 
 
 class ExecutionPlugin(CapabilityPlugin):

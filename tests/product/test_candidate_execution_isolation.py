@@ -452,9 +452,9 @@ def test_canonical_evidence_change_id_cannot_escape_the_project(tmp_path: Path) 
     outside = tmp_path / "outside"
 
     with pytest.raises((InputError, ValueError)):
-        write_canonical_evidence(project, _closed_evidence("../../outside"))
+        write_canonical_evidence(project, _closed_evidence("../../outside"), semantic="execution.execute")
     with pytest.raises((InputError, ValueError)):
-        write_canonical_evidence(project, _closed_evidence(".."))
+        write_canonical_evidence(project, _closed_evidence(".."), semantic="execution.execute")
 
     assert not outside.exists()
     assert list(project.rglob("execute-result.json")) == []

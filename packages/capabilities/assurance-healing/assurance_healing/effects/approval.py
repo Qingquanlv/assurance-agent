@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from assurance_healing.contracts.effects import ProposalApprovedIntentV1, ProposalApprovedReceiptV1
-from assurance_healing.effects.common import apply_effect, reconcile_effect
 from assurance_healing.operations.keys import derive_approval_id
+from graph_engine.effects.idempotent import apply_idempotent_effect, reconcile_idempotent_effect
 from graph_engine.effects.state import EffectCallContext
 from graph_engine.plugin_api import EffectApplyResult, EffectIntent, EffectReconcileResult
 
@@ -15,7 +15,7 @@ APPROVAL_RECEIPT_SCHEMA = "assurance.healing.schema.proposal-approved-receipt.v1
 
 class ProposalApprovedEffect:
     async def apply(self, intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult:
-        return await apply_effect(
+        return await apply_idempotent_effect(
             context=context,
             intent=intent,
             expected_kind=APPROVAL_KIND,
@@ -26,7 +26,7 @@ class ProposalApprovedEffect:
         )
 
     async def reconcile(self, intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult:
-        return await reconcile_effect(
+        return await reconcile_idempotent_effect(
             context=context,
             intent=intent,
             expected_kind=APPROVAL_KIND,

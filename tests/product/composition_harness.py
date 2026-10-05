@@ -144,8 +144,12 @@ def _extract_workspace_wheels(root: Path, extract_roots: dict[str, Path]) -> Non
     importlib.invalidate_caches()
 
 
+def _workspace_prefixes() -> tuple[str, ...]:
+    return tuple(name.replace("-", "_") for name, _ in _WORKSPACE_WHEELS)
+
+
 def _evict_workspace_packages() -> None:
-    prefixes = tuple(name.replace("-", "_") for name, _ in _WORKSPACE_WHEELS)
+    prefixes = _workspace_prefixes()
     for module_name in list(sys.modules):
         if module_name in prefixes or any(module_name.startswith(f"{prefix}.") for prefix in prefixes):
             del sys.modules[module_name]
@@ -153,7 +157,7 @@ def _evict_workspace_packages() -> None:
 
 def _import_extracted_workspace_packages() -> None:
     """Load extracted wheels with standard loaders, not pytest assertion rewriting."""
-    prefixes = tuple(name.replace("-", "_") for name, _ in _WORKSPACE_WHEELS)
+    prefixes = _workspace_prefixes()
     loaded_modules = tuple(
         sorted(
             (

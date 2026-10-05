@@ -16,6 +16,7 @@ EXPECTED = frozenset(
         "FrozenExecutionSelection",
         "InstructionPart",
         "PreparePhase",
+        "PreparedAgentRun",
         "RAW_AGENT_RUNTIME_BINDING_SCHEMA_VERSION",
         "RawAgentRuntimeBindingProjectionV1",
         "RawAgentRuntimeOutcome",

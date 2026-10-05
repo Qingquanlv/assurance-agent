@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 from collections.abc import Iterator, Mapping
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
-from typing import Any, get_type_hints
+from typing import Any, Literal
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Checkpointer
-from pydantic import ValidationError
+from pydantic import ValidationError, create_model
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_JOBS
 from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS as EXECUTION_TASKS
@@ -20,25 +19,22 @@ from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_JOBS
 from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS as GENERATION_TASKS
 from assurance_generation.graphs.factory import GenerationGraphs, build_generation_graphs
-from assurance_generation.graphs.state import GenerationState
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS as HEALING_JOBS
 from assurance_healing.graphs.factory import HealingGraphs, build_healing_graphs
 from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPROVEMENT_JOBS
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASKS
 from assurance_improvement.graphs.factory import ImprovementGraphs, build_improvement_graphs
-from assurance_improvement.graphs.state import ImprovementState
 from assurance_intake.feature import AGENT_JOB_CONTRACTS as INTAKE_JOBS
 from assurance_intake.feature import TASK_ATTEMPT_CONTRACTS as INTAKE_TASKS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
-from assurance_intake.graphs.state import IntakeState
-from assurance_product.graphs.entrypoints import publish_public_output
 from assurance_product.graphs.factory import (
     ProductFeatureBundles,
     ThinEntrypointGraphs,
+    build_product_graphs,
     build_thin_entrypoint_graphs,
     coerce_feature_bundles,
 )
-from assurance_product.graphs.state import ProductState
+from assurance_product.graphs.entrypoints import thin_root_flows
 from assurance_product.feature_set import CAPABILITY_OWNERS
 from assurance_product.models import (
     PRODUCT_ENTRYPOINTS,
@@ -49,13 +45,13 @@ from assurance_product.models import (
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_JOBS
 from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS as QUALITY_TASKS
 from assurance_quality.graphs.factory import QualityGraphs, build_quality_graphs
-from assurance_quality.graphs.state import QualityState
-from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.artifacts import ArtifactRef
+from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.boot.boot import EngineGraphBuildContext
-from graph_engine.stategraph.checkpoint_bridge import (
-    CHECKPOINT_MARKERS_STATE_KEY,
-    CheckpointBridgeState,
-)
+from graph_engine.flow import BoundFlow, Flow
+from graph_engine.plugin_api import FrozenModel, ResourceClaims
+from graph_engine.stategraph.ledger import NamedWrite
+from graph_engine.stategraph.checkpoint_bridge import CHECKPOINT_MARKERS_STATE_KEY
 from graph_engine.testing import GraphHarness
 
 from tests.product.test_product_input import valid_product_input
@@ -65,22 +61,10 @@ _CASE_DELTA = "qa/cases/system/dept/case.yaml"
 _THIN_EXPORTS = {
     "intake": ("assurance.intake", "prepare"),
     "init": ("assurance.generation", "init_runtime"),
-    "archive": ("assurance.improvement", "archive"),
     "retro": ("assurance.improvement", "retro"),
     "issue-review": ("assurance.quality", "issue_review"),
     "issue-analyze": ("assurance.quality", "issue_analyze"),
     "issue-reconcile": ("assurance.quality", "issue_reconcile"),
-    "improvement-review": ("assurance.improvement", "review"),
-    "improvement-evaluate": ("assurance.improvement", "evaluate"),
-    "improvement-export": ("assurance.improvement", "export"),
-    "improvement-apply": ("assurance.improvement", "apply"),
-    "improvement-rollback": ("assurance.improvement", "rollback"),
-}
-_CHILD_STATE = {
-    "assurance.intake": IntakeState,
-    "assurance.generation": GenerationState,
-    "assurance.quality": QualityState,
-    "assurance.improvement": ImprovementState,
 }
 
 
@@ -136,93 +120,194 @@ def _real_features() -> dict[str, object]:
     return features
 
 
-def _feature_success_status(state_schema: type) -> str:
-    if state_schema is IntakeState:
+class _ToyInput(FrozenModel):
+    change_id: str = ""
+    source_artifacts: object = None
+    coverage_epoch: int = 0
+    healing_rounds_used: int = 0
+    plan_ref: object = None
+    ui_exploration_ref: object = None
+    api_discovery_ref: object = None
+    rounds_budget: object = None
+    rounds_used: int = 0
+    artifact_paths: object = None
+    source_refs: object = None
+    window: object = None
+
+
+class _CaseToyInput(_ToyInput):
+    plan_digest: str = ""
+
+
+def _toy_output(outcomes: tuple[str, ...]) -> type[FrozenModel]:
+    return create_model(
+        "ToyOutcome",
+        __base__=FrozenModel,
+        public_outcome=(Literal[*outcomes], ...),
+        plan_digest=(str, "a" * 64),
+    )
+
+
+def _toy_task(outcomes: tuple[str, ...]) -> TaskAttemptContract[Any, Any]:
+    return TaskAttemptContract(
+        contract_id="assurance.product.test.toy-echo",
+        owner_id="assurance.product",
+        handler_id="assurance.product.toy-echo",
+        input_model=_ToyInput,
+        output_model=_toy_output(outcomes),
+        resources=ResourceClaims(),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=30),
+        validators=(),
+    )
+
+
+class _PrepareToyOp:
+    contract_id = "assurance.product.test.toy-echo"
+    input_model = _ToyInput
+
+    def __init__(self, outcomes: tuple[str, ...]) -> None:
+        self.output_model = _toy_output(outcomes)
+
+    def ledger_namespace(self) -> str:
+        return "intake"
+
+    def ledger_writes(self) -> tuple[NamedWrite, ...]:
+        return (NamedWrite(name="plan", root="qa/results/plan"),)
+
+    def input_bindings(self) -> tuple[object, ...]:
+        return ()
+
+
+class _SucceedContext:
+    def __init__(self, terminal: str) -> None:
+        self.terminal = terminal
+
+    def attempt(
+        self,
+        contract_id: str,
+        *,
+        semantic_node_id: object,
+        activation: object,
+        select: object,
+        publish: object,
+    ) -> object:
+        del contract_id, semantic_node_id, activation, select
+        terminal = self.terminal
+
+        async def _ok(state: object, runtime: object = None) -> dict[str, object]:
+            del runtime
+            raw: dict[str, object] = {"public_outcome": terminal, "plan_digest": "a" * 64}
+            if callable(publish):
+                payload = state if isinstance(state, Mapping) else {}
+                published = publish(
+                    payload,
+                    raw,
+                    None,
+                    committed=(ArtifactRef(path="qa/results/plan", digest=_SHA),),
+                )
+                if isinstance(published, Mapping):
+                    return {str(name): value for name, value in published.items()}
+            return raw
+
+        return _ok
+
+    def compile_subgraph(self, builder: object) -> object:
+        return builder.compile(checkpointer=None)  # type: ignore[union-attr]
+
+
+def _feature_success_status(marker: str) -> str:
+    if marker.startswith("intake."):
         return "passed"
-    if state_schema is ImprovementState:
+    if marker.startswith("improvement."):
         return "done"
     return "completed"
 
 
-def _stub_export(state_schema: type, marker: str, *, status: str | None = None) -> CompiledStateGraph:
-    builder = StateGraph(state_schema)
-    terminal = status or _feature_success_status(state_schema)
+_STUB_OUTCOMES = {
+    "intake.prepare": ("prepared", "failed"),
+    "intake.case": ("reviewed", "rejected", "exhausted", "failed"),
+    "generation.generation": ("completed", "failed"),
+    "generation.init_runtime": ("completed", "failed"),
+    "execution.execute": ("completed", "failed"),
+    "execution.rerun": ("completed", "failed"),
+    "quality.assess": ("completed", "failed"),
+    "quality.issue_review": ("fix_eligible", "report_issue", "unclassified", "failed"),
+    "quality.issue_analyze": ("fix_eligible", "report_issue", "unclassified", "failed"),
+    "quality.issue_reconcile": ("ready", "failed"),
+    "quality.report": ("completed", "failed"),
+    "quality.fact_baseline": ("completed", "failed"),
+    "quality.surface_baseline": ("completed", "failed"),
+    "healing.repair_failure": ("completed", "failed"),
+    "improvement.archive": ("done", "failed"),
+    "improvement.retro": ("done", "failed"),
+    "improvement.review": ("done", "failed"),
+    "improvement.evaluate": ("done", "failed"),
+    "improvement.export": ("done", "failed"),
+    "improvement.apply": ("done", "failed", "rejected", "rework", "superseded"),
+    "improvement.rollback": ("done", "failed"),
+    "improvement.runtime_snapshot": ("done", "failed"),
+    "intake.coverage-rework": ("done", "failed"),
+    "archive.archive": ("done", "failed"),
+    "improvement-apply.apply": ("done", "failed", "rejected", "rework", "superseded"),
+    "issue-review.issue_review": ("fix_eligible", "report_issue", "unclassified", "failed"),
+    "issue-reconcile.issue_reconcile": ("ready", "failed"),
+}
 
-    def echo(state: object) -> dict[str, object]:
-        del state
-        update: dict[str, object] = {"status": terminal}
-        if state_schema is IntakeState:
-            update["artifacts"] = [{"path": marker, "digest": _SHA}]
-        elif state_schema is QualityState:
-            update["evidence_refs"] = [{"path": marker, "digest": _SHA}]
-            if marker == "quality.fact_baseline":
-                update["fact_baseline_ref"] = {
-                    "path": "qa/results/facts/fact-baseline.json",
-                    "digest": _SHA,
-                }
-            if marker == "quality.surface_baseline":
-                update["ui_exploration_ref"] = {
-                    "path": "qa/results/facts/ui-exploration.json",
-                    "digest": _SHA,
-                }
-                update["api_discovery_ref"] = {
-                    "path": "qa/results/facts/api-discovery.json",
-                    "digest": _SHA,
-                }
-                update["ui_exploration_source"] = "unused"
-                update["api_discovery_source"] = "live"
-        elif state_schema is ImprovementState:
-            update["receipt_refs"] = [{"receipt_id": marker, "receipt_digest": _SHA}]
-        else:
-            update["receipts"] = [{"receipt_id": marker, "receipt_digest": _SHA}]
-        return update
 
-    builder.add_node("echo", echo)
-    builder.add_edge(START, "echo")
-    builder.add_edge("echo", END)
-    return builder.compile(checkpointer=None)
+def _stub_export(marker: str, *, status: str | None = None) -> BoundFlow:
+    outcomes = _STUB_OUTCOMES[marker]
+    terminal = status or _feature_success_status(marker)
+    model = _CaseToyInput if marker == "intake.case" else _ToyInput
+    flow = Flow(marker.replace(".", "-").replace("_", "-"), input=model, outcomes=outcomes)
+    flow.step(
+        "echo",
+        _PrepareToyOp(outcomes) if marker == "intake.prepare" else _toy_task(outcomes),
+        on_failure="failed" if "failed" in outcomes else outcomes[-1],
+        route_on="public_outcome",
+        routes={name: name for name in outcomes},
+    )
+    if marker == "intake.prepare":
+        flow.control("echo", plan_digest="plan_digest")
+    return flow.bind(_SucceedContext(terminal))
 
 
 def _stub_features() -> dict[str, object]:
     return {
         "assurance.intake": IntakeGraphs(
-            prepare=_stub_export(IntakeState, "intake.prepare"),
-            case=_stub_export(IntakeState, "intake.case"),
+            prepare=_stub_export("intake.prepare", status="prepared"),
+            case=_stub_export("intake.case", status="reviewed"),
+            coverage_rework=_stub_export("intake.coverage-rework", status="done"),
         ),
         "assurance.generation": GenerationGraphs(
-            generation=_stub_export(dict, "generation.generation"),
-            api=_stub_export(dict, "generation.api"),
-            e2e=_stub_export(dict, "generation.e2e"),
-            fuzz=_stub_export(dict, "generation.fuzz"),
-            performance=_stub_export(dict, "generation.performance"),
-            init_runtime=_stub_export(dict, "generation.init_runtime"),
-            resolve_inputs=_stub_export(dict, "generation.resolve_inputs"),
+            generation=_stub_export("generation.generation"),
+            init_runtime=_stub_export("generation.init_runtime", status="completed"),
         ),
         "assurance.execution": ExecutionGraphs(
-            execute=_stub_export(dict, "execution.execute"),
-            rerun=_stub_export(dict, "execution.rerun"),
+            execute=_stub_export("execution.execute"),
+            rerun=_stub_export("execution.rerun"),
         ),
         "assurance.quality": QualityGraphs(
-            assess=_stub_export(QualityState, "quality.assess"),
-            issue_review=_stub_export(QualityState, "quality.issue_review"),
-            issue_analyze=_stub_export(QualityState, "quality.issue_analyze"),
-            issue_reconcile=_stub_export(QualityState, "quality.issue_reconcile"),
-            report=_stub_export(QualityState, "quality.report"),
-            fact_baseline=_stub_export(QualityState, "quality.fact_baseline"),
-            surface_baseline=_stub_export(QualityState, "quality.surface_baseline"),
+            assess=_stub_export("quality.assess"),
+            issue_review=_stub_export("quality.issue_review", status="fix_eligible"),
+            issue_analyze=_stub_export("quality.issue_analyze", status="fix_eligible"),
+            issue_reconcile=_stub_export("quality.issue_reconcile", status="ready"),
+            report=_stub_export("quality.report"),
+            fact_baseline=_stub_export("quality.fact_baseline"),
+            surface_baseline=_stub_export("quality.surface_baseline"),
         ),
         "assurance.healing": HealingGraphs(
-            repair_failure=_stub_export(dict, "healing.repair_failure"),
-            repair_coverage=_stub_export(dict, "healing.repair_coverage"),
+            repair_failure=_stub_export("healing.repair_failure"),
         ),
         "assurance.improvement": ImprovementGraphs(
-            archive=_stub_export(ImprovementState, "improvement.archive"),
-            retro=_stub_export(ImprovementState, "improvement.retro"),
-            review=_stub_export(ImprovementState, "improvement.review"),
-            evaluate=_stub_export(ImprovementState, "improvement.evaluate"),
-            export=_stub_export(ImprovementState, "improvement.export"),
-            apply=_stub_export(ImprovementState, "improvement.apply"),
-            rollback=_stub_export(ImprovementState, "improvement.rollback"),
+            archive=_stub_export("improvement.archive"),
+            retro=_stub_export("improvement.retro"),
+            review=_stub_export("improvement.review"),
+            evaluate=_stub_export("improvement.evaluate"),
+            export=_stub_export("improvement.export"),
+            apply=_stub_export("improvement.apply"),
+            rollback=_stub_export("improvement.rollback"),
+            runtime_snapshot=_stub_export("improvement.runtime_snapshot", status="done"),
         ),
     }
 
@@ -235,15 +320,31 @@ def _build_context(checkpointer: Checkpointer = None) -> EngineGraphBuildContext
     )
 
 
+def _family_policy() -> dict[str, object]:
+    from assurance_intake.contracts import TestFamilyPolicyV1
+
+    return TestFamilyPolicyV1(required=("api",), allowed=("api",)).model_dump(mode="json")
+
+
+def _invoke(graph: object, payload: Mapping[str, object]) -> dict[str, Any]:
+    result = asyncio.run(graph.ainvoke(payload))  # type: ignore[union-attr]
+    if not isinstance(result, dict):
+        raise TypeError("root invoke must return a mapping")
+    return result
+
+
 def _public_input(entrypoint: str) -> dict[str, object]:
     case_delta = (_CASE_DELTA,) if entrypoint == "intake" else ()
     candidate = ("api",) if entrypoint == "intake" else ()
-    return ProductInputV1.model_validate(
+    payload = ProductInputV1.model_validate(
         valid_product_input(
             case_delta_paths=case_delta,
             candidate_test_families=candidate,
         )
     ).model_dump(mode="json")
+    if entrypoint == "intake":
+        payload["family_policy"] = _family_policy()
+    return payload
 
 
 class _DuplicateOwnerMapping(Mapping[str, object]):
@@ -269,8 +370,8 @@ def real_features() -> dict[str, object]:
 
 
 @pytest.fixture(scope="module")
-def thin_graphs(real_features: dict[str, object]) -> ThinEntrypointGraphs:
-    return build_thin_entrypoint_graphs(context=_build_context(), features=real_features)
+def thin_graphs() -> ThinEntrypointGraphs:
+    return build_thin_entrypoint_graphs(context=_build_context(), features=_real_features())
 
 
 def test_factory_accepts_exactly_six_owner_ids(
@@ -288,7 +389,7 @@ def test_factory_accepts_exactly_six_owner_ids(
         "improvement",
     }
     assert set(thin_graphs.entrypoints) == set(THIN_ENTRYPOINTS)
-    assert len(thin_graphs.entrypoints) == 12
+    assert len(thin_graphs.entrypoints) == 6
 
 
 def test_factory_rejects_missing_extra_duplicate_and_mistyped_bundles(
@@ -348,13 +449,10 @@ def test_thin_roots_are_independently_compiled_not_a_dispatcher(
                 ):
                     raise AssertionError(f"{path.name} inspects an entrypoint value inside state")
     names = {id(graph) for graph in thin_graphs.entrypoints.values()}
-    assert len(names) == 12
+    assert len(names) == 6
 
 
-_REPRESENTATIVE_THIN_ENTRYPOINTS = ("intake", "archive", "issue-review")
-
-
-@pytest.mark.parametrize("entrypoint", _REPRESENTATIVE_THIN_ENTRYPOINTS)
+@pytest.mark.parametrize("entrypoint", tuple(sorted(THIN_ENTRYPOINTS)))
 def test_each_thin_root_validates_invokes_declared_export_and_publishes(
     entrypoint: str,
 ) -> None:
@@ -363,39 +461,55 @@ def test_each_thin_root_validates_invokes_declared_export_and_publishes(
     root = graphs.entrypoints[entrypoint]
     owner_id, export = _THIN_EXPORTS[entrypoint]
     marker = f"{owner_id.split('.')[-1]}.{export}"
-    result = root.invoke(_public_input(entrypoint))
+    result = _invoke(root, _public_input(entrypoint))
     output = ProductPublicOutput.model_validate(result["output"])
     assert output.change_id == "CH-DEMO-001"
     assert output.status == "completed"
     assert CHECKPOINT_MARKERS_STATE_KEY not in output.model_dump(mode="json")
-    if owner_id == "assurance.improvement":
-        assert tuple(item.receipt_id for item in output.receipts) == (marker,)
-    else:
-        assert output.receipts == ()
+    del marker
+    assert output.receipts == ()
+
+
+def test_every_product_root_compiles_and_thin_roots_run() -> None:
+    graphs = build_product_graphs(context=_build_context(), features=_real_features())
+    assert set(graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS)
+    for name in PRODUCT_ENTRYPOINTS:
+        assert graphs.entrypoints[name] is not None
+    thin = build_thin_entrypoint_graphs(context=_build_context(), features=_stub_features())
+    for name in THIN_ENTRYPOINTS:
+        result = _invoke(thin.entrypoints[name], _public_input(name))
+        assert result["status"] in {"completed", "failed"}
 
 
 def test_thin_root_rejects_non_public_input() -> None:
     features = _stub_features()
     graphs = build_thin_entrypoint_graphs(context=_build_context(), features=features)
     with pytest.raises((ValueError, ValidationError, TypeError)):
-        graphs.entrypoints["intake"].invoke({"change_id": "CH-DEMO-001"})
+        _invoke(graphs.entrypoints["intake"], {"change_id": "CH-DEMO-001"})
 
 
-def test_product_state_inherits_checkpoint_bridge_and_public_io_omits_markers() -> None:
-    hints = get_type_hints(ProductState, include_extras=True)
-    assert issubclass(ProductState, dict)
+def test_compiled_root_state_keeps_checkpoint_markers_off_public_io() -> None:
+    from assurance_product.graphs.factory import declared_root_flows
+    from assurance_product.graphs.revisions import contract_for_root
+    from typing import get_type_hints
+
+    flow = declared_root_flows()["init"]
+    contract = contract_for_root("init", flow)
+    from graph_engine.flow import root_schemas
+
+    state_type, _, _, _ = root_schemas(flow)
+    hints = get_type_hints(state_type, include_extras=True)
     assert CHECKPOINT_MARKERS_STATE_KEY in hints
-    assert CheckpointBridgeState.__annotations__
     assert CHECKPOINT_MARKERS_STATE_KEY not in ProductPublicOutput.model_fields
     assert CHECKPOINT_MARKERS_STATE_KEY not in ProductInputV1.model_fields
+    assert contract.state_schema_version == "6"
 
 
-def test_twelve_thin_roots_compile_dry_and_runtime_with_matching_projections(
-    real_features: dict[str, object],
-) -> None:
+def test_thin_roots_compile_dry_and_runtime_with_matching_projections() -> None:
     saver = InMemorySaver()
-    dry = build_thin_entrypoint_graphs(context=_build_context(None), features=real_features)
-    runtime = build_thin_entrypoint_graphs(context=_build_context(saver), features=real_features)
+    features = _real_features()
+    dry = build_thin_entrypoint_graphs(context=_build_context(None), features=features)
+    runtime = build_thin_entrypoint_graphs(context=_build_context(saver), features=features)
     assert set(dry.entrypoints) == set(runtime.entrypoints) == set(THIN_ENTRYPOINTS)
     for name in THIN_ENTRYPOINTS:
         dry_graph = dry.entrypoints[name]
@@ -406,98 +520,45 @@ def test_twelve_thin_roots_compile_dry_and_runtime_with_matching_projections(
 
 
 def test_thin_root_uses_schema_different_child_state() -> None:
-    for _entrypoint, (owner_id, _export) in _THIN_EXPORTS.items():
-        assert _CHILD_STATE[owner_id] is not ProductState
+    from assurance_product.graphs.factory import declared_root_flows
+    from graph_engine.flow.declare import SubflowNode, declared_flow
+
+    roots = declared_root_flows()
+    for entrypoint, (owner_id, _export) in _THIN_EXPORTS.items():
+        root = roots[entrypoint]
+        child = next(declared_flow(node.child) for node in root.nodes if isinstance(node, SubflowNode))
+        assert child is not None
+        assert child.input is not root.input
+        del owner_id
 
 
 @pytest.mark.parametrize(
-    ("feature_status", "expected"),
+    ("entrypoint", "field", "feature_status", "expected"),
     [
-        ("passed", "completed"),
-        ("rejected", "failed"),
-        ("exhausted", "failed"),
-        ("done", "completed"),
-        ("rework", "failed"),
-        ("superseded", "failed"),
-        ("completed", "completed"),
-        ("failed", "failed"),
-    ],
-)
-def test_publish_adapts_feature_terminals_to_product_status(feature_status: str, expected: str) -> None:
-    result = publish_public_output({"change_id": "CH-DEMO-001", "status": feature_status})
-    output = ProductPublicOutput.model_validate(result["output"])
-    assert output.status == expected
-    assert result["status"] == expected
-
-
-@pytest.mark.parametrize(
-    ("entrypoint", "state_schema", "feature_status", "expected"),
-    [
-        ("intake", IntakeState, "passed", "completed"),
-        ("intake", IntakeState, "rejected", "failed"),
-        ("intake", IntakeState, "exhausted", "failed"),
-        ("archive", ImprovementState, "done", "completed"),
-        ("archive", ImprovementState, "rejected", "failed"),
-        ("archive", ImprovementState, "rework", "failed"),
-        ("archive", ImprovementState, "superseded", "failed"),
+        ("issue-review", "issue_review", "fix_eligible", "completed"),
+        ("issue-review", "issue_review", "report_issue", "completed"),
+        ("issue-review", "issue_review", "unclassified", "completed"),
+        ("issue-review", "issue_review", "failed", "failed"),
+        ("issue-reconcile", "issue_reconcile", "ready", "completed"),
     ],
 )
 def test_thin_root_publishes_real_feature_terminals(
     entrypoint: str,
-    state_schema: type,
+    field: str,
     feature_status: str,
     expected: str,
 ) -> None:
-    owner_id, export = _THIN_EXPORTS[entrypoint]
     features = _stub_features()
-    marker = f"{owner_id.split('.')[-1]}.{export}"
-    child = _stub_export(state_schema, marker, status=feature_status)
-    if owner_id == "assurance.intake":
-        features[owner_id] = IntakeGraphs(prepare=child, case=child)
-    else:
-        features[owner_id] = ImprovementGraphs(
-            archive=child,
-            retro=child,
-            review=child,
-            evaluate=child,
-            export=child,
-            apply=child,
-            rollback=child,
-        )
+    child = _stub_export(f"{entrypoint}.{field}", status=feature_status)
+    owner_id, _export = _THIN_EXPORTS[entrypoint]
+    bundle = features[owner_id]
+    features[owner_id] = replace(bundle, **{field: child})  # type: ignore[arg-type]
     graphs = build_thin_entrypoint_graphs(context=_build_context(), features=features)
-    result = graphs.entrypoints[entrypoint].invoke(_public_input(entrypoint))
+    result = _invoke(graphs.entrypoints[entrypoint], _public_input(entrypoint))
     output = ProductPublicOutput.model_validate(result["output"])
     assert output.status == expected
-
-
-def test_publish_keeps_only_real_receipt_refs() -> None:
-    result = publish_public_output(
-        {
-            "change_id": "CH-DEMO-001",
-            "status": "done",
-            "artifacts": [{"path": "input.artifact", "digest": _SHA}],
-            "evidence_refs": [{"path": "quality.evidence", "digest": _SHA}],
-            "receipt_refs": [{"receipt_id": "real.receipt", "receipt_digest": _SHA}],
-        }
-    )
-    output = ProductPublicOutput.model_validate(result["output"])
-    assert tuple(item.receipt_id for item in output.receipts) == ("real.receipt",)
-
-
-def test_publish_does_not_harvest_artifacts_or_evidence_as_receipts() -> None:
-    result = publish_public_output(
-        {
-            "change_id": "CH-DEMO-001",
-            "status": "passed",
-            "artifacts": [
-                {"path": "input.artifact", "digest": _SHA},
-                {"path": "intake.prepare", "digest": _SHA},
-            ],
-            "evidence_refs": [{"path": "quality.issue_review", "digest": _SHA}],
-        }
-    )
-    output = ProductPublicOutput.model_validate(result["output"])
-    assert output.receipts == ()
+    assert result["status"] == expected
+    assert result["terminal"] == {"status": expected, "reason": expected}
 
 
 def test_thin_root_does_not_publish_input_or_feature_artifacts_as_receipts() -> None:
@@ -505,9 +566,138 @@ def test_thin_root_does_not_publish_input_or_feature_artifacts_as_receipts() -> 
     graphs = build_thin_entrypoint_graphs(context=_build_context(), features=features)
     payload = _public_input("intake")
     payload["artifacts"] = [{"path": "input.case", "digest": _SHA}]
-    result = graphs.entrypoints["intake"].invoke(payload)
+    result = _invoke(graphs.entrypoints["intake"], payload)
     output = ProductPublicOutput.model_validate(result["output"])
     assert output.status == "completed"
     assert output.receipts == ()
-    quality = graphs.entrypoints["issue-review"].invoke(_public_input("issue-review"))
+    quality = _invoke(graphs.entrypoints["issue-review"], _public_input("issue-review"))
     assert ProductPublicOutput.model_validate(quality["output"]).receipts == ()
+
+
+def test_intake_root_passes_the_application_family_policy_to_prepare() -> None:
+    from assurance_intake.contracts import TestFamilyPolicyV1
+
+    seen: list[object] = []
+
+    class _PrepareProbe(FrozenModel):
+        family_policy: TestFamilyPolicyV1
+        source_artifacts: object = None
+        coverage_epoch: int = 0
+        healing_rounds_used: int = 0
+
+    class _RecordContext(_SucceedContext):
+        def attempt(
+            self,
+            contract_id: str,
+            *,
+            semantic_node_id: object,
+            activation: object,
+            select: object,
+            publish: object,
+        ) -> object:
+            del contract_id, semantic_node_id, activation, select
+
+            async def _ok(state: object, runtime: object = None) -> dict[str, object]:
+                del runtime
+                payload = state if isinstance(state, Mapping) else {}
+                if isinstance(payload, Mapping):
+                    seen.append(payload.get("family_policy"))
+                raw: dict[str, object] = {"public_outcome": "prepared", "plan_digest": "a" * 64}
+                if callable(publish):
+                    published = publish(
+                        payload,
+                        raw,
+                        None,
+                        committed=(ArtifactRef(path="qa/results/plan", digest=_SHA),),
+                    )
+                    if isinstance(published, Mapping):
+                        return {str(name): value for name, value in published.items()}
+                return raw
+
+            return _ok
+
+    outcomes = ("prepared", "failed")
+    flow = Flow("prepare", input=_PrepareProbe, outcomes=outcomes)
+    flow.step(
+        "record",
+        _PrepareToyOp(outcomes),
+        on_failure="failed",
+        route_on="public_outcome",
+        routes={name: name for name in outcomes},
+    )
+    flow.control("record", plan_digest="plan_digest")
+    features = _stub_features()
+    intake = features["assurance.intake"]
+    assert isinstance(intake, IntakeGraphs)
+    features["assurance.intake"] = replace(intake, prepare=flow.bind(_RecordContext("prepared")))
+    graphs = build_thin_entrypoint_graphs(context=_build_context(), features=features)
+    payload = _public_input("intake")
+
+    result = _invoke(graphs.entrypoints["intake"], payload)
+
+    assert result["status"] == "completed"
+    assert seen == [payload["family_policy"]]
+    assert payload["family_policy"] == _family_policy()
+
+
+def test_thin_root_publishes_a_child_receipt() -> None:
+    from pydantic import BaseModel
+
+    from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy
+    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.flow import Flow
+    from graph_engine.plugin_api import ResourceClaims
+    from graph_engine.testing import committed
+
+    class ChangeInput(BaseModel):
+        change_id: str = "CH-DEMO-001"
+
+    class MarkerOutput(BaseModel):
+        marker: str = "ok"
+
+    task = TaskAttemptContract(
+        contract_id="assurance.generation.task.init-receipt",
+        owner_id="assurance.generation",
+        handler_id="assurance.generation.init-receipt",
+        input_model=ChangeInput,
+        output_model=MarkerOutput,
+        resources=ResourceClaims(),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=30),
+        validators=(),
+    )
+    child = Flow("init-runtime", input=ChangeInput, outcomes=("completed", "failed"))
+    child.step("init-runtime", task, on_failure="failed", then="completed")
+    child.publish_receipt("init-runtime")
+    harness = GraphHarness()
+    context = harness.recording_context(
+        owner_id="assurance.generation",
+        contracts={task.contract_id: task},
+    )
+    features = _stub_features()
+    generation = features["assurance.generation"]
+    assert isinstance(generation, GenerationGraphs)
+    features["assurance.generation"] = replace(generation, init_runtime=child.bind(context))
+    graph = thin_root_flows(coerce_feature_bundles(features))["init"].compile(_build_context())
+    receipt = ReceiptRef(receipt_id="receipt-init", receipt_digest=_SHA)
+    ran = asyncio.run(
+        harness.run(
+            graph,
+            input=_public_input("init"),
+            script={"generation.init-runtime": [committed(MarkerOutput(), receipt)]},
+        )
+    )
+    assert isinstance(ran.terminal, Mapping)
+    output = ProductPublicOutput.model_validate(ran.terminal["output"])
+    assert [item.model_dump(mode="json") for item in output.receipts] == [
+        {"receipt_id": "receipt-init", "receipt_digest": _SHA}
+    ]
+
+
+def test_issue_review_thin_entry_publishes_failed_when_the_attempt_fails() -> None:
+    features = _real_features()
+    graphs = build_thin_entrypoint_graphs(context=_build_context(), features=features)
+    result = asyncio.run(graphs.entrypoints["issue-review"].ainvoke(_public_input("issue-review")))
+    output = ProductPublicOutput.model_validate(result["output"])
+    assert output.status == "failed"
+    assert result["status"] == "failed"

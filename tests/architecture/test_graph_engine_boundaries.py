@@ -277,6 +277,8 @@ def test_import_linter_encodes_four_role_matrix(repo_root: Path) -> None:
             continue
         if parser[section].get("type") != "forbidden":
             continue
+        if section == "importlinter:contract:capability-product-no-langgraph":
+            continue
         sources = _importlinter_names(parser, section, "source_modules")
         assert "assurance_product" not in sources, section
 

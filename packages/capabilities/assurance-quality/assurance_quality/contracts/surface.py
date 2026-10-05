@@ -150,3 +150,37 @@ class SurfaceProbeResultV1(FrozenModel):
     api_discovery_ref: EvidenceArtifactRefV1
     ui_source: SurfaceSource
     api_source: SurfaceSource
+    readiness: Literal["ready", "not_ready"] = "not_ready"
+
+
+_API_FAMILIES = frozenset({"api", "fuzz", "performance"})
+_SURFACE_SOURCES = frozenset({"live", "unavailable", "unused"})
+
+
+def published_surface(output: object, families: object) -> dict[str, object]:
+    """Validate the probe and decide readiness. The graph only routes on the result."""
+    result = SurfaceProbeResultV1.model_validate(output)
+    return {
+        "readiness": surface_readiness(families, result.ui_source, result.api_source),
+        "ui_exploration_ref": result.ui_exploration_ref.model_dump(mode="json"),
+        "api_discovery_ref": result.api_discovery_ref.model_dump(mode="json"),
+        "ui_exploration_source": result.ui_source,
+        "api_discovery_source": result.api_source,
+    }
+
+
+def surface_readiness(
+    families: object,
+    ui_source: object,
+    api_source: object,
+) -> Literal["ready", "not_ready"]:
+    """The probe decides. Callers route on this and do not reread the files."""
+    if ui_source not in _SURFACE_SOURCES or api_source not in _SURFACE_SOURCES:
+        return "not_ready"
+    if not isinstance(families, (list, tuple)):
+        return "not_ready"
+    if any(name in _API_FAMILIES for name in families) and api_source != "live":
+        return "not_ready"
+    if "e2e" in families and ui_source != "live":
+        return "not_ready"
+    return "ready"

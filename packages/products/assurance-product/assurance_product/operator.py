@@ -577,7 +577,7 @@ class AssuranceOperator:
         change_id: str,
         plan_digest: str,
         coverage_epoch: str,
-        batch_id: str,
+        repair_round: str,
     ) -> dict[str, object]:
         from assurance_product.assessment_read import read_committed_assessment
 
@@ -586,7 +586,7 @@ class AssuranceOperator:
             change_id=change_id,
             plan_digest=plan_digest,
             coverage_epoch=coverage_epoch,
-            batch_id=batch_id,
+            repair_round=repair_round,
         )
 
 

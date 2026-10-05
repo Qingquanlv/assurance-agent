@@ -18,6 +18,7 @@ from typing import Protocol, cast, runtime_checkable
 from pydantic import ValidationError
 
 from agent_runtime_contracts.ops import InputError, OutputError, validate_model
+from graph_engine.artifacts import stage_json_artifact
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
@@ -28,7 +29,15 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 
-from assurance_execution.contracts.agent import ExecutionPrepareInputV1, RunTestsInputV1
+from assurance_execution.contracts.agent import RunTestsInputV1
+from assurance_execution.contracts.workflow import (
+    EXECUTION_CYCLE_PATH,
+    ExecutionCycleDocumentV1,
+    ExecutionSemanticNodeId,
+    execution_evidence_path,
+    execution_node_for_kind,
+)
+from assurance_execution.operations.cycle import seal_execution
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1, FamilyExecutionOutcomeV1
 from assurance_execution.contracts.execution import EXECUTION_FAMILIES, ExecutionFamily, ExecutionReceiptV1
 from assurance_execution.contracts.observations import (
@@ -335,11 +344,9 @@ def write_canonical_evidence(
     project: Path,
     evidence: ExecutionEvidenceV1,
     *,
-    filename: str = "execute-result.json",
+    semantic: ExecutionSemanticNodeId,
 ) -> Path:
-    if filename not in {"execute-result.json", "run-result.json"}:
-        raise InputError("canonical evidence filename is not a closed execution result")
-    path = resolve_canonical_evidence(project, evidence.change_id, filename)
+    path = resolve_canonical_evidence(project, evidence.change_id, execution_evidence_path(semantic))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(evidence.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8")
     return path
@@ -409,7 +416,7 @@ def run_closed_mapping(
     write_canonical_evidence(
         workspace if write_root is None else write_root,
         evidence,
-        filename="run-result.json" if payload.execution_kind == "run" else "execute-result.json",
+        semantic=execution_node_for_kind(payload.execution_kind),
     )
     return _run_output(payload, selected, evidence, include_pr_metrics=include_pr_metrics)
 
@@ -485,9 +492,14 @@ class RunTestsHandler:
         raw = request.input
         if isinstance(raw, Mapping) and "mapping" in raw:
             return validate_model(RunTestsInputV1, raw)
+        from assurance_execution.contracts.agent import RerunPrepareInputV1
         from assurance_execution.operations.agent_skills import assemble_execution_input
+        from assurance_execution.operations.rerun import prepare_rerun
 
-        prepared = validate_model(ExecutionPrepareInputV1, raw)
+        prepared = prepare_rerun(
+            validate_model(RerunPrepareInputV1, raw),
+            context.project_root,
+        )
         return assemble_execution_input(
             prepared,
             workspace=context.project_root,
@@ -496,6 +508,9 @@ class RunTestsHandler:
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
+            from assurance_execution.contracts.agent import RerunPrepareInputV1
+            from assurance_execution.operations.rerun import prepare_rerun
+
             raw = request.input
             assembled = isinstance(raw, Mapping) and "mapping" in raw
             payload = self._payload(request, context)
@@ -536,16 +551,46 @@ class RunTestsHandler:
                     write_root=context.write_root,
                     on_started=bind_process,
                 )
-                filename = "run-result.json" if payload.execution_kind == "run" else "execute-result.json"
                 observations_ref = (
                     None if bundle is None else write_observation_bundle(context.write_root, payload, bundle)
                 )
                 evidence = evidence.model_copy(update={"observations_ref": observations_ref})
-                write_canonical_evidence(context.write_root, evidence, filename=filename)
+                write_canonical_evidence(
+                    context.write_root,
+                    evidence,
+                    semantic=execution_node_for_kind(payload.execution_kind),
+                )
             if context.activity is not None and not process_started:
                 context.activity.bind({"batch_id": payload.batch_id})
-            result = evidence.model_dump(mode="json")
-            return TaskOutcome.succeeded(cast(JSONValue, result))
+            if assembled:
+                published = seal_execution(
+                    evidence,
+                    change_id=payload.change_id,
+                    coverage_epoch=payload.coverage_epoch,
+                    repair_round=0,
+                    execution_kind=payload.execution_kind,
+                    generation=None,
+                )
+            else:
+                prepared = prepare_rerun(
+                    validate_model(RerunPrepareInputV1, raw),
+                    context.project_root,
+                )
+                published = seal_execution(
+                    evidence,
+                    change_id=prepared.change_id,
+                    coverage_epoch=prepared.coverage_epoch,
+                    repair_round=prepared.repair_round,
+                    execution_kind=prepared.execution_kind,
+                    generation=prepared.generation_result,
+                )
+            if published.execution_result is not None:
+                stage_json_artifact(
+                    context.write_root,
+                    EXECUTION_CYCLE_PATH,
+                    ExecutionCycleDocumentV1.model_validate(published.execution_result),
+                )
+            return TaskOutcome.succeeded(cast(JSONValue, published.model_dump(mode="json")))
         except InputError as error:
             return TaskOutcome.failed("invalid_input", str(error), retryable=False)
         except OutputError as error:
@@ -866,11 +911,3 @@ def write_observation_bundle(
     encoded = (json.dumps(bundle.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode()
     path.write_bytes(encoded)
     return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(encoded).hexdigest())
-
-
-def classify_exit(exit_code: int, *, failed: int, collected: int) -> str:
-    if failed > 0 or exit_code not in {0, 5}:
-        return "failed"
-    if collected == 0 or exit_code == 5:
-        return "skipped"
-    return "passed"

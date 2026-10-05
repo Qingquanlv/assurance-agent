@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Mapping
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -10,7 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent_runtime_contracts.ops import InputError, failed_input
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
-from assurance_improvement.contracts.delivery import ImprovementOutboxEntry, artifact_digest, same_digest
+from assurance_improvement.contracts.agent import RetroAnalysisResultV3
+from assurance_improvement.contracts.delivery import artifact_digest, same_digest
 from assurance_improvement.contracts.improvements import (
     ImprovementCandidateV3,
     ImprovementKind,
@@ -32,11 +36,9 @@ from assurance_improvement.contracts.retro import (
     RetroCollectInput,
     RetroContextV3,
     RetroIntegrity,
-    RetroInvocationResult,
-    RetroPipelineFailure,
-    RetroPipelineFailureDocument,
     RetroReconcileInputV1,
-    RetroRunStatus,
+    RetroSynthesizeInputV1,
+    RetroSynthesizeV1,
     RetroSourceManifestV3,
     RetroWindow,
     Signal,
@@ -74,54 +76,6 @@ class AssembleRetroInput(BaseModel):
     eval_slice_sha256: str = Field(min_length=1)
     discovery_slice_sha256: str | None = None
     coverage_gap_slice_sha256: str | None = None
-
-
-class DrainOutboxInput(BaseModel):
-    model_config = _FROZEN
-
-    context: RetroContextV3
-    candidates: tuple[ImprovementCandidateV3, ...] = ()
-    pipeline_failure: RetroPipelineFailure | None = None
-
-
-class FinalizeStatusInput(BaseModel):
-    model_config = _FROZEN
-
-    retro_id: str = Field(min_length=1)
-    batch_id: str | None = None
-    result: Literal["completed", "completed_with_gaps", "pending_reconcile"]
-    improvement_ids: tuple[str, ...] = ()
-    outbox_id: str | None = None
-    failure_ids: tuple[str, ...] = ()
-
-
-class PipelineFailureInput(BaseModel):
-    model_config = _FROZEN
-
-    retro_id: str = Field(min_length=1)
-    failures: tuple[RetroPipelineFailure, ...] = Field(min_length=1)
-
-
-class EvidenceGapFallbackInput(BaseModel):
-    model_config = _FROZEN
-
-    context: RetroContextV3
-
-
-class AnalysisFailedInput(BaseModel):
-    model_config = _FROZEN
-
-    retro_id: str = Field(min_length=1)
-    domain: Literal["issue", "workflow", "eval", "discovery", "coverage_gap"]
-    failure_reason: str = Field(min_length=1)
-    analyzer: str = Field(min_length=1)
-    slice_sha256: str = Field(min_length=1)
-
-
-class EmptyAnalysisInput(BaseModel):
-    model_config = _FROZEN
-
-    context: RetroContextV3
 
 
 class ReconcileInput(BaseModel):
@@ -470,14 +424,44 @@ def validate_candidates(
 
 class RetroCollectHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
+        from assurance_improvement.contracts.handoff import COLLECTED
+        from assurance_improvement.contracts.retro import (
+            CoverageGapEvidenceSlice,
+            DiscoveryEvidenceSlice,
+            EvalEvidenceSlice,
+            IssueEvidenceSlice,
+            RetroCollectAttemptInput,
+            RetroCollectedStamp,
+            WorkflowEvidenceSlice,
+        )
+        from assurance_improvement.operations.files import load_named, stage_named
+
         try:
-            payload = validate_input(RetroCollectInput, request.input)
+            attempt = validate_input(RetroCollectAttemptInput, request.input)
+            payload = RetroCollectInput(
+                retro_id=attempt.retro_id,
+                window=attempt.window,
+                issue_slice=load_named(context, attempt.issue_slice_ref, IssueEvidenceSlice),
+                workflow_slice=load_named(context, attempt.workflow_slice_ref, WorkflowEvidenceSlice),
+                eval_slice=load_named(context, attempt.eval_slice_ref, EvalEvidenceSlice),
+                discovery_slice=(
+                    load_named(context, attempt.discovery_slice_ref, DiscoveryEvidenceSlice)
+                    if attempt.discovery_slice_ref is not None
+                    else None
+                ),
+                coverage_gap_slice=(
+                    load_named(context, attempt.coverage_gap_slice_ref, CoverageGapEvidenceSlice)
+                    if attempt.coverage_gap_slice_ref is not None
+                    else None
+                ),
+            )
             assert_collect_identity(payload)
+            generated_at = datetime.now(timezone.utc).isoformat()
+            stage_named(context, COLLECTED, RetroCollectedStamp(generated_at=generated_at))
             return succeeded(
                 {
                     "retro_id": payload.retro_id,
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "generated_at": generated_at,
                     "window": payload.window.model_dump(mode="json"),
                     "issue_slice": payload.issue_slice.model_dump(mode="json"),
                     "workflow_slice": payload.workflow_slice.model_dump(mode="json"),
@@ -496,117 +480,165 @@ class RetroCollectHandler:
             return failed_input(error)
 
 
-class AssembleRetroContextHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(AssembleRetroInput, request.input)
-            assembled = assemble_context(payload)
-            return succeeded(cast(dict[str, object], assembled.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
+def _signal_document(
+    analysis: Mapping[str, object],
+    *,
+    domain: str,
+    retro_id: str,
+    slice_sha256: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": analysis.get("schema_version") or "3",
+        "retro_id": analysis.get("retro_id") or retro_id,
+        "domain": analysis.get("domain") or domain,
+        "analysis_status": analysis.get("analysis_status") or "ok",
+        "failure_reason": analysis.get("failure_reason"),
+        "analyzer": analysis.get("analyzer") or f"aa-retro-{domain}-analysis",
+        "signals": analysis.get("signals") or (),
+        "slice_sha256": analysis.get("slice_sha256") or slice_sha256,
+    }
 
 
-class DrainImprovementOutboxHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(DrainOutboxInput, request.input)
-            entries = [
-                ImprovementOutboxEntry(
-                    retro_id=payload.context.retro_id,
-                    candidate_sha256=artifact_digest(candidate),
-                    context_sha256=artifact_digest(payload.context),
-                    context=payload.context,
-                    candidate=candidate,
-                    pipeline_failure=payload.pipeline_failure,
-                ).model_dump(mode="json")
-                for candidate in payload.candidates
-            ]
-            return succeeded({"entries": entries})
-        except InputError as error:
-            return failed_input(error)
-
-
-class FinalizeRetroStatusHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(FinalizeStatusInput, request.input)
-            status = RetroRunStatus.model_validate(payload.model_dump(mode="json"))
-            invocation = RetroInvocationResult(status=status, result=status.result)
-            return succeeded(cast(dict[str, object], invocation.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class RecordRetroPipelineFailureHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(PipelineFailureInput, request.input)
-            document = RetroPipelineFailureDocument.model_validate(payload.model_dump(mode="json"))
-            return succeeded(cast(dict[str, object], document.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class RetroEvidenceGapFallbackHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(EvidenceGapFallbackInput, request.input)
-            return succeeded(
-                {
-                    "retro_id": payload.context.retro_id,
-                    "integrity": payload.context.integrity.model_dump(mode="json"),
-                    "fallback": payload.context.integrity.status != "complete",
-                    "reasons": list(payload.context.integrity.reasons),
-                }
+def route_retro_synthesis(
+    payload: RetroSynthesizeInputV1,
+    analyses: Mapping[str, Mapping[str, object]],
+) -> RetroSynthesizeV1:
+    """Hash the collected slices, merge signals, and choose synthesize or empty."""
+    domains = (
+        ("issue", payload.issue_slice, analyses["issue"]),
+        ("workflow", payload.workflow_slice, analyses["workflow"]),
+        ("eval", payload.eval_slice, analyses["eval"]),
+    )
+    digests: dict[str, str] = {}
+    documents: dict[str, SignalDocumentV3] = {}
+    for domain, slice_, analysis in domains:
+        digest = artifact_digest(slice_)
+        digests[domain] = digest
+        documents[domain] = SignalDocumentV3.model_validate(
+            _signal_document(
+                analysis,
+                domain=domain,
+                retro_id=payload.retro_id,
+                slice_sha256=digest,
             )
-        except InputError as error:
-            return failed_input(error)
+        )
+    coverage_gap = payload.coverage_gap_slice
+    context = assemble_context(
+        AssembleRetroInput(
+            generated_at=payload.generated_at,
+            dry_run=payload.dry_run,
+            window=payload.window,
+            issue_slice=payload.issue_slice,
+            workflow_slice=payload.workflow_slice,
+            eval_slice=payload.eval_slice,
+            discovery_slice=payload.discovery_slice,
+            coverage_gap_slice=coverage_gap,
+            issue_signals=documents["issue"],
+            workflow_signals=documents["workflow"],
+            eval_signals=documents["eval"],
+            issue_slice_sha256=digests["issue"],
+            workflow_slice_sha256=digests["workflow"],
+            eval_slice_sha256=digests["eval"],
+            coverage_gap_slice_sha256=artifact_digest(coverage_gap) if coverage_gap is not None else None,
+        )
+    )
+    return RetroSynthesizeV1(
+        route="synthesize" if context.signal_count else "empty",
+        context=context,
+        candidates=(),
+    )
 
 
-class RecordAnalysisFailedHandler:
+def _load_analysis(root: Path, ref: object) -> dict[str, object]:
+    path = getattr(ref, "path", None)
+    digest = getattr(ref, "digest", None)
+    if not isinstance(path, str) or not isinstance(digest, str):
+        raise InputError("analysis artifact ref is missing")
+    file_path = root / path
+    try:
+        raw = file_path.read_bytes()
+    except OSError as error:
+        raise InputError(f"analysis artifact is missing: {path}") from error
+    actual = hashlib.sha256(raw).hexdigest()
+    if actual != digest:
+        raise InputError(f"analysis artifact digest does not match: {path}")
+    try:
+        document = RetroAnalysisResultV3.model_validate_json(raw)
+    except (ValidationError, ValueError) as error:
+        raise InputError(f"analysis artifact is invalid: {path}") from error
+    return document.model_dump(mode="json")
+
+
+class RetroSynthesizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
+        from assurance_improvement.contracts.handoff import CONTEXT
+        from assurance_improvement.contracts.retro import (
+            CoverageGapEvidenceSlice,
+            DiscoveryEvidenceSlice,
+            EvalEvidenceSlice,
+            IssueEvidenceSlice,
+            RetroCollectedStamp,
+            RetroSynthesizeAttemptInput,
+            WorkflowEvidenceSlice,
+        )
+        from assurance_improvement.operations.files import load_named, stage_named
+
         try:
-            payload = validate_input(AnalysisFailedInput, request.input)
-            document = SignalDocumentV3.model_validate(
-                {
-                    "schema_version": "3",
-                    "retro_id": payload.retro_id,
-                    "domain": payload.domain,
-                    "analysis_status": "failed",
-                    "failure_reason": payload.failure_reason,
-                    "analyzer": payload.analyzer,
-                    "signals": [],
-                    "slice_sha256": payload.slice_sha256,
-                }
+            attempt = validate_input(RetroSynthesizeAttemptInput, request.input)
+            stamp = load_named(context, attempt.generated_at_ref, RetroCollectedStamp)
+            payload = RetroSynthesizeInputV1(
+                generated_at=stamp.generated_at,
+                dry_run=attempt.dry_run,
+                retro_id=attempt.retro_id,
+                window=attempt.window,
+                issue_slice=load_named(context, attempt.issue_slice_ref, IssueEvidenceSlice),
+                workflow_slice=load_named(context, attempt.workflow_slice_ref, WorkflowEvidenceSlice),
+                eval_slice=load_named(context, attempt.eval_slice_ref, EvalEvidenceSlice),
+                discovery_slice=(
+                    load_named(context, attempt.discovery_slice_ref, DiscoveryEvidenceSlice)
+                    if attempt.discovery_slice_ref is not None
+                    else None
+                ),
+                coverage_gap_slice=(
+                    load_named(context, attempt.coverage_gap_slice_ref, CoverageGapEvidenceSlice)
+                    if attempt.coverage_gap_slice_ref is not None
+                    else None
+                ),
+                issue_analysis_ref=attempt.issue_analysis_ref,
+                workflow_analysis_ref=attempt.workflow_analysis_ref,
+                eval_analysis_ref=attempt.eval_analysis_ref,
             )
-            return succeeded(cast(dict[str, object], document.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class MaterializeEmptyRetroAnalysisHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(EmptyAnalysisInput, request.input)
-            document = empty_analysis(payload.context)
-            return succeeded(cast(dict[str, object], document.model_dump(mode="json")))
-        except InputError as error:
+            root = Path(context.project_root)
+            analyses = {
+                "issue": _load_analysis(root, payload.issue_analysis_ref),
+                "workflow": _load_analysis(root, payload.workflow_analysis_ref),
+                "eval": _load_analysis(root, payload.eval_analysis_ref),
+            }
+            routed = route_retro_synthesis(payload, analyses)
+            stage_named(context, CONTEXT, routed.context)
+            return succeeded(cast(dict[str, object], routed.model_dump(mode="json")))
+        except (InputError, ValidationError, OSError, ValueError) as error:
             return failed_input(error)
 
 
 class ReconcileImprovementsHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        from assurance_improvement.contracts.retro import RetroCandidatesFile, RetroReconcileAttemptInput
+        from assurance_improvement.operations.files import load_named
         from assurance_improvement.operations.retro_persistence import stage_reconciliation
 
         try:
-            payload = validate_input(RetroReconcileInputV1, request.input)
+            attempt = validate_input(RetroReconcileAttemptInput, request.input)
+            candidates = (
+                load_named(context, attempt.candidates_ref, RetroCandidatesFile).candidates
+                if attempt.candidates_ref is not None
+                else ()
+            )
+            payload = RetroReconcileInputV1(
+                change_id=attempt.change_id,
+                context=load_named(context, attempt.context_ref, RetroContextV3),
+                candidates=candidates,
+            )
             result = stage_reconciliation(payload, context)
             return succeeded(cast(dict[str, object], result.model_dump(mode="json")))
         except (InputError, ValidationError, OSError, ValueError) as error:
@@ -614,15 +646,10 @@ class ReconcileImprovementsHandler:
 
 
 __all__ = [
-    "AssembleRetroContextHandler",
-    "DrainImprovementOutboxHandler",
-    "FinalizeRetroStatusHandler",
-    "MaterializeEmptyRetroAnalysisHandler",
     "ReconcileImprovementsHandler",
-    "RecordAnalysisFailedHandler",
-    "RecordRetroPipelineFailureHandler",
+    "RetroSynthesizeHandler",
+    "route_retro_synthesis",
     "RetroCollectHandler",
-    "RetroEvidenceGapFallbackHandler",
     "analysis_slice",
     "assemble_context",
     "assert_collect_identity",

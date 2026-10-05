@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import json
+import hashlib
 import re
 from collections.abc import Mapping
-from pathlib import Path
 from typing import cast
 
 import yaml
-from pydantic import ValidationError
 
 from agent_runtime_contracts.ops import OutputError
 
 from assurance_intake.contracts import MinimumCoverageMatrixAuthoring
 from assurance_intake.contracts.review import ReviewRepairActionV1
-from assurance_intake.domain.artifacts import file_digest, read_regular_bytes, workspace_file
 from assurance_intake.ops.case_repair.models import ReviewRepairContractV1
 
 
@@ -217,25 +214,21 @@ def _validate_proposal_repair_document(
             raise OutputError(f"review repair did not change named proposal section: {heading}")
 
 
-def _matrix_rows(data: bytes, *, artifact: str) -> tuple[dict[str, object], ...]:
-    try:
-        document = MinimumCoverageMatrixAuthoring.model_validate(json.loads(data))
-    except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
-        raise OutputError(f"invalid repaired minimum-coverage-matrix.json {artifact}: {error}") from error
+def _matrix_rows(document: MinimumCoverageMatrixAuthoring) -> tuple[dict[str, object], ...]:
     return tuple(cast(dict[str, object], row.model_dump(mode="json")) for row in document.root)
 
 
 def _validate_matrix_repair_document(
     *,
     artifact: str,
-    before: bytes,
-    after: bytes,
+    before: MinimumCoverageMatrixAuthoring,
+    after: MinimumCoverageMatrixAuthoring,
     actions: tuple[ReviewRepairActionV1, ...],
 ) -> None:
     if any(action.case_id is not None for action in actions):
         raise OutputError("minimum coverage matrix review repair case_id must be null")
-    before_rows = _matrix_rows(before, artifact=artifact)
-    after_rows = _matrix_rows(after, artifact=artifact)
+    before_rows = _matrix_rows(before)
+    after_rows = _matrix_rows(after)
     before_ids = tuple(cast(str, row["mrc_id"]) for row in before_rows)
     after_ids = tuple(cast(str, row["mrc_id"]) for row in after_rows)
     if before_ids != after_ids:
@@ -276,6 +269,8 @@ def _validate_repair_document(
     artifact: str,
     before: bytes,
     after: bytes,
+    before_document: object,
+    after_document: object,
     actions: tuple[ReviewRepairActionV1, ...],
 ) -> None:
     if artifact.endswith("/case.yaml"):
@@ -298,10 +293,12 @@ def _validate_repair_document(
             actions=actions,
         )
     elif artifact.endswith("/trace/minimum-coverage-matrix.json"):
+        assert isinstance(before_document, MinimumCoverageMatrixAuthoring)
+        assert isinstance(after_document, MinimumCoverageMatrixAuthoring)
         _validate_matrix_repair_document(
             artifact=artifact,
-            before=before,
-            after=after,
+            before=before_document,
+            after=after_document,
             actions=actions,
         )
     else:
@@ -309,36 +306,39 @@ def _validate_repair_document(
 
 
 def validate_review_repair(
-    project_root: Path,
-    write_root: Path,
     contract: ReviewRepairContractV1,
-) -> dict[str, bytes]:
-    review = read_regular_bytes(project_root, contract.review_path, kind="case-review authority")
-    if file_digest(review) != contract.review_sha256:
+    *,
+    project_refs: Mapping[str, str],
+    project_images: Mapping[str, bytes],
+    project_documents: Mapping[str, object],
+    candidate_documents: Mapping[str, object],
+    images: Mapping[str, bytes],
+    staged_paths: frozenset[str],
+) -> None:
+    if project_refs[contract.review_path] != contract.review_sha256:
         raise OutputError("case-review repair authority changed after prepare")
     actions_by_artifact: dict[str, list[ReviewRepairActionV1]] = {}
     for action in contract.actions:
         actions_by_artifact.setdefault(action.artifact, []).append(action)
-    images: dict[str, bytes] = {}
     for relative, baseline_digest in contract.baseline_file_digests.items():
-        baseline = read_regular_bytes(project_root, relative, kind="review repair baseline")
-        if file_digest(baseline) != baseline_digest:
+        if project_refs[relative] != baseline_digest:
             raise OutputError(f"review repair baseline changed after prepare: {relative}")
+        baseline = project_images[relative]
         actions = actions_by_artifact.get(relative)
         if actions is None:
-            candidate_path = workspace_file(write_root, relative)
-            if candidate_path.exists() or candidate_path.is_symlink():
+            if relative in staged_paths:
                 raise OutputError(f"review repair staged a non-target output: {relative}")
-            images[relative] = baseline
             continue
-        candidate = read_regular_bytes(write_root, relative, kind="review repair output")
-        if file_digest(candidate) == baseline_digest:
+        if relative not in staged_paths:
+            raise OutputError(f"review repair target is missing: {relative}")
+        candidate = images[relative]
+        if baseline_digest == hashlib.sha256(candidate).hexdigest():
             raise OutputError(f"review repair target did not change: {relative}")
         _validate_repair_document(
             artifact=relative,
             before=baseline,
             after=candidate,
+            before_document=project_documents[relative],
+            after_document=candidate_documents[relative],
             actions=tuple(actions),
         )
-        images[relative] = candidate
-    return images

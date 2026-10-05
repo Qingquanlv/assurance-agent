@@ -33,13 +33,14 @@ from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.boot.graph_revision import FeatureFactoryRef
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
+from graph_engine.testing.feature_bundle import compile_bundle
 
 PUBLIC_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
     "assurance.intake": ("prepare", "case"),
     "assurance.generation": ("generation",),
     "assurance.execution": ("execute", "rerun"),
     "assurance.quality": ("assess", "issue_review", "issue_analyze", "issue_reconcile", "report"),
-    "assurance.healing": ("repair_failure", "repair_coverage"),
+    "assurance.healing": ("repair_failure",),
     "assurance.improvement": (
         "archive",
         "retro",
@@ -56,20 +57,15 @@ EXPECTED_BUNDLE_COUNTS = {
     "assurance.generation": 1,
     "assurance.execution": 2,
     "assurance.quality": 5,
-    "assurance.healing": 2,
+    "assurance.healing": 1,
     "assurance.improvement": 7,
 }
 
 IMPLEMENTED_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
-    "assurance.intake": ("prepare", "case"),
+    "assurance.intake": ("prepare", "case", "coverage_rework"),
     "assurance.generation": (
         "generation",
-        "api",
-        "e2e",
-        "fuzz",
-        "performance",
         "init_runtime",
-        "resolve_inputs",
     ),
     "assurance.execution": ("execute", "rerun"),
     "assurance.quality": (
@@ -81,7 +77,7 @@ IMPLEMENTED_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
         "fact_baseline",
         "surface_baseline",
     ),
-    "assurance.healing": ("repair_failure", "repair_coverage"),
+    "assurance.healing": ("repair_failure",),
     "assurance.improvement": (
         "archive",
         "retro",
@@ -90,6 +86,7 @@ IMPLEMENTED_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
         "export",
         "apply",
         "rollback",
+        "runtime_snapshot",
     ),
 }
 
@@ -224,7 +221,7 @@ def _bundle_projection(bundle: object, context: RecordingCapabilityBuildContext)
 
 def _build_owner(owner_id: str) -> tuple[object, RecordingCapabilityBuildContext, str]:
     context = _spy_context(owner_id)
-    bundle = _FACTORY_BUILDERS[owner_id](context)
+    bundle = compile_bundle(_FACTORY_BUILDERS[owner_id](context))
     projection = _bundle_projection(bundle, context)
     return bundle, context, canonical_digest(projection)
 
@@ -240,22 +237,10 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
         if contract_id in agent_contract_ids
     )
 
-    duplicated_contract_ids = {
-        *(
-            f"assurance.generation.agent.{family}.{stage}.v1"
-            for family in ("api", "e2e", "fuzz", "performance")
-            for stage in ("codegen", "codegen-review")
-        ),
-    }
-    expected = Counter(
-        {
-            contract_id: 2 if contract_id in duplicated_contract_ids else 1
-            for contract_id in agent_contract_ids
-        }
-    )
+    expected = Counter({contract_id: 1 for contract_id in agent_contract_ids})
 
     assert Counter(occurrences) == expected
-    assert expected.total() == 35
+    assert expected.total() == 26
 
 
 def test_all_attempt_occurrences_are_exact() -> None:
@@ -266,20 +251,16 @@ def test_all_attempt_occurrences_are_exact() -> None:
     ids = set(agents) | {item.contract_id for item in tasks.values()}
     expected = Counter({contract_id: 1 for contract_id in ids})
     expected["assurance.intake.agent.case-design.v1"] = 1
-    expected["assurance.generation.resolve-inputs"] = 2
     expected["assurance.improvement.task.evaluate-memory-improvement"] = 2
-    for family in ("api", "e2e", "fuzz", "performance"):
-        for stage in ("codegen", "codegen-review"):
-            expected[f"assurance.generation.agent.{family}.{stage}.v1"] = 2
     actual = Counter(
         contract_id
         for owner in _FACTORY_BUILDERS
         for contract_id in _build_owner(owner)[1].bound_contract_ids
     )
-    assert len(ids) == 45
-    assert expected.total() == 55
+    assert len(ids) == 47
+    assert expected.total() == 48
     assert actual == expected
-    assert sum(len(names) for names in IMPLEMENTED_BUNDLE_FIELDS.values()) == 27
+    assert sum(len(names) for names in IMPLEMENTED_BUNDLE_FIELDS.values()) == 23
 
 
 def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) -> None:
@@ -337,12 +318,21 @@ def test_all_graph_modules_delegate_attempt_registration_to_helper(monkeypatch) 
     # function, so the two patches do not count the same registration twice.
     assert attempt_graph.add_attempt_node is add_attempt_node
     monkeypatch.setattr(attempt_graph, "add_attempt_node", record)
-    contexts = [_build_owner(owner)[1] for owner in _FACTORY_BUILDERS]
-    assert len(visited) >= 12
-    assert len(calls) == 55
-    assert Counter(contract_id for _, contract_id in calls) == Counter(
-        contract_id for context in contexts for contract_id in context.bound_contract_ids
+    contexts = {owner: _build_owner(owner)[1] for owner in _FACTORY_BUILDERS}
+    # Intake prepare and case are Flow graphs. They bind contracts without add_attempt_node.
+    helper_bound = Counter(
+        contract_id
+        for owner, context in contexts.items()
+        if owner != "assurance.intake"
+        for contract_id in context.bound_contract_ids
     )
+    assert len(visited) >= 12
+    # F2 one-shot graphs bind through Flow and do not call add_attempt_node.
+    registered = Counter(contract_id for _, contract_id in calls)
+    assert registered <= helper_bound
+    # Every capability graph is a Flow, so none of them call add_attempt_node.
+    assert len(calls) == registered.total() == 0
+    assert (helper_bound - registered) == helper_bound
 
 
 def test_product_allowlist_pairs_match_the_six_factory_builders() -> None:

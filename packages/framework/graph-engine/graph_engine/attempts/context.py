@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from pydantic import Field
 
 from graph_engine.attempts.keys import AttemptKey
+from graph_engine.canonical import JSONValue
+from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import FrozenModel, TaskWorkspaceBinding
 
 
@@ -22,6 +25,13 @@ class AttemptExecutionContext(FrozenModel):
 class AuthorizedAttemptScope:
     execution: AttemptExecutionContext
     workspace: TaskWorkspaceBinding
+    runtime_evidence: Callable[[], Awaitable[JSONValue]] | None = None
+
+    async def read_runtime_evidence(self) -> JSONValue:
+        """Organized evidence for this invocation, or an error when it was not declared."""
+        if self.runtime_evidence is None:
+            raise GraphEngineError("runtime evidence is not declared on this contract")
+        return await self.runtime_evidence()
 
 
 __all__ = ["AttemptExecutionContext", "AuthorizedAttemptScope"]

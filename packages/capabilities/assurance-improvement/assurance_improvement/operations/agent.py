@@ -8,13 +8,13 @@ from typing import Literal, Protocol
 from pydantic import ValidationError
 
 from agent_runtime_contracts.ops import InputError, OutputError
+from graph_engine.artifacts import ArtifactReadError, read_workspace_file
 
 from assurance_improvement.contracts.agent import (
     RetroAnalysisInputV1,
     RetroAnalysisResultV3,
     RetroSynthesisInputV1,
 )
-from assurance_improvement.validators.paths import canonical_relative
 
 DomainName = Literal["issue", "workflow", "eval", "discovery", "coverage_gap"]
 
@@ -32,19 +32,11 @@ def _source_ids(result: RetroAnalysisResultV3) -> tuple[str, ...]:
     return tuple(ids)
 
 
-def _workspace_file(workspace: Path, relative: str) -> Path:
-    if not relative or not canonical_relative(relative):
-        raise OutputError("Retro result path must be canonical and relative")
-    path = workspace / relative
-    path.resolve(strict=True).relative_to(workspace.resolve(strict=True))
-    for part in (path, *path.parents):
-        if part == workspace:
-            break
-        if part.is_symlink():
-            raise OutputError("Retro result path must not contain symlinks")
-    if not path.is_file() or path.stat().st_nlink != 1:
-        raise OutputError("Retro result must be a regular single-link file")
-    return path
+def _workspace_file(workspace: Path, relative: str) -> bytes:
+    try:
+        return read_workspace_file(workspace, relative)
+    except ArtifactReadError as error:
+        raise OutputError(str(error)) from error
 
 
 def commit_retro(
@@ -56,7 +48,7 @@ def commit_retro(
 ) -> RetroAnalysisResultV3:
     document = result
     if expected_domain is None:
-        if not isinstance(business, RetroSynthesisInputV1):
+        if not isinstance(business, RetroSynthesisInputV1) or business.context is None:
             raise InputError("retro synthesis requires the locked context")
         context_lock = business.context
         if document.retro_id != context_lock.retro_id:
@@ -73,7 +65,7 @@ def commit_retro(
         except (InputError, ValidationError) as error:
             raise OutputError(str(error)) from error
     else:
-        if not isinstance(business, RetroAnalysisInputV1):
+        if not isinstance(business, RetroAnalysisInputV1) or business.evidence_slice is None:
             raise InputError("retro analysis requires the locked evidence slice")
         slice_lock = business.evidence_slice
         if document.retro_id != slice_lock.retro_id:
@@ -94,8 +86,9 @@ def commit_retro(
             raise OutputError("candidate source is outside the retro manifest")
     suffix = f"retro-{expected_domain}-analysis" if expected_domain else "retro"
     try:
-        path = _workspace_file(context.write_root, f"qa/results/retro/{suffix}.json")
-        written = RetroAnalysisResultV3.model_validate_json(path.read_bytes())
+        written = RetroAnalysisResultV3.model_validate_json(
+            _workspace_file(context.write_root, f"qa/results/retro/{suffix}.json")
+        )
     except (OSError, ValueError) as error:
         raise OutputError(f"required Retro result artifact is invalid: {suffix}.json") from error
     if written != document:

@@ -12,6 +12,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_intake.contracts.agent import canonical_relative_paths
 from assurance_intake.contracts.common import NonEmptyStr
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 
 ReviewDecision = Literal["pass", "needs_fix", "needs_human_review", "reject"]
 PublicReviewOutcome = Literal["pass", "needs_fix", "needs_human", "reject"]
@@ -235,6 +236,15 @@ class CaseReviewResultV1(BaseModel):
         if self.public_outcome is not None and self.public_outcome != outcome:
             raise ValueError("public_outcome does not match the normalized review decision")
         return self.model_copy(update={"public_outcome": outcome})
+
+
+class CaseReviewOutputV1(CaseReviewResultV1):
+    """Finalized review plus the evidence created by the After phase."""
+
+    public_outcome: PublicReviewOutcome  # pyright: ignore[reportIncompatibleVariableOverride, reportGeneralTypeIssues]
+    artifacts: tuple[EvidenceArtifactRefV1, ...] = ()
+    reviewed_case: ReviewedCaseV1 | None = None
+    history_ref: EvidenceArtifactRefV1 | None = None
 
 
 def normalize_public_review_outcome(

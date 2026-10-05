@@ -322,6 +322,8 @@ class ProductRuntimePorts:
             expected_allow = any(".agent." in contract_id for contract_id in reachable)
             if network.allow_opencode != expected_allow:
                 raise ValueError("network policy does not match selected root")
+            from assurance_product.retro_evidence import ProjectedRuntimeEvidence
+
             kernel = AssuranceAttemptKernel(
                 journal=journal,
                 arbiter=ResourceArbiter(SqliteResourceAuthorizationStore(backend)),
@@ -332,6 +334,7 @@ class ProductRuntimePorts:
                 schemas=typed_composition.registries.schemas,
                 effect_state=effect_state,
                 pause_requested=pause_requested,
+                runtime_evidence=ProjectedRuntimeEvidence(workspace, journal.read_records),
             )
             ports = cls(
                 workspace=workspace,
@@ -437,7 +440,6 @@ class ProductRuntimePorts:
     ) -> BootArtifact:
         from assurance_product.graph_factories import build_feature_graphs
         from assurance_product.graphs.factory import build_product_graphs
-        from assurance_product.retro_evidence import snapshot_runtime_evidence
 
         if fencing_token < 1:
             raise ValueError("fencing token")
@@ -473,19 +475,7 @@ class ProductRuntimePorts:
             resolved_contracts=semantic,
         )
         features = build_feature_graphs(context)
-
-        async def runtime_snapshot():
-            return await snapshot_runtime_evidence(
-                self.workspace,
-                self.attempt_journal.read_records,
-                invocation_id=invocation_id,
-            )
-
-        graphs = build_product_graphs(
-            context=context,
-            features=features,
-            runtime_snapshot=runtime_snapshot,
-        )
+        graphs = build_product_graphs(context=context, features=features)
         composition = cast(FrozenComposition, self.composition)
         manifest = product_graph_manifest(composition, product_lock_from_composition(composition))
         artifact = BootArtifact(
@@ -593,8 +583,8 @@ def _preflight_selected_root(
     reachable: Sequence[str],
 ) -> NetworkPolicy:
     semantic = getattr(composition, "semantic_attempt_contracts", {})
-    if len(semantic) != 45:
-        raise ValueError("composition must resolve all 45 semantic contracts")
+    if len(semantic) != 47:
+        raise ValueError("composition must resolve all 47 semantic contracts")
     missing_reachable = tuple(contract_id for contract_id in reachable if contract_id not in semantic)
     if missing_reachable:
         raise ValueError(f"missing required port for contract {missing_reachable[0]}")

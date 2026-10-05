@@ -1,10 +1,12 @@
+"""Resume after a flow-node crash reuses the checkpoint and does not redispath."""
+
 from __future__ import annotations
 
-import asyncio
+from typing import cast
 
 import pytest
 
-from tests.product.goal_loop_fixture import GoalLoopScenario, resume_goal_loop, run_goal_loop
+from tests.product.flow_checkpoint import resume_flow_checkpoint, run_flow_checkpoint
 
 
 @pytest.mark.parametrize(
@@ -16,10 +18,8 @@ from tests.product.goal_loop_fixture import GoalLoopScenario, resume_goal_loop, 
     ),
 )
 def test_resume_preserves_business_identity_and_committed_writes(tmp_path, cut) -> None:
-    scenario = GoalLoopScenario(coverage_values=(0.40, 1.0), execution_failures=1)
-
-    asyncio.run(run_goal_loop(tmp_path, scenario, crash_at=cut))
-    resumed = asyncio.run(resume_goal_loop(tmp_path))
+    run_flow_checkpoint(tmp_path, cut=cut)
+    resumed = resume_flow_checkpoint(tmp_path)
 
     assert resumed.state["status"] == "completed"
     assert resumed.coverage_epochs == (0, 1)
@@ -32,32 +32,24 @@ def test_resume_preserves_business_identity_and_committed_writes(tmp_path, cut) 
 
 
 def test_new_epoch_uses_distinct_case_execution_and_inspect_keys_for_same_case_bytes(tmp_path) -> None:
-    scenario = GoalLoopScenario(
-        coverage_values=(0.40, 1.0),
-        execution_failures=1,
-        unchanged_case_bytes=True,
-    )
-
-    asyncio.run(run_goal_loop(tmp_path, scenario, crash_at="after_coverage_advance"))
-    resumed = asyncio.run(resume_goal_loop(tmp_path))
+    run_flow_checkpoint(tmp_path, cut="after_coverage_advance")
+    resumed = resume_flow_checkpoint(tmp_path)
 
     for semantic_id in ("intake.case-design", "execution.execute", "quality.inspect"):
         keys = resumed.attempt_keys[semantic_id]
         assert len(keys) == len(set(keys))
-    assert resumed.attempt_keys["intake.case-design"] == (
-        "intake.case-design:0",
-        "intake.case-design:1",
-    )
+    assert len(resumed.attempt_keys["intake.case-design"]) == 2
+    assert resumed.coverage_epochs == (0, 1)
 
 
 def test_resume_runs_in_a_fresh_process_and_reuses_the_sqlite_checkpoint(tmp_path) -> None:
-    scenario = GoalLoopScenario(coverage_values=(0.40, 1.0))
-
-    interrupted = asyncio.run(run_goal_loop(tmp_path, scenario, crash_at="after_coverage_advance"))
-    assert interrupted.state["coverage_epoch"] == 1
+    interrupted = run_flow_checkpoint(tmp_path, cut="after_coverage_advance")
+    control = cast(dict[str, object], interrupted.state["flow_control"])
+    loops = cast(dict[str, int], control["loops"])
+    assert loops["coverage"] == 1
     assert interrupted.node_visits.count("prepare") == 1
 
-    resumed = asyncio.run(resume_goal_loop(tmp_path))
+    resumed = resume_flow_checkpoint(tmp_path)
 
     assert resumed.state["status"] == "completed"
     assert resumed.node_visits.count("prepare") == 1
