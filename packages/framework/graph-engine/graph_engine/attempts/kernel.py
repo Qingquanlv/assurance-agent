@@ -477,7 +477,6 @@ class AssuranceAttemptKernel:
         await self.arbiter.assert_usable(attempt_key, fencing_token=context.fencing_token)
 
 
-
 _RESOLUTION_TYPES = (
     RejectedTaskResult,
     PermanentTaskFailure,
