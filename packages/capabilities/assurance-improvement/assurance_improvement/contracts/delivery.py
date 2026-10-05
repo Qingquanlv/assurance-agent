@@ -97,12 +97,48 @@ class MemoryApplyReceipt(BaseModel):
     receipt_sha256: NonEmptyStr
 
 
+EvalApplyRoute = Literal["apply", "failed"]
+
+
+def evaluate_apply_route(outcome: object) -> EvalApplyRoute:
+    named = getattr(outcome, "value", outcome)
+    return "apply" if named == "passed" else "failed"
+
+
+class MemoryEvalPublishedV1(BaseModel):
+    """Evaluate output. ``memory_eval`` is the receipt apply still validates."""
+
+    model_config = _FROZEN
+
+    memory_eval: MemoryEvalReceipt
+    effect_refs: tuple[dict[str, str], ...] = ()
+    route: EvalApplyRoute
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_route(cls, value: object) -> object:
+        if not isinstance(value, dict) or "route" in value:
+            return value
+        body = value.get("memory_eval", value)
+        outcome = body.get("outcome") if isinstance(body, dict) else getattr(body, "outcome", None)
+        return {**value, "route": evaluate_apply_route(outcome)}
+
+
+class ChangeExportPublishedV1(ChangeExportReceipt):
+    effect_refs: tuple[dict[str, str], ...] = ()
+
+
 class MemoryRollbackReceipt(BaseModel):
     model_config = _FROZEN
 
     target: NonEmptyStr
     restored_sha256: NonEmptyStr
     reason: NonEmptyStr
+
+
+class MemoryRollbackPublishedV1(MemoryRollbackReceipt):
+    lifecycle_state: Literal["rolled_back"] = "rolled_back"
+    effect_refs: tuple[dict[str, str], ...] = ()
 
 
 class ImprovementOutboxEntry(BaseModel):

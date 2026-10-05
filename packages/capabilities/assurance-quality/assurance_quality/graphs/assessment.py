@@ -1,31 +1,25 @@
+"""Assess: materialize the locked inputs, then route on the inspection disposition."""
+
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Mapping
-from typing import Any, cast
-
-from langgraph.graph import END, START
-from langgraph.graph.state import CompiledStateGraph
+from pydantic import Field
 
 from graph_engine.boot.boot import CapabilityBuildContext
-from graph_engine.stategraph import AttemptGraph
-from graph_engine.stategraph.routing import select_exclusive_route
+from graph_engine.flow import BoundFlow, Flow, ledger, ledger_receipt
+from graph_engine.plugin_api import FrozenModel
 
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS as EXECUTION_TASKS
+from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS as GENERATION_TASKS
+from assurance_intake.contracts import PolicyResourceV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.assessment import InspectionDisposition
 from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
-from assurance_quality.graphs.issues import route_attempt
-from assurance_quality.graphs.nodes import (
-    activation_assess,
-    activation_materialize_assessment,
-    publish_inspect,
-    publish_materialize_assessment,
-    select_inspect,
-    select_materialize_assessment,
-    terminal_done,
-)
-from assurance_quality.graphs.state import QualityState
 from assurance_quality.ops.inspect import op as inspect_op
 
-_COVERAGE_OTHERWISE = "failed"
+_MATERIALIZE = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
+_GENERATION_CYCLE = GENERATION_TASKS["publish-cycle"].artifact("cycle")
+_EXECUTION_CYCLE = EXECUTION_TASKS["execute"].artifact("cycle")
+_LEDGER = (_GENERATION_CYCLE, _EXECUTION_CYCLE)
 _DISPOSITIONS: tuple[InspectionDisposition, ...] = (
     "satisfied",
     "coverage_insufficient",
@@ -34,63 +28,56 @@ _DISPOSITIONS: tuple[InspectionDisposition, ...] = (
     "needs_human",
     "blocked",
 )
-_COVERAGE_PATHS: dict[Hashable, str] = {
-    name: END if name == "analysis_required" else name for name in (*_DISPOSITIONS, "failed")
-}
-_MATERIALIZE_TARGETS = ("quality.inspect", "failed")
 
 
-def coverage_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    raw = state.get("inspection_outcome")
-    current = raw.get("disposition") if isinstance(raw, Mapping) else getattr(raw, "disposition", None)
-    return {name: name if current == name else None for name in _DISPOSITIONS}
+class AssessFlowInput(FrozenModel):
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
+    capability_leafs: tuple[str, ...] = ()
+    allowed_artifact_paths: tuple[str, ...] = ()
+    product_policy: PolicyResourceV1
+    reviewed_case_ref: EvidenceArtifactRefV1
+    repair_round: int = Field(default=0, ge=0)
+    fact_baseline_ref: EvidenceArtifactRefV1 | None = None
+    healing_ref: EvidenceArtifactRefV1 | None = None
+    issue_ref: EvidenceArtifactRefV1 | None = None
 
 
-def route_coverage(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return _COVERAGE_OTHERWISE
-    return select_exclusive_route(coverage_named_matches(state), otherwise=_COVERAGE_OTHERWISE)
-
-
-def _node(fn: object) -> Callable[..., Any]:
-    return cast(Callable[..., Any], fn)
-
-
-def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
-    builder: AttemptGraph[QualityState] = AttemptGraph(QualityState, context, namespace="quality")
-    builder.add_attempt(
-        "quality.materialize-assessment-inputs",
-        TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"],
-        select=select_materialize_assessment,
-        publish=publish_materialize_assessment,
-        activation=activation_materialize_assessment,
-        semantic_node_id="quality.materialize-assessment-inputs",
+def build_assess_graph(context: CapabilityBuildContext) -> BoundFlow:
+    flow = Flow(
+        "quality",
+        input=AssessFlowInput,
+        outcomes=(*_DISPOSITIONS, "failed"),
+        ledger_inputs=_LEDGER,
     )
-    builder.add_attempt(
-        "quality.inspect",
+    flow.step(
+        "materialize-assessment-inputs",
+        _MATERIALIZE,
+        then="inspect",
+        on_failure="failed",
+        inputs={
+            "generation_ref": ledger(_GENERATION_CYCLE, many=False),
+            "execution_ref": ledger(_EXECUTION_CYCLE, many=False),
+            "execution_receipt": ledger_receipt(_EXECUTION_CYCLE),
+        },
+    )
+    flow.step(
+        "inspect",
         inspect_op,
-        select=select_inspect,
-        publish=publish_inspect,
-        activation=activation_assess,
-        semantic_node_id="quality.inspect",
+        on_failure="failed",
+        route_on="disposition",
+        routes={name: name for name in _DISPOSITIONS},
+        inputs={
+            "artifact_paths": "allowed_artifact_paths",
+            "assessment_ref": ledger(_MATERIALIZE.artifact("assessment"), many=False),
+            "generation_ref": ledger(_GENERATION_CYCLE, many=False),
+            "execution_ref": ledger(_EXECUTION_CYCLE, many=False),
+            "execution_receipt": ledger_receipt(_EXECUTION_CYCLE),
+        },
     )
-    for name in _COVERAGE_PATHS:
-        if name == "analysis_required":
-            continue
-        builder.add_node(str(name), _node(terminal_done))
-        builder.add_edge(str(name), END)
-    builder.add_edge(START, "quality.materialize-assessment-inputs")
-    builder.add_route(
-        "quality.materialize-assessment-inputs",
-        route_attempt("quality.inspect"),
-        targets=_MATERIALIZE_TARGETS,
-    )
-    builder.add_conditional_edges(
-        "quality.inspect",
-        _node(route_coverage),
-        _COVERAGE_PATHS,
-    )
-    return builder.compile_subgraph()
+    return flow.bind(context)
 
 
-__all__ = ["build_assess_graph", "coverage_named_matches", "route_coverage"]
+__all__ = ["AssessFlowInput", "build_assess_graph"]

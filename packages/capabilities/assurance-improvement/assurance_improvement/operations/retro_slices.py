@@ -11,7 +11,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from graph_engine.attempts import AuthorizedAttemptScope, ExecutedAttemptResult
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -48,18 +48,10 @@ class RetroSlicesInputError(ValueError):
 
 
 def _read_ref(root: Path, ref: EvidenceArtifactRefV1) -> bytes:
-    candidate = root.joinpath(*ref.path.split("/"))
     try:
-        resolved = candidate.resolve(strict=True)
-        resolved.relative_to(root.resolve(strict=True))
-    except (OSError, ValueError) as error:
-        raise RetroSlicesInputError(f"Retro source is unavailable: {ref.path}") from error
-    if not resolved.is_file() or resolved.is_symlink():
-        raise RetroSlicesInputError(f"Retro source is not a regular file: {ref.path}")
-    data = resolved.read_bytes()
-    if hashlib.sha256(data).hexdigest() != ref.digest:
-        raise RetroSlicesInputError(f"Retro source digest drifted: {ref.path}")
-    return data
+        return open_artifact(root, ref)
+    except ArtifactReadError as error:
+        raise RetroSlicesInputError(str(error)) from error
 
 
 def _json(data: bytes, path: str) -> object:
@@ -672,29 +664,29 @@ def build_retro_slices(
     )
 
 
-class RetroBuildSlicesExecutor:
-    async def execute(
-        self,
-        validated_input: RetroBuildSlicesInputV1,
-        scope: AuthorizedAttemptScope,
-    ) -> ExecutedAttemptResult[RetroCollectInput]:
-        return ExecutedAttemptResult(
-            output=build_retro_slices(validated_input, project_root=scope.workspace.project_root)
-        )
-
-
 class RetroBuildSlicesHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        from assurance_improvement.contracts.handoff import SLICE_PATH
+        from assurance_improvement.operations.files import stage_named
+
         try:
             validated = RetroBuildSlicesInputV1.model_validate(request.input)
             output = build_retro_slices(validated, project_root=context.project_root)
-        except (RetroSlicesInputError, ValidationError, OSError) as error:
+            for name, document in (
+                ("issue", output.issue_slice),
+                ("workflow", output.workflow_slice),
+                ("eval", output.eval_slice),
+                ("discovery", output.discovery_slice),
+                ("coverage_gap", output.coverage_gap_slice),
+            ):
+                if document is not None:
+                    stage_named(context, SLICE_PATH[name], document)
+        except (RetroSlicesInputError, ValidationError, OSError, ValueError) as error:
             return TaskOutcome.failed("invalid_input", str(error), retryable=True)
         return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
 
 
 __all__ = [
-    "RetroBuildSlicesExecutor",
     "RetroBuildSlicesHandler",
     "RetroSlicesInputError",
     "build_retro_slices",

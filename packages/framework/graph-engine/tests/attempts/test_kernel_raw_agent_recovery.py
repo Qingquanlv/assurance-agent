@@ -31,7 +31,6 @@ from graph_engine.attempts.resolutions import (
     SystemReference,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
 from graph_engine.effects.state import MemoryEffectState
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
@@ -706,7 +705,7 @@ async def test_cancel_and_reconcile_are_idempotent_and_fenced(tmp_path: Path) ->
         store.close()
 
 
-@pytest.mark.parametrize("kind", sorted(EXPECTED_EFFECT_KINDS))
+@pytest.mark.parametrize("kind", sorted(_HELPERS.REGISTERED_EFFECT_KINDS))
 async def test_raw_agent_exercises_existing_effect_kinds_without_repeat(tmp_path: Path, kind: str) -> None:
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
     effects, schemas = build_effect_registries(handler)

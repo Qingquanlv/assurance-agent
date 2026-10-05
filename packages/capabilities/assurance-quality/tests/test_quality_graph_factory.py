@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from dataclasses import fields
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_quality.contracts.decisions import triage_route
 from assurance_quality.contracts.metrics import (
     METRIC_KEYS,
     MetricEntry,
@@ -19,13 +20,19 @@ from assurance_quality.contracts.metrics import (
     MetricsDocument,
 )
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
-from assurance_quality.graphs.factory import QualityGraphs, build_quality_graphs
-from assurance_quality.graphs.nodes import publish_issue_analysis, select_quality, activation_issue_analysis
+from assurance_quality.graphs.factory import QualityGraphs, build_quality_graphs as _build_quality_graphs
 from assurance_quality.operations.metrics import BoundRisk
 from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
+from graph_engine.stategraph.ledger import ledger_refs
 from graph_engine.testing import GraphHarness, committed
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_quality_graphs(*args, **kwargs):
+    return compile_bundle(_build_quality_graphs(*args, **kwargs))
+
 
 _SHA = "a" * 64
 _RECEIPT_ID = "receipt-1"
@@ -122,7 +129,9 @@ def quality_graph_input(
         "plan_ref": _plan_ref(),
         **_skill_digests(),
     }
-    payload["execution_evidence_digest"] = payload.pop("execution_digest")
+    payload["execution_evidence_digest"] = payload["execution_digest"]
+    allowed = payload["allowed_artifact_paths"]
+    payload["artifact_paths"] = list(allowed) if isinstance(allowed, list) else []
     if activation is not None:
         payload["activation"] = activation
     if coverage_state is not None:
@@ -164,6 +173,7 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
     payload.update(
         {
             "coverage_epoch": 2,
+            "repair_round": 0,
             "reviewed_case": reviewed,
             "generation_result": generation,
             "execution_result": {
@@ -183,8 +193,20 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
                     {"family": "api", "state": "executed", "reason_code": None, "diagnostic_refs": []}
                 ],
             },
-            "policy_resource_id": "assurance.product.configuration.product-policy",
+            "product_policy": {
+                "resource_id": "assurance.product.configuration.product-policy",
+                "sha256": _SHA,
+            },
             "policy_sha256": _SHA,
+            "reviewed_case_ref": {"path": "qa/cases/reviewed-case.json", "digest": _SHA},
+            "artifact_ledger": {
+                "intake.reviewed_case": [{"path": "qa/cases/reviewed-case.json", "digest": _SHA}],
+                "generation.cycle": [{"path": "qa/results/codegen/generation-cycle.json", "digest": _SHA}],
+                "execution.cycle": {
+                    "refs": [{"path": "qa/results/execution/execution-cycle.json", "digest": _SHA}],
+                    "receipt": {"receipt_id": "execution", "receipt_digest": _SHA},
+                },
+            },
             "execution_at": "2026-08-22T00:00:00Z",
             "healing_ref": None,
             "issue_ref": None,
@@ -363,11 +385,24 @@ def _inspect_output() -> dict[str, object]:
 
 def _issue_output(*, classification: str = "test", fix_eligible: bool = True) -> dict[str, object]:
     return {
+        "route": triage_route(classification, fix_eligible),
         "classification": classification,
         "fix_eligible": fix_eligible,
         "evidence_refs": [{"path": "qa/results/inspect/issue-analysis.json", "digest": _SHA}],
         "rounds_budget": 2,
         "rounds_used": 0,
+    }
+
+
+def _routed_issue_analysis() -> dict[str, object]:
+    document = _finalized_issue_analysis_output()
+    return {
+        "route": "fix_eligible",
+        "classification": "test",
+        "fix_eligible": True,
+        "evidence_refs": [document["issue_analysis_ref"]],
+        "issue_analysis": document,
+        "issue_analysis_ref": document["issue_analysis_ref"],
     }
 
 
@@ -429,49 +464,10 @@ def _reconcile_output() -> dict[str, object]:
         "project_sync_status": "completed",
         "batches": ["20260822T000000Z"],
         "issue_snapshot_ref": snapshot_ref,
+        "classification": "test",
+        "fix_eligible": True,
+        "evidence_refs": [snapshot_ref],
     }
-
-
-def test_incomplete_issue_analysis_preserves_evidence_without_authorizing_repair() -> None:
-    output = _finalized_issue_analysis_output()
-    agent_result = cast(dict[str, object], output["agent_result"])
-    agent_result.update(status="pending", candidate_count=0, candidates=[], reason="awaiting evidence")
-    output["candidate_digest"] = None
-
-    published = publish_issue_analysis(quality_graph_input(), output, _receipt())
-
-    assert published["evidence_refs"] == [output["issue_analysis_ref"]]
-    assert published["classification"] == "unknown"
-    assert published["fix_eligible"] is False
-    issue_analysis = cast(Mapping[str, object], published["issue_analysis"])
-    assert issue_analysis["candidate_digest"] is None
-
-
-def test_issue_selection_preserves_evidence_ownership_and_batch_activation() -> None:
-    state = quality_graph_input()
-    selected = select_quality(state)
-    assert selected.owned_evidence_ids == ("OBS-DEMO-001",)
-    assert selected.evidence_bundle_digest == f"sha256:{_SHA}"
-    assert selected.execution_digest == "e" * 64
-    first = activation_issue_analysis(state)
-    assert activation_issue_analysis(dict(state)) == first
-    assert activation_issue_analysis({**state, "batch_id": "20260908T010000Z"}) != first
-
-
-def test_issue_analysis_mixed_product_and_test_bugs_never_authorizes_test_repair() -> None:
-    from copy import deepcopy
-
-    output = _finalized_issue_analysis_output()
-    result = cast(dict, output["agent_result"])
-    candidates = cast(list, result["candidates"])
-    product_bug = deepcopy(candidates[0])
-    product_bug["candidate_id"] = "CAND-2"
-    product_bug["proposed"].update(classification="product_bug", severity="low")
-    candidates.append(product_bug)
-    result["candidate_count"] = 2
-    published = publish_issue_analysis(quality_graph_input(), output, _receipt())
-    assert published["classification"] == "product_bug"
-    assert published["fix_eligible"] is False
 
 
 def _report_output() -> dict[str, object]:
@@ -525,14 +521,6 @@ def recording_context():
 def test_quality_factory_exports_five_public_graphs(
     recording_context, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from assurance_quality.graphs.nodes import (
-        activation_issue_analysis,
-        activation_one_shot,
-        publish_issue,
-        publish_issue_analysis,
-        select_quality,
-    )
-
     calls: list[tuple[str, str, object, object, object]] = []
     original = recording_context.attempt
 
@@ -573,34 +561,9 @@ def test_quality_factory_exports_five_public_graphs(
     assert recording_context.bound_contract_ids.count(_ISSUE_RECONCILE_ID) == 1
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
 
-    def stable_call(row):
-        return tuple((item.__module__, item.__qualname__) if callable(item) else item for item in row)
-
-    actual = [stable_call(row) for row in calls]
-    assert (
-        stable_call(
-            (
-                "assurance.quality.agent.issue-triage.v1",
-                "quality.issue-review",
-                activation_one_shot,
-                select_quality,
-                publish_issue,
-            )
-        )
-        in actual
-    )
-    assert (
-        stable_call(
-            (
-                _ISSUE_ANALYSIS_ID,
-                "quality.issue-analyze",
-                activation_issue_analysis,
-                select_quality,
-                publish_issue_analysis,
-            )
-        )
-        in actual
-    )
+    pairs = [(row[0], row[1]) for row in calls]
+    assert ("assurance.quality.agent.issue-triage.v1", "quality.issue-review") in pairs
+    assert (_ISSUE_ANALYSIS_ID, "quality.issue-analyze") in pairs
 
 
 def test_target_graphs_contain_no_phase_nodes_or_private_table(recording_context) -> None:
@@ -625,29 +588,27 @@ def test_target_graphs_contain_no_phase_nodes_or_private_table(recording_context
                 assert node.id != "Send"
 
 
-def test_assess_public_input_requires_typed_activation() -> None:
-    from assurance_quality.graphs.nodes import activation_assess
-
-    with pytest.raises((ValidationError, ValueError, TypeError, KeyError)):
-        activation_assess(quality_graph_input())
-    initial = activation_assess(assess_graph_input(kind="root", value="1"))
-    recheck = activation_assess(assess_graph_input(kind="round", value="1"))
-    assert initial == BusinessActivation.one_shot()
-    assert recheck == BusinessActivation.for_round(1)
-    assert initial != recheck
-
-
-async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
+async def test_assess_publishes_coverage_state_and_evidence() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
     bundle = build_quality_graphs(context)
     receipt = _receipt()
+    from assurance_quality.contracts.assessment import ASSESSMENT_INPUTS_PATH
+    from test_inspection_outcome import _publish_state, _seal  # pyright: ignore[reportMissingImports]
+
+    published_output = _seal(_publish_state(), _inspect_output())
     result = await harness.run(
         bundle.assess,
         input=assess_graph_input(),
         script={
-            "quality.materialize-assessment-inputs": [committed(_assessment_output(), receipt)],
-            "quality.inspect": [committed(_inspect_output(), receipt)],
+            "quality.materialize-assessment-inputs": [
+                committed(
+                    _assessment_output(),
+                    receipt,
+                    artifacts=[{"path": ASSESSMENT_INPUTS_PATH, "digest": "c" * 64}],
+                )
+            ],
+            "quality.inspect": [committed(published_output, receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
@@ -660,20 +621,94 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
     ]
     published = result.published_update
     assert published is not None
-    assert published["coverage_state"] == "satisfied"
-    assert published["rounds_budget"] == 2
-    assert published["rounds_used"] == 0
-    inspection_outcome = published["inspection_outcome"]
-    evidence_refs = published["evidence_refs"]
-    assert isinstance(inspection_outcome, dict)
-    assert isinstance(evidence_refs, list)
-    assert inspection_outcome["disposition"] == "satisfied"
-    receipt_payload = inspection_outcome["inspection_receipt"]
-    assert isinstance(receipt_payload, dict)
-    assert receipt_payload["receipt_id"] == _RECEIPT_ID
-    assert len(evidence_refs) == 9
-    assert any("obligation-assessment.json" in str(ref["path"]) for ref in evidence_refs)
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == "satisfied"
+    assert "coverage_state" not in published
+    assert "inspection_outcome" not in published
+    assert "inspection_receipt" not in published
+    outcome = published_output["inspection_outcome"]
+    assert isinstance(outcome, dict)
+    assert outcome["disposition"] == "satisfied"
+    assert "inspection_receipt" not in outcome
     assert result.terminal is not None
+
+
+_ASSESS_DISPOSITIONS = (
+    "satisfied",
+    "coverage_insufficient",
+    "repairable_execution_failure",
+    "analysis_required",
+    "needs_human",
+    "blocked",
+)
+
+
+def _scripted_inspection(disposition: str) -> dict[str, object]:
+    from test_inspection_outcome import _publish_state, _seal  # pyright: ignore[reportMissingImports]
+
+    published = _seal(_publish_state(), _inspect_output())
+    coverage = {
+        "satisfied": "satisfied",
+        "coverage_insufficient": "repair_required",
+    }.get(disposition)
+    published["disposition"] = disposition
+    published["coverage_state"] = coverage
+    outcome = published["inspection_outcome"]
+    assert isinstance(outcome, dict)
+    outcome["disposition"] = disposition
+    outcome["coverage_state"] = coverage
+    return published
+
+
+@pytest.mark.parametrize("disposition", _ASSESS_DISPOSITIONS)
+async def test_assess_status_is_the_inspection_disposition(disposition: str) -> None:
+    from assurance_quality.contracts.assessment import ASSESSMENT_INPUTS_PATH
+
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
+    bundle = build_quality_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.assess,
+        input=assess_graph_input(),
+        script={
+            "quality.materialize-assessment-inputs": [
+                committed(
+                    _assessment_output(),
+                    receipt,
+                    artifacts=[{"path": ASSESSMENT_INPUTS_PATH, "digest": "c" * 64}],
+                )
+            ],
+            "quality.inspect": [committed(_scripted_inspection(disposition), receipt)],
+        },
+    )
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == disposition
+
+
+async def test_assess_fails_when_inspect_attempt_fails() -> None:
+    from assurance_quality.contracts.assessment import ASSESSMENT_INPUTS_PATH
+
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
+    bundle = build_quality_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.assess,
+        input=assess_graph_input(),
+        script={
+            "quality.materialize-assessment-inputs": [
+                committed(
+                    _assessment_output(),
+                    receipt,
+                    artifacts=[{"path": ASSESSMENT_INPUTS_PATH, "digest": "c" * 64}],
+                )
+            ],
+            "quality.inspect": [PermanentTaskFailure(kind="invalid_output", message="inspection drifted")],
+        },
+    )
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == "failed"
 
 
 async def test_assess_stops_before_inspect_when_materialization_fails() -> None:
@@ -700,19 +735,20 @@ async def test_fact_baseline_export_publishes_the_committed_ref() -> None:
     context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
     bundle = build_quality_graphs(context)
     receipt = _receipt()
+    output = _fact_baseline_output()
+    baseline = {"path": "qa/results/facts/fact-baseline.json", "digest": _SHA}
     result = await harness.run(
         bundle.fact_baseline,
         input=assess_graph_input(),
-        script={"quality.fact-baseline": [committed(_fact_baseline_output(), receipt)]},
+        script={
+            "quality.fact-baseline": [committed(output, receipt, artifacts=[baseline])],
+        },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == ["quality.fact-baseline"]
     assert [call.contract_id for call in result.semantic_calls] == [_FACT_BASELINE_ID]
-    published = result.published_update
-    assert published is not None
-    assert published["fact_baseline_ref"] == {
-        "path": "qa/results/facts/fact-baseline.json",
-        "digest": _SHA,
-    }
+    assert output["fact_baseline_ref"] == baseline
+    assert isinstance(result.terminal, dict)
+    assert ledger_refs(result.terminal["artifact_ledger"], "quality.baseline") == [baseline]
 
 
 @pytest.mark.parametrize(
@@ -729,25 +765,18 @@ async def test_issue_exports_are_independently_callable(
     context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
     bundle = build_quality_graphs(context)
     graph = getattr(bundle, graph_name)
+    output = _routed_issue_analysis() if graph_name == "issue_analyze" else _issue_output()
     result = await harness.run(
         graph,
         input=quality_graph_input(classification="test"),
-        script={
-            semantic_node_id: [
-                committed(
-                    _finalized_issue_analysis_output() if graph_name == "issue_analyze" else _issue_output(),
-                    _receipt(),
-                )
-            ]
-        },
+        script={semantic_node_id: [committed(output, _receipt())]},
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [semantic_node_id]
     assert [call.contract_id for call in result.semantic_calls] == [contract_id]
-    published = result.published_update
-    assert published is not None
-    assert published["classification"] == "test"
-    assert published["fix_eligible"] is True
-    assert result.terminal is not None
+    assert output["classification"] == "test"
+    assert output["fix_eligible"] is True
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == output["route"]
 
 
 async def test_issue_reconcile_export_is_the_deterministic_task() -> None:
@@ -756,22 +785,23 @@ async def test_issue_reconcile_export_is_the_deterministic_task() -> None:
     bundle = build_quality_graphs(context)
     payload = quality_graph_input()
     payload["issue_analysis"] = _finalized_issue_analysis_output()
+    output = _reconcile_output()
+    snapshot = {"path": "qa/results/issues/snapshot.json", "digest": _SHA}
     result = await harness.run(
         bundle.issue_reconcile,
         input=payload,
-        script={"quality.issue-reconcile": [committed(_reconcile_output(), _receipt())]},
+        script={
+            "quality.issue-reconcile": [committed(output, _receipt(), artifacts=[snapshot])],
+        },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == ["quality.issue-reconcile"]
     assert [call.contract_id for call in result.semantic_calls] == [_ISSUE_RECONCILE_ID]
-    published = result.published_update
-    assert published is not None
-    assert published["issue_snapshot_ref"] == {
-        "path": "qa/results/issues/snapshot.json",
-        "digest": _SHA,
-    }
-    assert published["classification"] == "test"
-    assert published["fix_eligible"] is True
-    assert result.terminal is not None
+    assert output["issue_snapshot_ref"] == snapshot
+    assert output["classification"] == "test"
+    assert output["fix_eligible"] is True
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == "ready"
+    assert ledger_refs(result.terminal["artifact_ledger"], "quality.snapshot") == [snapshot]
 
 
 async def test_report_rejects_coverage_flag_and_preexisting_report_references() -> None:

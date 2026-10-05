@@ -1,10 +1,10 @@
 from graph_engine.effects.apply import AttemptEffectSettler
 from graph_engine.effects.contracts import (
-    EXPECTED_EFFECT_KINDS,
     GRAPH_NAMES_NOT_EFFECT_KINDS,
     IN_ATTEMPT_SETTLEMENT,
     effect_idempotency_key,
 )
+from graph_engine.effects.idempotent import apply_idempotent_effect, reconcile_idempotent_effect
 from graph_engine.effects.recovery import intent_from_state, next_effect_action
 from graph_engine.effects.state import (
     EffectCallContext,
@@ -17,8 +17,9 @@ from graph_engine.effects.state import (
 )
 
 __all__ = [
-    "EXPECTED_EFFECT_KINDS",
     "GRAPH_NAMES_NOT_EFFECT_KINDS",
+    "apply_idempotent_effect",
+    "reconcile_idempotent_effect",
     "IN_ATTEMPT_SETTLEMENT",
     "AttemptEffectSettler",
     "EffectCallContext",

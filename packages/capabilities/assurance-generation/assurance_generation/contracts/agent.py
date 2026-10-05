@@ -8,9 +8,8 @@ from typing import Any
 from pydantic import Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult
+from graph_engine.artifacts import is_canonical_relative
 from graph_engine.plugin_api import FrozenModel
-
-from assurance_generation.contracts.plans import canonical_relative_path
 from assurance_intake.contracts import EvidenceArtifactRefV1, ReviewedCaseV1, RiskTier
 from assurance_intake.contracts.workflow import require_same_plan
 
@@ -25,18 +24,17 @@ def _sorted_unique(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
 
 
 def _canonical_relative_paths(values: tuple[str, ...]) -> tuple[str, ...]:
-    paths = tuple(canonical_relative_path(path) for path in _sorted_unique(values, label="artifact path"))
+    paths = _sorted_unique(values, label="artifact path")
     for path in paths:
-        if len(path) >= 2 and path[1] == ":":
+        if not is_canonical_relative(path):
             raise ValueError("artifact path must be canonical and relative")
     return paths
 
 
 def _canonical_write_root(path: str) -> str:
     stripped = path.rstrip("/")
-    if not stripped:
+    if not stripped or not is_canonical_relative(stripped):
         raise ValueError("write root must be a non-empty canonical relative prefix")
-    canonical_relative_path(stripped)
     if path != stripped and not path.endswith("/"):
         raise ValueError("write root must be a canonical relative prefix")
     return path
@@ -233,6 +231,57 @@ class CodegenInputV1(FrozenModel):
                 self.reviewed_case.plan_ref,
             )
         return self
+
+
+class CodegenBoundInputV1(FrozenModel):
+    """Flow projection. Prepare opens ``reviewed_case_ref`` into ``CodegenInputV1``."""
+
+    change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
+    capability_leafs: tuple[str, ...]
+    artifact_paths: tuple[str, ...] = ()
+    codegen_scope: dict[str, Any] | None = None
+    codegen_output: dict[str, Any] | None = None
+    reviewed_cases: dict[str, Any] | None = None
+    family_constraints: FamilyConstraintsV1 | None = None
+    coverage_epoch: int = Field(default=0, ge=0)
+    local_round: int = Field(default=0, ge=0)
+    reviewed_case_ref: EvidenceArtifactRefV1 | None = None
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
+    ui_exploration_ref: EvidenceArtifactRefV1 | None = None
+    api_discovery_ref: EvidenceArtifactRefV1 | None = None
+
+    @field_validator("capability_leafs")
+    @classmethod
+    def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _sorted_unique(value, label="capability leaf")
+
+    @field_validator("artifact_paths")
+    @classmethod
+    def _artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_relative_paths(value)
+
+    @field_validator("codegen_scope")
+    @classmethod
+    def _codegen_scope(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and not value:
+            raise ValueError("codegen_scope must be a mapping")
+        return value
+
+    @field_validator("codegen_output")
+    @classmethod
+    def _codegen_output(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and not value:
+            raise ValueError("codegen_output must be a mapping")
+        return value
+
+    @field_validator("reviewed_cases")
+    @classmethod
+    def _reviewed_cases(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and not value:
+            raise ValueError("reviewed_cases must be a mapping")
+        return value
 
 
 def under_write_root(path: str, roots: tuple[str, ...]) -> bool:

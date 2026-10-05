@@ -4,13 +4,13 @@ from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.attempts import TaskAttemptContract
 from graph_engine.plugin_api import AttemptContractRef
 
-from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1, RerunPrepareInputV1
 from assurance_execution.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
     TASK_ATTEMPT_CONTRACTS,
     attempt_contract_refs,
 )
-from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.workflow import ExecutionAttemptOutputV1
 from assurance_execution.plugin import ExecutionPlugin
 
 
@@ -22,8 +22,8 @@ def test_execution_owns_two_non_retrying_task_contracts() -> None:
         assert contract.contract_id == f"assurance.execution.{base}"
         assert contract.owner_id == "assurance.execution"
         assert contract.handler_id == "assurance.execution.run-tests"
-        assert contract.input_model is ExecutionPrepareInputV1
-        assert contract.output_model is ExecutionEvidenceV1
+        assert contract.input_model is (RerunPrepareInputV1 if base == "run" else ExecutionPrepareInputV1)
+        assert contract.output_model is ExecutionAttemptOutputV1
         assert contract.validators == ()
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 3600

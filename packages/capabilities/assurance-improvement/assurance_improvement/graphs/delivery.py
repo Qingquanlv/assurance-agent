@@ -1,40 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any, cast
+from typing import Literal
 
-from langgraph.graph import END, START
-from langgraph.graph.state import CompiledStateGraph
+
+from pydantic import BaseModel, Field, create_model
+from pydantic_core import PydanticUndefined
 
 from graph_engine.boot.boot import CapabilityBuildContext
-from graph_engine.stategraph import AttemptGraph
-from graph_engine.stategraph.attempt_graph import HasContractId
-from graph_engine.stategraph.routing import select_exclusive_route
+from graph_engine.flow import BoundFlow, Flow
+from graph_engine.plugin_api import FrozenModel
 
+from assurance_improvement.contracts.agent import ImprovementSkillInputV1
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
-from assurance_improvement.graphs.nodes import (
-    _public_terminal,
-    activation_one_shot,
-    apply_human_interrupt,
-    publish_apply_memory,
-    publish_archive,
-    publish_auto_review,
-    publish_evaluate,
-    publish_export,
-    publish_human_review,
-    publish_review,
-    publish_rollback,
-    select_apply_memory,
-    select_auto_review,
-    select_evaluate,
-    select_export,
-    select_human_review,
-    select_rollback,
-    select_skill,
-    terminal_done,
-    terminal_failed,
-)
-from assurance_improvement.graphs.state import ImprovementState
+from assurance_improvement.contracts.improvements import ImprovementProjection
+from assurance_improvement.contracts.review import ImprovementAutoReviewAssessment
+from assurance_improvement.graphs.nodes import ApplyHumanDecision
 from assurance_improvement.ops.archive import op as archive
 from assurance_improvement.ops.improvement_review import op as improvement_review
 
@@ -44,254 +24,168 @@ _EVALUATE = TASK_ATTEMPT_CONTRACTS["assurance.improvement.evaluate-memory-improv
 _EXPORT = TASK_ATTEMPT_CONTRACTS["assurance.improvement.export-change-improvement"]
 _APPLY = TASK_ATTEMPT_CONTRACTS["assurance.improvement.apply-memory-improvement"]
 _ROLLBACK = TASK_ATTEMPT_CONTRACTS["assurance.improvement.rollback-memory-improvement"]
-_FAILED = "failed"
-_COMMITTED_TARGETS = ("done", _FAILED)
-_HUMAN_ACTIONS = frozenset({"approve", "reject", "request_rework", "supersede"})
+_EvalOutcome = Literal["passed", "regressed", "awaiting_baseline", "error"]
 
 
-def _node(fn: object) -> Callable[..., Any]:
-    return cast(Callable[..., Any], fn)
+def _without_validation_error(model: type[FrozenModel], name: str) -> type[FrozenModel]:
+    fields: dict[str, object] = {}
+    for field_name, field in model.model_fields.items():
+        if field_name == "validation_error":
+            continue
+        default = ... if field.default is PydanticUndefined else field.default
+        fields[field_name] = (field.annotation, default)
+    return create_model(name, __base__=FrozenModel, **fields)  # type: ignore[call-overload]
 
 
-def _named_matches(
-    state: Mapping[str, object],
-    table: Mapping[str, Callable[[Mapping[str, object]], bool]],
-) -> dict[str, str | None]:
-    return {target: target if predicate(state) else None for target, predicate in table.items()}
-
-
-def terminal_rejected(state: Mapping[str, object]) -> dict[str, object]:
-    return _public_terminal(state, "rejected")
-
-
-def terminal_rework(state: Mapping[str, object]) -> dict[str, object]:
-    return _public_terminal(state, "rework")
-
-
-def terminal_superseded(state: Mapping[str, object]) -> dict[str, object]:
-    return _public_terminal(state, "superseded")
-
-
-def route_committed(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return _FAILED
-    return select_exclusive_route({"done": "done"}, otherwise=_FAILED)
-
-
-_AUTO_REVIEW_OTHERWISE = _FAILED
-_AUTO_REVIEW_TABLE: dict[str, Callable[[Mapping[str, object]], bool]] = {
-    "improvement.apply-evaluate": lambda state: state.get("lifecycle_state") == "approved",
-    "rework": lambda state: state.get("lifecycle_state") == "needs_rework",
-    "rejected": lambda state: state.get("lifecycle_state") == "rejected",
-    "human-review": lambda state: state.get("lifecycle_state") == "proposed",
-}
-
-
-def route_auto_review(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return _AUTO_REVIEW_OTHERWISE
-    return select_exclusive_route(
-        _named_matches(state, _AUTO_REVIEW_TABLE),
-        otherwise=_AUTO_REVIEW_OTHERWISE,
-    )
-
-
-_HUMAN_ACTION_OTHERWISE = _FAILED
-_HUMAN_ACTION_TABLE: dict[str, Callable[[Mapping[str, object]], bool]] = {
-    "improvement.apply-human-review": lambda state: state.get("human_action") in _HUMAN_ACTIONS,
-}
-
-
-def route_human_action(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(
-        _named_matches(state, _HUMAN_ACTION_TABLE),
-        otherwise=_HUMAN_ACTION_OTHERWISE,
-    )
-
-
-_HUMAN_RESULT_OTHERWISE = _FAILED
-_HUMAN_RESULT_TABLE: dict[str, Callable[[Mapping[str, object]], bool]] = {
-    "improvement.apply-evaluate": lambda state: state.get("lifecycle_state") == "approved",
-    "rejected": lambda state: state.get("lifecycle_state") == "rejected",
-    "rework": lambda state: state.get("lifecycle_state") == "needs_rework",
-    "superseded": lambda state: state.get("lifecycle_state") == "superseded",
-}
-
-
-def route_human_review_result(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return _HUMAN_RESULT_OTHERWISE
-    return select_exclusive_route(
-        _named_matches(state, _HUMAN_RESULT_TABLE),
-        otherwise=_HUMAN_RESULT_OTHERWISE,
-    )
-
-
-_APPLY_EVALUATE_OTHERWISE = _FAILED
-_APPLY_EVALUATE_TABLE: dict[str, Callable[[Mapping[str, object]], bool]] = {
-    "improvement.apply": lambda state: state.get("outcome") == "passed",
-}
-
-
-def route_apply_evaluate(state: Mapping[str, object]) -> str:
-    if state.get("attempt_failure"):
-        return _APPLY_EVALUATE_OTHERWISE
-    return select_exclusive_route(
-        _named_matches(state, _APPLY_EVALUATE_TABLE),
-        otherwise=_APPLY_EVALUATE_OTHERWISE,
-    )
-
-
-def _add_shared_terminals(builder: AttemptGraph[ImprovementState]) -> None:
-    builder.add_node("done", _node(terminal_done))
-    builder.add_node("failed", _node(terminal_failed))
-    builder.add_edge("done", END)
-    builder.add_edge("failed", END)
+_SkillFlowInput = _without_validation_error(ImprovementSkillInputV1, "ImprovementSkillFlowInput")
 
 
 def _build_one_shot(
     context: CapabilityBuildContext,
     *,
-    contract_id: str | HasContractId,
-    semantic_node_id: str,
-    select: object,
-    publish: object,
-) -> CompiledStateGraph:
-    builder: AttemptGraph[ImprovementState] = AttemptGraph(
-        ImprovementState,
-        context,
-        namespace="improvement",
-        activation=activation_one_shot,
-    )
-    builder.add_attempt(
-        semantic_node_id,
-        contract_id,
-        select=select,
-        publish=publish,
-        semantic_node_id=semantic_node_id,
-    )
-    _add_shared_terminals(builder)
-    builder.add_edge(START, semantic_node_id)
-    builder.add_route(semantic_node_id, route_committed, targets=_COMMITTED_TARGETS)
-    return builder.compile_subgraph()
+    name: str,
+    step: str,
+    op: object,
+    flow_input: type[BaseModel],
+    receipt_field: str | None = None,
+    ledger_inputs: tuple[object, ...] = (),
+) -> BoundFlow:
+    flow = Flow(name, input=flow_input, outcomes=("done", "failed"), ledger_inputs=ledger_inputs)
+    flow.step(step, op, on_failure="failed", then="done")
+    if receipt_field is not None:
+        flow.publish_receipt(step)
+    return flow.bind(context)
 
 
-def build_archive_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
+def build_archive_graph(context: CapabilityBuildContext) -> BoundFlow:
     return _build_one_shot(
         context,
-        contract_id=archive,
-        semantic_node_id="improvement.archive",
-        select=select_skill,
-        publish=publish_archive,
+        name="archive",
+        step="archive",
+        op=archive,
+        flow_input=_SkillFlowInput,
+        receipt_field="receipt_refs",
     )
 
 
-def build_review_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
+def build_review_graph(context: CapabilityBuildContext) -> BoundFlow:
     return _build_one_shot(
         context,
-        contract_id=improvement_review,
-        semantic_node_id="improvement.review",
-        select=select_skill,
-        publish=publish_review,
+        name="review",
+        step="review",
+        op=improvement_review,
+        flow_input=_SkillFlowInput,
     )
 
 
-def build_evaluate_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
+def build_evaluate_graph(context: CapabilityBuildContext) -> BoundFlow:
     return _build_one_shot(
         context,
-        contract_id=_EVALUATE,
-        semantic_node_id="improvement.evaluate",
-        select=select_evaluate,
-        publish=publish_evaluate,
+        name="evaluate",
+        step="evaluate",
+        op=_EVALUATE,
+        flow_input=_EVALUATE.input_model,
+        receipt_field="receipt_refs",
+        ledger_inputs=(_AUTO_REVIEW.artifact("projection"),),
     )
 
 
-def build_export_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
+def build_export_graph(context: CapabilityBuildContext) -> BoundFlow:
     return _build_one_shot(
         context,
-        contract_id=_EXPORT,
-        semantic_node_id="improvement.export",
-        select=select_export,
-        publish=publish_export,
+        name="export",
+        step="export",
+        op=_EXPORT,
+        flow_input=_EXPORT.input_model,
+        receipt_field="receipt_refs",
     )
 
 
-def build_rollback_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
+def build_rollback_graph(context: CapabilityBuildContext) -> BoundFlow:
     return _build_one_shot(
         context,
-        contract_id=_ROLLBACK,
-        semantic_node_id="improvement.rollback",
-        select=select_rollback,
-        publish=publish_rollback,
+        name="rollback",
+        step="rollback",
+        op=_ROLLBACK,
+        flow_input=_ROLLBACK.input_model,
+        receipt_field="receipt_refs",
     )
 
 
-def build_apply_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
-    builder: AttemptGraph[ImprovementState] = AttemptGraph(
-        ImprovementState,
-        context,
-        namespace="improvement",
-        activation=activation_one_shot,
+class ApplyFlowInput(FrozenModel):
+    change_id: str = Field(min_length=1)
+    projection: ImprovementProjection | None = None
+    assessment: ImprovementAutoReviewAssessment | None = None
+    current: ImprovementProjection | None = None
+    review_id: str | None = None
+    eval_run_id: str | None = None
+    outcome: _EvalOutcome | None = None
+    report_sha256: str | None = None
+    staged_sha256: str | None = None
+    baseline_sha256: str | None = None
+    target_digest: str | None = None
+    approved_state_digest: str | None = None
+    approved_version: int | None = None
+    before_sha256: str | None = None
+    after_sha256: str | None = None
+    receipt_sha256: str | None = None
+    allowed_artifact_paths: tuple[str, ...] = ()
+    artifact_paths: tuple[str, ...] = ()
+
+
+def build_apply_graph(context: CapabilityBuildContext) -> BoundFlow:
+    flow = Flow(
+        "improvement",
+        input=ApplyFlowInput,
+        outcomes=("done", "failed", "rejected", "rework", "superseded"),
     )
-    builder.add_attempt(
-        "improvement.apply-auto-review",
+    flow.step(
+        "apply-auto-review",
         _AUTO_REVIEW,
-        select=select_auto_review,
-        publish=publish_auto_review,
-        semantic_node_id="improvement.apply-auto-review",
+        on_failure="failed",
+        route_on="route",
+        routes={
+            "apply-evaluate": "apply-evaluate",
+            "rework": "rework",
+            "rejected": "rejected",
+            "human-review": "human-review",
+            "failed": "failed",
+        },
     )
-    builder.add_node("human-review", _node(apply_human_interrupt))
-    builder.add_attempt(
-        "improvement.apply-human-review",
-        _HUMAN_REVIEW,
-        select=select_human_review,
-        publish=publish_human_review,
-        semantic_node_id="improvement.apply-human-review",
-    )
-    builder.add_attempt(
-        "improvement.apply-evaluate",
-        _EVALUATE,
-        select=select_evaluate,
-        publish=publish_evaluate,
-        semantic_node_id="improvement.apply-evaluate",
-    )
-    builder.add_attempt(
-        "improvement.apply",
-        _APPLY,
-        select=select_apply_memory,
-        publish=publish_apply_memory,
-        semantic_node_id="improvement.apply",
-    )
-    builder.add_node("rejected", _node(terminal_rejected))
-    builder.add_node("rework", _node(terminal_rework))
-    builder.add_node("superseded", _node(terminal_superseded))
-    _add_shared_terminals(builder)
-    builder.add_edge(START, "improvement.apply-auto-review")
-    builder.add_route(
-        "improvement.apply-auto-review",
-        route_auto_review,
-        targets=(*_AUTO_REVIEW_TABLE, _AUTO_REVIEW_OTHERWISE),
-    )
-    builder.add_route(
+    human = flow.gate(
         "human-review",
-        route_human_action,
-        targets=(*_HUMAN_ACTION_TABLE, _HUMAN_ACTION_OTHERWISE),
+        decision=ApplyHumanDecision,
+        routes={
+            "approve": "apply-human-review",
+            "reject": "apply-human-review",
+            "request_rework": "apply-human-review",
+            "supersede": "apply-human-review",
+        },
     )
-    builder.add_route(
-        "improvement.apply-human-review",
-        route_human_review_result,
-        targets=(*_HUMAN_RESULT_TABLE, _HUMAN_RESULT_OTHERWISE),
+    flow.step(
+        "apply-human-review",
+        _HUMAN_REVIEW,
+        inputs={"action": human.action},
+        on_failure="failed",
+        route_on="route",
+        routes={
+            "apply-evaluate": "apply-evaluate",
+            "rejected": "rejected",
+            "rework": "rework",
+            "superseded": "superseded",
+            "failed": "failed",
+        },
     )
-    builder.add_route(
-        "improvement.apply-evaluate",
-        route_apply_evaluate,
-        targets=(*_APPLY_EVALUATE_TABLE, _APPLY_EVALUATE_OTHERWISE),
+    flow.step(
+        "apply-evaluate",
+        _EVALUATE,
+        on_failure="failed",
+        route_on="route",
+        routes={"apply": "apply", "failed": "failed"},
     )
-    builder.add_route("improvement.apply", route_committed, targets=_COMMITTED_TARGETS)
-    builder.add_edge("rejected", END)
-    builder.add_edge("rework", END)
-    builder.add_edge("superseded", END)
-    return builder.compile_subgraph()
+    flow.step("apply", _APPLY, on_failure="failed", then="done")
+    flow.publish_receipt("apply")
+    return flow.bind(context)
 
 
 __all__ = [
@@ -301,12 +195,4 @@ __all__ = [
     "build_export_graph",
     "build_review_graph",
     "build_rollback_graph",
-    "route_apply_evaluate",
-    "route_auto_review",
-    "route_committed",
-    "route_human_action",
-    "route_human_review_result",
-    "terminal_rejected",
-    "terminal_rework",
-    "terminal_superseded",
 ]

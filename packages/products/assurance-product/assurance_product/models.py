@@ -26,7 +26,6 @@ PUBLIC_WORKFLOW_IMPORT_ALIASES: tuple[str, ...] = (
     "execution.execute",
     "execution.rerun",
     "generation.generate",
-    "healing.repair-coverage",
     "healing.repair-failure",
     "improvement.apply",
     "improvement.archive",
@@ -327,16 +326,10 @@ FAMILY_NONEMPTY_ENTRYPOINTS = frozenset({"full", "intake"})
 FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     {
         "init",
-        "archive",
         "retro",
         "issue-review",
         "issue-analyze",
         "issue-reconcile",
-        "improvement-review",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-apply",
-        "improvement-rollback",
     }
 )
 PRODUCT_ENTRYPOINTS = FAMILY_NONEMPTY_ENTRYPOINTS | FAMILY_EMPTY_ENTRYPOINTS

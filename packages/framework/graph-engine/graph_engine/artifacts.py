@@ -13,6 +13,7 @@ from typing import Literal, TypeVar, overload
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
+from graph_engine.canonical import canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import FrozenModel
 
@@ -35,6 +36,20 @@ class ArtifactRef(FrozenModel):
 
     path: str = Field(min_length=1)
     digest: str = Field(pattern=_SHA256_PATTERN)
+
+
+def under_root(path: str, roots: Sequence[str]) -> bool:
+    """True when ``path`` is a root or a file under one.
+
+    A root may end with ``/``. Comparison uses the posix form of ``path``.
+    """
+    relative = PurePosixPath(path).as_posix()
+    for root in roots:
+        bare = root.rstrip("/")
+        prefix = root if root.endswith("/") else f"{bare}/"
+        if relative == bare or relative.startswith(prefix):
+            return True
+    return False
 
 
 def is_canonical_relative(path: str) -> bool:
@@ -92,6 +107,7 @@ def open_artifact(
     *,
     model: None = None,
     loader: Literal["bytes"] = "bytes",
+    context: Mapping[str, object] | None = None,
 ) -> bytes: ...
 
 
@@ -102,6 +118,7 @@ def open_artifact(
     *,
     model: type[ModelT],
     loader: ArtifactLoader = "bytes",
+    context: Mapping[str, object] | None = None,
 ) -> ModelT: ...
 
 
@@ -111,6 +128,7 @@ def open_artifact(
     *,
     model: type[ModelT] | None = None,
     loader: ArtifactLoader = "bytes",
+    context: Mapping[str, object] | None = None,
 ) -> bytes | ModelT:
     """Read one regular file inside ``workspace`` and require ``ref.digest``.
 
@@ -125,7 +143,7 @@ def open_artifact(
             reason="path",
             path=artifact.path,
         )
-    data = _read_regular(workspace, artifact.path)
+    data = read_workspace_file(workspace, artifact.path)
     actual = hashlib.sha256(data).hexdigest()
     if actual != artifact.digest:
         raise ArtifactReadError(
@@ -145,14 +163,52 @@ def open_artifact(
     try:
         if chosen == "yaml":
             loaded = yaml.safe_load(data)
-            return model.model_validate(loaded)
-        return model.model_validate_json(data)
+            return model.model_validate(loaded, context=context)
+        return model.model_validate_json(data, context=context)
     except (yaml.YAMLError, UnicodeError, ValidationError, ValueError) as error:
         raise ArtifactReadError(
             f"artifact decode failed: {artifact.path}",
             reason="decode",
             path=artifact.path,
         ) from error
+
+
+def read_workspace_file(workspace: Path, relative: str) -> bytes:
+    """Capture one canonical, regular, single-link workspace file without a claimed digest."""
+    if not is_canonical_relative(relative):
+        raise ArtifactReadError(
+            f"artifact path must be canonical and relative: {relative}",
+            reason="path",
+            path=relative,
+        )
+    return _read_regular(workspace, relative)
+
+
+def stage_json_artifact(
+    workspace: Path, relative: str, document: BaseModel, *, trailing_newline: bool = True
+) -> ArtifactRef:
+    """Stage one canonical JSON document; identical retries are idempotent."""
+    if not is_canonical_relative(relative):
+        raise ValueError(f"artifact output path must be canonical and relative: {relative}")
+    data = canonical_json_bytes(document.model_dump(mode="json")) + (b"\n" if trailing_newline else b"")
+    path = workspace
+    for part in PurePosixPath(relative).parts:
+        path = path / part
+        if path.is_symlink():
+            raise ValueError(f"artifact output path contains a symlink: {relative}")
+    if not path.resolve().is_relative_to(workspace.resolve()):
+        raise ValueError(f"artifact output path escapes workspace: {relative}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            existing = read_workspace_file(workspace, relative)
+        except ArtifactReadError as error:
+            raise ValueError(f"artifact output is not a regular file: {relative}") from error
+        if existing != data:
+            raise ValueError(f"artifact output already exists with different bytes: {relative}")
+    else:
+        path.write_bytes(data)
+    return ArtifactRef(path=relative, digest=hashlib.sha256(data).hexdigest())
 
 
 def _read_regular(workspace: Path, relative: str) -> bytes:
@@ -256,5 +312,7 @@ __all__ = [
     "is_canonical_relative",
     "match_artifact_pattern",
     "open_artifact",
+    "read_workspace_file",
+    "stage_json_artifact",
     "refs_from_write_set",
 ]

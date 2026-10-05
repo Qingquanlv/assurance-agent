@@ -53,7 +53,7 @@ _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.generation.schema.plan-review.v1": (
         "1",
-        "abcf63153ad069c58cf7ba1f9b369e2f31ff7bdc0549cd99be10aeeff77ff929",
+        "374bf983137b80cd1b55299ff474d5ef3a901fd9db0305fa5251fa23d24e0d0e",
     ),
 }
 

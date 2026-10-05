@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
+    CommitValidator,
     PluginContribution,
     PluginDependency,
     PluginDescriptor,
@@ -16,10 +17,6 @@ from assurance_quality.contracts.attempts import attempt_contract_refs
 from assurance_quality.operations import quality_handlers
 from assurance_quality.ops import router
 from assurance_quality.resource_loader import resource_bytes
-from assurance_quality.validators.issues import IssueValidator, ProblemApplyValidator
-from assurance_quality.validators.metrics import CrossArtifactValidator, MetricsValidator
-from assurance_quality.validators.report import ReportValidator
-from assurance_quality.validators.trace import TraceValidator
 
 QUALITY_SOURCE = ProviderSource(
     distribution="assurance-quality",
@@ -40,7 +37,6 @@ QUALITY_DEPENDENCIES: tuple[PluginDependency, ...] = (
 
 QUALITY_RESOURCE_FILES: dict[str, str] = {
     **router.resource_files(),
-    "assurance.quality.skill.aa-dashboard.v1": "skills/aa-dashboard/SKILL.md",
 }
 
 _SCHEMA_FILES: dict[str, str] = {
@@ -106,14 +102,7 @@ _GENERATED_SCHEMAS: dict[str, str] = {
 
 _HANDLERS = quality_handlers()
 
-_VALIDATORS = {
-    "assurance.quality.validator.cross-artifact.v1": CrossArtifactValidator(path_only=True),
-    "assurance.quality.validator.issues.v1": IssueValidator(path_only=True),
-    "assurance.quality.validator.metrics.v1": MetricsValidator(path_only=True),
-    "assurance.quality.validator.problem-apply.v1": ProblemApplyValidator(path_only=True),
-    "assurance.quality.validator.report.v1": ReportValidator(path_only=True),
-    "assurance.quality.validator.trace.v2": TraceValidator(path_only=True),
-}
+_VALIDATORS: dict[str, CommitValidator] = {}
 
 
 class QualityPlugin(CapabilityPlugin):

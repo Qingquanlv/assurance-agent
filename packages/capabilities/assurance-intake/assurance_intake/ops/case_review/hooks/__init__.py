@@ -2,27 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
-from typing import Any
-
-import yaml
-from pydantic import ValidationError
+from typing import Any, cast
 
 from agent_runtime_contracts.ops import FinalizeContext, InputError, OutputError, PrepareContext
-from graph_engine.artifacts import ArtifactReadError, open_artifact
-from graph_engine.canonical import canonical_json_bytes
 
+from assurance_intake.contracts import CaseYamlAuthoring, MinimumCoverageMatrixAuthoring
 from assurance_intake.contracts.case_selection import selection_path
 from assurance_intake.contracts.review import (
     CaseMinimumCoverageReview,
     CaseReviewResultV1,
 )
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.domain.artifacts import (
-    authenticate_files,
-    file_digest,
-    leafs,
-)
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.domain.artifacts import leafs
 from assurance_intake.domain.case_checks import (
     authenticated_journey_keys,
     bound_obligations,
@@ -33,13 +26,16 @@ from assurance_intake.domain.case_checks import (
     require_selected_test_families,
 )
 from assurance_intake.domain.planning_facts import build_planning_facts
-from assurance_intake.domain.prepare_evidence import (
-    authenticate_evidence_refs,
-    require_regular_project_input,
+from assurance_intake.handoff import (
+    CASE,
+    CASE_CATALOG,
+    CASE_EXPLORATION,
+    CASE_KNOWLEDGE,
+    PLAN,
+    REVIEW_PLAN,
+    note_case_rework,
 )
-from assurance_intake.handoff import PLAN, REVIEW_PLAN
 from assurance_intake.ops.case_review.hooks.checks import (
-    read_case_review_inputs,
     validate_case_review_repair_scope,
 )
 from assurance_intake.ops.case_review.hooks.seal import (
@@ -58,14 +54,16 @@ REVIEW_HISTORY_ROOT = "qa/cases/reviews"
 SELECTION_ROOT = "qa/results/cases/epochs"
 
 
-def case_review_outputs(
-    change_id: str,
-    *,
-    coverage_epoch: int = 0,
-    review_round: int = 0,
-) -> tuple[str, ...]:
-    del change_id, coverage_epoch, review_round
-    return (SUMMARY_PATH, REVIEW_PATH)
+def _require_reviewed_case_matches_ledger(ctx: FinalizeContext, reviewed: ReviewedCaseV1) -> None:
+    opened = ctx.dep(CASE)
+    if not isinstance(opened, tuple):
+        raise OutputError("reviewed case refs do not match the artifact ledger")
+    digests = tuple(
+        sorted(hashlib.sha256(item).hexdigest() for item in opened if isinstance(item, (bytes, bytearray)))
+    )
+    expected = tuple(sorted(ref.digest for ref in reviewed.case_refs))
+    if len(opened) != len(reviewed.case_refs) or digests != expected:
+        raise OutputError("reviewed case refs do not match the artifact ledger")
 
 
 def case_review_inputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -84,16 +82,19 @@ def case_review_inputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tup
 
 
 def before(ctx: PrepareContext, business: CaseReviewInputV1) -> CaseReviewInputV1:
+    note_case_rework(ctx)
+    if business.case_refs:
+        business = business.model_copy(
+            update={"case_delta_paths": tuple(sorted(ref.path for ref in business.case_refs))}
+        )
     plan = ctx.dep(PLAN)
-    authenticate_evidence_refs(ctx.project_root, business.preparation_refs)
-    authenticate_evidence_refs(ctx.project_root, business.case_refs)
     if business.case_delta_paths and not set(business.case_delta_paths) <= {
         item.path for item in business.case_refs
     }:
         raise InputError("case_refs must bind every locked case_delta_path")
+    if sum(ref.path == MATRIX_PATH for ref in business.preparation_refs) != 1:
+        raise InputError("preparation_refs must authenticate the minimum coverage matrix for case review")
     review_inputs = case_review_inputs(business.change_id, business.case_delta_paths)
-    for relative in review_inputs:
-        require_regular_project_input(ctx.project_root, relative)
     business = CaseReviewInputV1.model_validate(
         {**business.model_dump(mode="json"), "review_input_paths": review_inputs}
     )
@@ -115,34 +116,30 @@ def after(ctx: FinalizeContext, business: CaseReviewInputV1, result: CaseReviewR
         raise InputError("frozen assurance plan does not match case review input")
     document = result
     change_id = business.change_id
-    if document.change_id != change_id:
-        raise OutputError("case review change_id does not match locked change_id")
     if plan.change_id != change_id:
         raise InputError("frozen assurance plan does not match case review change_id")
     validate_case_review_repair_scope(document, business, change_id=change_id)
-    images = read_case_review_inputs(ctx.project_root, business, MATRIX_PATH)
+    case_documents = {path: ctx.project_file(path) for path in business.case_delta_paths}
+    assert all(isinstance(item, CaseYamlAuthoring) for item in case_documents.values())
     authored = load_authored_case_delta(
-        ctx.project_root,
-        change_id=change_id,
         locked=business.case_delta_paths,
         declared=business.case_delta_paths,
         capability_leafs=leafs(business.capability_leafs),
-        images=images,
+        documents=cast(dict[str, CaseYamlAuthoring], case_documents),
     )
     require_selected_test_families(authored, plan.selected_test_families)
+    matrix_document = ctx.project_file(MATRIX_PATH)
+    assert isinstance(matrix_document, MinimumCoverageMatrixAuthoring)
+    knowledge = ctx.dep(CASE_KNOWLEDGE).root
+    obligations = bound_obligations(ctx.dep(CASE_EXPLORATION), ctx.dep(CASE_CATALOG).root, knowledge)
     matrix = load_minimum_coverage_matrix(
-        ctx.project_root,
-        relative=MATRIX_PATH,
+        document=matrix_document,
         authored=authored,
         selected=plan.selected_test_families,
-        journey_keys=authenticated_journey_keys(
-            ctx.project_root,
-            plan.quality_goal.source_resource_digests,
-        ),
-        images=images,
+        journey_keys=authenticated_journey_keys(knowledge),
     )
-    require_frozen_unresolved_rows(ctx.project_root, plan, matrix)
-    reject_unbound_covered_repairs(document, bound_obligations(ctx.project_root, plan))
+    require_frozen_unresolved_rows(obligations, matrix)
+    reject_unbound_covered_repairs(document, obligations)
     required = [row for row in matrix.root if row.required]
     expected_projection = {
         "total_required": len(required),
@@ -154,49 +151,23 @@ def after(ctx: FinalizeContext, business: CaseReviewInputV1, result: CaseReviewR
         update={"minimum_coverage": CaseMinimumCoverageReview.model_validate(expected_projection)}
     )
     output = document.model_dump(mode="json")
-    if not (business.preparation_refs and business.case_refs):
-        output["artifacts"] = []
-        return output
-    artifacts = authenticate_files(
-        ctx.write_root,
-        case_review_outputs(
-            change_id,
-            coverage_epoch=business.coverage_epoch,
-            review_round=business.review_round,
-        ),
-        business.artifact_paths,
-    )
-    by_path = {item["path"]: item for item in artifacts}
-    review_ref = EvidenceArtifactRefV1.model_validate(by_path[REVIEW_PATH])
-    try:
-        review_bytes = open_artifact(ctx.write_root, review_ref)
-    except ArtifactReadError as error:
-        if error.reason == "digest":
-            raise OutputError("staged case review changed during finalization") from error
-        raise OutputError(f"staged case review is missing or is not a regular file: {error}") from error
-    try:
-        staged_review = CaseReviewResultV1.model_validate_json(review_bytes)
-    except ValidationError as error:
-        raise OutputError(f"invalid staged case review: {error}") from error
+    staged_review = ctx.file(REVIEW_PATH)
     if staged_review != result:
         raise OutputError("staged case review differs from the typed agent result")
+    if not (business.preparation_refs and business.case_refs):
+        return output
+    review_ref = EvidenceArtifactRefV1.model_validate(ctx.ref(REVIEW_PATH).model_dump(mode="json"))
     selection_relative = selection_path(business.coverage_epoch)
     history_relative = (
         f"{REVIEW_HISTORY_ROOT}/epochs/{business.coverage_epoch}/rounds/{business.review_round}.json"
     )
     documents: list[tuple[EvidenceArtifactRefV1, Mapping[str, object]]] = []
     for ref in business.case_refs:
-        try:
-            source = yaml.safe_load(open_artifact(ctx.write_root, ref))
-        except (ArtifactReadError, OutputError, yaml.YAMLError):
-            source = yaml.safe_load(open_artifact(ctx.project_root, ref))
-        if not isinstance(source, Mapping):
-            raise OutputError(f"case source is not a mapping: {ref.path}")
-        documents.append((ref, source))
-    try:
-        selected = collect_selected_cases(business.case_refs, business.case_delta_paths, documents)
-    except ValueError as error:
-        raise OutputError(str(error)) from error
+        source = case_documents.get(ref.path)
+        if not isinstance(source, CaseYamlAuthoring):
+            raise InputError(f"case source is not a declared case: {ref.path}")
+        documents.append((ref, source.model_dump(mode="json")))
+    selected = collect_selected_cases(business.case_refs, business.case_delta_paths, documents)
     expected_selection = expected_case_selection(
         change_id=change_id,
         coverage_epoch=business.coverage_epoch,
@@ -212,13 +183,12 @@ def after(ctx: FinalizeContext, business: CaseReviewInputV1, result: CaseReviewR
         case_refs=business.case_refs,
         review_ref=review_ref,
     )
-    derived_refs: dict[str, EvidenceArtifactRefV1] = {}
-    for relative, derived in ((selection_relative, expected_selection), (history_relative, expected_history)):
-        data = canonical_json_bytes(derived.model_dump(mode="json")) + b"\n"
-        ctx.write(relative, data)
-        derived_refs[relative] = EvidenceArtifactRefV1(path=relative, digest=file_digest(data))
-    selection_ref = derived_refs[selection_relative]
-    history_ref = derived_refs[history_relative]
+    selection_ref = EvidenceArtifactRefV1.model_validate(
+        ctx.stage(selection_relative, expected_selection).model_dump(mode="json")
+    )
+    history_ref = EvidenceArtifactRefV1.model_validate(
+        ctx.stage(history_relative, expected_history).model_dump(mode="json")
+    )
     expected_reviewed = expected_reviewed_case(
         change_id=change_id,
         coverage_epoch=business.coverage_epoch,
@@ -229,14 +199,13 @@ def after(ctx: FinalizeContext, business: CaseReviewInputV1, result: CaseReviewR
         review_ref=review_ref,
         selection_ref=selection_ref,
     )
-    manifest_bytes = canonical_json_bytes(expected_reviewed.model_dump(mode="json")) + b"\n"
-    ctx.write(REVIEWED_CASE_PATH, manifest_bytes)
-    output["artifacts"] = [
-        *artifacts,
-        selection_ref.model_dump(mode="json"),
-        history_ref.model_dump(mode="json"),
-        {"path": REVIEWED_CASE_PATH, "digest": file_digest(manifest_bytes)},
-    ]
+    if (
+        expected_reviewed.change_id != business.change_id
+        or expected_reviewed.coverage_epoch != business.coverage_epoch
+    ):
+        raise OutputError("reviewed case does not match the case input")
+    _require_reviewed_case_matches_ledger(ctx, expected_reviewed)
+    ctx.stage(REVIEWED_CASE_PATH, expected_reviewed)
     output["reviewed_case"] = expected_reviewed.model_dump(mode="json")
     output["history_ref"] = history_ref.model_dump(mode="json")
     return output

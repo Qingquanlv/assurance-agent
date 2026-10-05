@@ -8,14 +8,15 @@ import yaml
 
 from typing import cast
 
+from graph_engine.artifacts import read_workspace_file
+
 from assurance_intake.domain.obligations import TrustedIntakeSourcesV1
 from assurance_intake.contracts.common import TestFamily
-from assurance_intake.ops.explore.hooks.context import build_explore_context
+from assurance_intake.ops.explore.hooks.context import build_explore_context as _build_explore_context
 from assurance_intake.contracts.obligations import SourceRefV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.domain.obligations import (
     authenticate_source,
-    build_source_index,
     resolve_requirement_quote,
     scope_exclusion_allowed,
 )
@@ -72,10 +73,29 @@ def _sources(tmp_path: Path, *, families: tuple[str, ...] = ("api",)) -> Trusted
     )
 
 
+def build_explore_context(workspace: Path, *, change_id: str, capability_leafs: tuple[str, ...]):
+    requirement = read_workspace_file(workspace, "qa/requirement.md")
+    return _build_explore_context(
+        workspace,
+        change_id=change_id,
+        capability_leafs=capability_leafs,
+        requirement_data=requirement,
+        snapshot_data=None,
+        evidence=None,
+        requirement_ref=EvidenceArtifactRefV1(
+            path="qa/requirement.md", digest=hashlib.sha256(requirement).hexdigest()
+        ),
+        snapshot_ref=None,
+    )
+
+
 def test_run_spec_cannot_authorize_expected_basis(tmp_path: Path) -> None:
     sources = _sources(tmp_path)
-    index = build_source_index(sources, workspace=tmp_path)
-    run_spec = index["run-spec"][0]
+    run_spec = SourceRefV1(
+        kind="decision",
+        artifact=sources.run_spec_ref,
+        locator="/candidate_test_families",
+    )
     with pytest.raises(ValueError, match="expected_basis"):
         authenticate_source(
             run_spec,

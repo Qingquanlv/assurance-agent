@@ -96,7 +96,20 @@ class AttemptNodeFactory:
         task = _task_contract(contract)
         business = _resolve_activation(activation, state)
         selected_state = omit_checkpoint_bridge_fields(state) if isinstance(state, Mapping) else state
-        validated = _validate_input(select, selected_state, task)
+        if not callable(select):
+            raise TypeError("select must be callable")
+        raw = select(selected_state)
+        try:
+            validated = _validated_selection(raw, task)
+        except ValidationError as error:
+            return {
+                "attempt_failure": {
+                    "resolution_kind": "permanent",
+                    "kind": "invalid_input",
+                    "message": str(error),
+                    "writes_promoted": False,
+                }
+            }
         if kernel is None:
             raise TypeError("attempt kernel is required")
         completions: list[tuple[AttemptKey, ActiveSystemInterrupt]] = []
@@ -288,7 +301,10 @@ def _with_latest_validation_error(validated: BaseModel, message: str) -> BaseMod
 def _validate_input(select: object, state: object, contract: TaskAttemptContract[Any, Any]) -> BaseModel:
     if not callable(select):
         raise TypeError("select must be callable")
-    raw = select(state)
+    return _validated_selection(select(state), contract)
+
+
+def _validated_selection(raw: object, contract: TaskAttemptContract[Any, Any]) -> BaseModel:
     if isinstance(raw, BaseModel) and isinstance(raw, contract.input_model):
         return raw
     # Graph bundles can be loaded from independently installed wheels.  A

@@ -1,112 +1,63 @@
+"""Execute and rerun, each one attempt with a committed or failed outcome."""
+
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from functools import partial
-from typing import Any, Literal, cast
+from typing import Literal
 
-from langgraph.graph import END, START
-from langgraph.graph.state import CompiledStateGraph
 
+from graph_engine.boot.boot import CapabilityBuildContext
+from graph_engine.flow import BoundFlow, Flow
+from graph_engine.flow.sources import const
+
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1, RerunPrepareInputV1
 from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.feature import ExecutionGraphs
-from assurance_execution.graphs.nodes import (
-    activation_execute,
-    activation_rerun,
-    publish_execution,
-    select_execute,
-    select_rerun,
-)
-from assurance_execution.graphs.state import ExecutionState
-from graph_engine.attempts import TaskAttemptContract
-from graph_engine.boot.boot import CapabilityBuildContext
-from graph_engine.stategraph import AttemptGraph
-from graph_engine.stategraph.routing import select_exclusive_route
 
-ExecutionSemanticNodeId = Literal["execution.execute", "execution.run"]
+_EXECUTE = "execution.execute"
+_RUN = "execution.run"
 
 
-def _node(fn: object) -> Callable[..., Any]:
-    return cast(Callable[..., Any], fn)
-
-
-def terminal_committed(state: ExecutionState) -> dict[str, object]:
-    del state
-    return {}
-
-
-def terminal_failed(state: ExecutionState) -> dict[str, object]:
-    del state
-    return {}
-
-
-_EXECUTION_OTHERWISE = "committed"
-_EXECUTION_TABLE: dict[str, Callable[[Mapping[str, object]], bool]] = {
-    "failed": lambda state: bool(state.get("attempt_failure")),
-}
-
-
-def route_execution(state: Mapping[str, object]) -> str:
-    named = {target: target if predicate(state) else None for target, predicate in _EXECUTION_TABLE.items()}
-    return select_exclusive_route(named, otherwise=_EXECUTION_OTHERWISE)
+def _one_shot(
+    context: CapabilityBuildContext,
+    *,
+    name: str,
+    step: str,
+    contract_key: str,
+    execution_kind: Literal["execute", "run"],
+) -> BoundFlow:
+    flow = Flow(
+        name,
+        input=RerunPrepareInputV1 if execution_kind == "run" else ExecutionPrepareInputV1,
+        outcomes=("committed", "failed"),
+    )
+    flow.step(
+        step,
+        TASK_ATTEMPT_CONTRACTS[contract_key],
+        on_failure="failed",
+        route_on="admission",
+        routes={"committed": "committed", "failed": "failed"},
+        inputs={"execution_kind": const(execution_kind)},
+    )
+    return flow.bind(context)
 
 
 def build_execution_graphs(context: CapabilityBuildContext) -> ExecutionGraphs:
     return ExecutionGraphs(
-        execute=_compile_graph(
+        execute=_one_shot(
             context,
-            contract=TASK_ATTEMPT_CONTRACTS["execute"],
-            semantic_node_id="execution.execute",
-            activation=activation_execute,
-            select=select_execute,
+            name="execute",
+            step="execute",
+            contract_key="execute",
+            execution_kind="execute",
         ),
-        rerun=_compile_graph(
+        rerun=_one_shot(
             context,
-            contract=TASK_ATTEMPT_CONTRACTS["run"],
-            semantic_node_id="execution.run",
-            activation=activation_rerun,
-            select=select_rerun,
+            name="rerun",
+            step="run",
+            contract_key="run",
+            execution_kind="run",
         ),
     )
 
 
-def _compile_graph(
-    context: CapabilityBuildContext,
-    *,
-    contract: TaskAttemptContract[Any, Any],
-    semantic_node_id: ExecutionSemanticNodeId,
-    activation: object,
-    select: object,
-) -> CompiledStateGraph:
-    builder: AttemptGraph[ExecutionState] = AttemptGraph(
-        ExecutionState,
-        context,
-        namespace="execution",
-        activation=activation,
-    )
-    builder.add_attempt(
-        semantic_node_id,
-        contract,
-        select=select,
-        publish=partial(publish_execution, semantic_node_id=semantic_node_id),
-        semantic_node_id=semantic_node_id,
-    )
-    builder.add_node("committed", _node(terminal_committed))
-    builder.add_node("failed", _node(terminal_failed))
-    builder.add_edge(START, semantic_node_id)
-    builder.add_route(
-        semantic_node_id,
-        route_execution,
-        targets=(*_EXECUTION_TABLE, _EXECUTION_OTHERWISE),
-    )
-    builder.add_edge("committed", END)
-    builder.add_edge("failed", END)
-    return builder.compile_subgraph()
-
-
-__all__ = [
-    "ExecutionGraphs",
-    "build_execution_graphs",
-    "route_execution",
-    "terminal_committed",
-    "terminal_failed",
-]
+__all__ = ["ExecutionGraphs", "build_execution_graphs"]

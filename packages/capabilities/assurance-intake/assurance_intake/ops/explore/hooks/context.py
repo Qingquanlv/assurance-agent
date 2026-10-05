@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import ValidationError
+from graph_engine.artifacts import ArtifactReadError, read_workspace_file
 
-from assurance_intake.contracts.explore import REQUIREMENT_PATH, RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.domain.planning_facts import source_path_hints
 from assurance_intake.ops.explore.models import (
-    CHANGE_EVIDENCE_PATH,
     REQUIREMENT_CONTEXT_BUDGET,
     CandidateCaseV1,
     ChangeEvidenceV1,
@@ -32,12 +29,9 @@ _MAX_PROBLEMS = 64
 
 
 def _read_regular(workspace: Path, relative: str) -> bytes | None:
-    path = workspace.joinpath(*relative.split("/"))
-    if path.is_symlink() or not path.is_file():
-        return None
     try:
-        return path.read_bytes()
-    except OSError:
+        return read_workspace_file(workspace, relative)
+    except ArtifactReadError:
         return None
 
 
@@ -46,16 +40,12 @@ def _seed_projection(
     *,
     change_id: str,
     requirement_text: str,
+    evidence: ChangeEvidenceV1 | None,
 ) -> tuple[
     Literal["change-evidence", "content-snapshot"], tuple[ImpactSeedV1, ...], tuple[str, ...], list[str]
 ]:
-    evidence_bytes = _read_regular(workspace, CHANGE_EVIDENCE_PATH)
     seeds: list[ImpactSeedV1] = []
-    if evidence_bytes is not None:
-        try:
-            evidence = ChangeEvidenceV1.model_validate_json(evidence_bytes)
-        except ValidationError as error:
-            raise ValueError(f"invalid change-evidence.json: {error}") from error
+    if evidence is not None:
         if evidence.change_id != change_id:
             raise ValueError("change-evidence.json change_id does not match the current change")
         for changed in evidence.changed_files:
@@ -195,29 +185,28 @@ def _utf8_prefix(data: bytes, budget: int) -> tuple[str, RequirementReadFactsV1]
     )
 
 
-def _source_catalog(workspace: Path) -> tuple[SourceCatalogEntryV1, ...]:
+def _source_catalog(
+    requirement: bytes | None,
+    snapshot: bytes | None,
+    requirement_ref: EvidenceArtifactRefV1 | None,
+    snapshot_ref: EvidenceArtifactRefV1 | None,
+) -> tuple[SourceCatalogEntryV1, ...]:
     entries: list[SourceCatalogEntryV1] = []
-    requirement = _read_regular(workspace, REQUIREMENT_PATH)
-    if requirement is not None:
+    if requirement is not None and requirement_ref is not None:
         entries.append(
             SourceCatalogEntryV1(
                 source_id="requirement",
                 kind="requirement",
-                artifact=EvidenceArtifactRefV1(
-                    path=REQUIREMENT_PATH, digest=hashlib.sha256(requirement).hexdigest()
-                ),
+                artifact=requirement_ref,
                 quotable=True,
             )
         )
-    snapshot = _read_regular(workspace, RUN_SPEC_SNAPSHOT_PATH)
-    if snapshot is not None:
+    if snapshot is not None and snapshot_ref is not None:
         entries.append(
             SourceCatalogEntryV1(
                 source_id="run-spec",
                 kind="decision",
-                artifact=EvidenceArtifactRefV1(
-                    path=RUN_SPEC_SNAPSHOT_PATH, digest=hashlib.sha256(snapshot).hexdigest()
-                ),
+                artifact=snapshot_ref,
                 quotable=False,
             )
         )
@@ -229,6 +218,11 @@ def build_explore_context(
     *,
     change_id: str,
     capability_leafs: tuple[str, ...],
+    requirement_data: bytes | None,
+    snapshot_data: bytes | None,
+    evidence: ChangeEvidenceV1 | None,
+    requirement_ref: EvidenceArtifactRefV1 | None,
+    snapshot_ref: EvidenceArtifactRefV1 | None,
 ) -> ExploreContextV1:
     """Build an honest content-deterministic context without consulting ambient state.
 
@@ -236,7 +230,6 @@ def build_explore_context(
     belongs to another change; a forged diff projection must fail prepare, not degrade.
     """
 
-    requirement_data = _read_regular(workspace, REQUIREMENT_PATH) or b""
     if requirement_data:
         requirement_text, read_facts = _utf8_prefix(requirement_data, REQUIREMENT_CONTEXT_BUDGET)
     else:
@@ -245,7 +238,7 @@ def build_explore_context(
     requirement_summary = requirement_text or None
 
     diff_base, seeds, unobserved, seed_degraded = _seed_projection(
-        workspace, change_id=change_id, requirement_text=requirement_text
+        workspace, change_id=change_id, requirement_text=requirement_text, evidence=evidence
     )
     candidate_cases, case_degraded = _candidate_cases(workspace)
     historical_problems, history_degraded = _historical_problems(workspace)
@@ -291,7 +284,7 @@ def build_explore_context(
         test_health=[],
         historical_issues=[],
         evidence=[],
-        source_catalog=_source_catalog(workspace),
+        source_catalog=_source_catalog(requirement_data, snapshot_data, requirement_ref, snapshot_ref),
         requirement_read_facts=read_facts,
         degraded=bool(degraded_reasons),
         degraded_reasons=degraded_reasons,

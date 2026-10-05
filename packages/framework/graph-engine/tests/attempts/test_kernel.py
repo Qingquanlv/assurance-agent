@@ -27,7 +27,6 @@ from graph_engine.attempts.resolutions import (
     PermanentTaskFailure,
     RejectedTaskResult,
 )
-from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
 from graph_engine.effects.state import MemoryEffectState
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
@@ -54,6 +53,7 @@ from graph_engine.plugin_api import (
     ValidationResult,
 )
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from assurance_intake.validators import SEALED_ARTIFACT_REFS_VALIDATOR_ID, SealedArtifactRefsValidator
 
 
 class RunInput(BaseModel):
@@ -101,6 +101,32 @@ class _WritingExecutor:
         self.calls += 1
         (scope.workspace.write_root / "out.txt").write_bytes(self.content)
         return ExecutedAttemptResult(output=RunOutput(status="ok"))
+
+
+class _ArtifactOutput(BaseModel):
+    artifacts: list[dict[str, str]]
+
+
+class _DigestBoundExecutor:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.write_root: Path | None = None
+
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[_ArtifactOutput]:
+        del validated_input
+        import hashlib
+
+        self.calls += 1
+        self.write_root = scope.workspace.write_root
+        data = b"validated bytes"
+        (self.write_root / "out.txt").write_bytes(data)
+        return ExecutedAttemptResult(
+            output=_ArtifactOutput(
+                artifacts=[{"path": "out.txt", "digest": hashlib.sha256(data).hexdigest()}]
+            )
+        )
 
 
 class _OtherOutput(BaseModel):
@@ -307,6 +333,39 @@ async def test_happy_path_trace_commits_receipt(tmp_path: Path) -> None:
         store.close()
 
 
+@pytest.mark.parametrize("change", ["alter", "remove"])
+async def test_committed_replay_rejects_changed_staging(tmp_path: Path, change: str) -> None:
+    kernel, key, resolved, validated, context, executor, project, store = make_kernel(tmp_path)
+    try:
+        first = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(first, CommittedTaskResult)
+        assert executor.workspace.binding is not None
+        restarted = AssuranceAttemptKernel(
+            journal=kernel.journal,
+            arbiter=kernel.arbiter,
+            workspace=kernel.workspace,
+            graph_revision=graph_revision(),
+        )
+        unchanged = await restarted.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(unchanged, CommittedTaskResult)
+        assert unchanged.receipt == first.receipt
+        assert unchanged.committed_artifacts == first.committed_artifacts
+
+        staged = executor.workspace.binding.write_root / "out.txt"
+        if change == "alter":
+            staged.write_bytes(b"uncommitted")
+        else:
+            staged.unlink()
+
+        with pytest.raises(AttemptIntegrityError):
+            await restarted.execute_or_recover(key, resolved, validated, context)
+
+        assert executor.calls == 1
+        assert (project / "out.txt").read_bytes() == b"committed"
+    finally:
+        store.close()
+
+
 async def test_kernel_port_exposes_execute_or_recover() -> None:
     assert "execute_or_recover" in AttemptKernelPort.__dict__ or hasattr(
         AttemptKernelPort, "execute_or_recover"
@@ -331,6 +390,39 @@ async def _assert_released(kernel: AssuranceAttemptKernel, key: AttemptKey, fenc
     assert snapshot.released is True
     with pytest.raises(ResourceAuthorizationError, match="no active authorization"):
         await kernel.arbiter.assert_usable(key, fencing_token=fencing_token)
+
+
+@pytest.mark.parametrize("change", ["mutate", "delete"])
+async def test_intake_artifact_change_after_finalize_is_rejected_before_seal(
+    tmp_path: Path, change: str
+) -> None:
+    executor = _DigestBoundExecutor()
+
+    def mutate_at_cut(name: str) -> None:
+        if name == "after_finalize_before_seal":
+            assert executor.write_root is not None
+            path = executor.write_root / "out.txt"
+            if change == "delete":
+                path.unlink()
+            else:
+                path.write_bytes(b"mutated after finalize")
+
+    kernel, key, resolved, validated, context, _writer, project, store = make_kernel(
+        tmp_path,
+        executor=executor,
+        output_model=_ArtifactOutput,
+        validators={SEALED_ARTIFACT_REFS_VALIDATOR_ID: SealedArtifactRefsValidator()},
+        validator_ids=(SEALED_ARTIFACT_REFS_VALIDATOR_ID,),
+        transaction_cut=mutate_at_cut,
+    )
+    try:
+        result = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(result, RejectedTaskResult)
+        assert ("missing from seal" if change == "delete" else "changed before seal") in result.reason
+        assert not (project / "out.txt").exists()
+        assert executor.calls == 1
+    finally:
+        store.close()
 
 
 async def test_rejected_terminal_replay_returns_same_rejection(tmp_path: Path) -> None:
@@ -519,7 +611,7 @@ async def test_unadoptable_in_flight_activity_terminates_releases_and_replays(tm
         store.close()
 
 
-DELIVERY_KIND = "assurance.improvement.effect.delivery.v1"
+DELIVERY_KIND = "example.beta.effect.delivery.v1"
 
 
 class ValidOutput(BaseModel):
@@ -790,7 +882,7 @@ def kernel_fixture(tmp_path: Path) -> Any:
         attempt_key=key,
         fencing_token=4,
     )
-    assert DELIVERY_KIND in EXPECTED_EFFECT_KINDS
+    assert DELIVERY_KIND in effects.entries
     try:
         yield _KernelFixture(
             kernel=kernel,

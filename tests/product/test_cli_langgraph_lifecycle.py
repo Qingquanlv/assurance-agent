@@ -3,14 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from pydantic import BaseModel
 
-from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.invocation_identity import InvocationIdentityRecord
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.composition import FrozenComposition
 from graph_engine.plugin_api import ResourceClaimTemplate, ResourceClaims
@@ -22,23 +20,21 @@ from tests.product.cli_support import (
     parse_json_output,
 )
 
+if TYPE_CHECKING:
+    from assurance_product.change_workspace import ChangeWorkspace
+    from assurance_product.invocation_identity import InvocationIdentityRecord
+
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 _NON_AGENT_ENTRYPOINTS = frozenset(
     {
-        "improvement-apply",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-rollback",
         "init",
         "issue-reconcile",
     }
 )
 _AGENT_ENTRYPOINTS = frozenset(
     {
-        "archive",
         "full",
-        "improvement-review",
         "intake",
         "issue-analyze",
         "issue-review",
@@ -58,14 +54,14 @@ def _load_identity(path: Path) -> dict[str, object]:
     return payload
 
 
-def test_all_thirteen_public_entrypoints_are_current() -> None:
+def test_all_seven_public_entrypoints_are_current() -> None:
     from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
     from assurance_product import models
     from assurance_product.models import PRODUCT_ENTRYPOINTS
 
     assert not hasattr(models, "ENTRYPOINT_RUNTIME_CUTOVER")
     assert set(ENTRYPOINT_AGENT_CONTRACT_IDS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(PRODUCT_ENTRYPOINTS) == 13
+    assert len(PRODUCT_ENTRYPOINTS) == 7
     assert set(PRODUCT_ENTRYPOINTS) == _NON_AGENT_ENTRYPOINTS | _AGENT_ENTRYPOINTS
     assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] == () for name in _NON_AGENT_ENTRYPOINTS)
     assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] for name in _AGENT_ENTRYPOINTS)
@@ -144,49 +140,12 @@ def test_leftover_invocation_without_identity_fails_closed(
     assert leftover.is_dir()
 
 
-_EVALUATE_WAKE = "wake-evaluate-1"
-_EVALUATE_INVOCATION = "inv-evaluate-reopen-001"
-
-
-def _evaluate_task_payload() -> dict[str, object]:
-    from assurance_improvement.contracts.improvements import ImprovementProjection
-
-    projection = ImprovementProjection.model_validate(
-        {
-            "improvement_id": "IMP-1",
-            "fingerprint": "f" * 64,
-            "kind": "prompt_improvement",
-            "delivery": "memory_patch",
-            "source_refs": {"problem_ids": ["PROB-1"], "occurrence_ids": ["OCC-1"]},
-            "target": ".aa/memory/aa-api-plan.md",
-            "rationale": "gap",
-            "proposed_change": "register adapters",
-            "verification": {"suites": [], "required_cases": [], "success_criteria": "review"},
-            "risk": "low",
-            "confidence": "high",
-            "state": "approved",
-            "version": 1,
-            "proposed_by_retro_ids": ["RET-1"],
-            "last_event_id": "IMPEVT-1",
-            "approval_source": "automatic",
-            "last_auto_review": {
-                "review_id": "REV-1",
-                "subject_sha256": f"sha256:{'a' * 64}",
-                "assessment_sha256": f"sha256:{'a' * 64}",
-                "policy_version": "1",
-                "verdict": "auto_approved",
-            },
-        }
-    )
-    return {
-        "projection": projection.model_dump(mode="json"),
-        "eval_run_id": "eval-1",
-        "outcome": "passed",
-        "report_sha256": "r",
-        "staged_sha256": "s",
-        "baseline_sha256": None,
-        "target_digest": "a" * 64,
-    }
+_LIFECYCLE_ENTRYPOINT = "init"
+_LIFECYCLE_WAKE = "wake-init-1"
+_LIFECYCLE_INVOCATION = "inv-init-reopen-001"
+_DATA_KNOWLEDGE = (
+    Path(__file__).resolve().parent / "fixtures" / "project-config" / ".aa" / "data-knowledge.yaml"
+)
 
 
 def _durable_chain(
@@ -199,6 +158,7 @@ def _durable_chain(
     expect_attempt_records: bool,
     workspace: ChangeWorkspace | None = None,
 ) -> object:
+    from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import _authorization
     from assurance_product.runtime_ports import ProductRuntimePorts
 
@@ -223,7 +183,7 @@ def _durable_chain(
                 root_input_digest=identity.root_input_digest,
                 fencing_token=started.fencing_token,
             )
-            snapshot = await artifact.entrypoints["improvement-evaluate"].aget_state(
+            snapshot = await artifact.entrypoints[_LIFECYCLE_ENTRYPOINT].aget_state(
                 {
                     "configurable": {
                         "thread_id": invocation_id,
@@ -325,6 +285,7 @@ def _authenticate_reopen(
     composition: FrozenComposition,
     expected_status: str | None = None,
 ) -> dict[str, Any]:
+    from assurance_product.invocation_identity import InvocationIdentityRecord
 
     statused = cli_runner.invoke(app, ["status", *existing])
     assert statused.exit_code == 0, statused.output
@@ -343,7 +304,7 @@ def _authenticate_reopen(
     assert status_doc["invocation_id"] == reopened.invocation_id
     assert status_doc["lock_digest"] == reopened.product_lock_digest
     assert status_doc["root_input_digest"] == reopened.root_input_digest
-    assert status_doc["entrypoint"] == "improvement-evaluate"
+    assert status_doc["entrypoint"] == _LIFECYCLE_ENTRYPOINT
     assert lock_doc["lock_digest"] == reopened.product_lock_digest
     assert lock_doc["lock"]["schema_version"] == "3"
     assert lock_doc["revision"]["revision_id"] == reopened.revision_id
@@ -366,56 +327,6 @@ def _authenticate_reopen(
     return status_doc
 
 
-def _inject_evaluate_payload(
-    *,
-    project_dir: Path,
-    change_id: str,
-    invocation_id: str,
-    composition: FrozenComposition,
-    identity: InvocationIdentityRecord,
-) -> None:
-    from assurance_product.cli import _authorization
-    from assurance_product.runtime_ports import ProductRuntimePorts
-
-    async def _update() -> None:
-        workspace = ChangeWorkspace.open(project_dir.resolve(), change_id)
-        authorization = _authorization([f"{SECRET_HANDLE}=env:{SECRET_ENV}"])
-        async with ProductRuntimePorts.open(
-            workspace,
-            composition,
-            invocation=invocation_id,
-            authorization=authorization,
-        ) as ports:
-            started = await ports.backend.journal.read_invocation_started(invocation_id)
-            assert started is not None
-            assert started.product_lock_digest == identity.product_lock_digest
-            assert started.root_input_digest == identity.root_input_digest
-            assert started.graph_revision == identity.revision_id
-            assert started.fencing_token >= 1
-            artifact = ports._compile_bound(
-                invocation_id=invocation_id,
-                root_input_digest=identity.root_input_digest,
-                fencing_token=started.fencing_token,
-            )
-            graph = artifact.entrypoints["improvement-evaluate"]
-            await graph.aupdate_state(
-                {
-                    "configurable": {
-                        "thread_id": invocation_id,
-                        "assurance_revision_id": artifact.manifest.revision.revision_id,
-                        "assurance_product_lock_digest": artifact.manifest.revision.product_lock_digest,
-                        "assurance_root_input_digest": identity.root_input_digest,
-                        "assurance_fencing_token": started.fencing_token,
-                        "assurance_initial_checkpoint": False,
-                    }
-                },
-                _evaluate_task_payload(),
-                as_node="validate",
-            )
-
-    asyncio.run(_update())
-
-
 def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     cli_runner, installed_sources, opencode_composition, tmp_path: Path, monkeypatch
 ) -> None:
@@ -430,10 +341,13 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
-        invocation_id=_EVALUATE_INVOCATION,
-        entrypoint="improvement-evaluate",
+        invocation_id=_LIFECYCLE_INVOCATION,
+        entrypoint=_LIFECYCLE_ENTRYPOINT,
         change_id="CH-PUB-001",
     )
+    knowledge = project_dir / ".aa" / "data-knowledge.yaml"
+    knowledge.parent.mkdir(parents=True, exist_ok=True)
+    knowledge.write_bytes(_DATA_KNOWLEDGE.read_bytes())
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
     assert SECRET_VALUE not in started.output
@@ -442,16 +356,16 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     for path in runtime.rglob("*"):
         if path.is_file():
             assert SECRET_VALUE.encode() not in path.read_bytes()
-    identity_path = _identity_path(project_dir, change_id, _EVALUATE_INVOCATION)
+    identity_path = _identity_path(project_dir, change_id, _LIFECYCLE_INVOCATION)
     identity_bytes = identity_path.read_bytes()
     identity = InvocationIdentityRecord.model_validate_json(identity_bytes)
     assert identity.phase == "initialized"
-    assert identity.entrypoint == "improvement-evaluate"
+    assert identity.entrypoint == _LIFECYCLE_ENTRYPOINT
     assert "runtime" not in identity.model_dump(mode="json")
     assert started_doc["lock_digest"] == composition.lock_digest == identity.product_lock_digest
     assert started_doc["root_input_digest"] == identity.root_input_digest
 
-    existing = _existing_lifecycle_args(args, project_dir, change_id, _EVALUATE_INVOCATION)
+    existing = _existing_lifecycle_args(args, project_dir, change_id, _LIFECYCLE_INVOCATION)
     premature_resume = tmp_path / "premature-wakeup.json"
     premature_resume.write_text(
         json.dumps({"wakeup": {"reference_id": "wake-1"}}, sort_keys=True) + "\n",
@@ -478,25 +392,17 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     _durable_chain(
         project_dir=project_dir,
         change_id=change_id,
-        invocation_id=_EVALUATE_INVOCATION,
+        invocation_id=_LIFECYCLE_INVOCATION,
         composition=composition,
         identity=identity,
         expect_attempt_records=False,
-    )
-
-    _inject_evaluate_payload(
-        project_dir=project_dir,
-        change_id=change_id,
-        invocation_id=_EVALUATE_INVOCATION,
-        composition=composition,
-        identity=identity,
     )
     from types import MappingProxyType
     from assurance_product import application as application_mod
 
     original_reachable = application_mod.ENTRYPOINT_AGENT_CONTRACT_IDS
     forced_reachable = dict(original_reachable)
-    forced_reachable["improvement-evaluate"] = ("assurance.intake.agent.intake.v1",)
+    forced_reachable[_LIFECYCLE_ENTRYPOINT] = ("assurance.intake.agent.intake.v1",)
     monkeypatch.setattr(
         application_mod,
         "ENTRYPOINT_AGENT_CONTRACT_IDS",
@@ -521,7 +427,7 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     ) -> object:
         if not issued["pending"]:
             issued["pending"] = True
-            return PendingTaskResult(wakeup=SystemReference(reference_id=_EVALUATE_WAKE))
+            return PendingTaskResult(wakeup=SystemReference(reference_id=_LIFECYCLE_WAKE))
         return await original_acquire(
             self,
             attempt_key,
@@ -549,7 +455,7 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     monkeypatch.setattr(ResourceArbiter, "acquire", original_acquire)
     resume_file = tmp_path / "system-wakeup.json"
     resume_file.write_text(
-        json.dumps({"wakeup": {"reference_id": _EVALUATE_WAKE}}, sort_keys=True) + "\n",
+        json.dumps({"wakeup": {"reference_id": _LIFECYCLE_WAKE}}, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     resumed = cli_runner.invoke(app, ["resume", *existing, "--resume-file", str(resume_file)])
@@ -566,11 +472,11 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     )
     assert achieved["change"]["state"] == "achieved"
     assert achieved["pending_interrupt"] is None
-    assert achieved["entrypoint"] == "improvement-evaluate"
+    assert achieved["entrypoint"] == _LIFECYCLE_ENTRYPOINT
     _durable_chain(
         project_dir=project_dir,
         change_id=change_id,
-        invocation_id=_EVALUATE_INVOCATION,
+        invocation_id=_LIFECYCLE_INVOCATION,
         composition=composition,
         identity=identity,
         expect_attempt_records=True,

@@ -13,19 +13,27 @@ from graph_engine.plugin_api import TaskHandler
 from graph_engine.testing import GraphHarness, committed
 from pydantic import ValidationError
 
-from assurance_product.graphs.tail_contracts import ExecuteTailResultV1, reported_tail_result
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.assessment import (
     FinalizedReportV1,
     InspectionOutcomeV1,
     ReportOutcomeV1,
+    ReportPublishedV1,
     ReportSkillInputV1,
 )
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_quality.graphs.factory import build_quality_graphs
-from assurance_quality.graphs.nodes import publish_report, select_report
+from assurance_quality.derived import derive_report_input
+from assurance_quality.graphs.factory import build_quality_graphs as _build_quality_graphs
+from assurance_quality.ops.report.hooks import seal_report
 from assurance_quality.ops.report import finalize as report_finalize, prepare as report_prepare
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_quality_graphs(*args, **kwargs):
+    return compile_bundle(_build_quality_graphs(*args, **kwargs))
+
 
 _CHANGE = "CH-REPORT-1"
 _BATCH = "batch-1"
@@ -182,6 +190,38 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
     }
 
 
+def _skill_from_state(state: dict[str, object]) -> ReportSkillInputV1:
+    payload = dict(state)
+    if payload.get("issue_digest") is None:
+        payload.pop("issue_digest", None)
+    filled = derive_report_input(payload)
+    return ReportSkillInputV1.model_validate(
+        {
+            "change_id": filled.get("change_id"),
+            "batch_id": filled.get("batch_id"),
+            "capability_leafs": filled.get("capability_leafs", ()),
+            "artifact_paths": filled.get("artifact_paths") or filled.get("allowed_artifact_paths", ()),
+            "coverage_epoch": filled.get("coverage_epoch"),
+            "purpose": filled.get("report_purpose", state.get("report_purpose", "normal")),
+            "inspection": filled.get("inspection_outcome"),
+            "assessment": filled.get("assessment_inputs"),
+            "generation": filled.get("generation_result"),
+            "fact_baseline_ref": filled.get("fact_baseline_ref"),
+            "issue_analysis_ref": filled.get("issue_analysis_ref"),
+            "execution_digest": filled.get("execution_digest") or filled.get("execution_evidence_digest"),
+            "healing_digest": filled.get("healing_digest"),
+            "trace_digest": filled.get("trace_digest"),
+            "coverage_digest": filled.get("coverage_digest"),
+            "metrics_digest": filled.get("metrics_digest"),
+            "case_digest": filled.get("case_digest"),
+            "plan_digest": filled.get("plan_digest"),
+            "plan_ref": filled.get("plan_ref"),
+            "mapping_digest": filled.get("mapping_digest"),
+            "issue_digest": filled.get("issue_digest"),
+        }
+    )
+
+
 def _raw_report(selected: ReportSkillInputV1, *, include_files: bool = True) -> dict[str, object]:
     result: dict[str, object] = {
         "schema_version": "1.1",
@@ -214,6 +254,71 @@ def _agent_result(payload: dict[str, object]) -> dict[str, object]:
     return result.model_dump(mode="json")
 
 
+def _bound_report(project: Path, selected: ReportSkillInputV1) -> dict[str, object]:
+    """Stage the producer files and return the ref input prepare validates."""
+
+    from graph_engine.artifacts import stage_json_artifact
+
+    from assurance_execution.contracts.workflow import EXECUTION_CYCLE_PATH, ExecutionCycleDocumentV1
+    from assurance_generation.contracts.workflow import GENERATION_CYCLE_PATH
+    from assurance_quality.contracts.assessment import (
+        ASSESSMENT_INPUTS_PATH,
+        INSPECTION_OUTCOME_PATH,
+        InspectionDocumentV1,
+        ReportBoundInputV1,
+    )
+
+    raw = selected.inspection.model_dump(mode="json")
+    raw.pop("inspection_receipt", None)
+    inspection = stage_json_artifact(
+        project, INSPECTION_OUTCOME_PATH, InspectionDocumentV1.model_validate(raw)
+    )
+    assessment = stage_json_artifact(project, ASSESSMENT_INPUTS_PATH, selected.assessment)
+    generation = stage_json_artifact(project, GENERATION_CYCLE_PATH, selected.generation)
+    execution = stage_json_artifact(
+        project,
+        EXECUTION_CYCLE_PATH,
+        ExecutionCycleDocumentV1.model_validate(
+            {
+                "change_id": selected.change_id,
+                "plan_digest": selected.plan_digest,
+                "plan_ref": selected.plan_ref.model_dump(mode="json"),
+                "coverage_epoch": selected.coverage_epoch,
+                "repair_round": 0,
+                "batch_id": selected.batch_id,
+                "executed_at": "2026-08-22T00:00:00Z",
+                "final_status": "PASS",
+                "evidence_ref": selected.assessment.execution_ref.model_dump(mode="json"),
+                "mapping_ref": selected.generation.mapping_ref.model_dump(mode="json"),
+                "source_refs": [item.model_dump(mode="json") for item in selected.generation.source_refs],
+                "family_outcomes": [{"family": "api", "state": "executed"}],
+            }
+        ),
+    )
+
+    def _plain(value: object) -> object:
+        dump = getattr(value, "model_dump", None)
+        return dump(mode="json") if callable(dump) else value
+
+    return ReportBoundInputV1.model_validate(
+        {
+            "change_id": selected.change_id,
+            "coverage_epoch": selected.coverage_epoch,
+            "purpose": selected.purpose,
+            "capability_leafs": list(selected.capability_leafs),
+            "fact_baseline_ref": _plain(selected.fact_baseline_ref),
+            "issue_analysis_ref": _plain(selected.issue_analysis_ref),
+            "artifact_paths": list(selected.artifact_paths),
+            "inspection_ref": {"path": inspection.path, "digest": inspection.digest},
+            "assessment_ref": {"path": assessment.path, "digest": assessment.digest},
+            "generation_ref": {"path": generation.path, "digest": generation.digest},
+            "execution_ref": {"path": execution.path, "digest": execution.digest},
+            "execution_receipt": {"receipt_id": "execute", "receipt_digest": _DIGEST},
+            "inspection_receipt": _plain(selected.inspection.inspection_receipt),
+        }
+    ).model_dump(mode="json")
+
+
 def _write_authenticated_inputs(project: Path, selected: ReportSkillInputV1) -> None:
     refs = (
         *selected.inspection.reviewed_case.preparation_refs,
@@ -240,14 +345,14 @@ def _write_authenticated_inputs(project: Path, selected: ReportSkillInputV1) -> 
 def test_report_input_does_not_accept_a_coverage_flag_or_stale_refs_alone() -> None:
     state = _state()
     state.pop("inspection_outcome")
-    with pytest.raises(ValueError):
-        select_report(state)
+    with pytest.raises(ValueError, match="inspection_outcome"):
+        derive_report_input(state)
 
 
-def test_report_selector_binds_current_satisfied_inspection_chain() -> None:
-    selected = select_report(_state())
-    assert isinstance(selected, ReportSkillInputV1)
-    assert selected.coverage_epoch == 0
+def test_report_prepare_binds_current_satisfied_inspection_chain() -> None:
+    filled = derive_report_input(_state())
+    selected = _skill_from_state(_state())
+    assert filled["coverage_epoch"] == 0
     assert selected.inspection.disposition == "satisfied"
     assert selected.inspection.batch_id == selected.batch_id
 
@@ -260,9 +365,12 @@ def test_diagnostic_report_binds_current_issue_analysis() -> None:
     state["report_purpose"] = "diagnostic"
     issue_ref = _ref("qa/results/inspect/issue-analysis.json")
     state["issue_analysis_ref"] = issue_ref
+    state.pop("issue_digest", None)
 
-    selected = cast(ReportSkillInputV1, select_report(state))
+    filled = derive_report_input(state)
+    selected = _skill_from_state(state)
 
+    assert filled["issue_digest"] == issue_ref["digest"]
     assert selected.issue_analysis_ref == EvidenceArtifactRefV1.model_validate(issue_ref)
     assert selected.issue_digest == issue_ref["digest"]
 
@@ -275,24 +383,24 @@ def test_diagnostic_report_rejects_missing_issue_analysis() -> None:
     state["report_purpose"] = "diagnostic"
 
     with pytest.raises(ValidationError, match="issue analysis"):
-        select_report(state)
+        _skill_from_state(state)
 
 
-def test_report_selector_rejects_an_inspection_from_a_previous_batch() -> None:
+def test_report_input_rejects_an_inspection_from_a_previous_batch() -> None:
     state = _state()
     state["batch_id"] = "batch-2"
     with pytest.raises(ValidationError, match="current inspection"):
-        select_report(state)
+        _skill_from_state(state)
 
 
 @pytest.mark.asyncio
 async def test_report_prepare_authenticates_the_current_inspection_chain(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path, _CHANGE)
-    selected = cast(ReportSkillInputV1, select_report(_state()))
+    selected = cast(ReportSkillInputV1, _skill_from_state(_state()))
     _write_authenticated_inputs(project, selected)
     prepared = await execute_task(
         cast(TaskHandler, report_prepare),
-        cast(JSONValue, selected.model_dump(mode="json")),
+        cast(JSONValue, _bound_report(project, selected)),
         project,
         write_root=write_root,
         binding_data=_BINDING,
@@ -302,7 +410,7 @@ async def test_report_prepare_authenticates_the_current_inspection_chain(tmp_pat
 
 @pytest.mark.asyncio
 async def test_report_finalizer_rejects_wrapped_input(tmp_path: Path) -> None:
-    selected = cast(ReportSkillInputV1, select_report(_state()))
+    selected = cast(ReportSkillInputV1, _skill_from_state(_state()))
     result = await execute_task(
         cast(TaskHandler, report_finalize),
         cast(
@@ -322,14 +430,15 @@ async def test_report_finalizer_rejects_wrapped_input(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_report_finalize_requires_declared_new_report_bytes(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path, _CHANGE)
-    selected = cast(ReportSkillInputV1, select_report(_state()))
+    selected = cast(ReportSkillInputV1, _skill_from_state(_state()))
     _write_authenticated_inputs(project, selected)
+    bound = _bound_report(project, selected)
     missing_refs = await execute_task(
         cast(TaskHandler, report_finalize),
         cast(
             JSONValue,
             {
-                **selected.model_dump(mode="json"),
+                **bound,
                 "agent_result": _agent_result(_raw_report(selected, include_files=False)),
             },
         ),
@@ -344,7 +453,7 @@ async def test_report_finalize_requires_declared_new_report_bytes(tmp_path: Path
         cast(
             JSONValue,
             {
-                **selected.model_dump(mode="json"),
+                **bound,
                 "agent_result": _agent_result(_raw_report(selected)),
             },
         ),
@@ -359,8 +468,9 @@ async def test_report_finalize_requires_declared_new_report_bytes(tmp_path: Path
 async def test_report_bytes_are_finalized_then_bound_to_commit_receipt(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path, _CHANGE)
     state = _state()
-    selected = cast(ReportSkillInputV1, select_report(state))
+    selected = cast(ReportSkillInputV1, _skill_from_state(state))
     _write_authenticated_inputs(project, selected)
+    bound = _bound_report(project, selected)
     report_path = "qa/results/report/report.md"
     staged = write_root / report_path
     staged.parent.mkdir(parents=True, exist_ok=True)
@@ -370,7 +480,7 @@ async def test_report_bytes_are_finalized_then_bound_to_commit_receipt(tmp_path:
         cast(
             JSONValue,
             {
-                **selected.model_dump(mode="json"),
+                **bound,
                 "agent_result": _agent_result(_raw_report(selected)),
             },
         ),
@@ -378,53 +488,17 @@ async def test_report_bytes_are_finalized_then_bound_to_commit_receipt(tmp_path:
         write_root=write_root,
     )
     assert finalized_run.outcome.status == "succeeded", finalized_run.outcome.failure
-    finalized = FinalizedReportV1.model_validate(finalized_run.outcome.output)
+    published = ReportPublishedV1.model_validate(finalized_run.outcome.output)
+    finalized = published.finalized
+    assert finalized is not None
     assert finalized.report_refs[0].digest == hashlib.sha256(staged.read_bytes()).hexdigest()
-
-    receipt = _receipt("report-current")
-    published = publish_report(state, finalized, receipt)
-    outcome = ReportOutcomeV1.model_validate(published["report_outcome"])
-    assert outcome.report_receipt == receipt
-    assert published["report_refs"] == [ref.model_dump(mode="json") for ref in outcome.report_refs]
-    assert published["report_receipt"] == receipt.model_dump(mode="json")
-
-
-def test_reported_tail_rejects_previous_batch_or_inspection_receipt() -> None:
-    inspection = InspectionOutcomeV1.model_validate(_state()["inspection_outcome"])
-    report = ReportOutcomeV1(
-        change_id=_CHANGE,
-        coverage_epoch=0,
-        plan_digest=_DIGEST,
-        plan_ref=inspection.plan_ref,
-        batch_id="previous-batch",
-        inspection_receipt=_receipt("inspect-previous"),
-        report_refs=(EvidenceArtifactRefV1.model_validate(_ref("qa/results/report/report.md")),),
-        report_receipt=_receipt("report-current"),
-    )
-    with pytest.raises(ValueError, match="current inspection"):
-        reported_tail_result(inspection, report)
-
-
-def test_reported_tail_requires_a_satisfied_inspection() -> None:
-    inspection = InspectionOutcomeV1.model_validate(_state()["inspection_outcome"]).model_copy(
-        update={"disposition": "blocked", "coverage_state": None}
-    )
-    matching = ReportOutcomeV1(
-        change_id=_CHANGE,
-        coverage_epoch=0,
-        plan_digest=_DIGEST,
-        plan_ref=inspection.plan_ref,
-        batch_id=_BATCH,
-        inspection_receipt=inspection.inspection_receipt,
-        report_refs=(EvidenceArtifactRefV1.model_validate(_ref("qa/results/report/report.md")),),
-        report_receipt=_receipt("report-current"),
-    )
-    with pytest.raises(ValueError, match="satisfied inspection"):
-        reported_tail_result(inspection, matching)
+    assert published.publication == "reported"
+    assert published.report_outcome is not None
+    assert "report_receipt" not in published.report_outcome
 
 
 @pytest.mark.asyncio
-async def test_failed_report_attempt_clears_stale_report_state() -> None:
+async def test_failed_report_attempt_clears_stale_report_state(tmp_path: Path) -> None:
     contracts = {
         contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
     }
@@ -435,26 +509,16 @@ async def test_failed_report_attempt_clears_stale_report_state() -> None:
     ).report
     result = await harness.run(
         graph,
-        input=_state(),
+        input=_bound_report(tmp_path, cast(ReportSkillInputV1, _skill_from_state(_state()))),
         script={"quality.report": [PermanentTaskFailure(kind="invalid_output", message="missing report")]},
     )
     terminal = cast(dict[str, object], result.terminal)
-    assert terminal["report_refs"] == []
-    assert terminal["report_receipt"] is None
-    assert not terminal.get("report_outcome")
-    with pytest.raises(ValidationError):
-        ExecuteTailResultV1(
-            status="reported",
-            inspection=InspectionOutcomeV1.model_validate(_state()["inspection_outcome"]),
-            plan_digest="d" * 64,
-            plan_ref=EvidenceArtifactRefV1(path="qa/results/plan.json", digest="e" * 64),
-            report_refs=(),
-            report_receipt=None,
-        )
+    assert terminal["status"] == "failed"
+    assert "report_outcome" not in terminal
 
 
 @pytest.mark.asyncio
-async def test_report_graph_publishes_only_the_current_committed_outcome() -> None:
+async def test_report_graph_publishes_only_the_current_committed_outcome(tmp_path: Path) -> None:
     contracts = {
         contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
     }
@@ -476,17 +540,28 @@ async def test_report_graph_publishes_only_the_current_committed_outcome() -> No
         inspection_receipt=inspection.inspection_receipt,
         report_refs=(ref,),
     )
+    selected = cast(ReportSkillInputV1, _skill_from_state(state))
+    receipt = _receipt("report-current")
+    sealed = seal_report(selected, finalized)
     result = await harness.run(
         graph,
-        input=state,
-        script={"quality.report": [committed(finalized, _receipt("report-current"))]},
+        input=_bound_report(tmp_path, selected),
+        script={"quality.report": [committed(sealed, receipt)]},
     )
     published = result.published_update
     assert published is not None
-    assert published["status"] == "reported"
-    outcome = ReportOutcomeV1.model_validate(published["report_outcome"])
+    assert cast(dict[str, object], result.terminal)["status"] == "reported"
+    assert "report_outcome" not in published
+    assert sealed.report_outcome is not None
+    outcome = ReportOutcomeV1.model_validate(
+        {
+            **sealed.report_outcome,
+            "report_receipt": receipt.model_dump(mode="json"),
+        }
+    )
     assert outcome.batch_id == inspection.batch_id
     assert outcome.inspection_receipt == inspection.inspection_receipt
+    assert outcome.report_receipt == receipt
 
 
 def test_diagnostic_report_cannot_publish_a_normal_success_outcome() -> None:
@@ -498,7 +573,7 @@ def test_diagnostic_report_cannot_publish_a_normal_success_outcome() -> None:
     state["coverage_state"] = None
     state["report_purpose"] = "diagnostic"
     state["issue_analysis_ref"] = _ref("qa/results/inspect/issue-analysis.json")
-    selected = cast(ReportSkillInputV1, select_report(state))
+    selected = cast(ReportSkillInputV1, _skill_from_state(state))
     ref = EvidenceArtifactRefV1.model_validate(_ref("qa/results/report/report.md"))
     finalized = FinalizedReportV1(
         change_id=_CHANGE,
@@ -510,7 +585,50 @@ def test_diagnostic_report_cannot_publish_a_normal_success_outcome() -> None:
         inspection_receipt=inspection.inspection_receipt,
         report_refs=(ref,),
     )
-    published = publish_report(state, finalized, _receipt("diagnostic-report"))
+    published = seal_report(selected, finalized)
     assert selected.purpose == "diagnostic"
-    assert published["status"] == "diagnostic"
-    assert published["report_outcome"] is None
+    assert published.publication == "diagnostic"
+    assert published.report_outcome is None
+
+
+def test_report_input_rejects_a_previous_batch() -> None:
+    selected = cast(ReportSkillInputV1, _skill_from_state(_state()))
+    payload = selected.model_dump(mode="json")
+    payload["batch_id"] = "previous-batch"
+    with pytest.raises(ValidationError, match="current inspection"):
+        ReportSkillInputV1.model_validate(payload)
+
+
+def test_normal_report_requires_a_satisfied_inspection() -> None:
+    selected = cast(ReportSkillInputV1, _skill_from_state(_state()))
+    payload = selected.model_dump(mode="json")
+    payload["inspection"]["disposition"] = "blocked"
+    payload["inspection"]["coverage_state"] = None
+    with pytest.raises(ValidationError, match="satisfied inspection"):
+        ReportSkillInputV1.model_validate(payload)
+
+
+def test_quality_gate_rejects_a_previous_inspection_receipt() -> None:
+    from assurance_product.models import QualityGateRefV1
+
+    selected = cast(ReportSkillInputV1, _skill_from_state(_state()))
+    inspection = selected.inspection
+    ref = EvidenceArtifactRefV1.model_validate(_ref("qa/results/report/report.md"))
+    outcome = ReportOutcomeV1(
+        change_id=inspection.change_id,
+        coverage_epoch=inspection.coverage_epoch,
+        batch_id=inspection.batch_id,
+        inspection_receipt=inspection.inspection_receipt,
+        plan_digest=inspection.plan_digest,
+        plan_ref=inspection.plan_ref,
+        report_refs=(ref,),
+        report_receipt=_receipt("report-current"),
+    )
+    QualityGateRefV1.model_validate(
+        {"inspection": inspection.model_dump(mode="json"), "report": outcome.model_dump(mode="json")}
+    )
+    stale = outcome.model_copy(update={"inspection_receipt": _receipt("previous-inspect")})
+    with pytest.raises(ValidationError, match="current inspection"):
+        QualityGateRefV1.model_validate(
+            {"inspection": inspection.model_dump(mode="json"), "report": stale.model_dump(mode="json")}
+        )

@@ -12,24 +12,18 @@ from graph_engine.plugin_api import (
     ResourceClaims,
     ValidationContext,
 )
+from graph_engine.artifacts import ArtifactReadError, is_canonical_relative, read_workspace_file, under_root
 
 from assurance_generation.contracts.mapping import _safe_project_relative_path
 from assurance_execution.operations.paths import resolve_selected_file
-from assurance_execution.validators.mapping import ClosedMappingValidator
 from assurance_generation.contracts.plans import canonical_relative_path
-from assurance_generation.validators.generated_files import GeneratedFilesValidator
 from assurance_healing.operations.agent import workspace_file as healing_workspace_file
-from assurance_healing.validators.test_tree import TestTreeValidator
 from assurance_improvement.operations.agent import _workspace_file as improvement_workspace_file
-from assurance_improvement.validators.delivery import DeliveryValidator
-from assurance_improvement.validators.paths import canonical_relative as improvement_canonical
 from agent_runtime_contracts.ops import ArtifactListResultV1
-from assurance_intake.domain.artifacts import allowed_by_lock
-from assurance_intake.domain.artifacts import workspace_file as intake_workspace_file
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.operations.assessment import _read_ref as quality_workspace_file
-from assurance_quality.validators.paths import canonical_relative as quality_canonical
-from assurance_quality.validators.report import ReportValidator
+
+_LOCKED = ("qa/cases", "qa/results", "qa/tests")
 
 PATH_CASES = (
     "absolute",
@@ -126,29 +120,31 @@ def _string_rejected(wheel: str, path: str, hook: PathProceedHook) -> bool:
             ArtifactListResultV1(output_files=(path,))
         except ValueError:
             return True
-        accepted = allowed_by_lock(path, _INTAKE_LOCK)
+        accepted = under_root(path, _INTAKE_LOCK)
     elif wheel == "generation":
         try:
             canonical_relative_path(path)
         except ValueError:
             return True
-        accepted = GeneratedFilesValidator().validate(_candidate(path), _context()).accepted
+        accepted = under_root(path, _LOCKED)
     elif wheel == "execution":
         try:
             _safe_project_relative_path(path)
         except ValueError:
             return True
-        accepted = ClosedMappingValidator().validate(_candidate(path), _context()).accepted
+        accepted = under_root(path, _LOCKED)
     elif wheel == "healing":
-        accepted = TestTreeValidator(path_only=True).validate(_candidate(path), _context()).accepted
+        if not is_canonical_relative(path):
+            return True
+        accepted = under_root(path, _LOCKED)
     elif wheel == "quality":
-        if not quality_canonical(path):
+        if not is_canonical_relative(path):
             return True
-        accepted = ReportValidator(path_only=True).validate(_candidate(path), _context()).accepted
+        accepted = under_root(path, _LOCKED)
     elif wheel == "improvement":
-        if not improvement_canonical(path):
+        if not is_canonical_relative(path):
             return True
-        accepted = DeliveryValidator(path_only=True).validate(_candidate(path), _context()).accepted
+        accepted = under_root(path, _LOCKED)
     else:
         raise ValueError(wheel)
     if accepted:
@@ -159,7 +155,7 @@ def _string_rejected(wheel: str, path: str, hook: PathProceedHook) -> bool:
 def _workspace_rejected(wheel: str, workspace: Path, relative: str, hook: PathProceedHook) -> bool:
     try:
         if wheel == "intake":
-            intake_workspace_file(workspace, relative)
+            read_workspace_file(workspace, relative)
         elif wheel == "generation":
             canonical_relative_path(relative)
             from assurance_generation.operations.planning import _workspace_file
@@ -178,7 +174,7 @@ def _workspace_rejected(wheel: str, workspace: Path, relative: str, hook: PathPr
             )
         else:
             raise ValueError(wheel)
-    except (ValueError, OSError, FileNotFoundError):
+    except (ValueError, OSError, FileNotFoundError, ArtifactReadError):
         return True
     hook.on_production_accept()
     return False

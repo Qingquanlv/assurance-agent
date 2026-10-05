@@ -5,15 +5,16 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
+from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables.config import RunnableConfig
 
 from agent_runtime_contracts import RawAgentRuntimeOutcome
 from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
-from assurance_execution.graphs.factory import build_execution_graphs
-from assurance_execution.graphs.nodes import publish_execution, select_execute
-from assurance_execution.graphs.state import ExecutionState
+from assurance_execution.contracts.workflow import ExecutionAttemptOutputV1
+from assurance_execution.graphs.factory import build_execution_graphs as _build_execution_graphs
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.plugin import ExecutionPlugin
 from assurance_product.agent_contracts import all_feature_agent_contracts
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
@@ -49,8 +50,49 @@ from graph_engine.plugin_api import (
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
 
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_execution_graphs(*args, **kwargs):
+    return compile_bundle(_build_execution_graphs(*args, **kwargs))
+
+
 _TEST_CONTRACT_ID = "test.assurance.execution.validator-parity.v1"
 _EVIDENCE_VALIDATOR_ID = "assurance.execution.validator.evidence.v1"
+
+
+class _ExecutionChannels(CheckpointBridgeState, total=False):
+    change_id: str
+    plan_digest: str
+    plan_ref: dict[str, str]
+    selected_test_families: list[str]
+    capability_leafs: list[str]
+    coverage_epoch: int
+    coverage_epoch_token: str
+    repair_round: int
+    execution_kind: str
+    generation_result: dict[str, object]
+    allowed_origins: list[str]
+    timeout_seconds: int
+    batch_id: str
+    case_ids: list[str]
+    artifact_paths: list[str]
+    mapping: dict[str, object]
+    selected_targets: dict[str, bool]
+    baseline_tree_id: str
+    runner_profile_digest: str
+    rounds_budget: int
+    rounds_used: int
+    status: str
+    execution_evidence: dict[str, object]
+    execution_digest: str
+    execution_semantic_node_id: str
+    execution_result: dict[str, object]
+    execution_receipt: dict[str, str]
+    family_outcomes: list[dict[str, object]]
+    attempt_failure: dict[str, object]
+
+
 _EXECUTE_ID = "assurance.execution.execute"
 _ACCEPT_PATH = "qa/tests/test_validator_parity.py"
 _REJECT_PATH = "src/validator_parity.py"
@@ -104,7 +146,7 @@ class _StagedWriteExecutor:
 
     async def execute(
         self, validated_input: object, scope: object
-    ) -> ExecutedAttemptResult[ExecutionEvidenceV1]:
+    ) -> ExecutedAttemptResult[ExecutionAttemptOutputV1]:
         del validated_input, scope
         self.calls += 1
         binding = self.workspace.binding
@@ -112,7 +154,18 @@ class _StagedWriteExecutor:
         target = binding.write_root / self.relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        return ExecutedAttemptResult(output=self.output)
+        from assurance_execution.operations.cycle import seal_execution
+
+        return ExecutedAttemptResult(
+            output=seal_execution(
+                self.output,
+                change_id=self.output.change_id,
+                coverage_epoch=0,
+                repair_round=0,
+                execution_kind="execute",
+                generation=None,
+            )
+        )
 
 
 class _CountingValidator:
@@ -264,12 +317,21 @@ def _invoke_config() -> RunnableConfig:
     }
 
 
+class _QaPathValidator:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
+        del context
+        for item in staged.files:
+            if item.path.startswith("src/"):
+                return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
+        return ValidationResult(accepted=True)
+
+
 def _assert_shipped_inventory(contribution: PluginContribution) -> None:
     assert all(contract.validators == () for contract in TASK_ATTEMPT_CONTRACTS.values())
     assert _TEST_CONTRACT_ID not in {item.contract_id for item in contribution.attempt_contracts}
     assert _TEST_CONTRACT_ID not in all_feature_agent_contracts()
-    assert len(all_feature_agent_contracts()) == 27
-    assert _EVIDENCE_VALIDATOR_ID in contribution.commit_validators
+    assert len(all_feature_agent_contracts()) == 26
+    assert contribution.commit_validators == {}
 
 
 async def _run_parity_candidate(
@@ -278,7 +340,7 @@ async def _run_parity_candidate(
     relative: str,
 ) -> tuple[dict[str, object], _CountingValidator, _RecordingWorkspace, _StagedWriteExecutor]:
     contribution = _contribution()
-    evidence = contribution.commit_validators[_EVIDENCE_VALIDATOR_ID]
+    evidence = _QaPathValidator()
     core = _boot_resolved_execute()
     clone = _parity_clone(core)
     authenticated = resolve_contract(clone, executor=core.executor)
@@ -345,7 +407,8 @@ async def _run_parity_candidate(
         contribution=contribution,
         manifest=manifest,
     )
-    builder: StateGraph[ExecutionState] = StateGraph(ExecutionState)
+
+    builder: StateGraph[_ExecutionChannels] = StateGraph(_ExecutionChannels)
     builder.add_node(
         "execution.validator-parity",
         cast(
@@ -354,8 +417,17 @@ async def _run_parity_candidate(
                 _TEST_CONTRACT_ID,
                 semantic_node_id="execution.validator-parity",
                 activation=BusinessActivation.one_shot(),
-                select=select_execute,
-                publish=publish_execution,
+                select=lambda state: ExecutionPrepareInputV1.model_validate(
+                    {
+                        **{key: state[key] for key in ExecutionPrepareInputV1.model_fields if key in state},
+                        "execution_kind": "execute",
+                    }
+                ),
+                publish=lambda _state, output, _receipt: {
+                    "status": getattr(output, "status", None)
+                    or (output.get("status") if isinstance(output, dict) else None)
+                    or "passed"
+                },
             ),
         ),
     )

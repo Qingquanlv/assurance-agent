@@ -407,7 +407,7 @@ def product_graph_manifest(
     from importlib import metadata
 
     from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
-    from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS
+    from assurance_product.graphs.factory import entrypoint_contracts
     from graph_engine.boot.boot import CHECKPOINT_CONTRACT_VERSION
     from graph_engine.boot.graph_revision import GraphBuildManifest, GraphRevision
     from graph_engine.canonical import canonical_digest
@@ -437,7 +437,7 @@ def product_graph_manifest(
         wheel_source_digests=wheel_source_digests,
         factory_symbols=factory_symbols,
         state_schema_versions={
-            name: contract.state_schema_version for name, contract in ENTRYPOINT_CONTRACTS.items()
+            name: contract.state_schema_version for name, contract in entrypoint_contracts().items()
         },
         langgraph_version=metadata.version("langgraph"),
         checkpoint_contract_version=CHECKPOINT_CONTRACT_VERSION,
@@ -446,7 +446,7 @@ def product_graph_manifest(
         revision=revision,
         entrypoint_contract_digests={
             name: canonical_digest(contract.canonical_projection())
-            for name, contract in ENTRYPOINT_CONTRACTS.items()
+            for name, contract in entrypoint_contracts().items()
         },
         attempt_contract_digests=attempt_contract_digests,
     )

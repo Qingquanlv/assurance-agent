@@ -18,7 +18,7 @@ _FACTORY_SYMBOLS = {ref.owner_id: ref.symbol for ref in FEATURE_GRAPH_FACTORIES}
         (pin, agents, tasks)
         for pin, (agents, tasks) in zip(
             CAPABILITIES,
-            ((5, 1), (8, 3), (0, 2), (3, 0), (5, 3), (6, 9)),
+            ((5, 2), (8, 3), (0, 2), (2, 0), (5, 3), (6, 11)),
             strict=True,
         )
     ),
@@ -49,9 +49,9 @@ def test_product_assembles_only_the_six_explicit_features() -> None:
     assert tuple(feature.owner_id for feature in FEATURES) == CAPABILITY_OWNERS
     validate_feature_set(FEATURES)
     assert FEATURE_GRAPH_FACTORIES == tuple(feature.graph_factory for feature in FEATURES)
-    assert len(all_feature_agent_contracts()) == 27
-    assert len(all_feature_task_contracts()) == 18
-    assert len(OutputRouteCatalog().aliases()) == 27
+    assert len(all_feature_agent_contracts()) == 26
+    assert len(all_feature_task_contracts()) == 21
+    assert len(OutputRouteCatalog().aliases()) == 26
     with pytest.raises(ValueError, match="feature owners"):
         validate_feature_set((*FEATURES[:-1], FEATURES[0]))
 

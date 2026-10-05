@@ -9,22 +9,16 @@ _PUBLIC_ENTRYPOINTS = (
     "intake",
     "full",
     "init",
-    "archive",
     "retro",
     "issue-review",
     "issue-analyze",
     "issue-reconcile",
-    "improvement-review",
-    "improvement-evaluate",
-    "improvement-export",
-    "improvement-apply",
-    "improvement-rollback",
 )
 
 
 def test_public_entrypoints_are_the_python_product_roots() -> None:
     assert set(PRODUCT_ENTRYPOINTS) == set(_PUBLIC_ENTRYPOINTS)
-    assert len(PRODUCT_ENTRYPOINTS) == 13
+    assert len(PRODUCT_ENTRYPOINTS) == 7
 
 
 def test_intake_bundle_exposes_prepare_and_case_graphs() -> None:

@@ -10,16 +10,11 @@ PUBLIC_CLOSURE_GOLDEN = Path(__file__).resolve().parent / "goldens" / "public-cl
 PUBLIC_ENTRYPOINTS = (
     "intake",
     "full",
-    "archive",
+    "init",
     "retro",
     "issue-review",
     "issue-analyze",
     "issue-reconcile",
-    "improvement-review",
-    "improvement-evaluate",
-    "improvement-export",
-    "improvement-apply",
-    "improvement-rollback",
 )
 
 STANDALONE_PASS_SCENARIOS: tuple[dict[str, Any], ...] = tuple(

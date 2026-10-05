@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
+from graph_engine.flow import BoundFlow
 
 from assurance_improvement.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
@@ -17,13 +17,14 @@ from assurance_improvement.plugin import ImprovementPlugin
 
 @dataclass(frozen=True, slots=True)
 class ImprovementGraphs:
-    archive: CompiledStateGraph
-    retro: CompiledStateGraph
-    review: CompiledStateGraph
-    evaluate: CompiledStateGraph
-    export: CompiledStateGraph
-    apply: CompiledStateGraph
-    rollback: CompiledStateGraph
+    archive: BoundFlow
+    retro: BoundFlow
+    review: BoundFlow
+    evaluate: BoundFlow
+    export: BoundFlow
+    apply: BoundFlow
+    rollback: BoundFlow
+    runtime_snapshot: BoundFlow
 
 
 FEATURE = FeatureSpec(

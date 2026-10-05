@@ -1,4 +1,5 @@
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.runtime_evidence import RUNTIME_EVIDENCE, RuntimeEvidenceSource
 from graph_engine.attempts.contracts import (
     AttemptExecutor,
     AttemptRetryPolicy,
@@ -42,8 +43,10 @@ __all__ = [
     "PendingTaskResult",
     "PermanentTaskFailure",
     "ReceiptRef",
+    "RUNTIME_EVIDENCE",
     "RejectedTaskResult",
     "ResolvedAttemptContract",
+    "RuntimeEvidenceSource",
     "SystemReference",
     "TaskAttemptContract",
     "TerminalReceiptRef",

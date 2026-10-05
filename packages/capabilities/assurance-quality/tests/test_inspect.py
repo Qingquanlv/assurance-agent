@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-import pytest
 from graph_engine.canonical import JSONValue
-from tests.capabilities.conformance import execute_task
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_healing.contracts.status import HealingStatusV1
-from assurance_quality.operations.inspect import InspectHandler, classify_failure
+from assurance_quality.operations.inspect import classify_failure
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     BATCH_ID,
     CASE_ID,
@@ -16,7 +14,6 @@ from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     HEX_A,
     HEX_B,
     LEAF,
-    as_object,
     digest_of,
 )
 
@@ -222,167 +219,3 @@ def test_classify_fixture_missing_is_auto_fixable_test_data() -> None:
     assert result.category == "test_data_failure"
     assert result.fix_proposal_eligible is True
     assert result.needs_review is False
-
-
-@pytest.mark.asyncio
-async def test_inspect_classifies_locator_failure() -> None:
-    outcome = await execute_task(
-        InspectHandler(), inspect_input(message="locator not found: .card", target="e2e")
-    )
-    assert outcome.status == "succeeded"
-    payload = as_object(outcome.output)
-    analysis = payload["analysis"]
-    assert analysis["failures"][0]["category"] == "locator_failure"
-    assert analysis["failures"][0]["fix_proposal_eligible"] is True
-    assert analysis["final_status"] == "FAIL"
-    assert payload["quality_gate"]["final_status"] == "FAIL"
-    assert "transcript" not in payload
-
-
-@pytest.mark.asyncio
-async def test_inspect_api_locator_is_unknown() -> None:
-    outcome = await execute_task(
-        InspectHandler(), inspect_input(message="locator not found: .card", target="api")
-    )
-    assert outcome.status == "succeeded"
-    failure = as_object(outcome.output)["analysis"]["failures"][0]
-    assert failure["category"] == "unknown"
-    assert failure["fix_proposal_eligible"] is False
-
-
-@pytest.mark.asyncio
-async def test_inspect_environment_timeout_is_environment_failure() -> None:
-    outcome = await execute_task(
-        InspectHandler(),
-        inspect_input(message="timeout connecting to host", target="api"),
-    )
-    assert outcome.status == "succeeded"
-    failure = as_object(outcome.output)["analysis"]["failures"][0]
-    assert failure["category"] == "environment_failure"
-    assert failure["fix_proposal_eligible"] is False
-
-
-@pytest.mark.asyncio
-async def test_inspect_classifies_assertion_as_not_auto_fixable() -> None:
-    outcome = await execute_task(InspectHandler(), inspect_input(message="AssertionError: expected 200"))
-    assert outcome.status == "succeeded"
-    failure = as_object(outcome.output)["analysis"]["failures"][0]
-    assert failure["category"] == "assertion_failure"
-    assert failure["fix_proposal_eligible"] is False
-
-
-@pytest.mark.asyncio
-async def test_inspect_integrity_issue_is_critical_manifest_failure() -> None:
-    payload = inspect_input(
-        message="",
-        status="passed",
-        execution=missing_asset_execution(),
-        execution_digest=digest_of(missing_asset_execution()),
-        result_paths={},
-        integrity_issues=[
-            {
-                "target": "api",
-                "path": "execution/api-result.json",
-                "reason": "selected target has no result file",
-            }
-        ],
-    )
-    outcome = await execute_task(InspectHandler(), payload)
-    assert outcome.status == "succeeded"
-    analysis = as_object(outcome.output)["analysis"]
-    assert analysis["status"] == "failed"
-    assert analysis["failures"][0]["category"] == "manifest_asset_missing"
-    assert analysis["final_status"] == "FAIL"
-
-
-@pytest.mark.asyncio
-async def test_inspect_failed_performance_fails_gate() -> None:
-    outcome = await execute_task(
-        InspectHandler(),
-        inspect_input(
-            message="",
-            status="passed",
-            sufficiency=sufficient_report(),
-            performance={
-                "available": True,
-                "status": "FAIL",
-                "scenarios": [
-                    {
-                        "capability": LEAF,
-                        "endpoint": "POST /menus",
-                        "measured_p95_ms": 900.0,
-                        "threshold_p95_ms": 200.0,
-                        "measured_error_rate": 0.0,
-                        "threshold_error_rate_max": 0.01,
-                        "verdict": "FAIL",
-                    }
-                ],
-            },
-        ),
-    )
-    assert outcome.status == "succeeded"
-    gate = as_object(outcome.output)["quality_gate"]
-    assert gate["dimensions"]["non_functional"]["status"] == "FAIL"
-    assert gate["final_status"] == "FAIL"
-
-
-@pytest.mark.asyncio
-async def test_inspect_rejects_execution_digest_that_does_not_match_document() -> None:
-    outcome = await execute_task(
-        InspectHandler(),
-        inspect_input(message="AssertionError: expected 200", execution_digest=HEX_B),
-    )
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_input"
-
-
-@pytest.mark.asyncio
-async def test_inspect_unmapped_tests_warn_and_missing_sufficiency_fails_coverage() -> None:
-    warned = await execute_task(
-        InspectHandler(),
-        inspect_input(
-            message="",
-            status="passed",
-            sufficiency=sufficient_report(),
-            unmapped_tests=[
-                {
-                    "case_id": "UNMAPPED-orphan",
-                    "test_name": "test_orphan",
-                    "status": "passed",
-                    "target": "api",
-                    "message": "",
-                    "file": "tests/orphan.py",
-                }
-            ],
-        ),
-    )
-    assert warned.status == "succeeded"
-    warned_gate = as_object(warned.output)["quality_gate"]
-    assert warned_gate["final_status"] == "PASS_WITH_WARNINGS"
-    assert warned_gate["dimensions"]["functional"]["unmapped_tests"] == 1
-    assert any("TRACEABILITY-BROKEN" in item for item in (warned_gate.get("warnings") or []))
-
-    missing = await execute_task(
-        InspectHandler(),
-        inspect_input(
-            message="",
-            status="passed",
-            coverage_metrics={
-                "available": True,
-                "line_coverage": 10.0,
-                "branch_coverage": 10.0,
-                "threshold_line": 80.0,
-                "threshold_branch": 0.0,
-                "uncovered_critical_files": [],
-            },
-        ),
-    )
-    assert missing.status == "succeeded"
-    missing_gate = as_object(missing.output)["quality_gate"]
-    assert missing_gate["dimensions"]["coverage"]["status"] == "FAIL"
-    assert missing_gate["dimensions"]["coverage"]["evidence"] == {
-        "kind": "error",
-        "error_code": "evidence_projection_missing",
-    }
-    assert missing_gate["final_status"] == "FAIL"

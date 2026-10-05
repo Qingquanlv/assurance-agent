@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self, get_type_hints
 
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -29,13 +29,19 @@ class AttemptGraph(StateGraph[StateT]):
         *,
         namespace: str,
         activation: object | None = None,
+        input_schema: type[Any] | None = None,
         output_schema: type[Any] | None = None,
     ) -> None:
         if not namespace or namespace.startswith(".") or namespace.endswith("."):
             raise ValueError(
                 f"namespace must be a non-empty string without leading or trailing dots, got {namespace!r}"
             )
-        super().__init__(state_schema, output_schema=output_schema)
+        _require_artifact_ledger(state_schema, "state_schema")
+        if input_schema is not None:
+            _require_artifact_ledger(input_schema, "input_schema")
+        if output_schema is not None:
+            _require_artifact_ledger(output_schema, "output_schema")
+        super().__init__(state_schema, input_schema=input_schema, output_schema=output_schema)
         self._context = context
         self._namespace = namespace
         self._activation = activation
@@ -100,6 +106,24 @@ class AttemptGraph(StateGraph[StateT]):
 
     def compile_subgraph(self) -> CompiledStateGraph:
         return self._context.compile_subgraph(self)
+
+
+def _require_artifact_ledger(schema: type[Any], role: str) -> None:
+    if "artifact_ledger" in _schema_annotations(schema):
+        return
+    name = getattr(schema, "__name__", None)
+    rendered = name if isinstance(name, str) else repr(schema)
+    raise TypeError(f"{role} {rendered} must declare artifact_ledger")
+
+
+def _schema_annotations(schema: type[Any]) -> Mapping[str, Any]:
+    try:
+        return get_type_hints(schema, include_extras=True)
+    except Exception:
+        found: dict[str, Any] = {}
+        for base in reversed(getattr(schema, "__mro__", ())):
+            found.update(getattr(base, "__annotations__", {}))
+        return found
 
 
 def _ledger_namespace(contract: object) -> str:

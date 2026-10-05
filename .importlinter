@@ -1,4 +1,5 @@
 [importlinter]
+include_external_packages = True
 root_packages =
     assurance_intake
     assurance_generation
@@ -277,6 +278,7 @@ modules =
     assurance_intake.ops.case_design
     assurance_intake.ops.case_repair
     assurance_intake.ops.case_review
+    assurance_intake.ops.coverage_rework
     assurance_intake.ops.explore
     assurance_intake.ops.intake
     assurance_intake.ops.resolve_plan
@@ -335,7 +337,6 @@ name = Healing ops never import one another
 type = independence
 modules =
     assurance_healing.ops.apply_test_repair
-    assurance_healing.ops.coverage_repair
     assurance_healing.ops.fix_proposal
 
 [importlinter:contract:healing-graphs-read-op-declarations]
@@ -407,4 +408,21 @@ source_modules =
     assurance_generation.graphs
 forbidden_modules =
     assurance_generation.ops.*.hooks
+allow_indirect_imports = True
+
+[importlinter:contract:capability-product-no-langgraph]
+name = capability and product packages must not import langgraph
+type = forbidden
+source_modules =
+    assurance_intake
+    assurance_generation
+    assurance_execution
+    assurance_healing
+    assurance_quality
+    assurance_improvement
+    assurance_product
+forbidden_modules =
+    langgraph
+ignore_imports =
+    assurance_product.sqlite_checkpointer -> langgraph
 allow_indirect_imports = True

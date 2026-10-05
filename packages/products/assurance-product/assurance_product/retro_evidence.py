@@ -197,3 +197,36 @@ def publish_runtime_evidence(
         if os.path.exists(pending.name):
             os.unlink(pending.name)
     return EvidenceArtifactRefV1(path=relative, digest=content_digest)
+
+
+class ProjectedRuntimeEvidence:
+    """Host side of the kernel port. Returns the organized document, not journal rows.
+
+    The reading attempt is still open, so its records are dropped before projection.
+    Post-run export does not use this port and still sees every terminated attempt.
+    """
+
+    def __init__(
+        self,
+        workspace: ChangeWorkspace,
+        read_records: Callable[[], Awaitable[tuple[AttemptJournalRecord, ...]]],
+    ) -> None:
+        self._workspace = workspace
+        self._read_records = read_records
+
+    async def project(
+        self,
+        *,
+        invocation_id: str,
+        exclude_attempt_key_digest: str,
+    ) -> JSONValue:
+        records = await self._read_records()
+        filtered = tuple(
+            record for record in records if record.attempt_key_digest != exclude_attempt_key_digest
+        )
+        document = project_runtime_evidence(
+            filtered,
+            change_id=self._workspace.change_id,
+            invocation_id=invocation_id,
+        )
+        return cast(JSONValue, document.model_dump(mode="json"))

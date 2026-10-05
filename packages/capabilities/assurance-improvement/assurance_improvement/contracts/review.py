@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from collections.abc import Mapping
+from typing import Any, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -90,11 +91,99 @@ class ImprovementAutoReviewStatus(BaseModel):
     replayed: bool = False
 
 
+AutoReviewRoute = Literal["apply-evaluate", "rework", "rejected", "human-review", "failed"]
+HumanReviewRoute = Literal["apply-evaluate", "rejected", "rework", "superseded", "failed"]
+
+_AUTO_REVIEW_ROUTE: dict[str, AutoReviewRoute] = {
+    "approved": "apply-evaluate",
+    "needs_rework": "rework",
+    "rejected": "rejected",
+    "proposed": "human-review",
+}
+_HUMAN_REVIEW_ROUTE: dict[str, HumanReviewRoute] = {
+    "approved": "apply-evaluate",
+    "rejected": "rejected",
+    "needs_rework": "rework",
+    "superseded": "superseded",
+}
+# Projection states that used to fall through to the graph's otherwise target.
+AUTO_REVIEW_FAILED_STATES = frozenset(
+    {
+        "evaluating",
+        "exported",
+        "applied",
+        "rolled_back",
+        "awaiting_baseline",
+        "eval_error",
+        "superseded",
+    }
+)
+HUMAN_REVIEW_FAILED_STATES = frozenset(
+    {
+        "proposed",
+        "evaluating",
+        "exported",
+        "applied",
+        "rolled_back",
+        "awaiting_baseline",
+        "eval_error",
+    }
+)
+
+
+def projection_state_name(projection: object) -> str:
+    if isinstance(projection, Mapping):
+        raw = projection.get("state")
+    else:
+        raw = getattr(projection, "state", None)
+    named = getattr(raw, "value", raw)
+    return "" if named is None else str(named)
+
+
+def auto_review_route(state: str) -> AutoReviewRoute:
+    return _AUTO_REVIEW_ROUTE.get(state, "failed")
+
+
+def human_review_route(state: str) -> HumanReviewRoute:
+    return _HUMAN_REVIEW_ROUTE.get(state, "failed")
+
+
 class AppliedAutoReviewV1(BaseModel):
     model_config = _FROZEN
 
     status: ImprovementAutoReviewStatus
     projection: ImprovementProjection
+    route: AutoReviewRoute
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_route(cls, value: object) -> object:
+        if not isinstance(value, dict) or "route" in value or "projection" not in value:
+            return value
+        return {**value, "route": auto_review_route(projection_state_name(value["projection"]))}
+
+
+class ApplyReviewPublishedV1(BaseModel):
+    model_config = _FROZEN
+
+    projection: ImprovementProjection
+    route: HumanReviewRoute
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_route(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        body = cast(dict[str, object], dict(value))
+        projection = body.get("projection")
+        if projection is None and "state" in body:
+            projection = {key: item for key, item in body.items() if key != "route"}
+            body = {"projection": projection}
+            if "route" in value:
+                body["route"] = value["route"]
+        if "route" not in body and projection is not None:
+            body["route"] = cast(Any, human_review_route(projection_state_name(projection)))
+        return body
 
 
 class AutoReviewBatchError(BaseModel):

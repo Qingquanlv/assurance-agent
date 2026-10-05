@@ -22,6 +22,7 @@ from agent_runtime_contracts.ops import (
     run_prepare,
 )
 from agent_runtime_contracts.ops.request import WorkspaceRoots
+from graph_engine.artifacts import ArtifactReadError, open_artifact, read_workspace_file
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
@@ -73,22 +74,11 @@ _SKILL_FILES: Mapping[Family, str] = {
 }
 
 
-def _authenticate_surface_ref(workspace: Path, ref: EvidenceArtifactRefV1) -> Path:
-    path = workspace
-    for part in PurePosixPath(ref.path).parts:
-        path = path / part
-        if path.is_symlink():
-            raise InputError(f"surface document must not contain a symlink: {ref.path}")
+def _authenticate_surface_ref(workspace: Path, ref: EvidenceArtifactRefV1) -> bytes:
     try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(workspace.resolve())
-    except (OSError, ValueError) as error:
-        raise InputError(f"surface document is missing: {ref.path}") from error
-    if resolved != path or not path.is_file() or path.stat().st_nlink != 1:
-        raise InputError(f"surface document must be a regular single-link file: {ref.path}")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
-        raise InputError(f"evidence digest changed after it was committed: {ref.path}")
-    return path
+        return open_artifact(workspace, ref)
+    except ArtifactReadError as error:
+        raise InputError(str(error)) from error
 
 
 def _verification_obligations(
@@ -105,15 +95,21 @@ def _verification_obligations(
     plan_path = _workspace_path(workspace, ref.path)
     if not plan_path.is_file() and not required:
         return ()
-    plan_bytes = _workspace_regular_file(workspace, ref.path).read_bytes()
-    if hashlib.sha256(plan_bytes).hexdigest() != ref.digest:
-        raise InputError("frozen plan digest changed")
+    try:
+        plan_bytes = open_artifact(workspace, ref)
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise InputError("frozen plan digest changed") from error
+        raise OutputError(str(error)) from error
     try:
         plan = decode_plan(plan_bytes, ref)
         obligations_ref = plan.quality_goal.obligations_ref
-        obligations_bytes = _workspace_regular_file(workspace, obligations_ref.path).read_bytes()
-        if hashlib.sha256(obligations_bytes).hexdigest() != obligations_ref.digest:
-            raise InputError("frozen obligation digest changed")
+        try:
+            obligations_bytes = open_artifact(workspace, obligations_ref)
+        except ArtifactReadError as error:
+            if error.reason == "digest":
+                raise InputError("frozen obligation digest changed") from error
+            raise OutputError(str(error)) from error
         exploration = load_exploration_document(obligations_bytes)
         rows = (
             exploration.minimum_required_coverage
@@ -336,19 +332,19 @@ def assemble_codegen_request(
         )
 
         if validated.ui_exploration_ref is not None:
-            ui_path = _authenticate_surface_ref(context.project_root, validated.ui_exploration_ref)
+            ui_bytes = _authenticate_surface_ref(context.project_root, validated.ui_exploration_ref)
             try:
-                ui_exploration = UiExplorationDocument.model_validate_json(ui_path.read_bytes())
-            except (OSError, ValidationError, ValueError) as error:
+                ui_exploration = UiExplorationDocument.model_validate_json(ui_bytes)
+            except (ValidationError, ValueError) as error:
                 raise InputError(f"invalid ui-exploration.json: {error}") from error
             if ui_exploration.change_id != validated.change_id:
                 raise InputError("ui-exploration.json change_id does not match codegen change_id")
             context_payload["ui_exploration"] = ui_exploration.model_dump(mode="json")
         if validated.api_discovery_ref is not None:
-            api_path = _authenticate_surface_ref(context.project_root, validated.api_discovery_ref)
+            api_bytes = _authenticate_surface_ref(context.project_root, validated.api_discovery_ref)
             try:
-                api_discovery = ApiDiscoveryDocument.model_validate_json(api_path.read_bytes())
-            except (OSError, ValidationError, ValueError) as error:
+                api_discovery = ApiDiscoveryDocument.model_validate_json(api_bytes)
+            except (ValidationError, ValueError) as error:
                 raise InputError(f"invalid api-discovery.json: {error}") from error
             if api_discovery.change_id != validated.change_id:
                 raise InputError("api-discovery.json change_id does not match codegen change_id")
@@ -385,13 +381,11 @@ def _workspace_path(workspace: Path, relative: str) -> Path:
     return path
 
 
-def _workspace_regular_file(workspace: Path, relative: str) -> Path:
-    path = _workspace_path(workspace, relative)
-    if not path.is_file():
-        raise OutputError(f"declared output file is missing: {relative}")
-    if path.stat().st_nlink != 1:
-        raise OutputError(f"declared output file is not a regular single-link file: {relative}")
-    return path
+def _workspace_regular_file(workspace: Path, relative: str) -> bytes:
+    try:
+        return read_workspace_file(workspace, relative)
+    except ArtifactReadError as error:
+        raise OutputError(str(error)) from error
 
 
 def _digest_bytes(payload: bytes) -> str:
@@ -432,7 +426,7 @@ def _seed_baseline(project: Path, staging: Path, baseline: Mapping[str, Generate
     pending: list[tuple[Path, bytes]] = []
     try:
         for relative, entry in baseline.items():
-            payload = _workspace_regular_file(project, relative).read_bytes()
+            payload = _workspace_regular_file(project, relative)
             if _digest_bytes(payload) != entry.content_sha256:
                 raise InputError(f"codegen baseline digest mismatch: {relative}")
             target = _workspace_path(staging, relative)
@@ -480,7 +474,7 @@ def _complete_files(
             staged = durable_test_path(target)
         except ValueError as error:
             raise OutputError(str(error)) from error
-        payload = _workspace_regular_file(workspace, staged).read_bytes()
+        payload = _workspace_regular_file(workspace, staged)
         digest = _digest_bytes(payload)
         if entry.disposition == "reused":
             prior = None if baseline is None else baseline.get(target)
@@ -547,24 +541,13 @@ def _authenticate_manifest(
     capability_leafs: tuple[str, ...],
 ) -> None:
     relative = f"qa/results/codegen/{document.layer}-generated-files.json"
-    try:
-        canonical_relative_path(relative)
-    except ValueError as error:
-        raise OutputError(str(error)) from error
-    path = workspace.joinpath(*PurePosixPath(relative).parts)
-    try:
-        path.resolve().relative_to(workspace.resolve())
-    except ValueError as error:
-        raise OutputError("generated-files manifest escapes the attempt workspace") from error
-    if not path.exists():
-        raise OutputError(f"generated-files manifest is missing: {relative}")
-    path = _workspace_regular_file(workspace, relative)
+    payload = _workspace_regular_file(workspace, relative)
     try:
         manifest = CodegenAuthoringV1.model_validate(
-            json.loads(path.read_text(encoding="utf-8")),
+            json.loads(payload),
             context={"capability_leafs": leafs_of(capability_leafs)},
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
+    except (UnicodeError, json.JSONDecodeError, ValidationError) as error:
         raise OutputError(f"generated-files manifest is invalid: {relative}: {error}") from error
     if manifest != document:
         raise OutputError("generated-files manifest does not match the structured codegen result")

@@ -1,108 +1,103 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Annotated, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel
+from pydantic import TypeAdapter
 
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.flow import Flow, root_schemas
 
-from assurance_product.graphs.state import ProductState
-from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1, ProductPublicOutput
+from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductPublicOutput
 
-STATE_SCHEMA_VERSION = "4"
+STATE_SCHEMA_VERSION = "6"
 ENTRYPOINT_RECURSION_LIMITS: MappingProxyType[str, int] = MappingProxyType(
     {
         "intake": 2048,
         "full": 8192,
         "init": 512,
-        "archive": 512,
         "retro": 2048,
         "issue-review": 512,
         "issue-analyze": 512,
         "issue-reconcile": 512,
-        "improvement-review": 512,
-        "improvement-evaluate": 512,
-        "improvement-export": 512,
-        "improvement-apply": 1024,
-        "improvement-rollback": 512,
     }
 )
 
 
-def _schema_digest(model: type[BaseModel]) -> str:
-    return canonical_digest(model.model_json_schema())
+def _schema_name(schema: type) -> str:
+    module = getattr(schema, "__module__", "")
+    name = getattr(schema, "__qualname__", None) or getattr(schema, "__name__", "")
+    if module:
+        return f"{module}.{name}"
+    return name
 
 
-def _stable_type_name(hint: object) -> str:
-    if isinstance(hint, type):
-        if hint.__module__ == "builtins":
-            return hint.__qualname__
-        return f"{hint.__module__}.{hint.__qualname__}"
-    name = getattr(hint, "__name__", None)
-    if isinstance(name, str):
-        return name
-    raise TypeError(f"unsupported type hint: {type(hint).__name__}")
+def _is_reducer(extra: object) -> bool:
+    return callable(extra) and not isinstance(extra, type)
 
 
-def _stable_origin_type(hint: object) -> str:
+def _field_state_projection(name: str, hint: object) -> JSONValue:
     origin = get_origin(hint)
-    if origin is None:
-        return _stable_type_name(hint)
-    rendered_args = [_stable_origin_type(arg) for arg in get_args(hint)]
-    rendered_origin = _stable_type_name(origin)
-    if not rendered_args:
-        return rendered_origin
-    return f"{rendered_origin}[{', '.join(rendered_args)}]"
-
-
-def _stable_hint_projection(hint: object) -> JSONValue:
-    origin = get_origin(hint)
+    reducers: list[JSONValue] = []
+    schema_hint = hint
     if origin is Annotated:
         annotated_origin, *metadata = get_args(hint)
-        reducers: list[JSONValue] = []
+        remaining: list[object] = []
         for extra in metadata:
-            if not callable(extra):
-                raise TypeError("ProductState annotated metadata must be a reducer")
-            reducers.append({"module": extra.__module__, "qualname": extra.__qualname__})
-        return {"origin": _stable_origin_type(annotated_origin), "reducers": reducers}
-    return {"origin": _stable_origin_type(hint), "reducers": []}
+            if _is_reducer(extra):
+                reducers.append({"module": extra.__module__, "qualname": extra.__qualname__})
+                continue
+            remaining.append(extra)
+        schema_hint = annotated_origin if not remaining else Annotated[annotated_origin, *remaining]
+    try:
+        schema = TypeAdapter(schema_hint).json_schema()
+    except Exception as error:
+        raise TypeError(f"state field {name!r} cannot produce JSON schema") from error
+    if not isinstance(schema, dict):
+        raise TypeError(f"state field {name!r} JSON schema must be an object")
+    return {"schema": schema, "reducers": reducers}
 
 
-def _product_state_schema_digest() -> str:
-    hints = get_type_hints(ProductState, include_extras=True)
-    return canonical_digest({name: _stable_hint_projection(hints[name]) for name in sorted(hints)})
+def _typeddict_digest(schema: type) -> str:
+    hints = get_type_hints(schema, include_extras=True)
+    return canonical_digest({name: _field_state_projection(name, hints[name]) for name in sorted(hints)})
 
 
-_INPUT_MODEL = "assurance_product.models.ProductInputV1"
-_OUTPUT_MODEL = "assurance_product.models.ProductPublicOutput"
-_STATE_MODEL = "assurance_product.graphs.state.ProductState"
-_INPUT_DIGEST = _schema_digest(ProductInputV1)
-_OUTPUT_DIGEST = _schema_digest(ProductPublicOutput)
-_STATE_DIGEST = _product_state_schema_digest()
+def _model_schema_digest(model: type) -> str:
+    schema = model.model_json_schema()
+    if not isinstance(schema, dict):
+        raise TypeError("model JSON schema must be an object")
+    return canonical_digest(schema)
 
 
-def _contract(name: str) -> EntrypointGraphContract:
+def contract_for_root(name: str, flow: Flow) -> EntrypointGraphContract:
+    """Input and output digests are JSON schemas. State is reducer ids plus TypeAdapter JSON schema."""
+    if name not in ENTRYPOINT_RECURSION_LIMITS:
+        raise KeyError(name)
+    state_type, _, _, _ = root_schemas(flow)
     return EntrypointGraphContract(
         name=name,
-        input_model=_INPUT_MODEL,
-        output_model=_OUTPUT_MODEL,
-        state_model=_STATE_MODEL,
-        input_schema_digest=_INPUT_DIGEST,
-        output_schema_digest=_OUTPUT_DIGEST,
-        state_schema_digest=_STATE_DIGEST,
+        input_model=_schema_name(flow.input),
+        output_model=_schema_name(ProductPublicOutput),
+        state_model=_schema_name(state_type),
+        input_schema_digest=_model_schema_digest(flow.input),
+        output_schema_digest=_model_schema_digest(ProductPublicOutput),
+        state_schema_digest=_typeddict_digest(state_type),
         state_schema_version=STATE_SCHEMA_VERSION,
         recursion_limit=ENTRYPOINT_RECURSION_LIMITS[name],
     )
 
 
+def contracts_from_roots(roots: Mapping[str, Flow]) -> MappingProxyType[str, EntrypointGraphContract]:
+    if set(roots) != set(PRODUCT_ENTRYPOINTS):
+        raise RuntimeError("root flows must cover every public Product entrypoint")
+    return MappingProxyType({name: contract_for_root(name, roots[name]) for name in sorted(roots)})
+
+
 if set(ENTRYPOINT_RECURSION_LIMITS) != set(PRODUCT_ENTRYPOINTS):
     raise RuntimeError("entrypoint recursion limits must cover every public Product entrypoint")
-
-ENTRYPOINT_CONTRACTS: MappingProxyType[str, EntrypointGraphContract] = MappingProxyType(
-    {name: _contract(name) for name in sorted(PRODUCT_ENTRYPOINTS)}
-)
 
 
 def digest(contract: EntrypointGraphContract) -> str:
@@ -114,9 +109,10 @@ def canonical_contract_projection(contract: EntrypointGraphContract) -> dict[str
 
 
 __all__ = [
-    "ENTRYPOINT_CONTRACTS",
     "ENTRYPOINT_RECURSION_LIMITS",
     "STATE_SCHEMA_VERSION",
     "canonical_contract_projection",
+    "contract_for_root",
+    "contracts_from_roots",
     "digest",
 ]

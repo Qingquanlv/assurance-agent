@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Generic, Literal, Self, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationInfo, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationError, ValidationInfo, model_validator
 
 from assurance_intake.contracts.common import CaseId, NonEmptyStr, RiskTier
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
@@ -392,3 +392,34 @@ class QaYaml(BaseModel):
     targets: QaTargets
     approval: QaApproval
     workflow: QaWorkflow | None = None
+
+
+def case_entry_at(document: object, locator: str, case_id: str) -> CaseEntryAuthoring:
+    """Resolve one authored case from a case YAML document.
+
+    An index locator ``section[n]`` selects that list item. Any other locator
+    selects the single entry in ``section`` whose ``case_id`` matches.
+    """
+    if not isinstance(document, dict):
+        raise ValueError("case source must be a mapping")
+    section_name, _, index_text = locator.partition("[")
+    entries = document.get(section_name)
+    if not isinstance(entries, list):
+        raise ValueError(f"selection locator is not a list: {locator}")
+    if index_text.endswith("]") and index_text[:-1].isdigit():
+        index = int(index_text[:-1])
+        if index >= len(entries) or not isinstance(entries[index], dict):
+            raise ValueError(f"selection locator is out of range: {locator}")
+        raw = entries[index]
+    else:
+        matches = [item for item in entries if isinstance(item, dict) and item.get("case_id") == case_id]
+        if len(matches) != 1:
+            raise ValueError(f"selection case_id is not unique in source: {case_id}")
+        raw = matches[0]
+    try:
+        entry = CaseEntryAuthoring.model_validate(raw)
+    except ValidationError as error:
+        raise ValueError(f"selected case is not a complete CaseEntry: {error}") from error
+    if entry.case_id != case_id:
+        raise ValueError("selection locator does not match case_id")
+    return entry

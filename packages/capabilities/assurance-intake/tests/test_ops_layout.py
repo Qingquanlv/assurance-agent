@@ -22,12 +22,13 @@ def test_every_op_directory_declares_exactly_one_op() -> None:
         "case-design",
         "case-repair",
         "case-review",
+        "coverage-rework",
         "explore",
         "intake",
         "resolve-plan",
     )
     assert tuple(AGENT_JOB_CONTRACTS) == ("case-design", "case-repair", "case-review", "explore", "intake")
-    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-plan",)
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("coverage-rework", "resolve-plan")
 
 
 def test_every_op_resource_is_published() -> None:

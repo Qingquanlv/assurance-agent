@@ -549,61 +549,6 @@
     "secret_handles": [],
     "target_capability_id": "assurance.generation.performance.codegen.prepare"
   },
-  "assurance.product.agent.healing.coverage-repair.execute": {
-    "data": {
-      "adapter_configuration_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "cancel_timeout_seconds": 5.0,
-      "endpoint": "http://127.0.0.1:4096/",
-      "max_response_bytes": 65536,
-      "observation_horizon_seconds": 30.0,
-      "poll_interval_seconds": 0.5,
-      "progress_timeout_seconds": 10.0,
-      "project_scope": "fixture-project",
-      "protocol_profile": "opencode-http-v1",
-      "request_timeout_seconds": 5.0,
-      "schema_version": "1",
-      "secret_handle": "opencode.token",
-      "tls_identity_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    },
-    "owner_id": "assurance.product.agent",
-    "phase": "execute",
-    "resource_ids": [],
-    "secret_handles": [
-      "opencode.token"
-    ],
-    "target_capability_id": "runtime.opencode.execute"
-  },
-  "assurance.product.agent.healing.coverage-repair.finalize": {
-    "data": null,
-    "owner_id": "assurance.product.agent",
-    "phase": "finalize",
-    "resource_ids": [],
-    "secret_handles": [],
-    "target_capability_id": "assurance.healing.coverage-repair.finalize"
-  },
-  "assurance.product.agent.healing.coverage-repair.prepare": {
-    "data": {
-      "agent_profile": "assurance-v1-test-author",
-      "execution": {
-        "limits": {
-          "max_seconds": 900
-        },
-        "permission_profile_digest": "363e4aeb8e46e283b4e5ca321644265b0b1e59c45462c1a5a485d923c4bda9fe",
-        "provider_model": "fixture-model",
-        "worker_profile": "assurance-worker"
-      },
-      "request_config_digest": "6b0ea8645ccaae3250898426b54d292abd3a0b8199df2403e46d3f6ed263a50c",
-      "request_policy_digest": "c6fca5a79118160150ecba7c8f3d2e7d9bdd322bc457c0cb747b06cecc7a92db"
-    },
-    "owner_id": "assurance.product.agent",
-    "phase": "prepare",
-    "resource_ids": [
-      "assurance.product.agent.permission.default",
-      "assurance.product.agent.request.default"
-    ],
-    "secret_handles": [],
-    "target_capability_id": "assurance.healing.coverage-repair.prepare"
-  },
   "assurance.product.agent.healing.fix-proposal.execute": {
     "data": {
       "adapter_configuration_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

@@ -8,6 +8,7 @@ from typing import Any, Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_quality.contracts.baseline import _reject_endpoint_inventories
@@ -58,6 +59,8 @@ class QualitySkillInputV1(FrozenModel):
     mapping_digest: str = Field(pattern=_SHA256)
     issue_digest: str | None = Field(default=None, pattern=_SHA256)
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
+    # Tail-only. Absent on the issue-review thin entry, so the graph table applies.
+    inspection_disposition: str | None = None
 
     @field_validator("capability_leafs")
     @classmethod
@@ -73,6 +76,49 @@ class QualitySkillInputV1(FrozenModel):
     @classmethod
     def _evidence(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _sorted_unique(value, label="owned evidence") if value else ()
+
+
+class IssueAnalysisBoundInputV1(FrozenModel):
+    """Scalars a thin entry already has, or refs prepare opens into the skill."""
+
+    change_id: str | None = None
+    batch_id: str | None = None
+    capability_leafs: tuple[str, ...] = ()
+    artifact_paths: tuple[str, ...] = ()
+    allowed_artifact_paths: tuple[str, ...] = ()
+    owned_evidence_ids: tuple[str, ...] = ()
+    evidence_bundle_digest: str | None = None
+    execution_evidence_digest: str | None = None
+    healing_digest: str | None = None
+    trace_digest: str | None = None
+    coverage_digest: str | None = None
+    metrics_digest: str | None = None
+    case_digest: str | None = None
+    plan_digest: str | None = None
+    plan_ref: EvidenceArtifactRefV1 | None = None
+    mapping_digest: str | None = None
+    issue_digest: str | None = None
+    inspection_disposition: str | None = None
+    rounds_budget: int = 0
+    rounds_used: int = 0
+    coverage_epoch: int = 0
+    inspection_ref: EvidenceArtifactRefV1 | None = None
+    assessment_ref: EvidenceArtifactRefV1 | None = None
+    generation_ref: EvidenceArtifactRefV1 | None = None
+    inspection_receipt: ReceiptRef | None = None
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
+
+
+class ReconcileBoundInputV1(IssueAnalysisBoundInputV1):
+    issue_analysis_ref: EvidenceArtifactRefV1 | None = None
+
+
+class IssueAnalysisSkillInputV1(QualitySkillInputV1):
+    """Issue analysis may read the inspection outcome and assessment from the ledger."""
+
+    inspection_ref: EvidenceArtifactRefV1 | None = None
+    assessment_ref: EvidenceArtifactRefV1 | None = None
+    coverage_epoch: int = Field(default=0, ge=0)
 
 
 class AgentFinalizeInputV1(QualitySkillInputV1):

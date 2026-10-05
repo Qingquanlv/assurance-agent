@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from graph_engine.artifacts import ArtifactRef
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.stategraph.ledger import NamedWrite, fill_artifact_ledger
+from graph_engine.stategraph.ledger import NamedWrite, fill_artifact_ledger, ledger_key, merge_refs_by_path
 
 
 def output_mapping(output: object) -> dict[str, object]:
@@ -60,6 +60,72 @@ def publish_result(
     return publish
 
 
+def publish_outcome(
+    field: str,
+    *,
+    channel: str = "outcome",
+    then: Callable[..., object] | None = None,
+) -> Callable[..., dict[str, object]]:
+    """Copy ``output[field]`` into ``channel``, then merge another publish function.
+
+    ``then`` wins on every key except ``channel``. ``committed`` is forwarded only
+    when ``then`` accepts it, so this result can sit under ``bind_produced_artifacts``.
+    """
+    if not field:
+        raise ValueError("publish_outcome field must be nonempty")
+    if not channel:
+        raise ValueError("publish_outcome channel must be nonempty")
+    if then is not None and not callable(then):
+        raise TypeError("then must be callable")
+
+    def publish(
+        state: Mapping[str, object],
+        output: object,
+        receipt: object,
+        *,
+        committed: Sequence[ArtifactRef | Mapping[str, object]] = (),
+    ) -> dict[str, object]:
+        payload = output_mapping(output)
+        value = payload.get(field)
+        if not isinstance(value, str) or not value:
+            raise TypeError(f"output[{field!r}] must be a nonempty str")
+        update: dict[str, object] = {}
+        if then is not None:
+            published = call_publish(then, state, output, receipt, committed)
+            update.update({str(name): item for name, item in published.items()})
+        update[channel] = value
+        return update
+
+    return publish
+
+
+def _accumulate_named_writes(
+    state: Mapping[str, object],
+    produced: dict[str, object],
+    namespace: str,
+    writes: Sequence[NamedWrite],
+) -> dict[str, object]:
+    """Fold accumulating writes onto the refs already stored for the same key.
+
+    The channel reducer replaces each key. Same-path history survives only if this
+    wrapper writes the merged list.
+    """
+    if not any(spec.accumulate for spec in writes):
+        return produced
+    existing = state.get("artifact_ledger")
+    ledger = existing if isinstance(existing, Mapping) else {}
+    merged = dict(produced)
+    for spec in writes:
+        if not spec.accumulate:
+            continue
+        key = ledger_key(namespace, spec.name)
+        incoming = produced.get(key)
+        if incoming is None:
+            continue
+        merged[key] = merge_refs_by_path(ledger.get(key), incoming)
+    return merged
+
+
 def bind_produced_artifacts(
     publish: Callable[..., object],
     *,
@@ -84,7 +150,13 @@ def bind_produced_artifacts(
     ) -> dict[str, object]:
         published = call_publish(publish, state, output, receipt, committed)
         update = {str(name): value for name, value in published.items() if name != "artifact_ledger"}
-        produced = fill_artifact_ledger(namespace, writes, committed)
+        produced = fill_artifact_ledger(
+            namespace,
+            writes,
+            committed,
+            receipt=receipt_mapping(receipt),
+        )
+        produced = _accumulate_named_writes(state, produced, namespace, writes)
         if produced:
             update["artifact_ledger"] = produced
         return update
@@ -122,6 +194,7 @@ __all__ = [
     "bind_produced_artifacts",
     "call_publish",
     "output_mapping",
+    "publish_outcome",
     "publish_result",
     "receipt_mapping",
 ]

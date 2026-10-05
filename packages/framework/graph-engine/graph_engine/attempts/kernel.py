@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from graph_engine.artifacts import ArtifactRef, refs_from_write_set
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.runtime_evidence import RUNTIME_EVIDENCE, RuntimeEvidenceSource
 from graph_engine.attempts.contracts import (
     ExecutedAttemptResult,
     ResolvedAttemptContract,
@@ -44,7 +45,6 @@ from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
 from graph_engine.composition.models import EffectRegistry, SchemaRegistry
 from graph_engine.effects.apply import AttemptEffectSettler
-from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
 from graph_engine.effects.state import EffectStatePort, effect_intent_digest
 from graph_engine.frozen_json import thaw_json
 from graph_engine.json_schema import validate_json_schema
@@ -76,6 +76,21 @@ class AttemptIntegrityError(GraphEngineError):
 
 def _noop_cut(_name: str) -> None:
     return None
+
+
+def _bound_runtime_evidence(
+    source: RuntimeEvidenceSource,
+    *,
+    invocation_id: str,
+    exclude_attempt_key_digest: str,
+) -> Callable[[], Awaitable[JSONValue]]:
+    async def read() -> JSONValue:
+        return await source.project(
+            invocation_id=invocation_id,
+            exclude_attempt_key_digest=exclude_attempt_key_digest,
+        )
+
+    return read
 
 
 _MISSING_CUT = object()
@@ -110,6 +125,7 @@ class AssuranceAttemptKernel:
         effect_state: EffectStatePort | None = None,
         transaction_cut: Callable[[str], None] | None = None,
         pause_requested: Callable[[], bool] | None = None,
+        runtime_evidence: RuntimeEvidenceSource | None = None,
     ) -> None:
         self.journal = journal
         self.arbiter = arbiter
@@ -121,6 +137,7 @@ class AssuranceAttemptKernel:
         self.effect_state = effect_state
         self._transaction_cut = transaction_cut or _noop_cut
         self._pause_requested = pause_requested
+        self.runtime_evidence = runtime_evidence
 
     async def execute_or_recover(
         self,
@@ -208,8 +225,8 @@ class AssuranceAttemptKernel:
             assert snapshot.terminal is not None
             resolution = _resolution_from_terminal(snapshot.terminal, contract)
             if isinstance(resolution, CommittedTaskResult):
-                # The promotion receipt stores digests, not paths. The write root still
-                # holds the sealed files, so a resumed commit can rebuild the ledger.
+                # A terminal receipt contains no file list. Rebuild refs only while
+                # staging still matches the write set recorded at promotion.
                 sealed = await self.workspace.seal(
                     await self.workspace.open_or_create(
                         attempt_key,
@@ -217,6 +234,8 @@ class AssuranceAttemptKernel:
                         seed_from=context.seed_attempt_key,
                     )
                 )
+                if sealed.sealed_digest != snapshot.promotion_staged_digest:
+                    raise AttemptIntegrityError("committed staging drifted after promotion")
                 return resolution.model_copy(update={"committed_artifacts": refs_from_write_set(sealed)})
             return resolution
 
@@ -233,7 +252,32 @@ class AssuranceAttemptKernel:
 
         binding = await self.workspace.open_or_create(attempt_key, claims, seed_from=context.seed_attempt_key)
         trace.append("begin_workspace")
-        scope = AuthorizedAttemptScope(execution=context, workspace=binding)
+        evidence = self.runtime_evidence
+        if RUNTIME_EVIDENCE in contract.contract.capabilities:
+            if evidence is None:
+                return await self._fail_closed(
+                    attempt_key,
+                    context,
+                    snapshot,
+                    authorization,
+                    PermanentTaskFailure(
+                        kind="configuration",
+                        message="runtime evidence port is not configured",
+                    ),
+                    cut,
+                )
+            reader = _bound_runtime_evidence(
+                evidence,
+                invocation_id=context.invocation_id,
+                exclude_attempt_key_digest=attempt_key.digest,
+            )
+        else:
+            reader = None
+        scope = AuthorizedAttemptScope(
+            execution=context,
+            workspace=binding,
+            runtime_evidence=reader,
+        )
 
         step, snapshot = await self._execute_or_adopt(
             attempt_key, contract, validated_input, scope, snapshot, cut
@@ -723,7 +767,7 @@ def _recorded_effect_intent_events(
 ) -> tuple[EffectIntentRecorded, ...]:
     events: list[EffectIntentRecorded] = []
     for ordinal, intent in enumerate(intents, start=1):
-        if intent.kind not in effects.entries or intent.kind not in EXPECTED_EFFECT_KINDS:
+        if intent.kind not in effects.entries:
             raise KeyError(f"unknown effect kind: {intent.kind}")
         registration = effects.require(intent.kind)
         schema = schemas.entries.get(registration.intent_schema_id)

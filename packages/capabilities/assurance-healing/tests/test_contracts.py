@@ -12,7 +12,6 @@ from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_healing.contracts import (
-    CoverageRepairBrief,
     FixProposal,
     HealApplyIntentV2,
     HealApplyReceiptV2,
@@ -24,7 +23,6 @@ from assurance_healing.contracts import (
     SafetyCheck,
     TestChangePolicyV1,
 )
-from assurance_healing.operations.status import project_episode
 from assurance_healing.plugin import HealingPlugin
 from tests.capabilities.import_boundary_exceptions import is_declared_cross_wheel_import
 
@@ -36,10 +34,6 @@ _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.healing.schema.allocation-receipt.v2": (
         "1",
         "48e8dde3a6cefde2e027ba55886e9cb5844085983e05ad8f81935f23afdf797e",
-    ),
-    "assurance.healing.schema.coverage-repair.v1": (
-        "1",
-        "430cfb5e671b0d7677a71352c8337d6480d4891392cc45a39d8de63ea23ca598",
     ),
     "assurance.healing.schema.fix-proposal.v1": (
         "1",
@@ -168,14 +162,6 @@ def schema_bytes(schema_id: str) -> bytes:
     raise KeyError(schema_id)
 
 
-def resource_bytes_for(resource_id: str) -> bytes:
-    contribution = HealingPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
-    for resource in contribution.resources:
-        if resource.resource_id == resource_id:
-            return bytes(resource.content)
-    raise KeyError(resource_id)
-
-
 def forbidden_healing_imports() -> set[str]:
     root = _WHEEL_ROOT / "assurance_healing"
     if not root.is_dir():
@@ -288,160 +274,6 @@ def current_proposal_approved_event(*, seq: int = 1) -> dict[str, object]:
 
 def current_heal_apply_event(*, seq: int = 2) -> dict[str, object]:
     return {"type": "heal_record_apply_v2", "seq": seq, **valid_heal_apply_receipt()}
-
-
-@pytest.mark.parametrize(
-    "event_type",
-    ["healing_attempt_allocated", "healing_entry_baseline_pinned", "heal_record_apply"],
-)
-def test_episode_rejects_old_event_kinds(event_type: str) -> None:
-    with pytest.raises(ValueError, match="current schema"):
-        project_episode(
-            [
-                {
-                    "type": event_type,
-                    "seq": 1,
-                    "episode_id": "ep-1",
-                    "attempt_key": "legacy-key",
-                    "artifact_sha256": _HEX_A,
-                }
-            ]
-        )
-
-
-def test_episode_rejects_missing_record_key() -> None:
-    with pytest.raises(ValueError, match="current schema"):
-        project_episode(
-            [
-                {
-                    "type": "heal_record_apply_v2",
-                    "seq": 2,
-                    "target": "api",
-                    "outcome": "applied",
-                    "claimed_modified_paths": ["tests/api/test_users.py"],
-                }
-            ]
-        )
-
-
-def test_episode_rejects_former_approval_field_aliases() -> None:
-    with pytest.raises(ValueError, match="current schema"):
-        project_episode(
-            [
-                {
-                    "type": "fixer_proposal_approved",
-                    "seq": 1,
-                    "approval_id": "apr-1",
-                    "proposal_sha256": f"sha256:{_HEX_A}",
-                    "fixer_authority_sha256": f"sha256:{_HEX_B}",
-                    "entry_baseline_sha256": f"sha256:{_HEX_C}",
-                    "policy_sha256": f"sha256:{_HEX_D}",
-                }
-            ]
-        )
-
-
-def test_episode_rejects_former_apply_field_aliases() -> None:
-    with pytest.raises(ValueError, match="current schema"):
-        project_episode(
-            [
-                {
-                    "type": "heal_record_apply_v2",
-                    "seq": 2,
-                    "record_key": "heal-apply-CH-DEMO-001-api",
-                    "attempt_key": "legacy-key",
-                    "safety_payload_sha256": _HEX_E,
-                    "files_modified": ["tests/api/test_users.py"],
-                }
-            ]
-        )
-
-
-def test_episode_rejects_former_allocation_field_aliases() -> None:
-    with pytest.raises(ValueError, match="current schema"):
-        project_episode(
-            [
-                {
-                    "type": "healing_attempt_allocated_v2",
-                    "seq": 1,
-                    "episode_id": "ep-1",
-                    "attempt_id": "at-1",
-                    "attempt_number": 1,
-                    "operation_id": "op-1",
-                    "source_batch_id": "batch-src",
-                    "entry_batch_id": "batch-entry",
-                    "baseline_sha256": _HEX_B,
-                    "baseline_embedded": True,
-                }
-            ]
-        )
-
-
-def test_episode_projects_current_allocation_document() -> None:
-    event = current_allocation_event()
-    document = {key: value for key, value in event.items() if key not in {"type", "seq"}}
-    HealingAllocationIntentV2.model_validate(document)
-    projection = project_episode([event])
-    dumped = json.dumps(projection)
-    assert "legacy:" not in dumped
-    assert '"form": "legacy"' not in dumped
-    allocations = projection["allocations"]
-    assert isinstance(allocations, list) and len(allocations) == 1
-    allocation = allocations[0]
-    assert isinstance(allocation, dict)
-    assert allocation["operation_id"] == "op-1"
-    assert allocation["episode_id"] == "ep-1"
-    assert allocation["attempt_id"] == "at-1"
-    assert allocation["baseline_digest"] == _HEX_B
-    assert "baseline_sha256" not in allocation
-    assert projection["attempts_used"] == 1
-    baseline = projection["baseline"]
-    assert isinstance(baseline, dict)
-    assert baseline["artifact_sha256"] == _HEX_B
-    assert baseline.get("form") != "legacy"
-
-
-def test_episode_projects_current_proposal_approved_document() -> None:
-    event = current_proposal_approved_event()
-    document = {key: value for key, value in event.items() if key not in {"type", "seq"}}
-    ProposalApprovedIntentV1.model_validate(document)
-    projection = project_episode([event])
-    dumped = json.dumps(projection)
-    assert "legacy:" not in dumped
-    assert '"form": "legacy"' not in dumped
-    approvals = projection["approvals"]
-    assert isinstance(approvals, list) and len(approvals) == 1
-    approval = approvals[0]
-    assert isinstance(approval, dict)
-    assert approval["approval_id"] == "apr-1"
-    assert approval["proposal_digest"] == _HEX_A
-    assert approval["fixer_authority_digest"] == _HEX_B
-    assert approval["baseline_digest"] == _HEX_D
-    assert approval["policy_digest"] == _HEX_E
-    assert approval["targets"] == ["api"]
-    assert approval["paths"] == ["tests/api/test_users.py"]
-    assert approval.get("form") != "legacy"
-
-
-def test_episode_projects_current_heal_apply_document() -> None:
-    event = current_heal_apply_event()
-    document = {key: value for key, value in event.items() if key not in {"type", "seq"}}
-    HealApplyReceiptV2.model_validate(document)
-    projection = project_episode([event])
-    dumped = json.dumps(projection)
-    assert "legacy:" not in dumped
-    assert '"form": "legacy"' not in dumped
-    records = projection["records"]
-    assert isinstance(records, list) and len(records) == 1
-    record = records[0]
-    assert isinstance(record, dict)
-    assert record["record_key"] == document["record_key"]
-    assert record["safety_payload_digest"] == _HEX_E
-    assert record["intent_digest"] == document["intent_digest"]
-    assert record["write_set_id"] == "ws-1"
-    assert record["claimed_modified_paths"] == ["tests/api/test_users.py"]
-    assert record["form"] == "v2"
-    assert record.get("form") != "legacy"
 
 
 def test_override_token_is_bound_to_policy_and_candidate() -> None:
@@ -565,9 +397,6 @@ def test_healing_schema_bytes_equal_model_schema() -> None:
     assert schema_bytes("assurance.healing.schema.healing-safety.v1") == canonical_json_bytes(
         cast(JSONValue, SafetyCheck.model_json_schema())
     )
-    assert schema_bytes("assurance.healing.schema.coverage-repair.v1") == canonical_json_bytes(
-        cast(JSONValue, CoverageRepairBrief.model_json_schema())
-    )
     assert schema_bytes("assurance.healing.schema.healing-status.v1") == canonical_json_bytes(
         cast(JSONValue, HealingStatusV1.model_json_schema())
     )
@@ -591,13 +420,6 @@ def test_healing_schema_bytes_equal_model_schema() -> None:
     )
 
 
-def test_policy_resource_is_closed_and_canonical() -> None:
-    raw = resource_bytes_for("assurance.healing.policy.test-change-policy.v1")
-    assert raw == canonical_json_bytes(cast(JSONValue, valid_policy()))
-    policy = TestChangePolicyV1.model_validate_json(raw)
-    assert policy.allowed_test_roots == ("tests",)
-
-
 def test_healing_contracts_import_only_upstream_public_contracts() -> None:
     assert forbidden_healing_imports() == set()
 
@@ -613,11 +435,6 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
             "assurance-v1-test-author",
             ("qa/tests",),
         ),
-        "coverage-repair": (
-            "aa-coverage-repair",
-            "assurance-v1-test-author",
-            ("qa/results/healing/coverage-repair.json",),
-        ),
         "fix-proposal": (
             "aa-fix-proposal",
             "assurance-v1-doc-author",
@@ -626,7 +443,7 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
     assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
-    assert len(AGENT_JOB_CONTRACTS) == 3
+    assert len(AGENT_JOB_CONTRACTS) == 2
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
     assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
     for base, (skill_id, agent_profile, writes) in expected.items():
@@ -638,7 +455,9 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
             tuple(
                 sorted(
                     (
+                        "qa/results/healing/applied-repair.json",
                         "qa/results/healing/epochs",
+                        "qa/results/healing/verified-repair.json",
                         "qa/tests",
                     )
                 )

@@ -413,6 +413,7 @@ def test_task_context_exposes_authenticated_project_and_write_roots(tmp_path: Pa
         "invocation",
         "activity",
         "secrets",
+        "runtime_evidence",
     }
 
 

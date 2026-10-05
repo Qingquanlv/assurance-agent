@@ -5,47 +5,8 @@ from typing import cast
 from graph_engine.plugin_api import TaskHandler
 
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
-from assurance_quality.operations.coverage import (
-    BuildCoverageGapsHandler,
-    CollectDiffCoverageHandler,
-    ComputeAuthMatrixHandler,
-    ComputeConstraintCoverageHandler,
-    ComputeJourneyCoverageHandler,
-    ComputeThresholdSlackHandler,
-    DerivePlanLayerApplicabilityHandler,
-    MaterializeCLayerMetricsHandler,
-    MaterializeMinimumCoverageHandler,
-    MaterializeQuarantineProjectionHandler,
-    MaterializeTraceAndCoverageGapsHandler,
-    ProbeCoverageRepairNeedHandler,
-)
-from assurance_quality.operations.inspect import InspectHandler
-from assurance_quality.operations.issues import (
-    ApplyProblemReviewHandler,
-    CollectObservationsHandler,
-    LoadProblemReviewContextHandler,
-    ReconcileIssuesHandler,
-    RecordEmptyIssueAnalysisHandler,
-    RecordIssueAnalysisFailureHandler,
-    RecordProjectSyncPendingHandler,
-)
-from assurance_quality.operations.metrics import (
-    CollectAdversarialYieldHandler,
-    CollectPrMetricsBatchHandler,
-    ComputeAssertionStrengthHandler,
-    ComputeBaselineDriftHandler,
-    LoadLatestPrMetricsHandler,
-    MaterializePrMetricsHandler,
-    RunMutationSampleHandler,
-)
-from assurance_quality.operations.nightly import (
-    AggregateNightlyMetricsHandler,
-    EvaluateRetrospectiveShortboardsHandler,
-    RunNightlyMetricsPipelineHandler,
-)
-from assurance_quality.operations.report import DashboardHandler, GenerateReportHandler
+from assurance_quality.operations.issues import ReconcileIssuesHandler
 from assurance_quality.operations.surface_baseline import SurfaceBaselineHandler
-from assurance_quality.operations.trace import MaterializeTraceHandler
 
 
 def quality_handlers() -> Mapping[str, TaskHandler]:
@@ -55,80 +16,16 @@ def quality_handlers() -> Mapping[str, TaskHandler]:
     return MappingProxyType(
         {
             **declared,
-            "assurance.quality.aggregate-nightly-metrics": AggregateNightlyMetricsHandler(),
-            "assurance.quality.apply-problem-review": ApplyProblemReviewHandler(),
-            "assurance.quality.build-coverage-gap-signals": BuildCoverageGapsHandler(),
-            "assurance.quality.collect-adversarial-yield": CollectAdversarialYieldHandler(),
-            "assurance.quality.collect-diff-coverage": CollectDiffCoverageHandler(),
-            "assurance.quality.collect-observations": CollectObservationsHandler(),
-            "assurance.quality.collect-pr-metrics-batch": CollectPrMetricsBatchHandler(),
-            "assurance.quality.compute-assertion-strength": ComputeAssertionStrengthHandler(),
-            "assurance.quality.compute-auth-matrix": ComputeAuthMatrixHandler(),
-            "assurance.quality.compute-baseline-drift": ComputeBaselineDriftHandler(),
-            "assurance.quality.compute-constraint-coverage": ComputeConstraintCoverageHandler(),
-            "assurance.quality.compute-journey-coverage": ComputeJourneyCoverageHandler(),
-            "assurance.quality.compute-threshold-slack": ComputeThresholdSlackHandler(),
-            "assurance.quality.dashboard": DashboardHandler(),
-            "assurance.quality.derive-plan-layer-applicability": DerivePlanLayerApplicabilityHandler(),
-            "assurance.quality.evaluate-retrospective-shortboards": EvaluateRetrospectiveShortboardsHandler(),
-            "assurance.quality.generate-report": GenerateReportHandler(),
-            "assurance.quality.inspect": InspectHandler(),
-            "assurance.quality.load-latest-pr-metrics": LoadLatestPrMetricsHandler(),
-            "assurance.quality.load-problem-review-context": LoadProblemReviewContextHandler(),
             "assurance.quality.materialize-assessment-inputs.execute": MaterializeAssessmentHandler(),
-            "assurance.quality.materialize-c-layer-metrics": MaterializeCLayerMetricsHandler(),
-            "assurance.quality.materialize-minimum-coverage": MaterializeMinimumCoverageHandler(),
-            "assurance.quality.materialize-pr-metrics": MaterializePrMetricsHandler(),
-            "assurance.quality.materialize-quarantine-projection": MaterializeQuarantineProjectionHandler(),
-            "assurance.quality.materialize-trace-and-coverage-gaps": MaterializeTraceAndCoverageGapsHandler(),
-            "assurance.quality.materialize-trace-projection": MaterializeTraceHandler(),
-            "assurance.quality.probe-coverage-repair-need": ProbeCoverageRepairNeedHandler(),
             "assurance.quality.reconcile-issues.execute": ReconcileIssuesHandler(),
-            "assurance.quality.record-empty-issue-analysis": RecordEmptyIssueAnalysisHandler(),
-            "assurance.quality.record-issue-analysis-failure": RecordIssueAnalysisFailureHandler(),
-            "assurance.quality.record-project-sync-pending": RecordProjectSyncPendingHandler(),
-            "assurance.quality.run-mutation-sample": RunMutationSampleHandler(),
-            "assurance.quality.run-nightly-metrics-pipeline": RunNightlyMetricsPipelineHandler(),
             "assurance.quality.surface-baseline.execute": SurfaceBaselineHandler(),
         }
     )
 
 
 __all__ = [
-    "AggregateNightlyMetricsHandler",
-    "ApplyProblemReviewHandler",
-    "BuildCoverageGapsHandler",
-    "CollectAdversarialYieldHandler",
-    "CollectDiffCoverageHandler",
-    "CollectObservationsHandler",
-    "CollectPrMetricsBatchHandler",
-    "ComputeAssertionStrengthHandler",
-    "ComputeAuthMatrixHandler",
-    "ComputeBaselineDriftHandler",
-    "ComputeConstraintCoverageHandler",
-    "ComputeJourneyCoverageHandler",
-    "ComputeThresholdSlackHandler",
-    "DashboardHandler",
-    "DerivePlanLayerApplicabilityHandler",
-    "GenerateReportHandler",
-    "InspectHandler",
-    "EvaluateRetrospectiveShortboardsHandler",
-    "LoadLatestPrMetricsHandler",
-    "LoadProblemReviewContextHandler",
-    "MaterializeCLayerMetricsHandler",
     "MaterializeAssessmentHandler",
-    "MaterializeMinimumCoverageHandler",
-    "MaterializePrMetricsHandler",
-    "MaterializeQuarantineProjectionHandler",
-    "MaterializeTraceAndCoverageGapsHandler",
-    "MaterializeTraceHandler",
-    "ProbeCoverageRepairNeedHandler",
     "ReconcileIssuesHandler",
-    "RecordEmptyIssueAnalysisHandler",
-    "RecordIssueAnalysisFailureHandler",
-    "RecordProjectSyncPendingHandler",
-    "RunMutationSampleHandler",
-    "RunNightlyMetricsPipelineHandler",
     "SurfaceBaselineHandler",
     "quality_handlers",
 ]

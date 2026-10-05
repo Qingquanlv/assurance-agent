@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Iterable, Mapping
-from pathlib import Path
 from typing import cast
 
-import yaml
 from pydantic import ValidationError
 
 from agent_runtime_contracts.ops import (
     InputError,
     OutputError,
 )
-from graph_engine.artifacts import ArtifactReadError, open_artifact
 
 from assurance_intake.contracts import (
     CaseReviewResultV1,
@@ -23,78 +19,35 @@ from assurance_intake.contracts import (
     MinimumCoverageMatrixAuthoring,
 )
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
+from assurance_intake.contracts.explore import ExploreAdvisoryV1, PreparedExploreV1
 from assurance_intake.contracts.obligations import PreparedObligationV1
-from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.review import (
     normalized_auto_fix_edits,
 )
-from assurance_intake.domain.artifacts import allowed_by_lock, read_regular_bytes
-from assurance_intake.domain.explore_context import load_exploration_document
+from graph_engine.artifacts import under_root
 from assurance_intake.domain.obligations import (
     journey_keys_from_document,
     normalize_goal_obligations,
 )
 
-_DATA_KNOWLEDGE_RESOURCE_ID = "assurance.product.configuration.data-knowledge"
 
-
-_DATA_KNOWLEDGE_PATH = ".aa/data-knowledge.yaml"
-
-
-_CAPABILITY_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
-
-
-_CAPABILITY_CATALOG_PATH = ".aa/capability-catalog.json"
-
-
-def _authenticated_capability_leafs(
-    workspace: Path,
-    source_resource_digests: tuple[tuple[str, str], ...],
-) -> tuple[str, ...]:
-    expected_digest = dict(source_resource_digests).get(_CAPABILITY_CATALOG_RESOURCE_ID)
-    if expected_digest is None:
-        raise InputError("frozen assurance plan does not bind the capability catalog")
+def _authenticated_capability_leafs(document: Mapping[str, object]) -> tuple[str, ...]:
     try:
-        data = open_artifact(
-            workspace,
-            {"path": _CAPABILITY_CATALOG_PATH, "digest": expected_digest},
-        )
-    except ArtifactReadError as error:
-        if error.reason == "digest":
-            raise InputError("capability catalog does not match the frozen assurance plan") from error
-        raise InputError(str(error)) from error
-    try:
-        document = json.loads(data)
-        raw = document.get("typed_leafs") if isinstance(document, Mapping) else None
+        raw = document.get("typed_leafs")
         if not isinstance(raw, list) or any(not isinstance(item, str) or not item for item in raw):
             raise ValueError("typed_leafs must be a list of non-empty strings")
         leafs = tuple(raw)
         if leafs != tuple(sorted(set(leafs))):
             raise ValueError("typed_leafs must be sorted and unique")
         return leafs
-    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+    except ValueError as error:
         raise InputError(f"invalid capability catalog: {error}") from error
 
 
-def authenticated_journey_keys(
-    workspace: Path,
-    source_resource_digests: tuple[tuple[str, str], ...],
-) -> tuple[str, ...]:
-    expected_digest = dict(source_resource_digests).get(_DATA_KNOWLEDGE_RESOURCE_ID)
-    if expected_digest is None:
-        raise InputError("frozen assurance plan does not bind data knowledge")
+def authenticated_journey_keys(document: Mapping[str, object]) -> tuple[str, ...]:
     try:
-        data = open_artifact(workspace, {"path": _DATA_KNOWLEDGE_PATH, "digest": expected_digest})
-    except ArtifactReadError as error:
-        if error.reason == "digest":
-            raise InputError("data knowledge does not match the frozen assurance plan") from error
-        raise InputError(str(error)) from error
-    try:
-        document = yaml.safe_load(data)
-        if not isinstance(document, Mapping):
-            raise ValueError("data knowledge must be a mapping")
         return journey_keys_from_document(document)
-    except (yaml.YAMLError, ValueError) as error:
+    except ValueError as error:
         raise InputError(f"invalid data knowledge: {error}") from error
 
 
@@ -136,14 +89,12 @@ def require_selected_test_families(
 
 
 def load_authored_case_delta(
-    workspace: Path,
     *,
-    change_id: str,
     locked: tuple[str, ...],
     declared: tuple[str, ...],
     capability_leafs: frozenset[str],
+    documents: Mapping[str, CaseYamlAuthoring],
     inventory: ChangeImpactInventoryV1 | None = None,
-    images: Mapping[str, bytes] | None = None,
 ) -> CaseYamlAuthoring:
     if not locked:
         raise InputError("artifact_paths must lock the expected output files")
@@ -165,21 +116,9 @@ def load_authored_case_delta(
     schema_version: str | None = None
     aggregate: dict[str, object] = {"added": [], "modified": [], "removed": []}
     for relative in relative_files:
-        if not allowed_by_lock(relative, locked):
+        if not under_root(relative, locked):
             raise OutputError(f"undeclared output file: {relative}")
-        try:
-            data = (
-                images[relative]
-                if images is not None
-                else read_regular_bytes(workspace, relative, kind="declared output file")
-            )
-            raw = yaml.safe_load(data)
-            document = CaseYamlAuthoring.model_validate(
-                raw,
-                context={"capability_leafs": capability_leafs, "inventory": inventory},
-            )
-        except (OSError, yaml.YAMLError, ValidationError, TypeError, ValueError) as error:
-            raise OutputError(f"invalid written case.yaml {relative}: {error}") from error
+        document = documents[relative]
         if schema_version is None:
             schema_version = document.schema_version
         elif document.schema_version != schema_version:
@@ -245,19 +184,12 @@ def reject_endpoint_literals(authored: CaseYamlAuthoring) -> None:
 
 
 def load_minimum_coverage_matrix(
-    workspace: Path,
     *,
-    relative: str,
+    document: MinimumCoverageMatrixAuthoring,
     authored: CaseYamlAuthoring,
     selected: tuple[str, ...],
     journey_keys: tuple[str, ...],
-    images: Mapping[str, bytes] | None = None,
 ) -> MinimumCoverageMatrixAuthoring:
-    document = read_minimum_coverage_matrix(
-        workspace,
-        relative=relative,
-        images=images,
-    )
 
     cases = {entry.case_id: entry for entry in (*authored.added, *authored.modified)}
     category_layer = {
@@ -319,30 +251,18 @@ _STATUS_COVERED = re.compile(r"(?<![a-z_])covered(?!_by)")
 _MATRIX_MUTABLE_FIELDS = frozenset({"status", "covered_by_cases", "skip_reason"})
 
 
-def bound_obligations(workspace: Path, plan: ResolvedAssurancePlan) -> tuple[PreparedObligationV1, ...]:
-    ref = plan.quality_goal.obligations_ref
+def bound_obligations(
+    exploration: ExploreAdvisoryV1 | PreparedExploreV1 | None,
+    catalog: Mapping[str, object],
+    knowledge: Mapping[str, object],
+) -> tuple[PreparedObligationV1, ...]:
+    if exploration is None:
+        raise InputError("frozen exploration does not match the assurance plan")
     try:
-        data = open_artifact(workspace, ref)
-    except ArtifactReadError as error:
-        if error.reason == "digest":
-            raise InputError("frozen exploration does not match the assurance plan") from error
-        raise InputError(str(error)) from error
-    try:
-        exploration = load_exploration_document(data)
         return normalize_goal_obligations(
             exploration,
-            capability_leafs=frozenset(
-                _authenticated_capability_leafs(
-                    workspace,
-                    plan.quality_goal.source_resource_digests,
-                )
-            ),
-            journey_keys=frozenset(
-                authenticated_journey_keys(
-                    workspace,
-                    plan.quality_goal.source_resource_digests,
-                )
-            ),
+            capability_leafs=frozenset(_authenticated_capability_leafs(catalog)),
+            journey_keys=frozenset(authenticated_journey_keys(knowledge)),
         )
     except (ValueError, ValidationError) as error:
         raise InputError(f"frozen exploration obligations are invalid: {error}") from error
@@ -406,11 +326,9 @@ def reject_unbound_covered_repairs(
 
 
 def require_frozen_unresolved_rows(
-    workspace: Path,
-    plan: ResolvedAssurancePlan,
+    obligations: tuple[PreparedObligationV1, ...],
     matrix: MinimumCoverageMatrixAuthoring,
 ) -> None:
-    obligations = bound_obligations(workspace, plan)
     unresolved = {row.mrc_id for row in obligations if row.key is None}
     mapped = {row.mrc_id for row in matrix.root if row.key is None}
     missing = sorted(unresolved - mapped)
@@ -419,21 +337,3 @@ def require_frozen_unresolved_rows(
     invented = sorted(mapped - unresolved)
     if invented:
         raise OutputError(f"unresolved MRC rows do not match the frozen plan: {invented}")
-
-
-def read_minimum_coverage_matrix(
-    workspace: Path,
-    *,
-    relative: str,
-    images: Mapping[str, bytes] | None = None,
-) -> MinimumCoverageMatrixAuthoring:
-    try:
-        data = (
-            images[relative]
-            if images is not None
-            else read_regular_bytes(workspace, relative, kind="minimum coverage matrix")
-        )
-        document = MinimumCoverageMatrixAuthoring.model_validate(json.loads(data))
-    except (OSError, json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
-        raise OutputError(f"invalid minimum-coverage-matrix.json: {error}") from error
-    return document

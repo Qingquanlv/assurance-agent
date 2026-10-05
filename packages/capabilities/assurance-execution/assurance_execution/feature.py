@@ -2,8 +2,8 @@
 
 from dataclasses import dataclass
 
-from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
+from graph_engine.flow import BoundFlow
 
 from assurance_execution.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
@@ -15,8 +15,8 @@ from assurance_execution.plugin import ExecutionPlugin
 
 @dataclass(frozen=True, slots=True)
 class ExecutionGraphs:
-    execute: CompiledStateGraph
-    rerun: CompiledStateGraph
+    execute: BoundFlow
+    rerun: BoundFlow
 
 
 FEATURE = FeatureSpec(

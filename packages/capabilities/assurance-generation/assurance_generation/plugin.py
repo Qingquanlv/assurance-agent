@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
+    CommitValidator,
     PluginContribution,
     PluginDependency,
     PluginDescriptor,
@@ -16,10 +17,6 @@ from assurance_generation.contracts.attempts import attempt_contract_refs
 from assurance_generation.operations import generation_handlers
 from assurance_generation.ops import router
 from assurance_generation.resource_loader import resource_bytes
-from assurance_generation.validators import (
-    CodegenMappingValidator,
-    GeneratedFilesValidator,
-)
 
 GENERATION_SOURCE = ProviderSource(
     distribution="assurance-generation",
@@ -56,10 +53,7 @@ _GENERATED_SCHEMAS: dict[str, str] = {
 
 _HANDLERS = generation_handlers()
 
-_VALIDATORS = {
-    "assurance.generation.validator.generated-files.v1": GeneratedFilesValidator(require_mapping=False),
-    "assurance.generation.validator.codegen-mapping.v1": CodegenMappingValidator(),
-}
+_VALIDATORS: dict[str, CommitValidator] = {}
 
 
 class GenerationPlugin(CapabilityPlugin):

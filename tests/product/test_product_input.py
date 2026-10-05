@@ -16,16 +16,10 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 _SHA = "a" * 64
 _FAMILY_EMPTY_ENTRYPOINTS = (
     "init",
-    "archive",
     "retro",
     "issue-review",
     "issue-analyze",
     "issue-reconcile",
-    "improvement-review",
-    "improvement-evaluate",
-    "improvement-export",
-    "improvement-apply",
-    "improvement-rollback",
 )
 _FAMILY_NONEMPTY_ENTRYPOINTS = ("full", "intake")
 
@@ -122,69 +116,7 @@ def test_only_retro_entrypoint_accepts_retro_window() -> None:
     value = ProductInputV1.model_validate(valid_product_input(retro_window=window))
     value.validate_for_entrypoint("retro")
     with pytest.raises(ValueError, match="does not consume retro_window"):
-        value.validate_for_entrypoint("archive")
-
-
-def test_standalone_retro_preserves_an_explicit_window() -> None:
-    from assurance_product.graphs.entrypoints import adapt_retro
-    from assurance_improvement.contracts.retro import RetroSelectionSnapshot, RetroWindow
-
-    window = RetroWindow(
-        selection=RetroSelectionSnapshot(
-            mode="change_ids", requested_change_ids=("CH-DEMO-001", "CH-DEMO-002")
-        ),
-        change_ids=("CH-DEMO-001", "CH-DEMO-002"),
-    )
-    state = valid_product_input(retro_window=window.model_dump(mode="json"))
-    result = adapt_retro(state)  # type: ignore[arg-type]
-    assert result["window"] == window.model_dump(mode="json")
-
-
-def test_full_retro_uses_the_current_change_and_report_receipt_identity() -> None:
-    from assurance_product.graphs.entrypoints import adapt_retro
-
-    report_receipt = {"receipt_id": "report-1", "receipt_digest": "b" * 64}
-    state = valid_product_input()
-    state["report_outcome"] = {"report_receipt": report_receipt}
-    first = adapt_retro(state)  # type: ignore[arg-type]
-    second = adapt_retro(state)  # type: ignore[arg-type]
-    assert first["window"]["change_ids"] == ["CH-DEMO-001"]  # type: ignore[index]
-    assert first["retro_id"] == second["retro_id"]
-
-
-def test_full_retro_prefers_the_plan_bound_exploration_digest() -> None:
-    from assurance_product.graphs.entrypoints import adapt_retro
-
-    stale = {"path": "qa/results/explore/exploration.json", "digest": "a" * 64}
-    bound = {"path": "qa/results/explore/exploration.json", "digest": "b" * 64}
-    state = valid_product_input(artifacts=(stale,))
-    state["artifacts"] = [stale]
-    state["source_artifacts"] = [stale]
-    state["preparation_refs"] = [bound]
-    source_refs = adapt_retro(state)["source_refs"]  # type: ignore[arg-type]
-    assert isinstance(source_refs, list)
-    assert bound in source_refs
-    assert stale not in source_refs
-
-
-def test_full_retro_binds_pre_retro_snapshot_and_all_review_rounds() -> None:
-    from assurance_product.graphs.entrypoints import adapt_retro
-
-    state = valid_product_input()
-    runtime_ref = {
-        "path": "qa/results/workflow/" + "a" * 64 + "/pre-retro/workflow-evidence.json",
-        "digest": "b" * 64,
-    }
-    history_refs = [
-        {"path": f"qa/cases/reviews/epochs/0/rounds/{index}.json", "digest": str(index) * 64}
-        for index in (1, 2)
-    ]
-    state["retro_runtime_ref"] = runtime_ref
-    state["history_refs"] = history_refs
-    source_refs = adapt_retro(state)["source_refs"]  # type: ignore[arg-type]
-    assert isinstance(source_refs, list)
-    assert runtime_ref in source_refs
-    assert all(ref in source_refs for ref in history_refs)
+        value.validate_for_entrypoint("init")
 
 
 def test_history_ref_reducer_accumulates_rounds_and_rejects_digest_conflicts() -> None:
@@ -193,27 +125,16 @@ def test_history_ref_reducer_accumulates_rounds_and_rejects_digest_conflicts() -
     first = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
     second = {"path": "qa/cases/reviews/epochs/0/rounds/1.json", "digest": "b" * 64}
     assert merge_history_refs([first], [second, first]) == [first, second]
-    with pytest.raises(ValueError, match="conflicting history ref"):
+    with pytest.raises(ValueError, match="conflicting artifact ref"):
         merge_history_refs([first], [{**first, "digest": "c" * 64}])
 
 
 def test_review_publishers_forward_sealed_round_refs() -> None:
-    from assurance_generation.graphs.nodes import publish_plan_review
-    from assurance_intake.graphs.calls import publish_case_review
+    from assurance_intake.ops.case_review import op as case_review
 
-    ref = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
-    case = publish_case_review(
-        {"rounds_used": 0, "rounds_budget": 2},
-        {"decision": "reject", "history_ref": ref},
-        None,
-    )
-    plan = publish_plan_review(
-        {"rounds_used": 0, "rounds_budget": 2},
-        {"route": "codegen", "history_ref": ref},
-        None,
-    )
-    assert case["history_refs"] == [ref]
-    assert plan["history_refs"] == [ref]
+    history = next(item for item in case_review.ledger_writes() if item.name == "history")
+    assert history.accumulate is True
+    assert history.root == "qa/cases/reviews"
 
 
 def test_product_input_rejects_auto_archive():

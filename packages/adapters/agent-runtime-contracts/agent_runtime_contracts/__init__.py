@@ -1,5 +1,6 @@
 from agent_runtime_contracts.executor.executor import ResolvedRawAgentExecutor
 from agent_runtime_contracts.executor.phases import FinalizePhase, PreparePhase, RawFinalizeBundle
+from agent_runtime_contracts.wire.prepare import PreparedAgentRun
 from agent_runtime_contracts.ops.contract import AgentExecutionContract, AgentPhaseWriteClaims
 from agent_runtime_contracts.qa_paths import qa_join, qa_route
 from agent_runtime_contracts.runtime.binding import (
@@ -44,6 +45,7 @@ __all__ = [
     "AgentRuntimePolicy",
     "FinalizePhase",
     "PreparePhase",
+    "PreparedAgentRun",
     "RAW_AGENT_RUNTIME_BINDING_SCHEMA_VERSION",
     "RawAgentRuntimeBindingProjectionV1",
     "AgentWorkspaceV1",

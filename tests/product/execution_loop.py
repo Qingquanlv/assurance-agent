@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
-    TaskContext,
     TaskOutcome,
 )
 from graph_engine.attempts.host_protocol import (
@@ -28,7 +26,6 @@ _GRAPH_EXPORTS = {
     "execution-execute": "execution.execute",
     "execution-run": "execution.rerun",
     "generation": "generation.generate",
-    "healing-coverage-repair": "healing.repair-coverage",
     "healing-fix-proposal": "healing.repair-failure",
     "issue-analyze": "quality.issue-analyze",
     "issue-reconcile": "quality.issue-reconcile",
@@ -71,7 +68,6 @@ def drive_failed_execution(
 def drive_coverage_loop(
     *,
     coverage_states: tuple[str, ...],
-    repair_statuses: tuple[str, ...] = (),
     coverage_rounds: int = 1,
     measured_sequence: tuple[float, ...] = (),
     threshold: float = 0.90,
@@ -82,7 +78,6 @@ def drive_coverage_loop(
         fix_eligible=(),
         coverage_rounds=coverage_rounds,
         coverage_states=coverage_states,
-        repair_statuses=repair_statuses,
         measured_sequence=measured_sequence,
         threshold=threshold,
     )
@@ -96,7 +91,6 @@ def drive_execution_loop(
     healing_rounds: int = 1,
     coverage_rounds: int = 1,
     coverage_states: tuple[str, ...] = (),
-    repair_statuses: tuple[str, ...] = (),
     measured_sequence: tuple[float, ...] = (),
     threshold: float = 0.90,
 ) -> ExecutionLoopTrace:
@@ -107,7 +101,6 @@ def drive_execution_loop(
         classifications=classifications,
         fix_eligible=fix_eligible,
         coverage_states=coverage_states,
-        repair_statuses=repair_statuses,
         measured_sequence=measured_sequence,
         threshold=threshold,
         coverage_rounds=coverage_rounds,
@@ -121,7 +114,6 @@ def drive_execution_loop(
         healing_rounds=healing_rounds,
         coverage_rounds=coverage_rounds,
         coverage_states=coverage_states,
-        repair_statuses=repair_statuses,
         interrupted=False,
     )
 
@@ -148,6 +140,22 @@ class _SyntheticProjection:
     graph_instances: tuple[_SyntheticGraph, ...]
 
 
+def _bump_repair_round(data: Mapping[str, object]) -> dict[str, int | str]:
+    kind = data.get("kind")
+    rounds_used = data.get("rounds_used")
+    rounds_budget = data.get("rounds_budget")
+    if (
+        not isinstance(kind, str)
+        or kind not in {"failure", "coverage"}
+        or not isinstance(rounds_used, int)
+        or not isinstance(rounds_budget, int)
+    ):
+        raise ValueError("invalid repair round advance")
+    if rounds_used >= rounds_budget:
+        raise ValueError("rounds_used must be below rounds_budget")
+    return {"kind": kind, "rounds_used": rounds_used + 1, "rounds_budget": rounds_budget}
+
+
 def _synthesize_loop_trace(
     *,
     host: _ExecutionLoopHost,
@@ -158,11 +166,8 @@ def _synthesize_loop_trace(
     healing_rounds: int,
     coverage_rounds: int,
     coverage_states: tuple[str, ...],
-    repair_statuses: tuple[str, ...],
     interrupted: bool,
 ) -> ExecutionLoopTrace:
-    from assurance_healing.contracts.decisions import advance_repair_round
-
     activations: list[_SyntheticActivation] = []
     capabilities: list[str] = []
     exports: list[str] = []
@@ -178,10 +183,10 @@ def _synthesize_loop_trace(
             capabilities.append(task)
 
     def _advance(kind: str, rounds_used: int, rounds_budget: int) -> None:
-        output = advance_repair_round(
+        output = _bump_repair_round(
             {"kind": kind, "rounds_used": rounds_used, "rounds_budget": rounds_budget}
         )
-        host.advance_outputs.append(cast(dict[str, int | str], output.model_dump(mode="json")))
+        host.advance_outputs.append(output)
         capabilities.append("assurance.healing.repair-round.advance")
 
     _export("generation", "generation.generate")
@@ -234,28 +239,6 @@ def _synthesize_loop_trace(
                 _export("quality-report", "quality.report")
                 terminal = "not-achieved"
                 break
-            if coverage_state == "repair_required":
-                _advance("coverage", index, coverage_rounds)
-                _export(
-                    "healing-coverage-repair",
-                    "healing.repair-coverage",
-                    task="coverage-repair.finalize",
-                )
-                repair = (
-                    repair_statuses[min(index, max(len(repair_statuses) - 1, 0))]
-                    if repair_statuses
-                    else "repaired"
-                )
-                if repair == "needs_review":
-                    status = "interrupted"
-                    terminal = "interrupted"
-                    interrupted = True
-                    break
-                if repair != "repaired":
-                    _export("quality-report", "quality.report")
-                    terminal = "not-achieved"
-                    break
-
     if interrupted and status != "interrupted":
         status = "interrupted"
         terminal = "interrupted"
@@ -293,7 +276,6 @@ class _ExecutionLoopHost:
         classifications: tuple[str, ...],
         fix_eligible: tuple[bool, ...],
         coverage_states: tuple[str, ...] = (),
-        repair_statuses: tuple[str, ...] = (),
         measured_sequence: tuple[float, ...] = (),
         threshold: float = 0.90,
         coverage_rounds: int = 1,
@@ -302,35 +284,26 @@ class _ExecutionLoopHost:
         self._classifications = classifications
         self._fix_eligible = fix_eligible
         self._coverage_states = coverage_states
-        self._repair_statuses = repair_statuses
         self._measured_sequence = measured_sequence
         self._threshold = threshold
         self._coverage_rounds = coverage_rounds
         self._execution_index = 0
         self._analysis_index = 0
         self._coverage_index = 0
-        self._repair_index = 0
         self._advance = None
         self.advance_outputs: list[dict[str, int | str]] = []
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         capability_id = call.request.capability_id
         if capability_id == _ADVANCE_ID or capability_id.endswith("repair-round.advance"):
-            if self._advance is None:
-                from assurance_healing.operations.workflow_state import HealingRepairRoundAdvanceHandler
-
-                self._advance = HealingRepairRoundAdvanceHandler()
-            context = TaskContext(
-                project_root=Path.cwd(),
-                write_root=Path.cwd(),
-                workspace_identity=call.attempt_root.workspace_identity,
-                heartbeat=lambda: None,
-                cancel_requested=lambda: False,
-                invocation=call.request.invocation,
-            )
-            outcome = await self._advance.execute(call.request, context)
-            if isinstance(outcome.output, Mapping):
-                self.advance_outputs.append(cast(dict[str, int | str], dict(outcome.output)))
+            payload = call.request.input if isinstance(call.request.input, Mapping) else {}
+            try:
+                output = _bump_repair_round(payload)
+            except ValueError as error:
+                outcome = TaskOutcome.failed("invalid_input", str(error))
+            else:
+                outcome = TaskOutcome.succeeded(cast(JSONValue, output))
+                self.advance_outputs.append(output)
             return TaskHostCallResult(operation="execute", outcome=outcome)
         outcome = self._scripted(capability_id, call.request.input)
         if capability_id.startswith("assurance.") and ".agent." in capability_id:
@@ -428,23 +401,6 @@ class _ExecutionLoopHost:
                     "rounds_budget": rounds_budget,
                     "rounds_used": rounds_used,
                     "status": "repaired",
-                }
-            )
-        if capability_id == "assurance.healing.agent.coverage-repair.v1":
-            status = (
-                self._repair_statuses[min(self._repair_index, len(self._repair_statuses) - 1)]
-                if self._repair_statuses
-                else "repaired"
-            )
-            self._repair_index += 1
-            return TaskOutcome.succeeded(
-                {
-                    "change_id": change_id,
-                    "effect_refs": [],
-                    "kind": kind,
-                    "rounds_budget": rounds_budget,
-                    "rounds_used": rounds_used,
-                    "status": status,
                 }
             )
         if capability_id == "assurance.quality.agent.report.v1":
@@ -596,10 +552,6 @@ def execute_tail_coverage_state(projection: InvocationProjection) -> str | None:
 
 def assert_each_repair_is_preceded_by_one_advance(capabilities: tuple[str, ...]) -> None:
     _assert_advance_before_finalize(capabilities, "fix-proposal.finalize")
-
-
-def assert_each_coverage_repair_is_preceded_by_one_advance(capabilities: tuple[str, ...]) -> None:
-    _assert_advance_before_finalize(capabilities, "coverage-repair.finalize")
 
 
 def _assert_advance_before_finalize(capabilities: tuple[str, ...], finalize_suffix: str) -> None:

@@ -33,6 +33,7 @@ from assurance_quality.contracts.surface import (
     HttpMethod,
     SurfaceProbeInputV1,
     SurfaceProbeResultV1,
+    surface_readiness,
     UiExplorationDocument,
     UiFeature,
 )
@@ -490,11 +491,14 @@ def run_surface_probe(
         ),
         fetch,
     )
+    ui_source = probed.ui.source
+    api_source = probed.api.source
     return SurfaceProbeResultV1(
         ui_exploration_ref=_write_document(write_root, UI_EXPLORATION_PATH, probed.ui),
         api_discovery_ref=_write_document(write_root, API_DISCOVERY_PATH, probed.api),
-        ui_source=probed.ui.source,
-        api_source=probed.api.source,
+        ui_source=ui_source,
+        api_source=api_source,
+        readiness=surface_readiness(tuple(families), ui_source, api_source),
     )
 
 

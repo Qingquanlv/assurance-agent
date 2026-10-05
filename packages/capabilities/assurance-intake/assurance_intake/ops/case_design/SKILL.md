@@ -146,11 +146,13 @@ valid trace entry.
    key is copied exactly from the reported `authenticated journey keys` and whose
    `covered_by_cases` contains the reported E2E case IDs. Never invent a journey key
    or modify `.aa/data-knowledge.yaml`.
-9. **Coverage rework:** When `case_rework_context` is provided, read its authenticated
-   `gaps_ref` and the report's `minimum_coverage` gaps under the same frozen
-   `plan_digest` / `plan_ref`. Add or modify cases and their matrix mappings to supply
-   the missing evidence within the frozen family set. Preserve the required baseline;
-   a new obligation needing an unselected family is a `family scope conflict`.
+9. **Coverage rework:** When `case_rework_context` is provided, it is the authenticated
+   rework document for this coverage round. Read its `gaps_ref` and the report's
+   `minimum_coverage` gaps under the same frozen `plan_digest` / `plan_ref`. Add or
+   modify cases and their matrix mappings to supply the missing evidence within the
+   frozen family set. Preserve the required baseline; a new obligation needing an
+   unselected family is a `family scope conflict`. The first coverage round has no
+   rework document.
 
 **After completing work:**
 

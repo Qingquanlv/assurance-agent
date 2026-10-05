@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import sys
 import uuid
@@ -17,8 +18,9 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskWorkspaceIdentity,
 )
+from graph_engine.stategraph.ledger import InputBinding
 
-from agent_runtime_contracts.ops import Agent, ArtifactListResultV1, Dir, OpRouter, WriteScopeError
+from agent_runtime_contracts.ops import Agent, ArtifactListResultV1, Dir, OpRouter, Out, WriteScopeError
 from agent_runtime_contracts.wire.models import AgentRunRequest, AgentRunResult
 
 _SHA = "a" * 64
@@ -91,6 +93,7 @@ def recover(ctx, business, error):
 
 op = router.agent(
     "echo",
+    transport_business=True,
     input=EchoInput,
     prepare=Prepare(hook=before, depends=(frozen_plan,), writes=("qa/seed.txt",)),
     agent=Agent(
@@ -107,6 +110,7 @@ op = router.agent(
 _COUNT_INIT = """
 from graph_engine.plugin_api import FrozenModel
 
+from agent_runtime_contracts.ops import OutputError
 from PKG.ops import router
 
 
@@ -119,6 +123,8 @@ class CountOutput(FrozenModel):
 
 
 def run(ctx, business):
+    if business.value == -2:
+        raise OutputError("bad result")
     if business.value < 0:
         raise ValueError("negative")
     return CountOutput(value=business.value + 1)
@@ -132,6 +138,110 @@ op = router.task(
     reads=("qa",),
     writes=("qa/count.json",),
     errors=(ValueError,),
+)
+"""
+
+_TYPED_INIT = """
+from graph_engine.plugin_api import FrozenModel
+from agent_runtime_contracts.ops import Agent, Finalize, Out, Prepare
+from PKG.ops import router
+
+calls = []
+
+class Input(FrozenModel):
+    change_id: str
+
+class Document(FrozenModel):
+    change_id: str
+
+class Output(FrozenModel):
+    digest: str
+
+def after(ctx, business, result):
+    calls.append("after")
+    assert ctx.file("qa/document.yaml") == Document(change_id=business.change_id)
+    return Output(digest=ctx.ref("qa/document.yaml").digest)
+
+op = router.agent(
+    "typed",
+    input=Input,
+    prepare=Prepare(),
+    agent=Agent(
+        profile="assurance-v1-reviewer",
+        skill="aa-typed",
+        strict_files=True,
+        writes=(Out("document", "qa/document.yaml", model=Document, format="yaml"),),
+    ),
+    finalize=Finalize(hook=after),
+    output=Output,
+)
+"""
+
+_TASK_DEP_INIT = """
+from graph_engine.plugin_api import FrozenModel
+from agent_runtime_contracts.ops import ArtifactHandle
+from PKG.ops import router
+
+class Input(FrozenModel):
+    source_ref: dict[str, str]
+
+class Document(FrozenModel):
+    value: int
+
+class Output(FrozenModel):
+    value: int
+
+SOURCE = ArtifactHandle("fixture.cap.source", slot="source_ref", model=Document)
+
+def run(ctx, business, deps):
+    return Output(value=deps[SOURCE.ledger_key].value)
+
+op = router.task(
+    "task-dep",
+    input=Input,
+    output=Output,
+    run=run,
+    depends=(SOURCE,),
+    reads=("qa",),
+    writes=(),
+)
+"""
+
+_TYPED_INPUT_INIT = """
+from graph_engine.plugin_api import FrozenModel
+from agent_runtime_contracts.ops import Agent, ArtifactHandle, Finalize, Out, Prepare
+from PKG.ops import router
+
+calls = []
+
+class Input(FrozenModel):
+    source_ref: dict[str, str]
+
+class Document(FrozenModel):
+    value: int
+
+class Result(FrozenModel):
+    done: bool
+
+class Output(FrozenModel):
+    value: int
+
+SOURCE = ArtifactHandle("fixture.cap.typed-input", slot="source_ref", model=Document)
+
+def after(ctx, business, result):
+    calls.append("after")
+    return Output(value=ctx.project_file("qa/source.json").value)
+
+op = router.agent(
+    "typed-input",
+    input=Input,
+    prepare=Prepare(
+        depends=(SOURCE,), eager_artifacts=True,
+        reads=(Out("source", "qa/source.json", model=Document, format="json"),),
+    ),
+    agent=Agent(profile="assurance-v1-reviewer", skill="aa-typed-input", result=Result, writes=()),
+    finalize=Finalize(hook=after),
+    output=Output,
 )
 """
 
@@ -329,7 +439,9 @@ def test_prepare_runs_depends_and_before(tmp_path: Path) -> None:
     )
 
     assert plain.status == "succeeded"
-    request = AgentRunRequest.model_validate(plain.output)
+    assert isinstance(plain.output, dict)
+    assert plain.output["prepared_business"] == {"change_id": "c1", "notes": []}
+    request = AgentRunRequest.model_validate(plain.output["run_request"])
     texts = [part.text_content for part in request.instructions if part.media_type == "text/plain"]
     assert texts == ["echo skill\n"]
     business = [part.json_content for part in request.instructions if part.media_type == "application/json"]
@@ -345,7 +457,7 @@ def test_dir_write_expands_to_the_exact_files_of_this_run(tmp_path: Path) -> Non
 
     outcome = _run(module, _Request("fixture.cap.echo.prepare", business, _binding()), _context(tmp_path))
 
-    request = AgentRunRequest.model_validate(outcome.output)
+    request = AgentRunRequest.model_validate(outcome.output["run_request"])
     assert request.workspace.allowed_outputs == ("qa/echo.json", "qa/notes/b.md", "qa/notes/deep/a.md")
 
 
@@ -412,6 +524,101 @@ def test_finalize_filters_prompt_extras_and_runs_after(tmp_path: Path) -> None:
     assert (tmp_path / "write" / "qa" / "final.txt").read_text() == "hi"
 
 
+def test_declared_file_receipt_and_model_are_checked_before_after(tmp_path: Path) -> None:
+    module = _capability(
+        tmp_path,
+        extra={"ops/typed/__init__.py": _TYPED_INIT, "ops/typed/SKILL.md": "typed skill\n"},
+    )
+    typed = importlib.import_module(f"{module.__name__}.typed")
+    context = _context(tmp_path)
+    request = lambda files: _Request(  # noqa: E731
+        "fixture.cap.typed.finalize",
+        {"prepare": {"change_id": "c1"}, "agent_result": _agent_result({"output_files": files})},
+    )
+
+    missing = _run(module, request([]), context)
+    assert missing.failure is not None and missing.failure.kind == "invalid_output"
+    assert typed.calls == []
+
+    _write(context.write_root, "qa/document.yaml", "wrong: c1\n")
+    invalid = _run(module, request(["qa/document.yaml"]), context)
+    assert invalid.failure is not None and invalid.failure.kind == "invalid_output"
+    assert typed.calls == []
+
+    _write(context.write_root, "qa/document.yaml", "change_id: c1\n")
+    valid = _run(module, request(["qa/document.yaml"]), context)
+    assert valid.status == "succeeded"
+    assert typed.calls == ["after"]
+
+    extra = _run(module, request(["qa/document.yaml", "qa/extra.yaml"]), context)
+    assert extra.failure is not None and extra.failure.kind == "invalid_output"
+    assert typed.calls == ["after"]
+
+
+def test_task_declared_artifact_is_authenticated_and_typed_before_run(tmp_path: Path) -> None:
+    module = _capability(tmp_path, extra={"ops/task_dep/__init__.py": _TASK_DEP_INIT})
+    context = _context(tmp_path)
+    path = context.project_root / "qa/source.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"value": 7}')
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    request = lambda value: _Request("fixture.cap.task-dep", {"source_ref": value})  # noqa: E731
+
+    valid = _run(module, request({"path": "qa/source.json", "digest": digest}), context)
+    assert valid.status == "succeeded" and valid.output == {"value": 7}
+
+    wrong_digest = _run(module, request({"path": "qa/source.json", "digest": "0" * 64}), context)
+    assert wrong_digest.failure is not None and wrong_digest.failure.kind == "invalid_input"
+
+    path.write_text('{"wrong": 7}')
+    wrong_schema = _run(
+        module,
+        request({"path": "qa/source.json", "digest": hashlib.sha256(path.read_bytes()).hexdigest()}),
+        context,
+    )
+    assert wrong_schema.failure is not None and wrong_schema.failure.kind == "invalid_input"
+
+
+def test_declared_typed_input_rejects_change_after_eager_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _capability(
+        tmp_path,
+        extra={
+            "ops/typed_input/__init__.py": _TYPED_INPUT_INIT,
+            "ops/typed_input/SKILL.md": "typed input skill\n",
+        },
+    )
+    typed = importlib.import_module(f"{module.__package__}.typed_input")
+    context = _context(tmp_path)
+    source = context.project_root / "qa/source.json"
+    source.parent.mkdir(parents=True)
+    source.write_text('{"value": 7}', encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    router_module = importlib.import_module("agent_runtime_contracts.ops.router")
+    original_read = router_module.read_workspace_file
+
+    def mutate_on_typed_capture(workspace: Path, relative: str) -> bytes:
+        if relative == "qa/source.json":
+            source.write_text('{"value": 9}', encoding="utf-8")
+        return original_read(workspace, relative)
+
+    monkeypatch.setattr(router_module, "read_workspace_file", mutate_on_typed_capture)
+    outcome = _run(
+        module,
+        _Request(
+            "fixture.cap.typed-input.finalize",
+            {
+                "prepare": {"source_ref": {"path": "qa/source.json", "digest": digest}},
+                "agent_result": _agent_result({"done": True}),
+            },
+        ),
+        context,
+    )
+    assert outcome.failure is not None and outcome.failure.kind == "invalid_input"
+    assert typed.calls == []
+
+
 def test_finalize_output_error_handler_recovers_or_reraises(tmp_path: Path) -> None:
     module = _capability(tmp_path)
 
@@ -449,9 +656,12 @@ def test_task_op_runs_and_maps_declared_errors(tmp_path: Path) -> None:
 
     ok = _run(module, _Request("fixture.cap.count", {"value": 1}), context)
     negative = _run(module, _Request("fixture.cap.count", {"value": -1}), context)
+    rejected = _run(module, _Request("fixture.cap.count", {"value": -2}), context)
 
     assert ok.output == {"value": 2}
     assert negative.failure is not None and negative.failure.kind == "invalid_input"
+    assert rejected.failure is not None and rejected.failure.kind == "invalid_output"
+    assert rejected.failure.retryable is True
 
 
 def test_dispatch_prefers_bound_target_and_fails_closed(tmp_path: Path) -> None:
@@ -608,3 +818,357 @@ def test_unbound_directory_is_invalid_input(tmp_path: Path) -> None:
     )
 
     assert outcome.failure is not None and outcome.failure.kind == "invalid_input"
+
+
+_SEAL_INIT = """
+from graph_engine.plugin_api import FrozenModel
+
+from agent_runtime_contracts.ops import Agent, Finalize, Out
+from PKG.ops import router
+
+
+class SealInput(FrozenModel):
+    change_id: str
+
+
+class SealResult(FrozenModel):
+    message: str
+
+
+op = router.agent(
+    "seal",
+    input=SealInput,
+    agent=Agent(
+        profile="assurance-v1-reviewer",
+        skill="aa-seal",
+        result=SealResult,
+        writes=(),
+    ),
+    finalize=Finalize(
+        writes=(
+            Out("reviewed_case", "qa/cases/reviewed-case.json"),
+            "qa/cases/reviews",
+        )
+    ),
+    output=SealResult,
+)
+"""
+
+
+def test_named_finalize_write_is_a_ledger_key_and_not_a_digest_name(tmp_path: Path) -> None:
+    module = _capability(
+        tmp_path,
+        extra={
+            "ops/seal/__init__.py": _SEAL_INIT,
+            "ops/seal/SKILL.md": "seal skill\n",
+        },
+    )
+    op = _router(module).ops()["seal"]
+    assert [(item.name, item.root, item.many) for item in op.ledger_writes()] == [
+        ("reviewed_case", "qa/cases/reviewed-case.json", False)
+    ]
+    claims = op.contract().canonical_projection()["phase_write_claims"]
+    assert claims == {
+        "prepare": [],
+        "runtime": [],
+        "finalize": ["qa/cases/reviewed-case.json", "qa/cases/reviews"],
+    }
+
+
+_HISTORY_INIT = """
+from graph_engine.plugin_api import FrozenModel
+
+from agent_runtime_contracts.ops import Dir, Out
+from PKG.ops import router
+
+
+class Input(FrozenModel):
+    change_id: str
+
+
+class Output(FrozenModel):
+    ok: bool
+
+
+def run(ctx, business):
+    return Output(ok=True)
+
+
+op = router.task(
+    "history",
+    input=Input,
+    output=Output,
+    run=run,
+    reads=("qa",),
+    writes=(
+        Dir("qa/history", name="history", accumulate=True),
+        Dir("qa/notes", name="notes"),
+        Out("summary", "qa/summary.md"),
+    ),
+)
+"""
+
+
+def test_task_op_input_bindings_and_models_match_agent_op(tmp_path: Path) -> None:
+    module = _capability(tmp_path, extra={"ops/task_dep/__init__.py": _TASK_DEP_INIT})
+    router = _router(module)
+    task = router.task_ops()["task-dep"]
+    echo = router.agent_ops()["echo"]
+
+    assert task.input_bindings() == (InputBinding(ledger_key="fixture.cap.source", field="source_ref"),)
+    assert task.input_model is task.input
+    assert task.output_model is task.output
+    assert echo.input_model is echo.input
+    assert echo.output_model is echo.output
+
+
+def test_dir_accumulate_is_stored_on_the_named_write_and_out_rejects_it(tmp_path: Path) -> None:
+    module = _capability(tmp_path, extra={"ops/history/__init__.py": _HISTORY_INIT})
+    writes = _router(module).task_ops()["history"].ledger_writes()
+
+    assert [(item.name, item.accumulate) for item in writes] == [
+        ("history", True),
+        ("notes", False),
+        ("summary", False),
+    ]
+    with pytest.raises(TypeError):
+        Out("summary", "qa/summary.md", accumulate=True)
+
+
+_MARK_INIT = """
+from graph_engine.artifacts import ArtifactRef
+from graph_engine.plugin_api import FrozenModel
+
+from agent_runtime_contracts.ops import Agent, Finalize, InputError, Prepare
+from PKG.ops import router
+
+calls = []
+
+
+class Input(FrozenModel):
+    change_id: str
+    plan_digest: str
+
+
+class Result(FrozenModel):
+    change_id: str
+    plan_digest: str
+    context_ref: str
+    nested: dict[str, str] = {}
+
+
+class Note(FrozenModel):
+    text: str
+
+
+class Output(FrozenModel):
+    change_id: str
+    artifacts: tuple[ArtifactRef, ...] = ()
+
+
+def after(ctx, business, result):
+    calls.append(business.change_id)
+    if business.change_id == "raise-value":
+        raise ValueError("hook rejected")
+    if business.change_id == "raise-input":
+        raise InputError("locked")
+    ctx.stage("qa/b.json", Note(text="b"))
+    ctx.stage("qa/a.json", Note(text="a"))
+    ctx.stage("qa/a.json", Note(text="a"))
+    return Output(change_id=result.change_id)
+
+
+op = router.agent(
+    "mark",
+    input=Input,
+    prepare=Prepare(),
+    agent=Agent(profile="assurance-v1-reviewer", skill="aa-mark", result=Result, writes=()),
+    finalize=Finalize(
+        hook=after,
+        same=("change_id", "plan_digest"),
+        errors=(ValueError,),
+        error_failure="output",
+        artifacts="auto",
+        writes=("qa/a.json", "qa/b.json"),
+    ),
+    output=Output,
+)
+"""
+
+_REJECT_INIT = """
+from graph_engine.plugin_api import FrozenModel
+
+from agent_runtime_contracts.ops import Agent, Finalize, Prepare
+from PKG.ops import router
+
+
+class Input(FrozenModel):
+    change_id: str
+
+
+def reject(ctx, business, result):
+    raise ValueError("mapped")
+
+
+op = router.agent(
+    "reject-input",
+    input=Input,
+    prepare=Prepare(),
+    agent=Agent(profile="assurance-v1-reviewer", skill="aa-reject", result=Input, writes=()),
+    finalize=Finalize(hook=reject, errors=(ValueError,)),
+    output=Input,
+)
+"""
+
+
+def _mark_module(tmp_path: Path) -> ModuleType:
+    return _capability(
+        tmp_path,
+        extra={
+            "ops/mark/__init__.py": _MARK_INIT,
+            "ops/mark/SKILL.md": "mark\n",
+            "ops/reject_input/__init__.py": _REJECT_INIT,
+            "ops/reject_input/SKILL.md": "reject\n",
+        },
+    )
+
+
+def _mark_finalize(
+    module: ModuleType, tmp_path: Path, business: dict[str, Any], payload: dict[str, Any], *, name: str
+) -> TaskOutcome:
+    request = _Request(
+        capability_id=f"fixture.cap.{name}.finalize",
+        input={"prepare": business, "agent_result": _agent_result(payload)},
+    )
+    return _run(module, request, _context(tmp_path))
+
+
+def test_finalize_same_accepts_matching_top_level_fields(tmp_path: Path) -> None:
+    module = _mark_module(tmp_path)
+    business = {"change_id": "c1", "plan_digest": "p1"}
+    payload = {
+        "change_id": "c1",
+        "plan_digest": "p1",
+        "context_ref": "explore/context.json",
+        "nested": {"change_id": "other"},
+    }
+
+    outcome = _mark_finalize(module, tmp_path, business, payload, name="mark")
+
+    assert outcome.status == "succeeded"
+    artifacts = outcome.output["artifacts"]
+    assert [item["path"] for item in artifacts] == ["qa/a.json", "qa/b.json"]
+    assert len({item["digest"] for item in artifacts}) == 2
+    mark = importlib.import_module(f"{module.__name__}.mark")
+    assert mark.calls == ["c1"]
+
+
+def test_finalize_same_mismatch_is_retryable_invalid_output(tmp_path: Path) -> None:
+    module = _mark_module(tmp_path)
+    outcome = _mark_finalize(
+        module,
+        tmp_path,
+        {"change_id": "c1", "plan_digest": "p1"},
+        {"change_id": "c1", "plan_digest": "other", "context_ref": "explore/context.json"},
+        name="mark",
+    )
+
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is True
+    assert "plan_digest" in outcome.failure.message
+    mark = importlib.import_module(f"{module.__name__}.mark")
+    assert mark.calls == []
+
+
+def test_finalize_errors_can_fail_as_output_or_input(tmp_path: Path) -> None:
+    module = _mark_module(tmp_path)
+    output_failure = _mark_finalize(
+        module,
+        tmp_path,
+        {"change_id": "raise-value", "plan_digest": "p1"},
+        {"change_id": "raise-value", "plan_digest": "p1", "context_ref": "explore/context.json"},
+        name="mark",
+    )
+    input_guard = _mark_finalize(
+        module,
+        tmp_path,
+        {"change_id": "raise-input", "plan_digest": "p1"},
+        {"change_id": "raise-input", "plan_digest": "p1", "context_ref": "explore/context.json"},
+        name="mark",
+    )
+    input_failure = _mark_finalize(
+        module,
+        tmp_path,
+        {"change_id": "c1"},
+        {"change_id": "c1"},
+        name="reject-input",
+    )
+
+    assert output_failure.failure is not None
+    assert (output_failure.failure.kind, output_failure.failure.retryable) == ("invalid_output", True)
+    assert "hook rejected" in output_failure.failure.message
+    assert input_guard.failure is not None
+    assert (input_guard.failure.kind, input_guard.failure.retryable) == ("invalid_input", True)
+    assert input_failure.failure is not None
+    assert (input_failure.failure.kind, input_failure.failure.retryable) == ("invalid_input", True)
+    assert "mapped" in input_failure.failure.message
+
+
+def test_finalize_rejects_unknown_error_and_artifact_policies() -> None:
+    from typing import Any, cast
+
+    from agent_runtime_contracts.ops import Finalize
+
+    with pytest.raises(ValueError, match="error_failure"):
+        Finalize(error_failure=cast(Any, "nope"))
+    with pytest.raises(ValueError, match="artifacts"):
+        Finalize(artifacts=cast(Any, "manual"))
+
+
+def test_artifact_handle_same_accepts_and_rejects_top_level_fields(tmp_path: Path) -> None:
+    from graph_engine.plugin_api import FrozenModel
+
+    from agent_runtime_contracts.ops import ArtifactHandle, InputError
+
+    class Business(FrozenModel):
+        change_id: str
+        plan_digest: str
+        source_ref: dict[str, str] | None = None
+        refs: tuple[dict[str, str], ...] = ()
+
+    class Document(FrozenModel):
+        change_id: str
+        plan_digest: str
+        nested: dict[str, str] = {}
+
+    matched = b'{"change_id":"c1","plan_digest":"p1","nested":{"change_id":"other"}}'
+    drifted = b'{"change_id":"other","plan_digest":"p1","nested":{}}'
+    (tmp_path / "qa").mkdir()
+    (tmp_path / "qa" / "doc.json").write_bytes(matched)
+    (tmp_path / "qa" / "other.json").write_bytes(drifted)
+    good = {"path": "qa/doc.json", "digest": hashlib.sha256(matched).hexdigest()}
+    bad = {"path": "qa/other.json", "digest": hashlib.sha256(drifted).hexdigest()}
+    handle = ArtifactHandle(
+        "fixture.doc", slot="source_ref", model=Document, same=("change_id", "plan_digest")
+    )
+    business = Business(change_id="c1", plan_digest="p1", source_ref=good)
+
+    loaded = handle.load(tmp_path, business)
+
+    assert isinstance(loaded, Document)
+    assert loaded.change_id == "c1"
+    assert loaded.nested["change_id"] == "other"
+    with pytest.raises(InputError, match="fixture.doc plan_digest"):
+        handle.load(tmp_path, Business(change_id="c1", plan_digest="nope", source_ref=good))
+    absent = ArtifactHandle("fixture.doc", slot="source_ref", model=Document, same=("missing",))
+    with pytest.raises(InputError, match="missing"):
+        absent.load(tmp_path, business)
+    many = ArtifactHandle("fixture.docs", slot="refs", many=True, model=Document, same=("change_id",))
+    assert len(many.load(tmp_path, Business(change_id="c1", plan_digest="p1", refs=(good,)))) == 1
+    with pytest.raises(InputError, match="change_id"):
+        many.load(tmp_path, Business(change_id="c1", plan_digest="p1", refs=(good, bad)))
+    optional = ArtifactHandle(
+        "fixture.doc", slot="source_ref", model=Document, optional=True, same=("change_id",)
+    )
+    assert optional.load(tmp_path, Business(change_id="c1", plan_digest="p1")) is None

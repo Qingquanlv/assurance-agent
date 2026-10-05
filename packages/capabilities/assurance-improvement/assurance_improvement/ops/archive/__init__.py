@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from agent_runtime_contracts.ops import Agent, Finalize, Prepare
 
-from assurance_improvement.contracts.agent import ArchiveResultV1, ImprovementSkillInputV1
+from assurance_improvement.contracts.agent import (
+    ArchivePublishedV1,
+    ArchiveResultV1,
+    ImprovementSkillInputV1,
+)
 from assurance_improvement.ops import router
 from assurance_improvement.ops.archive import hooks
 
@@ -18,8 +22,11 @@ op = router.agent(
         result=ArchiveResultV1,
         writes=("qa/results/archive/archive-receipt.json",),
     ),
-    finalize=Finalize(hook=hooks.after),
-    output=ArchiveResultV1,
+    finalize=Finalize(
+        hook=hooks.after,
+        same=("change_id", "invocation_id", "archive_digest"),
+    ),
+    output=ArchivePublishedV1,
 )
 
 __all__ = ["op"]

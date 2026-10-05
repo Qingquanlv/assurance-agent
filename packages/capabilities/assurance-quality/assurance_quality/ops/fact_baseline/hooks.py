@@ -2,34 +2,57 @@
 
 from __future__ import annotations
 
-from agent_runtime_contracts.ops import FinalizeContext, OutputError, PrepareContext
+from agent_runtime_contracts.ops import FinalizeContext, InputError, OutputError, PrepareContext
 
+from assurance_intake.contracts.workflow import ReviewedCaseV1
 from assurance_quality.contracts.agent import FactBaselineResultV1
-from assurance_quality.contracts.assessment import FactBaselineSkillInputV1, FinalizedFactBaselineV1
-from assurance_quality.operations.agent_skills import authenticate_fact_baseline_input, staged_agent_document
+from assurance_quality.contracts.assessment import (
+    FactBaselineBoundInputV1,
+    FactBaselineSkillInputV1,
+    FinalizedFactBaselineV1,
+)
+from assurance_quality.operations.agent_skills import (
+    authenticate_fact_baseline_input,
+    captured_agent_document,
+    open_quality_artifact,
+)
 
 PATH = "qa/results/facts/fact-baseline.json"
 
 
-def before(ctx: PrepareContext, business: FactBaselineSkillInputV1) -> FactBaselineSkillInputV1:
-    authenticate_fact_baseline_input(business, ctx.project_root)
-    return business
+def _skill(
+    ctx: PrepareContext | FinalizeContext,
+    business: FactBaselineBoundInputV1,
+    *,
+    error: type[InputError] | type[OutputError],
+) -> FactBaselineSkillInputV1:
+    reviewed = open_quality_artifact(ctx.project_root, business.reviewed_case_ref, ReviewedCaseV1, error)
+    return FactBaselineSkillInputV1(
+        change_id=business.change_id,
+        coverage_epoch=business.coverage_epoch,
+        plan_digest=business.plan_digest,
+        plan_ref=business.plan_ref,
+        capability_leafs=business.capability_leafs,
+        artifact_paths=business.artifact_paths,
+        reviewed_case=reviewed,
+        validation_error=business.validation_error,
+    )
+
+
+def before(ctx: PrepareContext, business: FactBaselineBoundInputV1) -> FactBaselineSkillInputV1:
+    skill = _skill(ctx, business, error=InputError)
+    authenticate_fact_baseline_input(skill, ctx.project_root)
+    return skill
 
 
 def after(
-    ctx: FinalizeContext, business: FactBaselineSkillInputV1, result: FactBaselineResultV1
+    ctx: FinalizeContext, business: FactBaselineBoundInputV1, result: FactBaselineResultV1
 ) -> FinalizedFactBaselineV1:
-    authenticate_fact_baseline_input(business, ctx.project_root)
-    if result.change_id != business.change_id:
-        raise OutputError("fact baseline change_id does not match the locked Reviewed Case")
-    _, baseline_ref = staged_agent_document(
-        context=ctx,
-        relative=PATH,
-        result=result,
-        model=FactBaselineResultV1,
-    )
+    skill = _skill(ctx, business, error=OutputError)
+    authenticate_fact_baseline_input(skill, ctx.project_root)
+    baseline_ref = captured_agent_document(ctx, PATH, result)
     return FinalizedFactBaselineV1(
         agent_result=result,
-        reviewed_case=business.reviewed_case,
+        reviewed_case=skill.reviewed_case,
         fact_baseline_ref=baseline_ref,
     )

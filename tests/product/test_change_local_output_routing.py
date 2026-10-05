@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from types import MappingProxyType
 from typing import Any, cast
 
-from agent_runtime_contracts import AgentRunRequest, AgentRunResult
+from agent_runtime_contracts import AgentRunResult, PreparedAgentRun
 from agent_runtime_contracts.wire.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
@@ -158,7 +158,7 @@ def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
 def test_every_agent_triplet_has_a_closed_output_route_that_stays_inside_the_change() -> None:
     catalog = OutputRouteCatalog()
 
-    assert len(EXECUTE_ALIASES) == 27
+    assert len(EXECUTE_ALIASES) == 26
     assert catalog.aliases() == EXECUTE_ALIASES
 
     for alias in EXECUTE_ALIASES:
@@ -221,7 +221,7 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
             write_root=write_root,
         )
     )
-    request = AgentRunRequest.model_validate(prepared.output)
+    request = PreparedAgentRun.model_validate(prepared.output).run_request
     # The host prepare node writes the requirement, so the agent may not.
     assert request.workspace.allowed_outputs == ("qa/.qa.yaml",)
     assert request.workspace.write_root == "qa/.staging/attempt-1"

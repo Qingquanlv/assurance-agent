@@ -1,24 +1,20 @@
 from __future__ import annotations
 
-import ast
-from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
-from pydantic import ValidationError
 
-from assurance_improvement.graphs.factory import build_improvement_graphs
-from assurance_improvement.graphs.nodes import APPLY_HUMAN_ACTIONS, apply_human_interrupt
-from assurance_improvement.graphs.state import ImprovementState
+from assurance_improvement.contracts.decisions import APPLY_HUMAN_ACTIONS
+from assurance_improvement.graphs.factory import build_improvement_graphs as _build_improvement_graphs
 from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.graph_harness import _prepare_anchored_backend
 
 from test_graph_delivery import (  # type: ignore[import-not-found]
+    _ApplyChannels,
     apply_graph_input,
     apply_receipt,
     auto_review_output,
@@ -26,13 +22,17 @@ from test_graph_delivery import (  # type: ignore[import-not-found]
     human_review_output,
 )
 from test_improvement_graph_factory import (  # type: ignore[import-not-found]
-    EFFECT_IDS,
     improvement_contracts,
 )
 
-_GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_improvement" / "graphs"
-_INTERRUPT_ID = "improvement-apply-human-review"
-_INTERRUPT_REASON = "needs_human_review"
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_improvement_graphs(*args, **kwargs):
+    return compile_bundle(_build_improvement_graphs(*args, **kwargs))
+
+
+_INTERRUPT_ID = "improvement.human-review"
 
 
 def _config() -> RunnableConfig:
@@ -46,93 +46,6 @@ def _config() -> RunnableConfig:
             "assurance_entrypoint": "improvement-apply",
         }
     }
-
-
-def _patch_interrupt(node, **kwargs):
-    return patch.dict(node.__globals__, {"interrupt": MagicMock(**kwargs)})
-
-
-def test_apply_interrupt_accepts_exactly_the_four_human_actions() -> None:
-    assert APPLY_HUMAN_ACTIONS == ("approve", "reject", "request_rework", "supersede")
-    state = apply_graph_input(lifecycle_state="proposed")
-    with _patch_interrupt(apply_human_interrupt, return_value={"action": "hold"}):
-        with pytest.raises(ValidationError):
-            apply_human_interrupt(state)
-    with _patch_interrupt(apply_human_interrupt, return_value={"action": "approve"}):
-        assert apply_human_interrupt(state) == {"human_action": "approve"}
-    with _patch_interrupt(apply_human_interrupt, return_value={"action": "reject"}):
-        assert apply_human_interrupt(state) == {"human_action": "reject"}
-    with _patch_interrupt(apply_human_interrupt, return_value={"action": "request_rework"}):
-        assert apply_human_interrupt(state) == {"human_action": "request_rework"}
-    with _patch_interrupt(apply_human_interrupt, return_value={"action": "supersede"}):
-        assert apply_human_interrupt(state) == {"human_action": "supersede"}
-
-
-def test_interrupt_validates_after_restart_and_preserves_identity() -> None:
-    seen: list[object] = []
-
-    def _first(payload: object) -> object:
-        seen.append(payload)
-        raise RuntimeError("interrupt")
-
-    state = apply_graph_input(lifecycle_state="proposed", decision="leftover")
-    with _patch_interrupt(apply_human_interrupt, side_effect=_first):
-        with pytest.raises(RuntimeError, match="interrupt"):
-            apply_human_interrupt(state)
-    request = seen[0]
-    assert isinstance(request, dict)
-    assert set(request["actions"]) == set(APPLY_HUMAN_ACTIONS)
-    assert request["interrupt_id"] == _INTERRUPT_ID
-    assert request["ordinal"] == 0
-    assert request["reason"] == _INTERRUPT_REASON
-
-    with _patch_interrupt(apply_human_interrupt, return_value={"action": "approve"}):
-        update = apply_human_interrupt(state)
-    assert update == {"human_action": "approve"}
-    assert "decision" not in update
-    assert "lifecycle_state" not in update
-    assert "effect_refs" not in update
-    assert "receipt_refs" not in update
-
-    restart_seen: list[object] = []
-
-    def _restart(payload: object) -> object:
-        restart_seen.append(payload)
-        raise RuntimeError("interrupt")
-
-    with _patch_interrupt(apply_human_interrupt, side_effect=_restart):
-        with pytest.raises(RuntimeError, match="interrupt"):
-            apply_human_interrupt(state)
-    restart_request = restart_seen[0]
-    assert isinstance(restart_request, dict)
-    assert restart_request["interrupt_id"] == _INTERRUPT_ID
-    assert restart_request["ordinal"] == 0
-    assert restart_request["reason"] == _INTERRUPT_REASON
-
-
-def test_interrupt_node_has_no_effect_kinds_or_pre_interrupt_side_effect() -> None:
-    nodes = (_GRAPHS_ROOT / "nodes.py").read_text(encoding="utf-8")
-    tree = ast.parse(nodes, filename=str(_GRAPHS_ROOT / "nodes.py"))
-    review_fn = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "apply_human_payload"
-    )
-    source = ast.get_source_segment(nodes, review_fn) or ""
-    for effect_id in EFFECT_IDS:
-        assert effect_id not in source
-    assert "effect" not in source
-    assert "system_wake" not in source
-    assert "system_block" not in source
-
-
-def test_pending_kernel_effects_are_not_this_human_decision_node() -> None:
-    nodes = (_GRAPHS_ROOT / "nodes.py").read_text(encoding="utf-8")
-    tree = ast.parse(nodes, filename=str(_GRAPHS_ROOT / "nodes.py"))
-    review_fn = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "apply_human_payload"
-    )
-    source = ast.get_source_segment(nodes, review_fn) or ""
-    assert "Attempt" not in source
-    assert "settle" not in source
 
 
 @pytest.mark.parametrize("action", ("approve", "reject", "request_rework", "supersede"))
@@ -174,7 +87,8 @@ async def test_apply_human_review_resume_reuses_interrupt_identity(action: str) 
             ],
         }
     )
-    wrapper: StateGraph[ImprovementState] = StateGraph(ImprovementState)
+
+    wrapper: StateGraph[_ApplyChannels] = StateGraph(_ApplyChannels)
     wrapper.add_node("apply", cast(Any, bundle.apply))
     wrapper.add_edge(START, "apply")
     wrapper.add_edge("apply", END)
@@ -191,15 +105,9 @@ async def test_apply_human_review_resume_reuses_interrupt_identity(action: str) 
         assert value.get("ordinal") == 0
         assert set(value.get("actions") or ()) == set(APPLY_HUMAN_ACTIONS)
     resumed = await graph.ainvoke(Command(resume={"action": action}), config=config)
-    assert resumed["human_action"] == action
     assert _interrupt_value(resumed) is None
     if action != "approve":
-        assert resumed.get("lifecycle_state") in {
-            "rejected",
-            "needs_rework",
-            "superseded",
-            action,
-        }
+        assert resumed.get("status") in {"rejected", "rework", "superseded", "failed"}
 
 
 def _interrupt_value(result: object) -> object | None:

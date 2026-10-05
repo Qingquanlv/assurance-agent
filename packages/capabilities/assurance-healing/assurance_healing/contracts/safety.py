@@ -6,12 +6,10 @@ from typing import Any, Literal, Self
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr, model_validator
 
-from assurance_execution.contracts import ExecutionEvidenceV1
 from assurance_healing.contracts.wire import (
     FrozenContract,
     HexDigest,
     StrictWireModel,
-    execution_evidence_binding_digest,
     override_token_digest,
     validate_canonical_strings,
     validate_prefixed_sha256,
@@ -117,11 +115,3 @@ class HealingOverrideTokenV1(FrozenContract):
         if self.token_digest != expected:
             raise ValueError("override token digest does not match policy and candidate")
         return self
-
-
-def evidence_binding_digest(evidence: ExecutionEvidenceV1) -> str:
-    return execution_evidence_binding_digest(
-        baseline_tree_id=evidence.baseline_tree_id,
-        mapping_digest=evidence.mapping_digest,
-        receipt_digest=evidence.receipt_digest,
-    )

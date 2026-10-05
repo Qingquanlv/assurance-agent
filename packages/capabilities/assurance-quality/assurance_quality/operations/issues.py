@@ -5,15 +5,19 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from collections.abc import Mapping
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_runtime_contracts.ops import InputError, failed_input, validate_model
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_quality.contracts.agent import FinalizedIssueAnalysisV1
+from assurance_quality.contracts.decisions import classify_issue_candidates
 from assurance_quality.contracts.issues import (
     ChangeIssueSnapshot,
     IssueAnalysisStatus,
@@ -23,7 +27,6 @@ from assurance_quality.contracts.issues import (
     IssueOccurrence,
     Observation,
     ObservationDocument,
-    ObservationSource,
     OccurrenceAnalysis,
     Problem,
     ProblemAssessment,
@@ -31,17 +34,20 @@ from assurance_quality.contracts.issues import (
     ProvisionalAssessment,
     ReconcileIssuesResultV1,
 )
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_quality.contracts.assessment import (
+    AssessmentInputsV1,
+    InspectionDocumentV1,
+    InspectionOutcomeV1,
+)
+from assurance_quality.derived import derive_reconcile_input
 from assurance_quality.operations.common import succeeded
 from assurance_quality.operations.identity import (
-    ObservationIdentityInput,
     candidate_document_digest,
-    event_id,
-    observation_id,
     occurrence_id,
     per_candidate_digest,
     problem_fingerprint,
     problem_id,
-    review_id,
 )
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
@@ -54,31 +60,6 @@ _FAILURE_REASONS: dict[str, Literal["timeout", "transport", "invalid_output", "u
 }
 
 
-class CollectObservationsInput(BaseModel):
-    model_config = _FROZEN
-
-    change_id: str
-    batch_id: str
-    kind: Literal[
-        "test_failure",
-        "warning",
-        "anomaly",
-        "workaround",
-        "coverage_gap",
-        "performance_signal",
-        "environment_signal",
-        "review_finding",
-    ] = "test_failure"
-    target: Literal["api", "e2e", "fuzz", "performance", "coverage"] = "api"
-    case_id: str | None = None
-    source_artifact: str
-    source_json_pointer: str
-    evidence_refs: tuple[str, ...]
-    signature: str
-    message: str | None = None
-    observed_at: str
-
-
 class AnalysisStatusInput(BaseModel):
     model_config = _FROZEN
 
@@ -87,15 +68,6 @@ class AnalysisStatusInput(BaseModel):
     evidence_bundle_digest: str
     error_kind: str | None = None
     candidate_digest: str | None = None
-
-
-class SyncPendingInput(BaseModel):
-    model_config = _FROZEN
-
-    change_id: str
-    batch_id: str
-    evidence_bundle_digest: str
-    candidate_digest: str
 
 
 class ReconcileInput(BaseModel):
@@ -109,15 +81,7 @@ class ReconcileInput(BaseModel):
     analyzer: str = "assurance.quality"
     prompt_version: str = "1"
     observations_ref: EvidenceArtifactRefV1 | None = None
-
-
-class ReviewContextInput(BaseModel):
-    model_config = _FROZEN
-
-    change_id: str
-    problem: Problem
-    occurrence_id: str
-    candidate_id: str | None = None
+    issue_analysis: dict[str, object] | None = None
 
 
 class ApplyReviewInput(BaseModel):
@@ -138,38 +102,6 @@ class ApplyReviewInput(BaseModel):
     expected_problem_version: int | None = None
 
 
-def collect_observations(payload: CollectObservationsInput) -> ObservationDocument:
-    signature = payload.message if payload.message is not None else payload.signature
-    identity = ObservationIdentityInput(
-        change_id=payload.change_id,
-        batch_id=payload.batch_id,
-        kind=payload.kind,
-        target=payload.target,
-        case_id=payload.case_id,
-        source_artifact=payload.source_artifact,
-        source_json_pointer=payload.source_json_pointer,
-        signature=signature,
-    )
-    observation = Observation(
-        observation_id=observation_id(identity),
-        change_id=payload.change_id,
-        batch_id=payload.batch_id,
-        kind=payload.kind,
-        target=payload.target,
-        case_id=payload.case_id,
-        source=ObservationSource(artifact=payload.source_artifact, json_pointer=payload.source_json_pointer),
-        evidence_refs=list(payload.evidence_refs),
-        signature=signature,
-        observed_at=payload.observed_at,
-    )
-    return ObservationDocument(
-        schema_version="1.0",
-        change_id=payload.change_id,
-        batch_id=payload.batch_id,
-        observations=[observation],
-    )
-
-
 def empty_analysis(payload: AnalysisStatusInput) -> IssueAnalysisStatus:
     empty = IssueCandidateDocument(
         schema_version="1.0",
@@ -187,35 +119,6 @@ def empty_analysis(payload: AnalysisStatusInput) -> IssueAnalysisStatus:
         candidate_count=0,
         candidate_digest=candidate_document_digest(empty),
     )
-
-
-def failed_analysis(payload: AnalysisStatusInput) -> IssueAnalysisStatus:
-    kind = payload.error_kind or "unavailable"
-    reason = _FAILURE_REASONS.get(kind)
-    if reason is None:
-        raise InputError(f"unknown analysis error kind: {kind}")
-    return IssueAnalysisStatus(
-        schema_version="1.0",
-        change_id=payload.change_id,
-        batch_id=payload.batch_id,
-        status="failed",
-        evidence_bundle_digest=payload.evidence_bundle_digest,
-        candidate_count=0,
-        reason=reason,
-        retryable=reason != "invalid_output",
-    )
-
-
-def sync_pending(payload: SyncPendingInput) -> dict[str, object]:
-    key = f"project_sync_pending:{payload.change_id}:{payload.batch_id}:{payload.candidate_digest}"
-    return {
-        "project_sync_status": "pending",
-        "change_id": payload.change_id,
-        "batch_id": payload.batch_id,
-        "candidate_digest": payload.candidate_digest,
-        "evidence_bundle_digest": payload.evidence_bundle_digest,
-        "event_id": event_id(key),
-    }
 
 
 def reconcile_issues(payload: ReconcileInput) -> dict[str, object]:
@@ -334,33 +237,6 @@ def _snapshot_from_reconcile(result: dict[str, object]) -> ChangeIssueSnapshot:
     )
 
 
-def load_review_context(payload: ReviewContextInput) -> dict[str, object]:
-    identified = review_id(payload.problem.problem_id, payload.problem.version)
-    return {
-        "review_id": identified,
-        "problem_id": payload.problem.problem_id,
-        "expected_problem_version": payload.problem.version,
-        "change_id": payload.change_id,
-        "occurrence_id": payload.occurrence_id,
-        "candidate_id": payload.candidate_id,
-    }
-
-
-def apply_problem_review(payload: ApplyReviewInput) -> dict[str, object]:
-    expected = payload.expected_problem_version or payload.problem.version
-    expected_id = review_id(payload.problem.problem_id, expected)
-    if payload.review_id != expected_id:
-        raise InputError("review_id does not authenticate the reviewed problem version")
-    return {
-        "problem_id": payload.problem.problem_id,
-        "review_id": payload.review_id,
-        "action": payload.action,
-        "expected_problem_version": expected,
-        "evidence_digest": payload.evidence_digest,
-        "change_id": payload.change_id,
-    }
-
-
 class _Handler:
     input_model: type[BaseModel]
     builder: object
@@ -379,36 +255,41 @@ class _Handler:
             return failed_input(error)
 
 
-class CollectObservationsHandler(_Handler):
-    input_model = CollectObservationsInput
-    builder = staticmethod(collect_observations)
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        return await super().execute(request, context)
-
-
-class RecordEmptyIssueAnalysisHandler(_Handler):
-    input_model = AnalysisStatusInput
-    builder = staticmethod(empty_analysis)
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        return await super().execute(request, context)
+def _analysis_route_fields(raw: object) -> tuple[str, bool]:
+    if raw is None:
+        return "unknown", False
+    summary = classify_issue_candidates(FinalizedIssueAnalysisV1.model_validate(raw).agent_result)
+    return summary.classification, summary.fix_eligible
 
 
-class RecordIssueAnalysisFailureHandler(_Handler):
-    input_model = AnalysisStatusInput
-    builder = staticmethod(failed_analysis)
+def _open_reconcile(root: Path, raw: dict[str, Any], key: str, model: type[BaseModel]) -> None:
+    ref = raw.get(key)
+    if ref is None:
+        return
+    try:
+        opened = open_artifact(root, EvidenceArtifactRefV1.model_validate(ref), model=model)
+    except ArtifactReadError as error:
+        if error.reason == "digest":
+            raise InputError(f"evidence digest changed: {error.path}") from error
+        raise InputError(str(error)) from error
+    raw[key] = opened.model_dump(mode="json")
 
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        return await super().execute(request, context)
 
-
-class RecordProjectSyncPendingHandler(_Handler):
-    input_model = SyncPendingInput
-    builder = staticmethod(sync_pending)
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        return await super().execute(request, context)
+def _derive_reconcile_documents(root: Path, raw: Mapping[str, object]) -> dict[str, Any]:
+    payload: dict[str, Any] = dict(raw)
+    if payload.get("inspection_ref") is not None:
+        _open_reconcile(root, payload, "inspection_ref", InspectionDocumentV1)
+        document = payload.pop("inspection_ref")
+        if isinstance(document, dict) and payload.get("inspection_receipt") is not None:
+            document = {**document, "inspection_receipt": payload["inspection_receipt"]}
+        payload["inspection_outcome"] = InspectionOutcomeV1.model_validate(document).model_dump(mode="json")
+    if payload.get("assessment_ref") is not None:
+        _open_reconcile(root, payload, "assessment_ref", AssessmentInputsV1)
+        payload["assessment_inputs"] = payload.pop("assessment_ref")
+    if payload.get("generation_ref") is not None:
+        _open_reconcile(root, payload, "generation_ref", GenerationCycleResultV1)
+        payload["generation_result"] = payload.pop("generation_ref")
+    return derive_reconcile_input(payload)
 
 
 class ReconcileIssuesHandler(_Handler):
@@ -418,6 +299,8 @@ class ReconcileIssuesHandler(_Handler):
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             raw = dict(request.input) if isinstance(request.input, dict) else request.input
+            if isinstance(raw, dict):
+                raw = _derive_reconcile_documents(context.project_root, raw)
             if isinstance(raw, dict) and not raw.get("observations") and raw.get("observations_ref"):
                 ref = EvidenceArtifactRefV1.model_validate(raw["observations_ref"])
                 loaded = _load_observations(context, ref)
@@ -429,30 +312,23 @@ class ReconcileIssuesHandler(_Handler):
             result = reconcile_issues(payload)
             snapshot = _snapshot_from_reconcile(result)
             ref = _write_snapshot(context.write_root, snapshot)
+            classification, fix_eligible = _analysis_route_fields(
+                raw.get("issue_analysis") if isinstance(raw, dict) else None
+            )
             sealed = ReconcileIssuesResultV1.model_validate(
-                {**result, "issue_snapshot_ref": ref.model_dump(mode="json")}
+                {
+                    **result,
+                    "issue_snapshot_ref": ref.model_dump(mode="json"),
+                    "classification": classification,
+                    "fix_eligible": fix_eligible,
+                    "evidence_refs": [ref.model_dump(mode="json")],
+                }
             )
             return succeeded(cast(dict[str, object], sealed.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
         except (ValidationError, OSError, json.JSONDecodeError) as error:
             return failed_input(error)
-
-
-class LoadProblemReviewContextHandler(_Handler):
-    input_model = ReviewContextInput
-    builder = staticmethod(load_review_context)
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        return await super().execute(request, context)
-
-
-class ApplyProblemReviewHandler(_Handler):
-    input_model = ApplyReviewInput
-    builder = staticmethod(apply_problem_review)
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        return await super().execute(request, context)
 
 
 # Re-export proposed types so tests can build candidates without hunting.

@@ -211,6 +211,7 @@ async def test_codegen_first_prepare_does_not_trust_a_durable_manifest(tmp_path:
 async def test_codegen_repair_runs_through_installed_phases(tmp_path: Path) -> None:
     from agent_runtime_contracts import (
         AgentRunResult,
+        PreparedAgentRun,
         RawAgentRuntimeOutcome,
         ReadOnlyRawWorkspace,
         ResolvedRawAgentExecutor,
@@ -228,7 +229,7 @@ async def test_codegen_repair_runs_through_installed_phases(tmp_path: Path) -> N
 
     class RepairRuntime:
         async def execute(
-            self, prepared: AgentRunRequest, scope: AuthorizedAttemptScope
+            self, prepared: AgentRunRequest | PreparedAgentRun, scope: AuthorizedAttemptScope
         ) -> RawAgentRuntimeOutcome:
             assert (staging / test_path).read_bytes() == b"test\n"
             (staging / data_path).write_bytes(b"repaired\n")
@@ -831,7 +832,8 @@ async def test_codegen_finalize_rejects_missing_staged_manifest(tmp_path: Path) 
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-    assert "generated-files manifest is missing" in executed.failure.message
+    assert "qa/results/codegen/api-generated-files.json" in executed.failure.message
+    assert "missing" in executed.failure.message
 
 
 @pytest.mark.asyncio

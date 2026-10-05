@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import inspect
-from typing import get_type_hints
-
 import pytest
-from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.attempts import TaskAttemptContract
@@ -28,12 +24,7 @@ from assurance_intake.ops.case_review import CaseReviewInputV1
 from assurance_intake.ops.explore import ExploreInputV1
 from assurance_intake.ops.intake import IntakeInputV1
 from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS, attempt_contract_refs
-from assurance_intake.contracts.review import CaseReviewResultV1
-from assurance_intake.graphs.case import (
-    ReviewRoundAdvanceInput,
-    ReviewRoundAdvanceOutput,
-    advance_review_round,
-)
+from assurance_intake.contracts.review import CaseReviewOutputV1, CaseReviewResultV1
 from assurance_intake.plugin import IntakePlugin
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOBS
 from assurance_quality.plugin import QualityPlugin
@@ -43,17 +34,17 @@ EXPECTED_AGENT_COUNTS = {
     "assurance.generation": 8,
     "assurance.execution": 0,
     "assurance.quality": 5,
-    "assurance.healing": 3,
+    "assurance.healing": 2,
     "assurance.improvement": 6,
 }
 
 EXPECTED_VALIDATOR_COUNTS = {
-    "assurance.intake": 0,
-    "assurance.generation": 2,
-    "assurance.execution": 2,
-    "assurance.quality": 6,
-    "assurance.healing": 3,
-    "assurance.improvement": 4,
+    "assurance.intake": 1,
+    "assurance.generation": 0,
+    "assurance.execution": 0,
+    "assurance.quality": 0,
+    "assurance.healing": 0,
+    "assurance.improvement": 0,
 }
 
 _PURE_IDS = frozenset(
@@ -99,10 +90,10 @@ def test_feature_agent_counts_are_frozen() -> None:
     for owner, expected in EXPECTED_AGENT_COUNTS.items():
         assert len(catalogs[owner]) == expected
         assert all(contract.owner_id == owner for contract in catalogs[owner].values())
-    assert sum(EXPECTED_AGENT_COUNTS.values()) == 27
+    assert sum(EXPECTED_AGENT_COUNTS.values()) == 26
 
 
-def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> None:
+def test_intake_agent_catalog_uses_concrete_models_and_seal_validator() -> None:
     expected = {
         "case-design": (
             "assurance.intake.agent.case-design.v1",
@@ -126,7 +117,7 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
             "assurance-v1-reviewer",
             CaseReviewInputV1,
             CaseReviewResultV1,
-            CaseReviewResultV1,
+            CaseReviewOutputV1,
         ),
         "explore": (
             "assurance.intake.agent.explore.v1",
@@ -157,7 +148,7 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
         assert contract.input_model is input_model
         assert contract.agent_result_model is result_model
         assert contract.output_model is output_model
-        assert contract.validators == ()
+        assert contract.validators == ("assurance.intake.validator.sealed-artifact-refs.v1",)
         assert contract.retry.max_attempts == 10
         assert contract.retry.interval_seconds == 10
         assert contract.timeout.seconds == 60
@@ -190,7 +181,7 @@ def test_agent_contract_omitting_validators_is_invalid() -> None:
         )  # type: ignore[call-arg]
 
 
-def test_registered_validators_remain_unbound_and_legal() -> None:
+def test_registered_validators_are_bound_only_where_required() -> None:
     plugins = {
         "assurance.intake": IntakePlugin,
         "assurance.generation": GenerationPlugin,
@@ -214,18 +205,20 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
         assert len(contribution.commit_validators) == EXPECTED_VALIDATOR_COUNTS[owner]
         registered += len(contribution.commit_validators)
         for contract in catalogs[owner].values():
-            assert contract.validators == ()
+            assert contract.validators == (
+                ("assurance.intake.validator.sealed-artifact-refs.v1",) if owner == "assurance.intake" else ()
+            )
             effectful += 1
     for contract in IMPROVEMENT_TASKS.values():
         assert isinstance(contract, TaskAttemptContract)
         assert contract.validators == ()
         effectful += 1
-    assert registered == 17
-    assert effectful == 36
+    assert registered == 1
+    assert effectful == 37
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 
 
-def test_semantic_agent_contracts_are_twenty_seven() -> None:
+def test_semantic_agent_contracts_are_twenty_six() -> None:
     catalogs = (
         AGENT_JOB_CONTRACTS,
         GENERATION_AGENT_JOBS,
@@ -234,7 +227,7 @@ def test_semantic_agent_contracts_are_twenty_seven() -> None:
         HEALING_AGENT_JOBS,
         IMPROVEMENT_AGENT_JOBS,
     )
-    assert sum(len(catalog) for catalog in catalogs) == 27
+    assert sum(len(catalog) for catalog in catalogs) == 26
 
 
 def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:
@@ -252,11 +245,15 @@ def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:
 
 
 def test_intake_owns_resolve_plan_task() -> None:
-    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-plan",)
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("coverage-rework", "resolve-plan")
     resolve = TASK_ATTEMPT_CONTRACTS["resolve-plan"]
     assert resolve.contract_id == "assurance.intake.task.resolve-plan"
     assert resolve.handler_id == "assurance.intake.resolve-plan"
-    assert resolve.resources.writes == ("qa/results/explore/exploration.json", "qa/results/plan")
+    assert resolve.resources.writes == (
+        "qa/results/explore/exploration.json",
+        "qa/results/plan",
+        "qa/results/preparation/refs.json",
+    )
 
 
 def test_review_round_advance_is_not_a_task_contract() -> None:
@@ -264,30 +261,3 @@ def test_review_round_advance_is_not_a_task_contract() -> None:
         contract.contract_id != "assurance.intake.review-round.advance"
         for contract in AGENT_JOB_CONTRACTS.values()
     )
-    assert "context" not in inspect.signature(advance_review_round).parameters
-    assert get_type_hints(advance_review_round)["return"] is ReviewRoundAdvanceOutput
-
-
-@pytest.mark.parametrize(("used", "budget", "expected"), [(0, 2, 1), (1, 2, 2)])
-def test_advance_review_round_is_pure_budget_arithmetic(used: int, budget: int, expected: int) -> None:
-    output = advance_review_round({"rounds_used": used, "rounds_budget": budget})
-    assert isinstance(output, ReviewRoundAdvanceOutput)
-    assert output.model_dump(mode="json") == {"rounds_used": expected, "rounds_budget": budget}
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"rounds_used": 2, "rounds_budget": 2},
-        {"rounds_used": -1, "rounds_budget": 2},
-        {"rounds_used": 0, "rounds_budget": 0},
-        {"rounds_used": 3, "rounds_budget": 2},
-        {"rounds_used": 1},
-        {"rounds_budget": 2},
-        {"rounds_used": 0, "rounds_budget": 2, "extra": True},
-    ],
-)
-def test_advance_review_round_rejects_invalid_inputs(payload: dict[str, object]) -> None:
-    with pytest.raises((ValidationError, ValueError)):
-        advance_review_round(payload)
-    ReviewRoundAdvanceInput.model_validate({"rounds_used": 0, "rounds_budget": 2})

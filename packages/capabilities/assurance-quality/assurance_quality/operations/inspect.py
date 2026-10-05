@@ -5,30 +5,16 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from agent_runtime_contracts.ops import InputError, failed_input, validate_model
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.plugin_api import FrozenModel, TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
-from assurance_healing.contracts.status import HealingStatusV1
 from assurance_quality.contracts.assessment import FailureClassificationFactsV1
-from assurance_quality.contracts.common import CoverageThreshold, FunctionalCounts, FunctionalDimension
 from assurance_quality.contracts.inspect import (
-    CoverageDimensionV2,
-    CoverageGapEntry,
-    EvidenceCoverageErrorV2,
-    EvidenceCoverageSuccessV2,
-    FailureAnalysis,
     FailureEntry,
     FailureEvidence,
-    NonFunctionalDimension,
-    PerformanceScenarioVerdict,
-    QualityGateDimensionsV2,
-    QualityGateResultV2,
 )
-from assurance_quality.contracts.sufficiency import SufficiencyReportV2
 from assurance_quality.contracts.metrics import MetricsDocument
 
 TargetName = Literal["api", "e2e", "fuzz", "performance", "coverage"]
@@ -175,66 +161,6 @@ _ACTION = {
 }
 
 
-class InspectCaseInputV1(FrozenModel):
-    case_id: str = Field(min_length=1)
-    test_name: str = Field(min_length=1)
-    status: CaseStatus
-    target: TargetName
-    message: str = ""
-    file: str = ""
-    trace: str = ""
-    screenshot: str = ""
-    video: str = ""
-    raw_log: str = ""
-
-
-class UncoveredFileV1(FrozenModel):
-    file: str = ""
-    line_coverage: float = 0.0
-
-
-class InspectCoverageMetricsV1(FrozenModel):
-    available: bool = False
-    line_coverage: float = 0.0
-    branch_coverage: float = 0.0
-    threshold_line: float = 0.0
-    threshold_branch: float = 0.0
-    uncovered_critical_files: tuple[UncoveredFileV1, ...] = ()
-
-
-class InspectIntegrityIssueV1(FrozenModel):
-    target: TargetName
-    path: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-
-
-class InspectPerformanceInputV1(FrozenModel):
-    available: bool
-    status: Literal["PASS", "FAIL", "SKIPPED"]
-    scenarios: tuple[PerformanceScenarioVerdict, ...] = ()
-
-
-class InspectInputV1(FrozenModel):
-    change_id: str = Field(min_length=1)
-    batch_id: str = Field(min_length=1)
-    execution: ExecutionEvidenceV1
-    healing: HealingStatusV1
-    trace: dict[str, Any]
-    coverage: dict[str, Any]
-    metrics: dict[str, Any]
-    execution_digest: str = Field(pattern=_SHA256)
-    healing_digest: str = Field(pattern=_SHA256)
-    trace_digest: str = Field(pattern=_SHA256)
-    coverage_digest: str = Field(pattern=_SHA256)
-    metrics_digest: str = Field(pattern=_SHA256)
-    result_paths: dict[str, str] = Field(default_factory=dict)
-    sufficiency: SufficiencyReportV2 | None = None
-    performance: InspectPerformanceInputV1 | None = None
-    coverage_metrics: InspectCoverageMetricsV1 | None = None
-    unmapped_tests: tuple[InspectCaseInputV1, ...] = ()
-    integrity_issues: tuple[InspectIntegrityIssueV1, ...] = ()
-
-
 class Classification:
     def __init__(
         self,
@@ -368,35 +294,10 @@ def build_failure_classification_facts(
     )
 
 
-def _counts(evidence: ExecutionEvidenceV1, target: str) -> FunctionalCounts:
-    selected = [item for item in evidence.results if _layer_for(item.test, evidence) == target]
-    return FunctionalCounts(
-        total=len(selected),
-        passed=sum(1 for item in selected if item.status == "passed"),
-        failed=sum(1 for item in selected if item.status == "failed"),
-    )
-
-
-def _functional_status(*counts: FunctionalCounts) -> str:
-    ran = [item for item in counts if item.total > 0]
-    if not ran:
-        return "SKIPPED"
-    if any(item.failed > 0 for item in ran):
-        return "FAIL"
-    return "PASS"
-
-
 def _diagnosis(message: str, category: str) -> str:
     first = (message or "").split("\n")[0][:200]
     prefix = _DIAGNOSIS.get(category)
     return f"{prefix} {first}".strip() if prefix else (first or "Unknown failure.")
-
-
-def _complete(failures: list[FailureEntry]) -> None:
-    for index, failure in enumerate(failures, start=1):
-        failure.id = failure.id or f"FAIL-{index:03d}"
-        failure.test = failure.test or failure.evidence.test_file or failure.case_id
-        failure.recommended_next_action = failure.recommended_next_action or failure.recommended_action
 
 
 def _entry(
@@ -431,247 +332,3 @@ def _entry(
         diagnosis=_diagnosis(message, classification.category),
         recommended_action=_ACTION.get(classification.category, "Investigate manually."),
     )
-
-
-def _classify_evidence(payload: InspectInputV1) -> list[FailureEntry]:
-    entries: list[FailureEntry] = []
-    for result in payload.execution.results:
-        if result.status != "failed":
-            continue
-        target = _layer_for(result.test, payload.execution)
-        entries.append(
-            _entry(
-                case_id=result.case_id or result.test,
-                target=target,
-                message=result.message,
-                file=result.test,
-                result_file=payload.result_paths.get(target, ""),
-                classification=classify_failure(message=result.message, target=target),
-            )
-        )
-    for case in payload.unmapped_tests:
-        if case.status != "failed":
-            continue
-        entries.append(
-            _entry(
-                case_id=case.case_id or case.test_name,
-                target=case.target,
-                message=case.message,
-                file=case.file,
-                result_file=payload.result_paths.get(case.target, ""),
-                classification=classify_failure(message=case.message, target=case.target),
-                trace=case.trace,
-                screenshot=case.screenshot,
-                video=case.video,
-                raw_log=case.raw_log,
-            )
-        )
-    return entries
-
-
-def _integrity_failures(issues: tuple[InspectIntegrityIssueV1, ...]) -> list[FailureEntry]:
-    return [
-        FailureEntry(
-            case_id=f"manifest:{issue.target}",
-            target=issue.target,
-            category="manifest_asset_missing",
-            fix_proposal_eligible=False,
-            severity="critical",
-            needs_review=False,
-            evidence=FailureEvidence(
-                result_file=issue.path,
-                test_file="",
-                trace="",
-                screenshot="",
-                video="",
-                raw_log="",
-                log_excerpt=issue.reason,
-            ),
-            diagnosis=f"Execution asset missing for target '{issue.target}': {issue.path}",
-            recommended_action=_ACTION["manifest_asset_missing"],
-        )
-        for issue in issues
-    ]
-
-
-def _coverage_gaps(coverage: InspectCoverageMetricsV1 | None) -> list[CoverageGapEntry]:
-    if coverage is None or not coverage.available:
-        return []
-    return [
-        CoverageGapEntry(
-            file=item.file,
-            line_coverage=item.line_coverage,
-            threshold=coverage.threshold_line,
-        )
-        for item in coverage.uncovered_critical_files
-    ]
-
-
-def _coverage_dimension(payload: InspectInputV1) -> CoverageDimensionV2:
-    metrics = payload.coverage_metrics
-    if payload.sufficiency is None:
-        status = "FAIL"
-        evidence: EvidenceCoverageErrorV2 | EvidenceCoverageSuccessV2 = EvidenceCoverageErrorV2(
-            kind="error",
-            error_code="evidence_projection_missing",
-        )
-    else:
-        status = "PASS" if payload.sufficiency.all_sufficient else "FAIL"
-        evidence = EvidenceCoverageSuccessV2(kind="sufficiency", report=payload.sufficiency)
-    return CoverageDimensionV2(
-        status=status,  # type: ignore[arg-type]
-        available=bool(metrics and metrics.available),
-        line_coverage=metrics.line_coverage if metrics else 0.0,
-        branch_coverage=metrics.branch_coverage if metrics else 0.0,
-        threshold=CoverageThreshold(
-            line=metrics.threshold_line if metrics else 0.0,
-            branch=metrics.threshold_branch if metrics else 0.0,
-        ),
-        evidence=evidence,
-    )
-
-
-def _non_functional(performance: InspectPerformanceInputV1 | None) -> NonFunctionalDimension | None:
-    if performance is None:
-        return None
-    if not performance.available:
-        status: str = "SKIPPED"
-    elif performance.status == "FAIL":
-        status = "FAIL"
-    elif performance.status == "PASS":
-        status = "PASS"
-    else:
-        status = "SKIPPED"
-    return NonFunctionalDimension(status=status, performance=list(performance.scenarios))  # type: ignore[arg-type]
-
-
-def _build_gate(payload: InspectInputV1, functional_status: str) -> QualityGateResultV2:
-    api = _counts(payload.execution, "api")
-    e2e = _counts(payload.execution, "e2e")
-    fuzz = _counts(payload.execution, "fuzz")
-    unmapped = len(payload.unmapped_tests)
-    warnings: list[str] = []
-    if unmapped > 0:
-        warnings.append(
-            f"TRACEABILITY-BROKEN: {unmapped} executed test(s) have no case_id mapping. "
-            "Test function names must use the test_<case_id lowercase>__<description> prefix "
-            "(e.g. test_tc_user_api_001__list_users_happy_path)."
-        )
-        if functional_status == "PASS":
-            functional_status = "PASS_WITH_WARNINGS"
-    coverage_dim = _coverage_dimension(payload)
-    non_functional = _non_functional(payload.performance)
-    functional = FunctionalDimension(
-        status=functional_status,  # type: ignore[arg-type]
-        api=api,
-        e2e=e2e,
-        fuzz=fuzz if fuzz.total > 0 else None,
-        unmapped_tests=unmapped if unmapped > 0 else None,
-    )
-    statuses = [functional_status, coverage_dim.status]
-    if non_functional is not None:
-        statuses.append(non_functional.status)
-    return QualityGateResultV2(
-        change_id=payload.change_id,
-        batch_id=payload.batch_id,
-        dimensions=QualityGateDimensionsV2(
-            functional=functional,
-            coverage=coverage_dim,
-            non_functional=non_functional,
-        ),
-        final_status=worst_status(statuses),  # type: ignore[arg-type]
-        warnings=warnings or None,
-    )
-
-
-def _analysis(
-    payload: InspectInputV1,
-    gate: QualityGateResultV2,
-    failures: list[FailureEntry],
-    coverage_gaps: list[CoverageGapEntry],
-    inspection_status: str,
-    status: str,
-) -> FailureAnalysis:
-    hard = [item for item in failures if not item.fix_proposal_eligible and not item.needs_review]
-    review = [item for item in failures if item.needs_review]
-    known = [item for item in failures if item.category == "known_product_issue"]
-    return FailureAnalysis(
-        schema_version="1.0",
-        change_id=payload.change_id,
-        source_manifest="execution/execution-manifest.json",
-        inspection_status=inspection_status,  # type: ignore[arg-type]
-        batch_id=payload.batch_id,
-        source_batch_id=payload.batch_id,
-        final_status=gate.final_status,
-        inspect_mode="primary",
-        classification_performed=status != "failed",
-        status=status,  # type: ignore[arg-type]
-        failures=failures,
-        hard_fails=hard,
-        needs_review=review,
-        known_product_issues=known,
-        coverage_gaps=coverage_gaps or None,
-    )
-
-
-def _require_document_digests(payload: InspectInputV1) -> None:
-    expected = {
-        "execution": payload.execution,
-        "healing": payload.healing,
-        "trace": payload.trace,
-        "coverage": payload.coverage,
-        "metrics": payload.metrics,
-    }
-    actual = {
-        "execution": payload.execution_digest,
-        "healing": payload.healing_digest,
-        "trace": payload.trace_digest,
-        "coverage": payload.coverage_digest,
-        "metrics": payload.metrics_digest,
-    }
-    for name, document in expected.items():
-        if document_digest(document) != actual[name]:
-            raise InputError(f"{name} digest does not match the authenticated {name} document")
-
-
-class InspectHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_model(InspectInputV1, request.input)
-            _require_document_digests(payload)
-            if payload.integrity_issues:
-                failures = _integrity_failures(payload.integrity_issues)
-                _complete(failures)
-                gate = _build_gate(payload, "FAIL")
-                gate = gate.model_copy(update={"final_status": "FAIL"})
-                analysis = _analysis(payload, gate, failures, [], "failed", "failed")
-            else:
-                failures = _classify_evidence(payload)
-                _complete(failures)
-                api = _counts(payload.execution, "api")
-                e2e = _counts(payload.execution, "e2e")
-                fuzz = _counts(payload.execution, "fuzz")
-                func_status = _functional_status(api, e2e, fuzz)
-                gate = _build_gate(payload, func_status)
-                status = "no_failures" if not failures else "analyzed"
-                analysis = _analysis(
-                    payload,
-                    gate,
-                    failures,
-                    _coverage_gaps(payload.coverage_metrics),
-                    "completed",
-                    status,
-                )
-            output = {
-                "analysis": analysis.model_dump(mode="json"),
-                "quality_gate": gate.model_dump(mode="json"),
-                "execution_digest": payload.execution_digest,
-                "healing_digest": payload.healing_digest,
-                "trace_digest": payload.trace_digest,
-                "coverage_digest": payload.coverage_digest,
-                "metrics_digest": payload.metrics_digest,
-            }
-            return TaskOutcome.succeeded(cast(JSONValue, output))
-        except InputError as error:
-            return failed_input(error)

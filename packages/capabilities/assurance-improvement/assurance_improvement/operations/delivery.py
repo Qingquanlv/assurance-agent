@@ -7,18 +7,21 @@ from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_runtime_contracts.ops import InputError, failed_input
+from assurance_intake.contracts import EvidenceArtifactRefV1
 from graph_engine.plugin_api import EffectIntent, TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.delivery import (
-    ApplyAttemptResult,
+    ChangeExportPublishedV1,
     ChangeExportReceipt,
     ImprovementApplyProof,
-    ImprovementDeliveryDocument,
     KnowledgeExportReceipt,
     MemoryApplyReceipt,
+    MemoryEvalPublishedV1,
     MemoryEvalReceipt,
+    MemoryRollbackPublishedV1,
     MemoryRollbackReceipt,
     artifact_digest,
+    evaluate_apply_route,
     same_digest,
 )
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
@@ -27,10 +30,7 @@ from assurance_improvement.contracts.improvements import (
     ImprovementProjection,
     ImprovementState,
 )
-from assurance_improvement.contracts.promotion import PromotionReceipt, TestPromotionManifest
 from assurance_improvement.operations.common import as_json, succeeded, validate_input
-from assurance_improvement.operations.keys import promotion_effect_key
-from assurance_improvement.operations.review import assert_improvement_transition
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 DELIVERY_EFFECT = "assurance.improvement.effect.delivery.v1"
@@ -59,22 +59,11 @@ _INTENT_RECEIPT_FIELD = {
 }
 
 
-class LoadDeliveryInput(BaseModel):
-    model_config = _FROZEN
-
-    projection: ImprovementProjection
-    stage: Literal["evaluate", "apply", "rollback", "export_change", "export_knowledge"]
-    change_export: ChangeExportReceipt | None = None
-    knowledge_export: KnowledgeExportReceipt | None = None
-    memory_eval: MemoryEvalReceipt | None = None
-    memory_apply: MemoryApplyReceipt | None = None
-    memory_rollback: MemoryRollbackReceipt | None = None
-
-
 class EvaluateMemoryInput(BaseModel):
     model_config = _FROZEN
 
-    projection: ImprovementProjection
+    projection: ImprovementProjection | None = None
+    projection_ref: EvidenceArtifactRefV1 | None = None
     eval_run_id: str = Field(min_length=1)
     outcome: Literal["passed", "regressed", "awaiting_baseline", "error"]
     report_sha256: str = Field(min_length=1)
@@ -86,8 +75,10 @@ class EvaluateMemoryInput(BaseModel):
 class ApplyMemoryInput(BaseModel):
     model_config = _FROZEN
 
-    projection: ImprovementProjection
-    eval_receipt: MemoryEvalReceipt
+    projection: ImprovementProjection | None = None
+    projection_ref: EvidenceArtifactRefV1 | None = None
+    eval_receipt: MemoryEvalReceipt | None = None
+    eval_receipt_ref: EvidenceArtifactRefV1 | None = None
     approved_state_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     approved_version: int = Field(ge=1)
     before_sha256: str = Field(min_length=1)
@@ -113,46 +104,6 @@ class ExportChangeInput(BaseModel):
     sha256: str = Field(min_length=1)
     created: bool
     target_digest: str = Field(min_length=1)
-
-
-class ExportKnowledgeInput(BaseModel):
-    model_config = _FROZEN
-
-    projection: ImprovementProjection
-    artifact_path: str = Field(min_length=1)
-    sha256: str = Field(min_length=1)
-    created: bool
-    target_digest: str = Field(min_length=1)
-
-
-class RecordAppliedInput(BaseModel):
-    model_config = _FROZEN
-
-    projection: ImprovementProjection
-    next_state: Literal["applied", "exported"]
-
-
-class PromotionInput(BaseModel):
-    model_config = _FROZEN
-
-    projection: ImprovementProjection
-    manifest: TestPromotionManifest
-    receipt: PromotionReceipt
-    promotion_digest: str = Field(min_length=1)
-
-
-def _present_receipts(payload: LoadDeliveryInput) -> tuple[str, ...]:
-    return tuple(
-        name
-        for name, value in (
-            ("change_export", payload.change_export),
-            ("knowledge_export", payload.knowledge_export),
-            ("memory_eval", payload.memory_eval),
-            ("memory_apply", payload.memory_apply),
-            ("memory_rollback", payload.memory_rollback),
-        )
-        if value is not None
-    )
 
 
 def assert_delivery_gate(projection: ImprovementProjection, kind: DeliveryKind) -> None:
@@ -203,87 +154,6 @@ _ATTEMPT_STATES: dict[str, ImprovementState] = {
     "superseded": ImprovementState.SUPERSEDED,
     "approved": ImprovementState.APPROVED,
 }
-
-
-def attempt_apply(
-    *,
-    state: str,
-    evaluation: str = "passed",
-    forge_state_digest: bool = False,
-) -> ApplyAttemptResult:
-    try:
-        if state not in _ATTEMPT_STATES:
-            raise InputError(f"unsupported apply state: {state}")
-        resolved = _ATTEMPT_STATES[state]
-        projection = _attempt_projection(resolved)
-        current_digest = artifact_digest(projection)
-        receipt = MemoryEvalReceipt(
-            eval_run_id="eval-1",
-            outcome="regressed" if evaluation == "failed" else "passed",
-            report_sha256="r",
-            staged_sha256="s",
-            baseline_sha256=None,
-            approved_state_digest=None if evaluation == "missing" else current_digest,
-            approved_version=None if evaluation == "missing" else projection.version,
-        )
-        if evaluation == "stale":
-            receipt = receipt.model_copy(
-                update={
-                    "approved_state_digest": "sha256:" + ("d" * 64),
-                    "approved_version": projection.version,
-                }
-            )
-        digest = current_digest
-        if forge_state_digest:
-            digest = "sha256:" + ("0" * 64)
-        intent = _apply_memory(
-            projection=projection,
-            eval_receipt=receipt,
-            approved_state_digest=digest,
-            approved_version=projection.version,
-            before_sha256="b",
-            after_sha256="a",
-            receipt_sha256="r",
-            target_digest="a" * 64,
-        )
-        return ApplyAttemptResult(
-            applied=True,
-            effect_intents=(intent,),
-            write_authorization=(projection.target,),
-        )
-    except InputError:
-        return ApplyAttemptResult(applied=False, effect_intents=(), write_authorization=())
-
-
-def _attempt_projection(state: ImprovementState) -> ImprovementProjection:
-    payload: dict[str, object] = {
-        "improvement_id": "IMP-1",
-        "fingerprint": "f" * 64,
-        "kind": "prompt_improvement",
-        "delivery": "memory_patch",
-        "source_refs": {"problem_ids": ["PROB-1"], "occurrence_ids": ["OCC-1"]},
-        "target": ".aa/memory/aa-api-plan.md",
-        "rationale": "gap",
-        "proposed_change": "register adapters",
-        "verification": {"suites": [], "required_cases": [], "success_criteria": "review"},
-        "risk": "low",
-        "confidence": "high",
-        "state": state.value,
-        "version": 1,
-        "proposed_by_retro_ids": ["RET-1"],
-        "last_event_id": "IMPEVT-1",
-        "approval_source": "none",
-    }
-    if state is ImprovementState.APPROVED:
-        payload["approval_source"] = "automatic"
-        payload["last_auto_review"] = {
-            "review_id": "REV-1",
-            "subject_sha256": "sha256:" + ("a" * 64),
-            "assessment_sha256": "sha256:" + ("b" * 64),
-            "policy_version": "1",
-            "verdict": "auto_approved",
-        }
-    return ImprovementProjection.model_validate(payload)
 
 
 def _apply_memory(
@@ -355,45 +225,21 @@ def _delivery_intent(
     )
 
 
-class LoadImprovementDeliveryHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(LoadDeliveryInput, request.input)
-            assert_delivery_gate(payload.projection, _STAGE_KIND[payload.stage])
-            present = _present_receipts(payload)
-            expected = _STAGE_RECEIPTS[payload.stage]
-            if present != expected:
-                raise InputError(f"{payload.stage} delivery requires exact receipts {expected}")
-            document = ImprovementDeliveryDocument.model_validate(
-                {
-                    "schema_version": "1",
-                    "improvement_id": payload.projection.improvement_id,
-                    "expected_improvement_version": payload.projection.version,
-                    "delivery": payload.projection.delivery.value,
-                    "change_export": payload.change_export.model_dump(mode="json")
-                    if payload.change_export
-                    else None,
-                    "knowledge_export": payload.knowledge_export.model_dump(mode="json")
-                    if payload.knowledge_export
-                    else None,
-                    "memory_eval": payload.memory_eval.model_dump(mode="json")
-                    if payload.memory_eval
-                    else None,
-                    "memory_apply": payload.memory_apply.model_dump(mode="json")
-                    if payload.memory_apply
-                    else None,
-                    "memory_rollback": payload.memory_rollback.model_dump(mode="json")
-                    if payload.memory_rollback
-                    else None,
-                }
-            )
-            return succeeded(cast(dict[str, object], document.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
+def _bound_projection(
+    payload: EvaluateMemoryInput | ApplyMemoryInput, context: TaskContext
+) -> ImprovementProjection:
+    from assurance_improvement.operations.files import load_named
+
+    if payload.projection_ref is not None:
+        return load_named(context, payload.projection_ref, ImprovementProjection)
+    if payload.projection is not None:
+        return payload.projection
+    raise InputError("improvement projection is missing")
 
 
 def evaluate_memory(payload: EvaluateMemoryInput) -> tuple[MemoryEvalReceipt, EffectIntent]:
+    if payload.projection is None:
+        raise InputError("improvement projection is missing")
     assert_delivery_gate(payload.projection, DeliveryKind.MEMORY_PATCH)
     receipt = MemoryEvalReceipt(
         eval_run_id=payload.eval_run_id,
@@ -417,22 +263,39 @@ def evaluate_memory(payload: EvaluateMemoryInput) -> tuple[MemoryEvalReceipt, Ef
 
 class EvaluateMemoryImprovementHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
+        from assurance_improvement.contracts.handoff import MEMORY_EVAL
+        from assurance_improvement.operations.files import stage_named
+
         try:
-            receipt, intent = evaluate_memory(validate_input(EvaluateMemoryInput, request.input))
-            return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
+            payload = validate_input(EvaluateMemoryInput, request.input)
+            receipt, intent = evaluate_memory(
+                payload.model_copy(update={"projection": _bound_projection(payload, context)})
+            )
+            stage_named(context, MEMORY_EVAL, receipt)
+            published = MemoryEvalPublishedV1(
+                memory_eval=receipt, route=evaluate_apply_route(receipt.outcome)
+            )
+            return succeeded(cast(dict[str, object], published.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
             return failed_input(error)
 
 
 class ApplyMemoryImprovementHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
             payload = validate_input(ApplyMemoryInput, request.input)
+            projection = _bound_projection(payload, context)
+            if payload.eval_receipt_ref is not None:
+                from assurance_improvement.operations.files import load_named
+
+                eval_receipt = load_named(context, payload.eval_receipt_ref, MemoryEvalReceipt)
+            elif payload.eval_receipt is not None:
+                eval_receipt = payload.eval_receipt
+            else:
+                raise InputError("apply requires an eval receipt")
             intent = _apply_memory(
-                projection=payload.projection,
-                eval_receipt=payload.eval_receipt,
+                projection=projection,
+                eval_receipt=eval_receipt,
                 approved_state_digest=payload.approved_state_digest,
                 approved_version=payload.approved_version,
                 before_sha256=payload.before_sha256,
@@ -441,7 +304,7 @@ class ApplyMemoryImprovementHandler:
                 target_digest=payload.target_digest,
             )
             receipt = MemoryApplyReceipt(
-                target=payload.projection.target,
+                target=projection.target,
                 before_sha256=payload.before_sha256,
                 after_sha256=payload.after_sha256,
                 receipt_sha256=payload.receipt_sha256,
@@ -462,6 +325,11 @@ class RollbackMemoryImprovementHandler:
                 restored_sha256=payload.restored_sha256,
                 reason=payload.reason,
             )
+            published = MemoryRollbackPublishedV1(
+                target=receipt.target,
+                restored_sha256=receipt.restored_sha256,
+                reason=receipt.reason,
+            )
             intent = _delivery_intent(
                 kind="memory_rollback",
                 projection=payload.projection,
@@ -471,7 +339,7 @@ class RollbackMemoryImprovementHandler:
                 reason=payload.reason,
                 receipt=receipt,
             )
-            return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
+            return succeeded(cast(dict[str, object], published.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
             return failed_input(error)
 
@@ -487,6 +355,11 @@ class ExportChangeImprovementHandler:
                 created=payload.created,
                 artifact_path=payload.artifact_path,
             )
+            published = ChangeExportPublishedV1(
+                sha256=receipt.sha256,
+                created=receipt.created,
+                artifact_path=receipt.artifact_path,
+            )
             intent = _delivery_intent(
                 kind="change_export",
                 projection=payload.projection,
@@ -495,115 +368,16 @@ class ExportChangeImprovementHandler:
                 artifact_path=payload.artifact_path,
                 receipt=receipt,
             )
-            return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
-        except InputError as error:
-            return failed_input(error)
-
-
-class RecordChangeImprovementAppliedHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(RecordAppliedInput, request.input)
-            target = (
-                ImprovementState.APPLIED if payload.next_state == "applied" else ImprovementState.EXPORTED
-            )
-            assert_improvement_transition(payload.projection.state, target)
-            updated = payload.projection.model_copy(
-                update={"state": target, "version": payload.projection.version + 1}
-            )
-            return succeeded(cast(dict[str, object], updated.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class ExportKnowledgeImprovementHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(ExportKnowledgeInput, request.input)
-            assert_delivery_gate(payload.projection, DeliveryKind.KNOWLEDGE_DELTA)
-            receipt = KnowledgeExportReceipt(
-                sha256=payload.sha256,
-                created=payload.created,
-                artifact_path=payload.artifact_path,
-            )
-            intent = _delivery_intent(
-                kind="knowledge_export",
-                projection=payload.projection,
-                target_kind="knowledge_export",
-                target_digest=payload.target_digest,
-                artifact_path=payload.artifact_path,
-                receipt=receipt,
-            )
-            return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
-        except InputError as error:
-            return failed_input(error)
-
-
-class RecordKnowledgeImprovementAppliedHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(RecordAppliedInput, request.input)
-            target = (
-                ImprovementState.APPLIED if payload.next_state == "applied" else ImprovementState.EXPORTED
-            )
-            assert_improvement_transition(payload.projection.state, target)
-            updated = payload.projection.model_copy(
-                update={"state": target, "version": payload.projection.version + 1}
-            )
-            return succeeded(cast(dict[str, object], updated.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-
-
-class ApplyTestPromotionHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_input(PromotionInput, request.input)
-            if payload.manifest.improvement_id != payload.projection.improvement_id:
-                raise InputError("promotion manifest improvement_id does not match")
-            if payload.receipt.improvement_id != payload.projection.improvement_id:
-                raise InputError("promotion receipt improvement_id does not match")
-            intent_payload = ImprovementEffectIntentV1.model_validate(
-                {
-                    "schema_version": "1",
-                    "kind": "test_promotion",
-                    "improvement_id": payload.projection.improvement_id,
-                    "version": payload.projection.version,
-                    "promotion_digest": payload.promotion_digest,
-                    "candidate_id": payload.manifest.candidate_id,
-                    "promotion": payload.receipt.model_dump(mode="json"),
-                }
-            )
-            key = promotion_effect_key(intent_payload)
-            del key
-            return succeeded(
-                cast(dict[str, object], payload.receipt.model_dump(mode="json")),
-                effects=(
-                    EffectIntent(
-                        kind=PROMOTION_EFFECT,
-                        payload=as_json(intent_payload.model_dump(mode="json")),
-                    ),
-                ),
-            )
+            return succeeded(cast(dict[str, object], published.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
             return failed_input(error)
 
 
 __all__ = [
     "ApplyMemoryImprovementHandler",
-    "ApplyTestPromotionHandler",
     "EvaluateMemoryImprovementHandler",
     "ExportChangeImprovementHandler",
-    "ExportKnowledgeImprovementHandler",
-    "LoadImprovementDeliveryHandler",
-    "RecordChangeImprovementAppliedHandler",
-    "RecordKnowledgeImprovementAppliedHandler",
     "RollbackMemoryImprovementHandler",
-    "attempt_apply",
     "assert_apply_proof",
     "assert_authenticated_approval",
     "evaluate_memory",

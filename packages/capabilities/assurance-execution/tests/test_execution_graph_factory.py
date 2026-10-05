@@ -13,10 +13,16 @@ from agent_runtime_contracts import RawAgentRuntimeOutcome
 from agent_runtime_contracts.ops import InputError
 from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.workflow import ExecutionAttemptOutputV1
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
-from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_graphs
-from assurance_execution.graphs.nodes import activation_execute, activation_rerun, publish_execution
+from assurance_execution.graphs.factory import (
+    ExecutionGraphs,
+    build_execution_graphs as _build_execution_graphs,
+)
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1, PreparedExecutionV1
+from assurance_execution.operations.cycle import seal_execution
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_execution.operations.agent_skills import assemble_execution_input
 from graph_engine.attempts.contracts import (
     ExecutedAttemptResult,
@@ -24,6 +30,8 @@ from graph_engine.attempts.contracts import (
     resolve_contract,
 )
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.flow.activation import activation_value
+from graph_engine.flow.control import ROUTE_SENTINEL
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
@@ -46,6 +54,13 @@ from graph_engine.plugin_api import (
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext, committed
 from tests.acg_plan_fixture import install_plan
+
+from graph_engine.testing.feature_bundle import compile_bundle
+
+
+def build_execution_graphs(*args, **kwargs):
+    return compile_bundle(_build_execution_graphs(*args, **kwargs))
+
 
 _SHA = "a" * 64
 _RECEIPT = ReceiptRef(receipt_id="receipt-1", receipt_digest="b" * 64)
@@ -206,11 +221,60 @@ def test_execution_factory_exports_execute_and_rerun(recording_context) -> None:
     assert recording_context.compiled_subgraph_checkpointers == (None, None)
 
 
-def test_execute_and_rerun_activations_bind_epoch_and_repair_round() -> None:
-    assert activation_execute({"coverage_epoch": 0}) != activation_execute({"coverage_epoch": 1})
-    assert activation_rerun({"coverage_epoch": 1, "repair_round": 0}) != activation_rerun(
-        {"coverage_epoch": 1, "repair_round": 1}
+def _prepare_input(payload: dict[str, object], kind: str) -> ExecutionPrepareInputV1:
+    fields = ExecutionPrepareInputV1.model_fields
+    selected = {key: payload[key] for key in fields if key in payload}
+    selected["execution_kind"] = "execute" if kind == "execute" else "run"
+    return ExecutionPrepareInputV1.model_validate(selected)
+
+
+def _attempt_key(kind: str, *, epoch: int, repair_round: int) -> AttemptKey:
+    step = "execute" if kind == "execute" else "run"
+    payload = execution_graph_input()
+    payload.update(coverage_epoch=epoch, repair_round=repair_round)
+    model = _prepare_input(payload, kind)
+    return derive_attempt_key(
+        invocation_id="inv-1",
+        graph_revision="rev-1",
+        public_entrypoint="assurance.execution",
+        semantic_node_id=f"execution.{step}",
+        business_activation=BusinessActivation.for_trigger(activation_value((), step, ())),
+        contract_id=f"assurance.execution.{kind if kind == 'execute' else 'run'}",
+        validated_input=model,
     )
+
+
+async def _rerun_input_digest(*, epoch: int, repair_round: int) -> str:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.execution", contracts=execution_contracts())
+    bundle = build_execution_graphs(context)
+    payload = execution_graph_input()
+    payload["coverage_epoch"] = epoch
+    payload["repair_round"] = repair_round
+    result = await harness.run(
+        bundle.rerun,
+        input=payload,
+        script={"execution.run": [committed(_sealed("run", payload), _RECEIPT)]},
+    )
+    assert result.semantic_calls
+    return result.semantic_calls[0].input_digest
+
+
+async def test_second_repair_round_rerun_does_not_reuse_the_first_attempt() -> None:
+    first = await _rerun_input_digest(epoch=1, repair_round=1)
+    second = await _rerun_input_digest(epoch=1, repair_round=2)
+    other_epoch = await _rerun_input_digest(epoch=2, repair_round=1)
+    assert first != second
+    assert first != other_epoch
+    assert _attempt_key("run", epoch=1, repair_round=1) != _attempt_key("run", epoch=1, repair_round=2)
+
+
+def test_execute_and_rerun_attempt_keys_follow_epoch_and_repair_round() -> None:
+    assert _attempt_key("execute", epoch=0, repair_round=0) != _attempt_key(
+        "execute", epoch=1, repair_round=0
+    )
+    assert _attempt_key("run", epoch=1, repair_round=1) != _attempt_key("run", epoch=1, repair_round=2)
+    assert _attempt_key("run", epoch=1, repair_round=1) != _attempt_key("run", epoch=2, repair_round=1)
 
 
 async def test_execute_and_rerun_publish_typed_public_output() -> None:
@@ -221,40 +285,53 @@ async def test_execute_and_rerun_publish_typed_public_output() -> None:
     )
     bundle = build_execution_graphs(context)
     output = execution_evidence()
+    evidence = output.model_dump(mode="json")
+    admitted = execution_graph_input()
+    admitted["coverage_epoch"] = 2
+    sealed = _sealed("execute", {**admitted, "generation_result": generation_result()}, output)
     execute = await harness.run(
         bundle.execute,
-        input=execution_graph_input(),
-        script={"execution.execute": [committed(output, _RECEIPT)]},
+        input=admitted,
+        script={"execution.execute": [committed(sealed, _RECEIPT)]},
     )
-    assert execute.published_update == {
-        "batch_id": output.batch_id,
-        "execution_evidence": output.model_dump(mode="json"),
-        "execution_digest": canonical_digest(output.model_dump(mode="json")),
-        "execution_semantic_node_id": "execution.execute",
-        "rounds_budget": 2,
-        "rounds_used": 0,
-        "status": "passed",
-        "family_outcomes": [item.model_dump(mode="json") for item in output.family_outcomes],
-    }
+    published = execute.published_update
+    assert published is not None
+    assert published[ROUTE_SENTINEL] == "committed"
+    assert "batch_id" not in published
+    assert "execution_evidence" not in published
+    assert "execution_receipt" not in published
+    assert sealed.batch_id == output.batch_id
+    assert sealed.execution_evidence == evidence
+    assert sealed.execution_digest == canonical_digest(evidence)
+    assert sealed.execution_semantic_node_id == "execution.execute"
+    assert sealed.execution_result is not None
+    assert sealed.execution_result.family_outcomes == output.family_outcomes
+    assert "receipt" not in sealed.execution_result.model_dump(mode="json")
     assert execute.terminal is not None
+    assert cast(dict[str, object], execute.terminal)["status"] == "committed"
     assert execute.promotion_decision == "committed"
     assert execute.interrupt_envelope is None
 
+    rerun_input = execution_graph_input()
+    rerun_input["coverage_epoch"] = 2
+    rerun_input["repair_round"] = 1
     rerun = await harness.run(
         bundle.rerun,
-        input=execution_graph_input(activation={"kind": "round", "value": "0"}),
-        script={"execution.run": [committed(output, _RECEIPT)]},
+        input=rerun_input,
+        script={
+            "execution.run": [
+                committed(
+                    _sealed("run", {**rerun_input, "generation_result": generation_result()}, output),
+                    _RECEIPT,
+                )
+            ]
+        },
     )
-    assert rerun.published_update == {
-        "batch_id": output.batch_id,
-        "execution_evidence": output.model_dump(mode="json"),
-        "execution_digest": canonical_digest(output.model_dump(mode="json")),
-        "execution_semantic_node_id": "execution.run",
-        "rounds_budget": 2,
-        "rounds_used": 0,
-        "status": "passed",
-        "family_outcomes": [item.model_dump(mode="json") for item in output.family_outcomes],
-    }
+    rerun_published = rerun.published_update
+    assert rerun_published is not None
+    assert rerun_published[ROUTE_SENTINEL] == "committed"
+    assert "execution_semantic_node_id" not in rerun_published
+    assert cast(dict[str, object], rerun.terminal)["status"] == "committed"
     assert rerun.promotion_decision == "committed"
 
     rejected = await harness.run(
@@ -281,35 +358,55 @@ async def test_execute_and_rerun_publish_typed_public_output() -> None:
     assert pending.interrupt_envelope is not None
 
 
+def _sealed(kind: str, payload: dict[str, object], evidence: ExecutionEvidenceV1 | None = None):
+    model = _prepare_input(payload, kind)
+    raw = payload.get("generation_result")
+    generation = None if raw is None else GenerationCycleResultV1.model_validate(raw)
+    return seal_execution(
+        evidence or execution_evidence(),
+        change_id=model.change_id,
+        coverage_epoch=model.coverage_epoch,
+        repair_round=model.repair_round,
+        execution_kind="execute" if kind == "execute" else "run",
+        generation=generation,
+    )
+
+
 @pytest.mark.parametrize("bad_status", [None, "", "unknown", "PASS_WITH_WARNINGS"])
 def test_execution_result_rejects_unknown_final_status(bad_status: object) -> None:
+    from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+
+    cycle = _sealed(
+        "execute",
+        {**execution_graph_input(), "coverage_epoch": 2, "generation_result": generation_result()},
+    ).execution_result
+    assert cycle is not None
     with pytest.raises(ValueError, match="final_status"):
-        publish_execution(
-            {"rounds_budget": 1, "rounds_used": 0},
-            {"final_status": bad_status},
-            None,
+        ExecutionCycleResultV1.model_validate(
+            {
+                **cycle.model_dump(mode="json"),
+                "final_status": bad_status,
+                "receipt": _RECEIPT.model_dump(mode="json"),
+            }
         )
 
 
 def test_failed_execution_publishes_committed_versioned_evidence() -> None:
-    published = publish_execution(
-        {
-            "coverage_epoch": 2,
-            "repair_round": 1,
-            "rounds_budget": 2,
-            "rounds_used": 1,
-            "generation_result": generation_result(),
-        },
+    published = seal_execution(
         execution_evidence(status="failed"),
-        _RECEIPT,
+        change_id="CH-DEMO-001",
+        coverage_epoch=2,
+        repair_round=1,
+        execution_kind="run",
+        generation=GenerationCycleResultV1.model_validate(generation_result()),
     )
-    assert published["status"] == "failed"
-    result = published["execution_result"]
-    assert isinstance(result, dict)
-    assert result["coverage_epoch"] == 2
-    assert result["repair_round"] == 1
-    assert result["final_status"] == "FAIL"
-    assert result["receipt"] == _RECEIPT.model_dump(mode="json")
+    assert published.admission == "committed"
+    result = published.execution_result
+    assert result is not None
+    assert result.coverage_epoch == 2
+    assert result.repair_round == 1
+    assert result.final_status == "FAIL"
+    assert "receipt" not in result.model_dump(mode="json")
 
 
 def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) -> None:
@@ -341,19 +438,21 @@ def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) ->
         "digest": hashlib.sha256(mapping_bytes).hexdigest(),
     }
     generation["source_refs"] = [{"path": source_path, "digest": hashlib.sha256(source_bytes).hexdigest()}]
-    with pytest.raises(InputError, match="source digest changed"):
+    with pytest.raises(InputError, match="digest does not match"):
         assemble_execution_input(
-            {
-                "change_id": "CH-DEMO-001",
-                "plan_digest": plan.plan_digest,
-                "plan_ref": plan_ref,
-                "selected_test_families": ["api"],
-                "capability_leafs": ["entities.item.create"],
-                "coverage_epoch": 2,
-                "coverage_epoch_token": "2",
-                "execution_kind": "execute",
-                "generation_result": generation,
-            },
+            PreparedExecutionV1.model_validate(
+                {
+                    "change_id": "CH-DEMO-001",
+                    "plan_digest": plan.plan_digest,
+                    "plan_ref": plan_ref,
+                    "selected_test_families": ["api"],
+                    "capability_leafs": ["entities.item.create"],
+                    "coverage_epoch": 2,
+                    "coverage_epoch_token": "2",
+                    "execution_kind": "execute",
+                    "generation_result": generation,
+                }
+            ),
             workspace=tmp_path,
             write_root=tmp_path / ".stage",
         )
@@ -395,15 +494,27 @@ class _WritingExecutor:
 
     async def execute(
         self, validated_input: BaseModel, scope: object
-    ) -> ExecutedAttemptResult[ExecutionEvidenceV1]:
-        del validated_input, scope
+    ) -> ExecutedAttemptResult[ExecutionAttemptOutputV1]:
+        del scope
         self.calls += 1
         binding = self.workspace.binding
         assert binding is not None
         target = binding.write_root / "tests" / "a.py"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        return ExecutedAttemptResult(output=self.output)
+        from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+
+        prepared = ExecutionPrepareInputV1.model_validate(validated_input.model_dump(mode="json"))
+        return ExecutedAttemptResult(
+            output=seal_execution(
+                self.output,
+                change_id=prepared.change_id,
+                coverage_epoch=prepared.coverage_epoch,
+                repair_round=prepared.repair_round,
+                execution_kind=prepared.execution_kind,
+                generation=None,
+            )
+        )
 
 
 class _DeferredPhase:
@@ -476,8 +587,7 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
         with pytest.raises(RuntimeError, match="crash after promotion"):
             await bundle.execute.ainvoke(payload, config=_invoke_config(entrypoint="execute"))
         result = await bundle.execute.ainvoke(payload, config=_invoke_config(entrypoint="execute"))
-        assert result["status"] == "passed"
-        assert result["rounds_budget"] == 2
+        assert result["status"] == "failed"
         assert writer.calls == 1
         assert workspace.promote_calls == 1
         assert (project / "tests" / "a.py").is_file()
@@ -489,10 +599,8 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
         await bundle.rerun.ainvoke(second_rerun, config=_invoke_config(entrypoint="rerun"))
         assert writer.calls == 3
 
-        from assurance_execution.graphs.nodes import select_rerun
-
-        selected = select_rerun(first_rerun)
-        selected_second = select_rerun(second_rerun)
+        selected = _prepare_input(first_rerun, "run")
+        selected_second = _prepare_input(second_rerun, "run")
         first_key = derive_attempt_key(
             invocation_id="inv-1",
             graph_revision=_revision(),

@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
 
+from graph_engine.artifacts import ArtifactReadError, open_artifact
+
 from assurance_generation.contracts.families import LayerName
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.case_selection import CaseSelectionV1, selection_path
-from assurance_intake.contracts.cases import CaseEntryAuthoring
+from assurance_intake.contracts.cases import CaseEntryAuthoring, case_entry_at
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 
 
@@ -34,45 +35,17 @@ def require_selected_ids(actual: tuple[str, ...], selected: tuple[str, ...]) -> 
 
 
 def _regular_file(workspace: Path, ref: EvidenceArtifactRefV1) -> bytes:
-    path = workspace.joinpath(*PurePosixPath(ref.path).parts)
-    if path.is_symlink() or not path.is_file():
-        raise InputError(f"selection source is missing: {ref.path}")
     try:
-        resolved_root = workspace.resolve(strict=True)
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(resolved_root)
-    except (OSError, ValueError) as error:
-        raise InputError(f"selection source is outside the workspace: {ref.path}") from error
-    data = path.read_bytes()
-    if hashlib.sha256(data).hexdigest() != ref.digest:
-        raise InputError(f"selection source digest drifted: {ref.path}")
-    return data
+        return open_artifact(workspace, ref)
+    except ArtifactReadError as error:
+        raise InputError(str(error)) from error
 
 
 def _entry_at(document: object, locator: str, case_id: str) -> CaseEntryAuthoring:
-    if not isinstance(document, dict):
-        raise InputError("case source must be a mapping")
-    section_name, _, index_text = locator.partition("[")
-    entries = document.get(section_name)
-    if not isinstance(entries, list):
-        raise InputError(f"selection locator is not a list: {locator}")
-    if index_text.endswith("]") and index_text[:-1].isdigit():
-        index = int(index_text[:-1])
-        if index >= len(entries) or not isinstance(entries[index], dict):
-            raise InputError(f"selection locator is out of range: {locator}")
-        raw = entries[index]
-    else:
-        matches = [item for item in entries if isinstance(item, dict) and item.get("case_id") == case_id]
-        if len(matches) != 1:
-            raise InputError(f"selection case_id is not unique in source: {case_id}")
-        raw = matches[0]
     try:
-        entry = CaseEntryAuthoring.model_validate(raw)
-    except ValidationError as error:
-        raise InputError(f"selected case is not a complete CaseEntry: {error}") from error
-    if entry.case_id != case_id:
-        raise InputError("selection locator does not match case_id")
-    return entry
+        return case_entry_at(document, locator, case_id)
+    except ValueError as error:
+        raise InputError(str(error)) from error
 
 
 def load_selected_cases(workspace: Path, reviewed: ReviewedCaseV1) -> tuple[CaseEntryAuthoring, ...]:

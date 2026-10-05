@@ -8,6 +8,7 @@ from agent_runtime_contracts.ops import InputError
 from agent_runtime_contracts.qa_paths import qa_join
 
 from assurance_execution.contracts.selection import selected_test_file
+from assurance_execution.contracts.workflow import EXECUTION_EVIDENCE_PATHS
 
 
 def _safe_component(value: str, *, label: str) -> str:
@@ -26,29 +27,16 @@ def execution_view_relative(batch_id: str) -> str:
     return f"{qa_join('.staging/execution')}/{_safe_component(batch_id, label='batch_id')}"
 
 
-def resolve_canonical_evidence(project: Path, change_id: str, filename: str) -> Path:
+def resolve_canonical_evidence(project: Path, change_id: str, relative: str) -> Path:
     _safe_component(change_id, label="change_id")
-    relative = qa_join(f"execution/{filename}")
+    if relative not in EXECUTION_EVIDENCE_PATHS.values():
+        raise InputError("canonical evidence path is not a closed execution result")
     path = project.joinpath(*PurePosixPath(relative).parts)
     try:
         resolved = path.resolve()
         resolved.relative_to(project.resolve())
     except ValueError as error:
         raise InputError(f"canonical evidence path escapes the project: {relative}") from error
-    return path
-
-
-def resolve_execution_view(project: Path, change_id: str, batch_id: str) -> Path:
-    _safe_component(change_id, label="change_id")
-    relative = execution_view_relative(batch_id)
-    path = project.joinpath(*PurePosixPath(relative).parts)
-    try:
-        resolved = path.resolve()
-        resolved.relative_to(project.resolve())
-    except ValueError as error:
-        raise InputError(f"execution view path escapes the project: {relative}") from error
-    if path.is_symlink() or not path.is_dir():
-        raise InputError(f"execution view is missing: {relative}")
     return path
 
 

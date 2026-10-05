@@ -572,7 +572,7 @@ def _write_chain(
     *,
     change_id: str,
     epoch: str,
-    batch_id: str,
+    repair_round: str,
     plan_bytes: bytes,
     assessment: dict[str, object],
     omit_entry: bool = False,
@@ -582,9 +582,11 @@ def _write_chain(
     plan_path = project / plan_relative
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_bytes(plan_bytes)
-    batch = project / "qa" / "results" / "inspect" / "epochs" / epoch / "batches" / batch_id
+    batch = project / "qa" / "results" / "inspect" / "epochs" / epoch / "rounds" / repair_round
     batch.mkdir(parents=True, exist_ok=True)
-    assessment_relative = f"qa/results/inspect/epochs/{epoch}/batches/{batch_id}/obligation-assessment.json"
+    assessment_relative = (
+        f"qa/results/inspect/epochs/{epoch}/rounds/{repair_round}/obligation-assessment.json"
+    )
     encoded = (json.dumps(assessment) + "\n").encode("utf-8")
     (project / assessment_relative).write_bytes(encoded)
     entry = {
@@ -594,7 +596,7 @@ def _write_chain(
     manifest = {
         "schema_version": "1.0",
         "change_id": change_id,
-        "batch_id": batch_id,
+        "batch_id": "batch-" + repair_round,
         "digest": "sha256:" + "ab" * 32,
         "entries": [] if omit_entry else [entry],
     }
@@ -633,10 +635,10 @@ def test_operator_assessment_reads_one_committed_chain_and_rejects_the_rest(
         "rows": [{"plan_digest": plan_digest, "mrc_id": "MRC-2", "verdict": "supported"}],
     }
     _write_chain(
-        project, change_id="BOOT-1", epoch="1", batch_id="batch-a", plan_bytes=plan_bytes, assessment=selected
+        project, change_id="BOOT-1", epoch="1", repair_round="0", plan_bytes=plan_bytes, assessment=selected
     )
     _write_chain(
-        project, change_id="BOOT-1", epoch="1", batch_id="batch-b", plan_bytes=plan_bytes, assessment=other
+        project, change_id="BOOT-1", epoch="1", repair_round="1", plan_bytes=plan_bytes, assessment=other
     )
 
     def read(epoch: str, batch: str, digest: str | None = None) -> dict[str, object]:
@@ -654,7 +656,7 @@ def test_operator_assessment_reads_one_committed_chain_and_rejects_the_rest(
                 digest or plan_digest,
                 "--coverage-epoch",
                 epoch,
-                "--batch-id",
+                "--repair-round",
                 batch,
             ],
         )
@@ -663,21 +665,21 @@ def test_operator_assessment_reads_one_committed_chain_and_rejects_the_rest(
         assert isinstance(body, dict)
         return body
 
-    valid = read("1", "batch-a")
+    valid = read("1", "0")
     assert valid["reason"] is None
     assessment = valid["assessment"]
     assert isinstance(assessment, dict)
     assert assessment["rows"][0]["verdict"] == "refuted"
-    sibling = read("1", "batch-b")
+    sibling = read("1", "1")
     sibling_assessment = sibling["assessment"]
     assert isinstance(sibling_assessment, dict)
     assert sibling_assessment["rows"][0]["mrc_id"] == "MRC-2"
-    assert read("2", "batch-a")["reason"] == "missing_ref"
-    assert read("1", "batch-a", digest="ab" * 32)["reason"] == "plan_mismatch"
+    assert read("2", "0")["reason"] == "missing_ref"
+    assert read("1", "0", digest="ab" * 32)["reason"] == "plan_mismatch"
 
-    changed = project / "qa/results/inspect/epochs/1/batches/batch-a/obligation-assessment.json"
+    changed = project / "qa/results/inspect/epochs/1/rounds/0/obligation-assessment.json"
     changed.write_text(changed.read_text(encoding="utf-8") + " ", encoding="utf-8")
-    assert read("1", "batch-a")["reason"] == "assessment_changed"
+    assert read("1", "0")["reason"] == "assessment_changed"
 
     empty = _project(tmp_path / "manual")
     manual = cli_runner.invoke(
@@ -694,8 +696,8 @@ def test_operator_assessment_reads_one_committed_chain_and_rejects_the_rest(
             plan_digest,
             "--coverage-epoch",
             "1",
-            "--batch-id",
-            "batch-a",
+            "--repair-round",
+            "0",
         ],
     )
     assert json.loads(manual.stdout)["reason"] == "not_assessed"
@@ -719,7 +721,7 @@ def test_operator_assessment_reports_a_missing_manifest_entry(cli_runner, tmp_pa
         project,
         change_id="BOOT-1",
         epoch="1",
-        batch_id="batch-a",
+        repair_round="0",
         plan_bytes=plan_bytes,
         assessment=assessment,
         omit_entry=True,
@@ -738,8 +740,8 @@ def test_operator_assessment_reports_a_missing_manifest_entry(cli_runner, tmp_pa
             plan_digest,
             "--coverage-epoch",
             "1",
-            "--batch-id",
-            "batch-a",
+            "--repair-round",
+            "0",
         ],
     )
     assert json.loads(result.stdout)["reason"] == "missing_ref"

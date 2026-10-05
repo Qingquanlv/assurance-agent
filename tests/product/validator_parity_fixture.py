@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
+from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables.config import RunnableConfig
 
@@ -14,8 +15,7 @@ from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
 from assurance_execution.graphs.factory import build_execution_graphs
-from assurance_execution.graphs.nodes import publish_execution, select_execute
-from assurance_execution.graphs.state import ExecutionState
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.plugin import ExecutionPlugin
 from assurance_product.agent_contracts import all_feature_agent_contracts
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
@@ -49,6 +49,7 @@ from graph_engine.plugin_api import (
     ValidationResult,
 )
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.flow import BoundFlow
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
 
 from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID
@@ -165,16 +166,15 @@ def assert_production_inventory_unbound() -> None:
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
     assert TEST_CONTRACT_ID not in {item.contract_id for item in contribution.attempt_contracts}
     assert TEST_CONTRACT_ID not in all_feature_agent_contracts()
-    assert len(all_feature_agent_contracts()) == 27
-    assert len(all_feature_agent_contracts()) == 27
+    assert len(all_feature_agent_contracts()) == 26
+    assert len(all_feature_agent_contracts()) == 26
     registered = _registered_validator_count()
     bound = sum(1 for contract in all_feature_agent_contracts().values() if contract.validators)
     from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 
     bound += sum(1 for contract in TASK_ATTEMPT_CONTRACTS.values() if contract.validators)
-    assert registered == 25
+    assert registered == 1
     assert bound == 0
-    assert EVIDENCE_VALIDATOR_ID in contribution.commit_validators
 
 
 def _registered_validator_count() -> int:
@@ -265,9 +265,39 @@ def _invoke_config() -> RunnableConfig:
     }
 
 
+class _ExecutionChannels(CheckpointBridgeState, total=False):
+    change_id: str
+    plan_digest: str
+    plan_ref: dict[str, str]
+    selected_test_families: list[str]
+    capability_leafs: list[str]
+    coverage_epoch: int
+    repair_round: int
+    batch_id: str
+    case_ids: list[str]
+    artifact_paths: list[str]
+    mapping: dict[str, object]
+    selected_targets: dict[str, bool]
+    baseline_tree_id: str
+    status: str
+    attempt_failure: dict[str, object]
+
+
+class _QaPathValidator:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
+        del context
+        for item in staged.files:
+            if item.path.startswith("src/"):
+                return ValidationResult(
+                    accepted=False,
+                    reason="execution candidate may write only tests and change execution paths",
+                )
+        return ValidationResult(accepted=True)
+
+
 async def _run_langgraph_candidate(tmp_path: Path, *, relative: str) -> ValidatorRuntimeResult:
     contribution = production_contribution()
-    evidence = contribution.commit_validators[EVIDENCE_VALIDATOR_ID]
+    evidence = _QaPathValidator()
     core = boot_resolved_execute()
     clone = clone_langgraph_contract(core)
     authenticated = resolve_contract(clone, executor=core.executor)
@@ -319,7 +349,11 @@ async def _run_langgraph_candidate(tmp_path: Path, *, relative: str) -> Validato
             contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
         },
     )
-    build_execution_graphs(shipped)
+    _execution = build_execution_graphs(shipped)
+    assert isinstance(_execution.execute, BoundFlow)
+    assert isinstance(_execution.rerun, BoundFlow)
+    _execution.execute.compile(outcome_field="status")
+    _execution.rerun.compile(outcome_field="status")
     assert TEST_CONTRACT_ID not in shipped.bound_contract_ids
     factory = AttemptNodeFactory(journal=journal, kernel=kernel)
     context = RecordingCapabilityBuildContext(
@@ -333,7 +367,8 @@ async def _run_langgraph_candidate(tmp_path: Path, *, relative: str) -> Validato
         contribution=contribution,
         manifest=manifest,
     )
-    builder: StateGraph[ExecutionState] = StateGraph(ExecutionState)
+
+    builder: StateGraph[_ExecutionChannels] = StateGraph(_ExecutionChannels)
     builder.add_node(
         "execution.validator-parity",
         cast(
@@ -342,8 +377,13 @@ async def _run_langgraph_candidate(tmp_path: Path, *, relative: str) -> Validato
                 TEST_CONTRACT_ID,
                 semantic_node_id="execution.validator-parity",
                 activation=BusinessActivation.one_shot(),
-                select=select_execute,
-                publish=publish_execution,
+                select=lambda state: ExecutionPrepareInputV1.model_validate(
+                    {
+                        **{key: state[key] for key in ExecutionPrepareInputV1.model_fields if key in state},
+                        "execution_kind": "execute",
+                    }
+                ),
+                publish=lambda _state, _output, _receipt: {},
             ),
         ),
     )

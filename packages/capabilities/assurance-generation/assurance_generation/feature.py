@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
+from graph_engine.flow import BoundFlow
 
 from assurance_generation.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
@@ -17,13 +17,8 @@ from assurance_generation.plugin import GenerationPlugin
 
 @dataclass(frozen=True, slots=True)
 class GenerationGraphs:
-    generation: CompiledStateGraph
-    api: CompiledStateGraph
-    e2e: CompiledStateGraph
-    fuzz: CompiledStateGraph
-    performance: CompiledStateGraph
-    init_runtime: CompiledStateGraph
-    resolve_inputs: CompiledStateGraph
+    generation: BoundFlow
+    init_runtime: BoundFlow
 
 
 FEATURE = FeatureSpec(

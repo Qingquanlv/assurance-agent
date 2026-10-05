@@ -12,7 +12,8 @@ from graph_engine.plugin_api import FrozenModel
 from assurance_intake.contracts.agent import ArtifactDigestV1, canonical_relative_paths
 from assurance_intake.contracts.common import SHA256_PATTERN
 from assurance_intake.contracts.review import ReviewRepairActionV1
-from assurance_intake.domain.case_delta import CaseDeltaInputV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.domain.case_delta import CaseDeltaInputV1, refresh_case_attempt_input
 
 
 class ReviewRepairContractV1(FrozenModel):
@@ -50,17 +51,21 @@ class ReviewRepairContractV1(FrozenModel):
 
 
 class CaseRepairInputV1(CaseDeltaInputV1):
+    coverage_epoch: int = Field(default=0, ge=0)
     review_repair: ReviewRepairContractV1 | None = None
+    case_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    marker_ref: EvidenceArtifactRefV1 | None = None
+    proposal_ref: EvidenceArtifactRefV1 | None = None
+    matrix_ref: EvidenceArtifactRefV1 | None = None
+    artifacts: tuple[EvidenceArtifactRefV1, ...] = ()
+    rework_ref: EvidenceArtifactRefV1 | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refresh_attempt_input(cls, data: object) -> object:
+        return refresh_case_attempt_input(data)
 
 
 class CaseRepairOutputV1(FrozenModel):
     artifacts: tuple[ArtifactDigestV1, ...]
     review_repair: ReviewRepairContractV1
-
-    @field_validator("artifacts")
-    @classmethod
-    def _artifacts(cls, value: tuple[ArtifactDigestV1, ...]) -> tuple[ArtifactDigestV1, ...]:
-        paths = tuple(item.path for item in value)
-        if paths != tuple(sorted(set(paths))):
-            raise ValueError("case-repair artifact paths must be sorted and unique")
-        return value

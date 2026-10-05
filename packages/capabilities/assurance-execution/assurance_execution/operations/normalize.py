@@ -8,26 +8,19 @@ from typing import Any, cast
 from pydantic import ValidationError
 
 from agent_runtime_contracts.ops import (
-    InputError,
     OutputError,
-    failed_input,
-    failed_output,
-    validate_model,
 )
 from graph_engine.canonical import JSONValue
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
-from assurance_execution.contracts.agent import NormalizeInputV1
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1, FamilyExecutionOutcomeV1
 from assurance_execution.contracts.execution import (
     EXECUTION_FAMILIES,
     ExecutionCommandReceiptV1,
     ExecutionFamily,
     ExecutionReceiptV1,
-    RawTestResultV1,
 )
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
-from assurance_execution.operations.common import json_digest, leafs_of, mapping_digest
+from assurance_execution.operations.common import json_digest, mapping_digest
 from assurance_execution.operations.pytest_parser import parse_pytest_report, receipt_counts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
@@ -133,46 +126,3 @@ def normalize_evidence(
         )
     except ValidationError as error:
         raise OutputError(str(error)) from error
-
-
-def raw_results(evidence: ExecutionEvidenceV1) -> tuple[RawTestResultV1, ...]:
-    return evidence.results
-
-
-class NormalizeHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
-        try:
-            payload = validate_model(NormalizeInputV1, request.input)
-            leafs = leafs_of(payload.capability_leafs)
-            case_ids = leafs_of(payload.case_ids)
-            try:
-                mapping = ClosedMappingV1.model_validate(
-                    payload.mapping.model_dump(mode="json"),
-                    context={"capability_leafs": leafs, "case_ids": case_ids},
-                )
-            except ValidationError as error:
-                raise InputError(str(error)) from error
-            evidence = normalize_evidence(
-                change_id=payload.change_id,
-                plan_digest=payload.plan_digest,
-                plan_ref=payload.plan_ref,
-                batch_id=payload.batch_id,
-                selected_targets=payload.selected_targets,
-                mapping=mapping,
-                capability_leafs=leafs,
-                case_ids=case_ids,
-                baseline_tree_id=payload.baseline_tree_id,
-                runner_profile_digest=payload.runner_profile_digest,
-                command=payload.command,
-                exit_code=payload.exit_code,
-                report=payload.report,
-                receipt=payload.receipt,
-            )
-            return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))
-        except ValidationError as error:
-            return failed_input(error)

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from langgraph.graph.state import CompiledStateGraph
-
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
+from graph_engine.flow import BoundFlow
 
 from assurance_intake.ops import router
 from assurance_intake.plugin import IntakePlugin
@@ -19,8 +18,9 @@ attempt_contract_refs = router.attempt_contract_refs
 
 @dataclass(frozen=True, slots=True)
 class IntakeGraphs:
-    prepare: CompiledStateGraph
-    case: CompiledStateGraph
+    prepare: BoundFlow
+    case: BoundFlow
+    coverage_rework: BoundFlow
 
 
 FEATURE = FeatureSpec(

@@ -483,6 +483,16 @@ def test_raw_review_decisions_normalize_to_public_outcomes(
     assert expected in PUBLIC_REVIEW_OUTCOMES
 
 
+def test_case_review_formal_output_checks_derived_refs() -> None:
+    from assurance_intake.ops.case_review import op
+
+    payload = _review_payload(decision="pass", auto_fix_allowed=False, human_review_required=False)
+    payload["artifacts"] = [{"path": "qa/results/review/case-review.json", "digest": "invalid"}]
+
+    with pytest.raises(ValidationError, match="digest"):
+        op.output.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     ("decision", "auto_fix_allowed", "human_review_required"),
     [

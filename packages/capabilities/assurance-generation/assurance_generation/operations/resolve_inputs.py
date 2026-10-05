@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
+from graph_engine.artifacts import ArtifactReadError, open_artifact
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from assurance_generation.contracts.workflow import ResolveGenerationInputV1
 from assurance_intake.contracts.review import CaseReviewResultV1
@@ -18,6 +19,28 @@ from assurance_intake.contracts.workflow import require_same_plan
 
 class InputError(ValueError):
     """The requested generation source cannot prove an approved Case version."""
+
+
+def open_reviewed_case(root: Path, ref: EvidenceArtifactRefV1, error: type[Exception]) -> ReviewedCaseV1:
+    """Open the reviewed-case ref. The caller chooses the prepare or finalize error."""
+
+    try:
+        return open_artifact(root, ref, model=ReviewedCaseV1)
+    except ArtifactReadError as read_error:
+        if read_error.reason == "digest":
+            raise error(f"reviewed case digest changed: {read_error.path}") from read_error
+        raise error(str(read_error)) from read_error
+
+
+def reviewed_case_field(root: Path, prepared: object, error: type[Exception]) -> dict[str, object]:
+    """Load the case when finalize only kept the ref."""
+
+    if not isinstance(prepared, dict):
+        return {}
+    if prepared.get("reviewed_case") is not None or prepared.get("reviewed_case_ref") is None:
+        return {}
+    ref = EvidenceArtifactRefV1.model_validate(prepared["reviewed_case_ref"])
+    return {"reviewed_case": open_reviewed_case(root, ref, error).model_dump(mode="json")}
 
 
 def _file(root: Path, ref: EvidenceArtifactRefV1) -> Path:
@@ -78,7 +101,9 @@ def resolve_generation_input(data: object, project_root: Path) -> ReviewedCaseV1
         request = ResolveGenerationInputV1.model_validate(data)
     except ValidationError as error:
         raise InputError(str(error)) from error
-    reviewed = request.reviewed_case
+    reviewed = None
+    if request.reviewed_case_ref is not None:
+        reviewed = open_reviewed_case(project_root, request.reviewed_case_ref, InputError)
     standalone = reviewed is None
     if standalone:
         expected = "qa/cases/reviewed-case.json"
@@ -125,5 +150,7 @@ __all__ = [
     "InputError",
     "ResolveGenerationInputsHandler",
     "authenticate_reviewed_case",
+    "open_reviewed_case",
     "resolve_generation_input",
+    "reviewed_case_field",
 ]

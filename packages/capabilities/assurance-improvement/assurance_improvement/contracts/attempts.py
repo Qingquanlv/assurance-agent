@@ -8,6 +8,7 @@ from typing import Any, Literal, cast
 from agent_runtime_contracts import AgentExecutionContract
 from agent_runtime_contracts.qa_paths import qa_route
 from graph_engine.attempts import (
+    RUNTIME_EVIDENCE,
     AttemptExecutionContext,
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
@@ -24,19 +25,22 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
+from graph_engine.stategraph.ledger import InputBinding, NamedWrite
 from pydantic import BaseModel
 
 from assurance_improvement.contracts.delivery import (
-    ChangeExportReceipt,
+    ChangeExportPublishedV1,
     MemoryApplyReceipt,
-    MemoryEvalReceipt,
-    MemoryRollbackReceipt,
+    MemoryEvalPublishedV1,
+    MemoryRollbackPublishedV1,
 )
-from assurance_improvement.contracts.improvements import (
-    ImprovementLedgerProjection,
-    ImprovementProjection,
+from assurance_improvement.contracts.improvements import ImprovementLedgerProjection
+from assurance_improvement.contracts.review import AppliedAutoReviewV1, ApplyReviewPublishedV1
+from assurance_improvement.contracts.runtime_snapshot import (
+    RUNTIME_EVIDENCE_ROOT,
+    RetroRuntimeSnapshotInputV1,
+    RetroRuntimeSnapshotOutputV1,
 )
-from assurance_improvement.contracts.review import AppliedAutoReviewV1
 from assurance_improvement.operations.delivery import (
     ApplyMemoryInput,
     EvaluateMemoryInput,
@@ -49,14 +53,32 @@ from assurance_improvement.operations.retro import (
     assert_collect_identity,
 )
 from assurance_improvement.operations.review import ApplyAutoReviewInput, ApplyReviewInput
+from assurance_improvement.contracts.handoff import (
+    CANDIDATES,
+    COLLECTED,
+    CONTEXT,
+    COVERAGE_GAP_SLICE,
+    DISCOVERY_SLICE,
+    EVAL_SLICE,
+    ISSUE_SLICE,
+    SLICE_WRITES,
+    WORKFLOW_SLICE,
+    COLLECTED_WRITE,
+    CONTEXT_WRITE,
+    MEMORY_EVAL_WRITE,
+    PROJECTION_WRITE,
+)
 from assurance_improvement.contracts.retro import (
     EvalEvidenceSlice,
     IssueEvidenceSlice,
     RetroBuildSlicesInputV1,
+    RetroCollectAttemptInput,
     RetroCollectInput,
     RetroCollectedV1,
-    RetroReconcileInputV1,
+    RetroReconcileAttemptInput,
     RetroReconcileResultV1,
+    RetroSynthesizeAttemptInput,
+    RetroSynthesizeV1,
     WorkflowEvidenceSlice,
 )
 
@@ -78,99 +100,168 @@ def _task(
     handler_id: str,
     input_model: type[Any],
     output_model: type[Any],
+    *,
+    writes: tuple[NamedWrite, ...] = (),
+    bindings: tuple[InputBinding, ...] = (),
+    resources: ResourceClaims | None = None,
+    capabilities: tuple[str, ...] = (),
 ) -> TaskAttemptContract[Any, Any]:
     suffix = handler_id.removeprefix("assurance.improvement.")
+    claimed = resources
+    if claimed is None:
+        claimed = ResourceClaims(writes=tuple(item.root for item in writes))
     return TaskAttemptContract(
         contract_id=f"assurance.improvement.task.{suffix}",
         owner_id="assurance.improvement",
         handler_id=handler_id,
         input_model=input_model,
         output_model=output_model,
-        resources=ResourceClaims(),
+        resources=claimed,
         retry=_TASK_RETRY,
         timeout=_TIMEOUT,
         validators=(),
+        writes=writes,
+        bindings=bindings,
+        capabilities=capabilities,
     )
 
 
-AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES = _agent_catalog()
+def _bind(producer: TaskAttemptContract[Any, Any], name: str, field: str) -> InputBinding:
+    handle = producer.artifact(name, slot=field)
+    return InputBinding(ledger_key=handle.ledger_key, field=field, many=handle.many)
+
+
+_BUILD_SLICES = TaskAttemptContract(
+    contract_id="assurance.improvement.retro-build-slices",
+    owner_id="assurance.improvement",
+    handler_id="assurance.improvement.retro-build-slices.execute",
+    input_model=RetroBuildSlicesInputV1,
+    output_model=RetroCollectInput,
+    resources=ResourceClaims(
+        reads=("issues", "qa"),
+        writes=(ISSUE_SLICE, WORKFLOW_SLICE, EVAL_SLICE, DISCOVERY_SLICE, COVERAGE_GAP_SLICE),
+    ),
+    retry=_TASK_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+    writes=SLICE_WRITES,
+)
+_SLICE_BINDINGS = (
+    _bind(_BUILD_SLICES, "issue", "issue_slice_ref"),
+    _bind(_BUILD_SLICES, "workflow", "workflow_slice_ref"),
+    _bind(_BUILD_SLICES, "eval", "eval_slice_ref"),
+    _bind(_BUILD_SLICES, "discovery", "discovery_slice_ref"),
+    _bind(_BUILD_SLICES, "coverage_gap", "coverage_gap_slice_ref"),
+)
+_COLLECT = _task(
+    "assurance.improvement.retro-collect-v3",
+    RetroCollectAttemptInput,
+    RetroCollectedV1,
+    writes=(COLLECTED_WRITE,),
+    bindings=_SLICE_BINDINGS,
+    resources=ResourceClaims(reads=("qa",), writes=(COLLECTED,)),
+)
+_SYNTHESIZE = _task(
+    "assurance.improvement.retro-synthesize",
+    RetroSynthesizeAttemptInput,
+    RetroSynthesizeV1,
+    writes=(CONTEXT_WRITE,),
+    bindings=(
+        *_SLICE_BINDINGS,
+        _bind(_COLLECT, "collected", "generated_at_ref"),
+    ),
+    resources=ResourceClaims(reads=("qa",), writes=(CONTEXT,)),
+)
+_RECONCILE = TaskAttemptContract(
+    contract_id="assurance.improvement.task.reconcile-improvements",
+    owner_id="assurance.improvement",
+    handler_id="assurance.improvement.reconcile-improvements",
+    input_model=RetroReconcileAttemptInput,
+    output_model=RetroReconcileResultV1,
+    resources=ResourceClaims(
+        reads=("qa/improvements/ledger.json", CONTEXT, CANDIDATES),
+        writes=tuple(
+            sorted(
+                (
+                    "qa/improvements/ledger.json",
+                    *_paths(
+                        "retro/context.json",
+                        "retro/candidates.json",
+                        "retro/reconciliation.json",
+                        "retro/status.json",
+                    ),
+                )
+            )
+        ),
+    ),
+    retry=_TASK_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+    bindings=(_bind(_SYNTHESIZE, "context", "context_ref"),),
+)
+_AUTO_REVIEW = _task(
+    "assurance.improvement.apply-improvement-auto-review",
+    ApplyAutoReviewInput,
+    AppliedAutoReviewV1,
+    writes=(PROJECTION_WRITE,),
+)
+_HUMAN_REVIEW = _task(
+    "assurance.improvement.apply-improvement-review",
+    ApplyReviewInput,
+    ApplyReviewPublishedV1,
+    writes=(PROJECTION_WRITE,),
+    bindings=(_bind(_AUTO_REVIEW, "projection", "projection_ref"),),
+)
+_EVALUATE = _task(
+    "assurance.improvement.evaluate-memory-improvement",
+    EvaluateMemoryInput,
+    MemoryEvalPublishedV1,
+    writes=(MEMORY_EVAL_WRITE,),
+    bindings=(_bind(_AUTO_REVIEW, "projection", "projection_ref"),),
+)
+_RUNTIME_SNAPSHOT = _task(
+    "assurance.improvement.retro-runtime-snapshot",
+    RetroRuntimeSnapshotInputV1,
+    RetroRuntimeSnapshotOutputV1,
+    writes=(NamedWrite("runtime-evidence", RUNTIME_EVIDENCE_ROOT, many=True),),
+    resources=ResourceClaims(reads=("qa",), writes=(RUNTIME_EVIDENCE_ROOT,)),
+    capabilities=(RUNTIME_EVIDENCE,),
+)
+_APPLY = _task(
+    "assurance.improvement.apply-memory-improvement",
+    ApplyMemoryInput,
+    MemoryApplyReceipt,
+    bindings=(
+        _bind(_AUTO_REVIEW, "projection", "projection_ref"),
+        _bind(_EVALUATE, "memory-eval", "eval_receipt_ref"),
+    ),
+)
+
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
     {
-        "assurance.improvement.retro-build-slices": TaskAttemptContract(
-            contract_id="assurance.improvement.retro-build-slices",
-            owner_id="assurance.improvement",
-            handler_id="assurance.improvement.retro-build-slices.execute",
-            input_model=RetroBuildSlicesInputV1,
-            output_model=RetroCollectInput,
-            resources=ResourceClaims(reads=("issues", "qa")),
-            retry=_TASK_RETRY,
-            timeout=_TIMEOUT,
-            validators=(),
-        ),
-        "assurance.improvement.apply-improvement-auto-review": _task(
-            "assurance.improvement.apply-improvement-auto-review",
-            ApplyAutoReviewInput,
-            AppliedAutoReviewV1,
-        ),
-        "assurance.improvement.apply-improvement-review": _task(
-            "assurance.improvement.apply-improvement-review",
-            ApplyReviewInput,
-            ImprovementProjection,
-        ),
-        "assurance.improvement.apply-memory-improvement": _task(
-            "assurance.improvement.apply-memory-improvement",
-            ApplyMemoryInput,
-            MemoryApplyReceipt,
-        ),
-        "assurance.improvement.evaluate-memory-improvement": _task(
-            "assurance.improvement.evaluate-memory-improvement",
-            EvaluateMemoryInput,
-            MemoryEvalReceipt,
-        ),
+        "assurance.improvement.retro-build-slices": _BUILD_SLICES,
+        "assurance.improvement.apply-improvement-auto-review": _AUTO_REVIEW,
+        "assurance.improvement.apply-improvement-review": _HUMAN_REVIEW,
+        "assurance.improvement.apply-memory-improvement": _APPLY,
+        "assurance.improvement.evaluate-memory-improvement": _EVALUATE,
         "assurance.improvement.export-change-improvement": _task(
             "assurance.improvement.export-change-improvement",
             ExportChangeInput,
-            ChangeExportReceipt,
+            ChangeExportPublishedV1,
         ),
-        "assurance.improvement.reconcile-improvements": TaskAttemptContract(
-            contract_id="assurance.improvement.task.reconcile-improvements",
-            owner_id="assurance.improvement",
-            handler_id="assurance.improvement.reconcile-improvements",
-            input_model=RetroReconcileInputV1,
-            output_model=RetroReconcileResultV1,
-            resources=ResourceClaims(
-                reads=("qa/improvements/ledger.json",),
-                writes=tuple(
-                    sorted(
-                        (
-                            "qa/improvements/ledger.json",
-                            *_paths(
-                                "retro/context.json",
-                                "retro/candidates.json",
-                                "retro/reconciliation.json",
-                                "retro/status.json",
-                            ),
-                        )
-                    )
-                ),
-            ),
-            retry=_TASK_RETRY,
-            timeout=_TIMEOUT,
-            validators=(),
-        ),
-        "assurance.improvement.retro-collect-v3": _task(
-            "assurance.improvement.retro-collect-v3",
-            RetroCollectInput,
-            RetroCollectedV1,
-        ),
+        "assurance.improvement.reconcile-improvements": _RECONCILE,
+        "assurance.improvement.retro-synthesize": _SYNTHESIZE,
+        "assurance.improvement.retro-collect-v3": _COLLECT,
+        "assurance.improvement.retro-runtime-snapshot": _RUNTIME_SNAPSHOT,
         "assurance.improvement.rollback-memory-improvement": _task(
             "assurance.improvement.rollback-memory-improvement",
             RollbackMemoryInput,
-            MemoryRollbackReceipt,
+            MemoryRollbackPublishedV1,
         ),
     }
 )
 
+AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES = _agent_catalog()
 
 _SHA = "0" * 64
 
@@ -239,8 +330,12 @@ class ClosedImprovementExecutor:
 
         self.dispatch_count += 1
         context = scope.execution if isinstance(scope, Scope) else scope
+        project_root = scope.workspace.project_root if isinstance(scope, Scope) else Path(".")
+        write_root = scope.workspace.write_root if isinstance(scope, Scope) else Path(".")
         request = _synthetic_request(validated_input, context, self.handler_id)
-        outcome = await self._handler.execute(request, _synthetic_context(context))  # type: ignore[attr-defined]
+        outcome = await self._handler.execute(  # type: ignore[attr-defined]
+            request, _synthetic_context(context, project_root=project_root, write_root=write_root)
+        )
         if outcome.failure is not None:
             raise InputError(outcome.failure.message)
         return ExecutedAttemptResult(
@@ -283,7 +378,12 @@ def _synthetic_request(
     )
 
 
-def _synthetic_context(context: AttemptExecutionContext) -> TaskContext:
+def _synthetic_context(
+    context: AttemptExecutionContext,
+    *,
+    project_root: Path = Path("."),
+    write_root: Path = Path("."),
+) -> TaskContext:
     invocation = InvocationMetadata(
         invocation_id=context.invocation_id,
         lock_digest=_SHA,
@@ -305,8 +405,8 @@ def _synthetic_context(context: AttemptExecutionContext) -> TaskContext:
         identity_digest=canonical_digest(cast(JSONValue, identity_payload)),
     )
     return TaskContext(
-        project_root=Path("."),
-        write_root=Path("."),
+        project_root=project_root,
+        write_root=write_root,
         workspace_identity=identity,
         heartbeat=lambda: None,
         cancel_requested=lambda: False,

@@ -12,6 +12,7 @@ from assurance_improvement.graphs.delivery import (
     build_rollback_graph,
 )
 from assurance_improvement.graphs.retro import build_retro_graph
+from assurance_improvement.graphs.runtime_snapshot import build_runtime_snapshot_graph
 
 
 def build_improvement_graphs(context: CapabilityBuildContext) -> ImprovementGraphs:
@@ -23,6 +24,7 @@ def build_improvement_graphs(context: CapabilityBuildContext) -> ImprovementGrap
         export=build_export_graph(context),
         apply=build_apply_graph(context),
         rollback=build_rollback_graph(context),
+        runtime_snapshot=build_runtime_snapshot_graph(context),
     )
 
 
