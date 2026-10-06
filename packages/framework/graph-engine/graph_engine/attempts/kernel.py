@@ -3,20 +3,16 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from graph_engine.artifacts import refs_from_write_set
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.activity_runtime import execute_or_recover_activity
 from graph_engine.attempts.commit import CommitRejected, commit_or_recover
 from graph_engine.attempts.errors import AttemptIdentityDrift
 from graph_engine.attempts.runtime_evidence import RUNTIME_EVIDENCE, RuntimeEvidenceSource
-from graph_engine.attempts.contracts import (
-    ExecutedAttemptResult,
-    ResolvedAttemptContract,
-    TerminalReceiptRef,
-)
+from graph_engine.attempts.contracts import ResolvedAttemptContract
 from graph_engine.attempts.events import (
-    ActivityPrepared,
     AttemptOpened,
     AttemptSnapshot,
     AttemptTerminated,
@@ -45,15 +41,10 @@ from graph_engine.effects.apply import AttemptEffectSettler
 from graph_engine.effects.state import EffectStatePort
 from graph_engine.plugin_api import (
     CommitValidator,
-    EffectIntent,
     FailureKind,
     PromotionReceipt,
     ResourceClaims,
     WorkspaceProvider,
-)
-from graph_engine.attempts.activity import (
-    attempt_activity_in_flight,
-    attempt_activity_is_terminal,
 )
 
 
@@ -251,8 +242,14 @@ class AssuranceAttemptKernel:
             runtime_evidence=reader,
         )
 
-        step, snapshot = await self._execute_or_adopt(
-            attempt_key, contract, validated_input, scope, snapshot, cut
+        step, snapshot = await execute_or_recover_activity(
+            journal=self.journal,
+            assert_fence=lambda name: self._assert_fence(attempt_key, context, name, cut),
+            attempt_key=attempt_key,
+            contract=contract,
+            validated_input=validated_input,
+            scope=scope,
+            snapshot=snapshot,
         )
         if isinstance(step, (RejectedTaskResult, PermanentTaskFailure)):
             return await self._fail_closed(attempt_key, context, snapshot, authorization, step, cut)
@@ -364,41 +361,6 @@ class AssuranceAttemptKernel:
             )
         context = context.model_copy(update={"authorization_id": granted.authorization_id})
         return granted, snapshot, context
-
-    async def _execute_or_adopt(
-        self,
-        attempt_key: AttemptKey,
-        contract: ResolvedAttemptContract[Any, Any],
-        validated_input: BaseModel,
-        scope: AuthorizedAttemptScope,
-        snapshot: AttemptSnapshot,
-        cut: Callable[[str], None],
-    ) -> tuple[object, AttemptSnapshot]:
-        context = scope.execution
-        activity_id = snapshot.activity_id or attempt_key.digest
-        if attempt_activity_is_terminal(snapshot.activity_state) and snapshot.activity_outcome is not None:
-            return _executed_from_snapshot(contract, snapshot), snapshot
-        if attempt_activity_in_flight(snapshot.activity_state):
-            await self._assert_fence(attempt_key, context, "external_dispatch", cut)
-            reconcile = getattr(contract.executor, "reconcile", None)
-            if reconcile is None:
-                return (
-                    PermanentTaskFailure(kind="internal", message="in-flight activity cannot be adopted"),
-                    snapshot,
-                )
-            output = await reconcile(validated_input, scope, snapshot)
-            snapshot = await self._reload(attempt_key, snapshot)
-            return output, snapshot
-        snapshot = await self.journal.append(
-            attempt_key,
-            (ActivityPrepared(activity_id=activity_id),),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
-        await self._assert_fence(attempt_key, context, "external_dispatch", cut)
-        output = await contract.executor.execute(validated_input, scope)
-        snapshot = await self._reload(attempt_key, snapshot)
-        return output, snapshot
 
     async def _settle_effects(
         self,
@@ -514,10 +476,6 @@ class AssuranceAttemptKernel:
         cut(f"fence:{name}")
         await self.arbiter.assert_usable(attempt_key, fencing_token=context.fencing_token)
 
-    async def _reload(self, attempt_key: AttemptKey, snapshot: AttemptSnapshot) -> AttemptSnapshot:
-        latest = await self.journal.load(attempt_key)
-        return latest if latest is not None else snapshot
-
 
 _RESOLUTION_TYPES = (
     RejectedTaskResult,
@@ -555,30 +513,6 @@ def _assert_identity(snapshot: AttemptSnapshot, identity: Mapping[str, str]) -> 
         raise AttemptIdentityDrift("contract digest drifted")
     if snapshot.graph_revision != identity["graph_revision"]:
         raise AttemptIdentityDrift("revision digest drifted")
-
-
-def _executed_from_snapshot(
-    contract: ResolvedAttemptContract[Any, Any],
-    snapshot: AttemptSnapshot,
-) -> ExecutedAttemptResult[Any] | PermanentTaskFailure:
-    try:
-        output = contract.contract.output_model.model_validate(
-            snapshot.activity_outcome,
-            context=contract.validation_context,
-        )
-    except ValidationError as error:
-        return PermanentTaskFailure(kind="invalid_output", message=str(error))
-    receipt = None
-    if snapshot.source_identity_digest and snapshot.source_receipt_digest:
-        receipt = TerminalReceiptRef(
-            identity_digest=snapshot.source_identity_digest,
-            receipt_digest=snapshot.source_receipt_digest,
-        )
-    return ExecutedAttemptResult(
-        output=output,
-        effects=tuple(EffectIntent(kind=item.kind, payload=item.payload) for item in snapshot.effects),
-        source_terminal_receipt=receipt,
-    )
 
 
 def _resolved_claims(

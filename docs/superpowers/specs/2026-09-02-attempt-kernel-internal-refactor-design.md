@@ -148,6 +148,26 @@ crash-cut names and positions, transaction trace, Effect settlement semantics, a
 semantics remain unchanged. Activity recovery is intentionally not part of this extraction.
 
 
+
+### 2026-10-05 follow-up: extract the Activity recovery subprotocol
+
+After the commit subprotocol extraction, the remaining Activity execute/adopt/replay branch is moved
+to internal `graph_engine.attempts.activity_runtime`. The low-level
+`graph_engine.attempts.activity` module continues to own the journal-backed worker Activity port;
+the new runtime module owns only the Attempt-facing choice between terminal replay, in-flight
+reconcile, and first execute.
+
+The Kernel remains the sole transaction coordinator and retains live fence authority. The Activity
+runtime receives a narrow fence callback for the external-dispatch boundary, persists the existing
+`ActivityPrepared` event, and reloads the authoritative Attempt snapshot after executor activity.
+It does not seal or promote the workspace, settle Effects, publish terminal results, release
+resources, or know any concrete provider such as OpenCode or Deep Agent.
+
+This is also behavior-preserving: Activity event order, external-dispatch fence position, executor
+calls, replay semantics, public protocols, persisted bytes, and transaction ordering remain
+unchanged. No new public Activity service or second coordinator is introduced.
+
+
 ## Acceptance
 
 - all graph execution callers still depend only on `execute_or_recover`;
