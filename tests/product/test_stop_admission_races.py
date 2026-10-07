@@ -11,6 +11,15 @@ import pytest
 from assurance_product import worker_lifecycle as lifecycle
 
 
+@pytest.fixture(autouse=True)
+def current_lifecycle_module(monkeypatch):
+    # The session wheel fixture evicts modules imported during collection.
+    # Exercise the same canonical lifecycle module as dynamic product imports.
+    from assurance_product import worker_lifecycle
+
+    monkeypatch.setitem(globals(), "lifecycle", worker_lifecycle)
+
+
 def test_linux_stop_binds_handle_before_identity_check(monkeypatch):
     events = []
     identity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}

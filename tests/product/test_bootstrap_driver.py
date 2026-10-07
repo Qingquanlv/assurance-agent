@@ -20,6 +20,32 @@ from assurance_product.bootstrap.status import (
 from tests.product.test_bootstrap_contracts import _spec
 
 
+@pytest.fixture(autouse=True)
+def current_product_imports(monkeypatch):
+    # installed_sources replaces collected source modules with extracted wheels.
+    # Keep decorated functions and their exception/model identities coherent.
+    from assurance_product.bootstrap import contracts, driver, opencode, preflight, status
+
+    for module, names in (
+        (contracts, ("BootstrapStatusV1", "OpenCodeHandleV1")),
+        (driver, ("resume_bootstrap", "run_bootstrap", "stop_bootstrap")),
+        (opencode, ("OpenCodeLaunchError",)),
+        (preflight, ("BootstrapPreflightError",)),
+        (
+            status,
+            (
+                "read_bootstrap_status",
+                "run_dir_for",
+                "write_bootstrap_status",
+                "write_run_manifest",
+                "write_stop_request",
+            ),
+        ),
+    ):
+        for name in names:
+            monkeypatch.setitem(globals(), name, getattr(module, name))
+
+
 def _sut(tmp_path: Path) -> Path:
     project = tmp_path / "sut"
     aa = project / ".aa"
