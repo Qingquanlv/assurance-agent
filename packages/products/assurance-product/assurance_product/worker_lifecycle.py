@@ -440,31 +440,46 @@ def _pidfd_signal(fd: int, sig: signal.Signals) -> bool:
     return True
 
 
-def _linux_group_members(group: int, *, terminating: bool = False) -> dict[int, dict[str, object]]:
-    """Reject incomplete snapshots; an omitted exiting parent could spawn a child."""
-    members = {}
+def _linux_group_members(
+    group: int, *, terminating: bool = False, deadline: float | None = None
+) -> dict[int, dict[str, object]]:
+    """Rescan vanished entries before accepting a complete freeze snapshot."""
+    if deadline is None:
+        deadline = time.monotonic() + 0.1
     try:
-        entries = list(Path("/proc").iterdir())
-        for entry in entries:
-            if not entry.name.isdigit():
-                continue
-            pid = int(entry.name)
-            # Disappearance, including an unrelated process, makes this snapshot
-            # incomplete. Do not infer group membership from missing metadata.
-            stat = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-            if int(stat[2]) != group:
-                continue
-            if stat[0] == "Z":
-                if not terminating:
-                    raise ExecutionConflict("exited group member prevents freeze confirmation")
-                continue
-            observed = process_identity(pid)
-            if observed is None or observed["pgid"] != group:
-                raise ExecutionConflict("process group changed during enumeration")
-            members[pid] = observed
+        while True:
+            members = {}
+            vanished = False
+            entries = list(Path("/proc").iterdir())
+            for entry in entries:
+                if not entry.name.isdigit():
+                    continue
+                pid = int(entry.name)
+                try:
+                    stat = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                except FileNotFoundError:
+                    vanished = True
+                    continue
+                if int(stat[2]) != group:
+                    continue
+                if stat[0] == "Z":
+                    if not terminating:
+                        raise ExecutionConflict("exited group member prevents freeze confirmation")
+                    continue
+                observed = process_identity(pid)
+                if observed is None or observed["pgid"] != group:
+                    raise ExecutionConflict("process group changed during enumeration")
+                members[pid] = observed
+            # After whole-group freeze and bound-handle exit, no authenticated
+            # member can spawn. Reaping then cannot hide a newly born descendant.
+            if not vanished or terminating:
+                return members
+            # An unknown parent may have spawned after the directory snapshot
+            # and vanished before stat. A fresh complete scan must find its child.
+            if time.monotonic() >= deadline:
+                raise ExecutionConflict("cannot verify owned process group before freeze deadline")
     except (OSError, ValueError, IndexError) as error:
         raise ExecutionConflict("cannot verify owned process group") from error
-    return members
 
 
 def _linux_stopped(pid: int) -> bool:
@@ -549,7 +564,7 @@ def _terminate_linux(identity: dict[str, Any], timeout: float) -> bool:
             while True:
                 if _pidfd_exited(leader):
                     raise ExecutionConflict("group leader exited before quiescence confirmation")
-                members = _linux_group_members(pid)
+                members = _linux_group_members(pid, deadline=freeze_deadline)
                 added = False
                 for target, observed in members.items():
                     if target not in handles:
@@ -569,7 +584,7 @@ def _terminate_linux(identity: dict[str, Any], timeout: float) -> bool:
                     break
                 if time.monotonic() >= freeze_deadline:
                     raise ExecutionConflict("owned process group did not quiesce")
-        for sig in (signal.SIGTERM, signal.SIGKILL):
+        for sig in (signal.SIGKILL,) if group else (signal.SIGTERM, signal.SIGKILL):
             for fd in handles.values():
                 _pidfd_signal(fd, sig)
             deadline = time.monotonic() + timeout

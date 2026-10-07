@@ -126,7 +126,7 @@ uv run aa bootstrap stop --run-dir RUN_DIR --force
 
 Force stop confirms recorded Worker identities, owned children and external calls
 have ended, then releases only that execution's resource grants. Shared OpenCode
-services are never signaled. Confirmed stop exits 0; unconfirmed stop exits 40 and
+services are never signaled. Confirmed stop exits 0; stopping exits 20; unconfirmed stop exits 40 and
 keeps replacement execution blocked. Cancellation acknowledgment alone is
 insufficient. Resume clears the stop request under the lifecycle guard.
 
@@ -136,8 +136,9 @@ termination and escalation, uses those verified handles. Unsupported or denied
 pidfds keep admission closed; numeric PID/group signaling is not a fallback.
 Dedicated groups are frozen and rescanned with a bounded deadline before force
 termination; an unauthenticated remaining group or unconfirmed freeze fails
-closed. Group members remain frozen through TERM and KILL, so group force stop
-can require KILL. A naturally exited owner's existing lifetime-lock and external
+closed. Vanished process entries trigger bounded fresh scans before freeze
+confirmation. Confirmed frozen groups receive KILL directly through their verified
+handles and remain frozen through exit verification. A naturally exited owner's existing lifetime-lock and external
 activity confirmation remains required. This is the existing owned process-group
 containment boundary, not supervision of processes that escaped that group.
 On macOS, repeated native creation checks remain, but the subsequent numeric
@@ -306,4 +307,4 @@ Foreground execution can be stopped from another terminal using its actual works
 uv run aa stop --project-dir /absolute/path/to/run-workspace --invocation-id inv-123 --force
 ```
 
-The command verifies the local owner's process identity, confirms termination of its retained external activity, and releases only its owned resources before replacement is admitted. An acknowledged or unknown cancellation reports `unconfirmed` (exit 20); retry the same stop command after terminal proof becomes available. Omit `--force` to wait for local exit without sending a signal. The Python control API is `AssuranceProductApplication.stop(project_dir=..., invocation_id=..., force=True)`.
+The command verifies the local owner's process identity, confirms termination of its retained external activity, and releases only its owned resources before replacement is admitted. An acknowledged or unknown cancellation reports `unconfirmed` (exit 40); retry the same stop command after terminal proof becomes available. A pending local exit reports `stopping` (exit 20); confirmed stop exits 0. Omit `--force` to wait for local exit without sending a signal. The Python control API is `AssuranceProductApplication.stop(project_dir=..., invocation_id=..., force=True)`.

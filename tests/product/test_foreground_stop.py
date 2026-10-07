@@ -326,3 +326,16 @@ def test_read_only_ports_preserve_no_owner_and_upgrade_old_host_call_table(tmp_p
         assert conn.execute(
             "SELECT call_digest, stop_authority_digest FROM assurance_host_calls"
         ).fetchall() == [("old", None)]
+
+
+@pytest.mark.parametrize("status,exit_code", [("stopped", 0), ("stopping", 20), ("unconfirmed", 40)])
+def test_foreground_stop_cli_status_exit_mapping(tmp_path, monkeypatch, status, exit_code):
+    from click.testing import CliRunner
+    from assurance_product import cli
+
+    monkeypatch.setattr(cli.AssuranceProductApplication, "stop", lambda self, **kwargs: status)
+    result = CliRunner().invoke(
+        cli.app, ["stop", "--project-dir", str(tmp_path), "--invocation-id", "inv-stop", "--force"]
+    )
+    assert json.loads(result.output)["status"] == status
+    assert result.exit_code == exit_code

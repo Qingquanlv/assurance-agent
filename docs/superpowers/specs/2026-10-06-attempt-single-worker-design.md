@@ -38,13 +38,17 @@ validation and `signal.pidfd_send_signal` for TERM, KILL, STOP and failure-recov
 CONT. There is no numeric-PID or `killpg` fallback when pidfds are unsupported or
 denied. Dedicated groups are frozen with confirmed stopped state and bounded
 rescans, including children born before freeze; every discovered member is bound
-to a verified handle. Members remain frozen through TERM/KILL so no member can
-spawn during exit verification; force group stop may require KILL. An absent
+to a verified handle. Confirmed frozen groups receive KILL directly and remain
+frozen so no member can spawn during exit verification. Ordinary processes
+retain TERM followed by KILL after the termination timeout. An absent
 leader at handle acquisition uses the existing natural-exit confirmation without
 signaling; an unproved remaining group, failed enumeration, or unconfirmed freeze
-fails closed for this signaling path. Vanished enumeration entries or a group
-member already becoming a zombie during freeze also close admission rather than
-allow an unlisted newly born descendant to escape confirmation. Only pauses introduced by this stop controller
+fails closed for this signaling path. Vanished stat entries trigger fresh scans
+within the same freeze deadline before accepting quiescence: an unknown vanished
+parent may have spawned a child after the preceding directory snapshot. Permission,
+parse and proc-root failures, persistent churn and unknown owned zombies fail
+closed. After confirmed whole-group freeze and all bound handles exiting, vanished
+entries can be skipped because no authenticated member can spawn. Only pauses introduced by this stop controller
 are undone on its verified handles. Handle closure is unconditional. An empty
 snapshot or leader exit alone is not the active termination proof. Naturally
 exited owners retain the existing owner/children, lifetime flock and authenticated

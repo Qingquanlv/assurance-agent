@@ -119,7 +119,7 @@ def stop_command(project_dir: str, invocation_id: str, force: bool) -> None:
         force=force,
     )
     _emit({"invocation_id": invocation_id, "status": result})
-    raise SystemExit(0 if result == "stopped" else 20)
+    raise SystemExit({"stopped": 0, "stopping": 20, "unconfirmed": 40}[result])
 
 
 @app.command("compile")
