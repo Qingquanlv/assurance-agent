@@ -56,7 +56,6 @@ def test_generation_source_identity() -> None:
     assert descriptor.task_handlers == tuple(sorted(descriptor.task_handlers))
     assert descriptor.commit_validators == tuple(sorted(descriptor.commit_validators))
     assert descriptor.resources == tuple(sorted(descriptor.resources))
-    assert descriptor.effects == ()
     assert descriptor.bindings == ()
 
 

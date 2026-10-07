@@ -14,8 +14,6 @@ from graph_engine.canonical import JSONValue, canonical_json_bytes
 from assurance_improvement.contracts import (
     DeclarationProposal,
     ImprovementCandidateDocumentV3,
-    ImprovementEffectIntentV1,
-    ImprovementEffectReceiptV1,
     ImprovementDeliveryDocument,
     ImprovementReviewSubject,
     RetroContextV3,
@@ -337,12 +335,6 @@ def test_improvement_schema_bytes_equal_model_schema() -> None:
     )
     assert schema_bytes("assurance.improvement.schema.declaration-proposal.v1") == canonical_json_bytes(
         cast(JSONValue, DeclarationProposal.model_json_schema())
-    )
-    assert schema_bytes("assurance.improvement.schema.improvement-effect-intent.v1") == canonical_json_bytes(
-        cast(JSONValue, ImprovementEffectIntentV1.model_json_schema())
-    )
-    assert schema_bytes("assurance.improvement.schema.improvement-effect-receipt.v1") == canonical_json_bytes(
-        cast(JSONValue, ImprovementEffectReceiptV1.model_json_schema())
     )
 
 

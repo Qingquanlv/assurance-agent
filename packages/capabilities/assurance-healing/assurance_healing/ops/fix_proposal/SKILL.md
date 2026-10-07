@@ -19,7 +19,6 @@ fix proposal. Schema truth is `assurance_healing.contracts` for `FixProposalResu
 ### optional
 
 - prior proposal digest
-- approval requirement flag
 
 ## Outputs
 
@@ -38,8 +37,9 @@ fix proposal. Schema truth is `assurance_healing.contracts` for `FixProposalResu
   change-scoped files authorized by the typed result.
 - Do not write product trees (`app/`, `src/`, `web/src/`).
 - Do not select a host adapter or remember prior conversation state.
-- When a proposal needs review, set `needs_review: true` and leave apply to an
-  approved receipt.
+- When a proposal needs review, set `needs_review: true`; that item is excluded
+  from automatic repair. Eligible items that do not need review and are not
+  critical proceed to bounded test repair without human approval.
 - Write the typed result to `qa/results/healing/fix-proposal.json`.
 - Return the typed result and stop.
 

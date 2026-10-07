@@ -89,20 +89,8 @@ class _ProductionRepository:
                     found.append(str(path.relative_to(self.root)))
         return tuple(sorted(set(found)))
 
-    def effect_factory_registry_definitions(self) -> tuple[str, ...]:
-        found: list[str] = []
-        markers = ("EffectStoreContract", "EffectHandlerFactory", "factory registry", "EffectFactoryRegistry")
-        for path in self._iter_production_files():
-            if path.suffix != ".py":
-                continue
-            text = path.read_text(encoding="utf-8")
-            if any(marker in text for marker in markers):
-                found.append(str(path.relative_to(self.root)))
-        return tuple(sorted(found))
-
 
 def test_production_tree_contains_no_deleted_runtime_surface() -> None:
     repository = _ProductionRepository(Path(__file__).resolve().parents[2])
     assert repository.production_symbol_hits(FORBIDDEN_SYMBOLS) == {}
     assert repository.production_pickle_imports() == ()
-    assert repository.effect_factory_registry_definitions() == ()

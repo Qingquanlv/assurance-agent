@@ -271,3 +271,150 @@ def test_production_host_rejects_windows(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(UnsupportedProductionPlatform, match="Linux and macOS"):
         _ProcessSupervisor.for_platform()
+
+
+def test_runtime_envelope_is_durable_before_dispatch(production_host_fixture, tmp_path) -> None:
+    from assurance_product.change_workspace import ChangeWorkspace
+    from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
+    from assurance_product.retained_host import RetainedHost
+    from assurance_product.worker_lifecycle import acquire_execution, control_root
+    import json
+
+    fixture = production_host_fixture
+    project = tmp_path / "project"
+    workspace = ChangeWorkspace.prepare(Path(project).resolve(), "run")
+
+    async def scenario():
+        async with open_sqlite_checkpointer(workspace) as backend:
+
+            class CrashingHost:
+                async def execute(self, call):
+                    cursor = await backend._conn.execute("SELECT payload FROM assurance_host_calls")
+                    row = await cursor.fetchone()
+                    assert row is not None
+                    assert json.loads(bytes(row[0])) == call.model_dump(mode="json")
+                    raise RuntimeError("dispatch crash")
+
+            host = RetainedHost(CrashingHost(), backend, fixture.attempt_journal)
+            with pytest.raises(RuntimeError, match="dispatch crash"):
+                await host.execute(fixture.call)
+
+    with acquire_execution(workspace.paths.project_root, "inv-1"):
+        asyncio.run(scenario())
+    assert json.loads((control_root(workspace.paths.project_root) / "owner.json").read_text())["calls"]
+
+
+@pytest.mark.parametrize("status, expected", [("acknowledged", False), ("terminal", True)])
+def test_stop_bridge_rebinds_envelope_and_requires_terminal_cancel(
+    production_host_fixture, tmp_path, monkeypatch, status, expected
+) -> None:
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from assurance_product.change_workspace import ChangeWorkspace
+    from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
+    from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
+    from assurance_product.retained_host import confirm_owned_calls
+    from assurance_product.bootstrap.status import write_run_manifest
+    from graph_engine.attempts.resource_arbiter import ResourceArbiter
+    from graph_engine.plugin_api import TaskActivityCancelResult
+    from graph_engine.canonical import canonical_json_bytes
+
+    fixture = production_host_fixture
+    workspace = ChangeWorkspace.prepare((tmp_path / "project").resolve(), "inv-1")
+    run_dir = tmp_path / "run"
+    write_run_manifest(
+        run_dir,
+        {
+            "project_dir": str(workspace.paths.project_root),
+            "invocation_id": "inv-1",
+            "product": "test",
+            "binding_dist": "test",
+            "binding_declaration": "test",
+            "config_tree": "test",
+        },
+    )
+    monkeypatch.setattr("assurance_product.cli._resolve_and_audit", lambda **kwargs: (object(), None))
+    monkeypatch.setattr(
+        "assurance_product.cli._authorize_secrets", lambda *args: empty_runtime_authorization()
+    )
+    monkeypatch.setattr(
+        "assurance_product.bootstrap.spec.load_run_spec",
+        lambda path: SimpleNamespace(opencode_token_env="TOKEN"),
+    )
+
+    async def scenario():
+        async with open_sqlite_checkpointer(workspace) as backend:
+            previous = await backend.lease.acquire("inv-1", owner_id="old")
+            await backend.lease.release(previous)
+            arbiter = ResourceArbiter(SqliteResourceAuthorizationStore(backend))
+            grant = await arbiter.acquire(fixture.attempt_key, ResourceClaims(), fencing_token=1)
+            snap = await fixture.attempt_journal.load(fixture.attempt_key)
+            await fixture.attempt_journal.append(
+                fixture.attempt_key,
+                (ResourcesAuthorized(authorization_id=grant.authorization_id),),
+                expected_revision=snap.revision,
+                fencing_token=1,
+            )
+            call = fixture.call.model_copy(
+                update={
+                    "identity": fixture.call.identity.model_copy(
+                        update={"authorization_id": grant.authorization_id}
+                    ),
+                    "activity_rpc": fixture.call.activity_rpc.model_copy(
+                        update={"authorization_id": grant.authorization_id}
+                    ),
+                }
+            )
+            digest = canonical_digest(call.model_dump(mode="json"))
+            await backend._conn.execute(
+                "INSERT INTO assurance_host_calls (call_digest, owner_nonce, attempt_key_digest, payload) VALUES (?, ?, ?, ?)",
+                (
+                    digest,
+                    "nonce",
+                    fixture.attempt_key.digest,
+                    canonical_json_bytes(call.model_dump(mode="json")),
+                ),
+            )
+            await backend._conn.commit()
+
+            class StopHost:
+                def read_terminal_receipts(self, identity):
+                    assert identity == call.identity
+                    return ()
+
+                async def cancel(self, cancellation):
+                    assert cancellation.request == call.request
+                    assert cancellation.identity.fencing_token == 2
+                    assert cancellation.activity_rpc.fencing_token == 2
+                    assert cancellation.identity.operation == "cancel"
+                    result = TaskActivityCancelResult(
+                        status=status,
+                        outcome=TaskOutcome.stopped("cancelled") if status == "terminal" else None,
+                    )
+                    return TaskHostCallResult(operation="cancel", cancel_result=result)
+
+            fake = SimpleNamespace(
+                backend=backend,
+                attempt_journal=fixture.attempt_journal,
+                host=StopHost(),
+                revision_id=call.identity.graph_revision,
+                product_lock_digest=call.identity.product_lock_digest,
+            )
+
+            @asynccontextmanager
+            async def ports(*args, **kwargs):
+                yield fake
+
+            monkeypatch.setattr("assurance_product.runtime_ports.ProductRuntimePorts.open", ports)
+            owner = {
+                "workspace": str(workspace.paths.project_root),
+                "invocation": "inv-1",
+                "nonce": "nonce",
+                "run_dir": str(run_dir),
+                "calls": [digest],
+            }
+            assert await confirm_owned_calls(owner) is expected
+            cursor = await backend._conn.execute("SELECT confirmed FROM assurance_host_calls")
+            assert bool((await cursor.fetchone())[0]) is expected
+
+    asyncio.run(scenario())

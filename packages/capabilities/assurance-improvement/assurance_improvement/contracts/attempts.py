@@ -66,6 +66,9 @@ from assurance_improvement.contracts.handoff import (
     COLLECTED_WRITE,
     CONTEXT_WRITE,
     MEMORY_EVAL_WRITE,
+    MEMORY_APPLY_WRITE,
+    MEMORY_ROLLBACK_WRITE,
+    CHANGE_EXPORT_WRITE,
     PROJECTION_WRITE,
 )
 from assurance_improvement.contracts.retro import (
@@ -231,6 +234,7 @@ _APPLY = _task(
     "assurance.improvement.apply-memory-improvement",
     ApplyMemoryInput,
     MemoryApplyReceipt,
+    writes=(MEMORY_APPLY_WRITE,),
     bindings=(
         _bind(_AUTO_REVIEW, "projection", "projection_ref"),
         _bind(_EVALUATE, "memory-eval", "eval_receipt_ref"),
@@ -248,6 +252,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
             "assurance.improvement.export-change-improvement",
             ExportChangeInput,
             ChangeExportPublishedV1,
+            writes=(CHANGE_EXPORT_WRITE,),
         ),
         "assurance.improvement.reconcile-improvements": _RECONCILE,
         "assurance.improvement.retro-synthesize": _SYNTHESIZE,
@@ -257,6 +262,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
             "assurance.improvement.rollback-memory-improvement",
             RollbackMemoryInput,
             MemoryRollbackPublishedV1,
+            writes=(MEMORY_ROLLBACK_WRITE,),
         ),
     }
 )
@@ -340,7 +346,6 @@ class ClosedImprovementExecutor:
             raise InputError(outcome.failure.message)
         return ExecutedAttemptResult(
             output=self._output_model.model_validate(outcome.output),
-            effects=tuple(outcome.effects),
         )
 
 

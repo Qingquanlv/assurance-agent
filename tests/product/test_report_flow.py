@@ -63,12 +63,6 @@ def test_report_follows_successful_existing_test_repair(tmp_path) -> None:
         _reported(script)
         done = await _invoke(
             script,
-            resumes=(
-                {
-                    "action": "approve",
-                    "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-                },
-            ),
             budgets=_budgets(),
         )
         names = _names(done.captured)

@@ -525,6 +525,7 @@ async def _repair_epoch_handoff() -> None:
     _case(script, "pass", "pass", epochs=(0, 1))
     _issue_then_coverage(script)
     _one_repair(script, 1, "satisfied")
+    _reported(script)
     script["intake.coverage-rework"] = [
         committed(
             {"rework_ref": {"path": "qa/results/cases/case-rework-context.json", "digest": _SHA}},
@@ -532,12 +533,9 @@ async def _repair_epoch_handoff() -> None:
             artifacts=[{"path": "qa/results/cases/case-rework-context.json", "digest": _SHA}],
         )
     ]
-    approval = {
-        "action": "approve",
-        "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-    }
-    done = await _invoke(script, resumes=(approval,))
+    done = await _invoke(script)
     proposals = [item for name, item in done.captured if name == "healing.fix-proposal"]
+    assert done.outcome == "achieved"
     assert len(proposals) == 2
     first, second = proposals
     assert getattr(first, "coverage_epoch") == 0
@@ -733,11 +731,7 @@ async def _healing_counters() -> None:
         )
     ]
     _reported(script)
-    approval = {
-        "action": "approve",
-        "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-    }
-    done = await _invoke(script, resumes=(approval, approval))
+    done = await _invoke(script)
     assert done.outcome == "achieved"
     repair_rounds = [
         getattr(item, "repair_round")
@@ -769,19 +763,6 @@ async def _mounted_interrupt_ids() -> None:
     case["intake.case-design"] = [committed({"artifacts": []}, _RECEIPT)]
     case["intake.case-review"] = [committed(_review("needs_human"), _RECEIPT)]
     assert _interrupt_id((await _invoke(case)).result) == "full.human-review"
-
-    healing: dict[str, list[object]] = {}
-    _front(healing)
-    _case(healing)
-    _tail_until_inspect(healing, ("repairable_execution_failure", 0))
-    healing["healing.fix-proposal"] = [
-        committed(
-            {"schema_version": "1"},
-            _RECEIPT,
-            artifacts=[{"path": "qa/results/healing/fix-proposal.json", "digest": _SHA}],
-        )
-    ]
-    assert _interrupt_id((await _invoke(healing)).result) == "full.approval"
 
     lane: dict[str, list[object]] = {}
     _front(lane)

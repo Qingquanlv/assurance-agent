@@ -116,7 +116,7 @@ def test_restart_clears_a_confirmed_operator_pause(tmp_path: Path) -> None:
 def test_restart_reconciles_an_unresolved_stop_before_clearing_it(
     tmp_path: Path, known_snapshot: bool
 ) -> None:
-    run_dir = _paused_run(tmp_path, reason="effect_pending")
+    run_dir = _paused_run(tmp_path, reason="attempt_recovery_pending")
     prior = read_bootstrap_status(run_dir)
     snapshot = dict(prior.status) if known_snapshot else {}
     write_bootstrap_status(run_dir, prior.model_copy(update={"status": snapshot}))

@@ -5,7 +5,6 @@ from typing import Annotated, Literal, Self, cast
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
     FailureKind,
     StagedWriteSet,
@@ -257,23 +256,6 @@ class TaskAttemptFailed(RuntimeEventModel):
     promotion_receipt_digest: None = None
 
 
-class TaskAttemptCommittedEffectFailed(RuntimeEventModel):
-    """Terminal task failure after its staged writes were durably promoted."""
-
-    kind: Literal["task_attempt_committed_effect_failed"] = "task_attempt_committed_effect_failed"
-    activation_id: str
-    attempt: int = Field(ge=1)
-    failure: TaskFailure
-    staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
-    promotion_receipt_digest: str = Field(pattern=_SHA256_PATTERN)
-
-    @model_validator(mode="after")
-    def _require_permanent_failure(self) -> Self:
-        if self.failure.retryable:
-            raise ValueError("committed effect failure must be non-retryable")
-        return self
-
-
 class TaskAttemptStopped(RuntimeEventModel):
     kind: Literal["task_attempt_stopped"] = "task_attempt_stopped"
     activation_id: str
@@ -293,18 +275,13 @@ class TaskCommitPrepared(RuntimeEventModel):
     workspace_identity: TaskWorkspaceIdentity
     staged_write_set: StagedWriteSet
     staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
-    effect_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
-    def _validate_effect_ids(self) -> Self:
+    def _validate_prepared_commit(self) -> Self:
         if self.workspace_identity.identity_digest != self.staged_write_set.identity_digest:
             raise ValueError("prepared staged write set belongs to another workspace")
         if self.staged_write_set_digest != self.staged_write_set.staged_digest:
             raise ValueError("prepared staged write-set digest is not canonical")
-        if any(not effect_id for effect_id in self.effect_ids):
-            raise ValueError("prepared effect ids must be non-empty")
-        if len(set(self.effect_ids)) != len(self.effect_ids):
-            raise ValueError("prepared effect ids must be unique")
         return self
 
 
@@ -315,59 +292,6 @@ class TaskPromotionCompleted(RuntimeEventModel):
     attempt: int = Field(ge=1)
     staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
     promotion_receipt_digest: str = Field(pattern=_SHA256_PATTERN)
-
-
-class EffectIntentCommitted(RuntimeEventModel):
-    kind: Literal["effect_intent_committed"] = "effect_intent_committed"
-    effect_id: str
-    activation_id: str
-    attempt: int = Field(ge=1)
-    index: int = Field(ge=0)
-    effect_kind: str
-    payload: FrozenJSONValue
-    idempotency_key: str = Field(pattern=_SHA256_PATTERN)
-
-    @field_validator("effect_kind")
-    @classmethod
-    def _validate_effect_kind(cls, value: str) -> str:
-        try:
-            return validate_qualified_id(value)
-        except IdentifierError as error:
-            raise ValueError(f"invalid effect kind: {value!r}") from error
-
-    @field_validator("effect_id")
-    @classmethod
-    def _validate_effect_id(cls, value: str) -> str:
-        if not value:
-            raise ValueError("effect id must not be empty")
-        return value
-
-
-class EffectApplyStarted(RuntimeEventModel):
-    kind: Literal["effect_apply_started"] = "effect_apply_started"
-    effect_id: str
-    apply_attempt: int = Field(ge=1)
-
-    @field_validator("effect_id")
-    @classmethod
-    def _validate_effect_id(cls, value: str) -> str:
-        if not value:
-            raise ValueError("effect id must not be empty")
-        return value
-
-
-class EffectReceiptRecorded(RuntimeEventModel):
-    kind: Literal["effect_receipt_recorded"] = "effect_receipt_recorded"
-    effect_id: str
-    apply_attempt: int = Field(ge=1)
-    receipt: FrozenJSONValue
-
-    @field_validator("effect_id")
-    @classmethod
-    def _validate_effect_id(cls, value: str) -> str:
-        if not value:
-            raise ValueError("effect id must not be empty")
-        return value
 
 
 class NodeCompleted(RuntimeEventModel):
@@ -451,12 +375,8 @@ RuntimeEvent = Annotated[
     | TaskActivityTerminalObserved
     | TaskLeaseAdopted
     | TaskCommitPrepared
-    | EffectIntentCommitted
-    | EffectApplyStarted
-    | EffectReceiptRecorded
     | TaskAttemptSucceeded
     | TaskAttemptFailed
-    | TaskAttemptCommittedEffectFailed
     | TaskAttemptStopped
     | TaskPromotionCompleted
     | NodeCompleted
@@ -504,9 +424,6 @@ def _envelope_digest_payload(seq: int, event: RuntimeEvent) -> JSONValue:
 
 
 __all__ = [
-    "EffectApplyStarted",
-    "EffectIntentCommitted",
-    "EffectReceiptRecorded",
     "EventEnvelope",
     "FailureKind",
     "GraphCompleted",
@@ -528,7 +445,6 @@ __all__ = [
     "TaskActivityPrepared",
     "TaskActivityTerminalObserved",
     "TaskAttemptFailed",
-    "TaskAttemptCommittedEffectFailed",
     "TaskAttemptStarted",
     "TaskAttemptStopped",
     "TaskAttemptSucceeded",

@@ -1,4 +1,4 @@
-"""Bind the approved test files, then verify the staged repair and write its history."""
+"""Bind the eligible test files, then verify the staged repair and write its history."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from assurance_healing.contracts.application import (
 from assurance_healing.contracts.repair_input import ApplyBoundInputV1
 from assurance_healing.operations.repair_input import opened_repair_input
 from assurance_healing.operations.application import (
-    approved_sources,
+    repair_sources,
     expected_repair_history,
     repair_history_path,
     verify_application,
@@ -36,7 +36,7 @@ def _apply(
 
 def before(ctx: PrepareContext, business: ApplyBoundInputV1) -> ApplyTestRepairInputV1:
     skill = _apply(ctx, business, InputError)
-    paths = tuple(approved_sources(skill, ctx.project_root))
+    paths = tuple(repair_sources(skill, ctx.project_root))
     ctx.bind("qa/tests", paths)
     ctx.extra("allowed_test_paths", list(paths))
     return skill

@@ -17,6 +17,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import ProductLock
 from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
+from assurance_product.worker_lifecycle import exclusive_application
 from assurance_product.binding_builder import build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.invocation_identity import (
@@ -251,6 +252,7 @@ class AssuranceProductApplication:
         manifest = product_graph_manifest(composition, product_lock)
         return ProductBuildArtifacts(product_lock, manifest)
 
+    @exclusive_application
     def start(
         self,
         *,
@@ -350,6 +352,7 @@ class AssuranceProductApplication:
             "root_input_digest": root_input_digest,
         }
 
+    @exclusive_application
     def run(
         self,
         *,
@@ -414,6 +417,7 @@ class AssuranceProductApplication:
         code, mapped = _LG_EXIT[status]
         return SimpleRun(status=status, terminal_reason=None, actions=(), projection=None), mapped, code
 
+    @exclusive_application
     def resume(
         self,
         *,
@@ -555,9 +559,9 @@ class AssuranceProductApplication:
         )
 
     def request_stop(self, run_dir: Path, *, change_id: str) -> None:
-        from assurance_product.bootstrap.status import write_stop_request
+        from assurance_product.worker_lifecycle import stop_run
 
-        write_stop_request(run_dir, change_id=change_id)
+        stop_run(run_dir, change_id=change_id)
 
     def status(
         self,
@@ -793,15 +797,19 @@ class AssuranceProductApplication:
         ) as ports:
             application = self._application(ports)
             self._remember_started(application, ports, invocation_id, record.entrypoint)
-            result = await application.run(
+            execution = self._execution_factory(
+                ports,
                 invocation_id=invocation_id,
-                execution_factory=self._execution_factory(
-                    ports,
-                    invocation_id=invocation_id,
-                    entrypoint=record.entrypoint,
-                    root_input_digest=record.root_input_digest,
-                ),
+                entrypoint=record.entrypoint,
+                root_input_digest=record.root_input_digest,
             )
+            stopped_resume = await _abandoned_system_resume(ports, record, invocation_id)
+            if stopped_resume is None:
+                result = await application.run(invocation_id=invocation_id, execution_factory=execution)
+            else:
+                result = await application.resume(
+                    invocation_id=invocation_id, execution_factory=execution, resume=stopped_resume
+                )
             if record.entrypoint != "retro":
                 from assurance_product.retro_evidence import export_runtime_evidence
 
@@ -1032,6 +1040,48 @@ def _assert_langgraph_revision(workspace: ChangeWorkspace, composition: Any, inv
 async def _graph_snapshot(artifact: object, entrypoint: str, invocation_id: str) -> object:
     graph = getattr(artifact, "entrypoints", {})[entrypoint]
     return await graph.aget_state({"configurable": {"thread_id": invocation_id}})
+
+
+async def _abandoned_system_resume(ports: Any, record: Any, invocation_id: str) -> dict[str, object] | None:
+    """Resume existing system envelopes only after the owner's stop/cleanup barrier.
+
+    This uses the existing graph checkpoint and normal resume API. Human gates
+    and non-abandoned waits retain their ordinary graph behavior.
+    """
+    from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend
+
+    backend = getattr(ports, "backend", None)
+    if not isinstance(backend, AssuranceSqliteBackend):
+        return None
+    async with backend.store._lock:
+        cursor = await backend._conn.execute(
+            "SELECT attempt_key_digest, scope FROM assurance_attempt_generations WHERE abandoned = 1"
+        )
+        rows = await cursor.fetchall()
+    abandoned = {
+        str(key) for key, scope in rows if json.loads(bytes(scope)).get("invocation_id") == invocation_id
+    }
+    if not abandoned:
+        return None
+    bound = await ports.read_only_execution(
+        invocation_id=invocation_id, root_input_digest=record.root_input_digest
+    )
+    snapshot = await _graph_snapshot(bound.artifact, record.entrypoint, invocation_id)
+    pending = getattr(snapshot, "interrupts", ())
+    if not pending:
+        return None
+    resume: dict[str, object] = {}
+    for item in pending:
+        value = getattr(item, "value", None)
+        if not isinstance(value, Mapping) or value.get("attempt_key") not in abandoned:
+            return None
+        kind = value.get("kind")
+        field = "wakeup" if kind == "system_wake" else "reconciliation" if kind == "system_block" else None
+        identifier = getattr(item, "id", None)
+        if field is None or field not in value or not isinstance(identifier, str):
+            return None
+        resume[identifier] = {field: value[field]}
+    return resume
 
 
 __all__ = [

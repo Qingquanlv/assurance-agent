@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -65,7 +66,13 @@ def test_next_managed_run_archives_prior_status_and_preserves_workspace(
     )
     for path in retained:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"prior evidence\n")
+        if path.suffix == ".sqlite3":
+            with sqlite3.connect(path) as connection:
+                connection.execute("CREATE TABLE prior_evidence (value TEXT)")
+                connection.execute("INSERT INTO prior_evidence VALUES (?)", ("prior evidence",))
+        else:
+            path.write_bytes(b"prior evidence\n")
+    retained_bytes = {path: path.read_bytes() for path in retained}
     monkeypatch.setattr("assurance_product.operator.launch_worker", lambda **kwargs: None)
 
     AssuranceOperator()._launch_or_fail(run_dir=current, change_id="BOOT-new", environ={})
@@ -73,7 +80,7 @@ def test_next_managed_run_archives_prior_status_and_preserves_workspace(
     assert (previous / "qa-status.json").read_bytes() == content
     assert not (task / "qa" / "status.json").exists()
     assert ChangeWorkspace.open(task, "BOOT-new").change_id == "BOOT-new"
-    assert all(path.read_bytes() == b"prior evidence\n" for path in retained)
+    assert all(path.read_bytes() == retained_bytes[path] for path in retained)
 
 
 @pytest.mark.parametrize(

@@ -1,10 +1,13 @@
-"""Compile-time checks. Domination is intentionally not decided here."""
+"""Compile-time structure, input and guaranteed-availability checks."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
+
+from graph_engine.artifacts import ArtifactRef
+from graph_engine.flow.dataflow import guaranteed
 
 from pydantic import BaseModel
 
@@ -183,6 +186,7 @@ def _check_step(flow: Flow, step: StepNode) -> None:
         view.input_model,
         step.inputs,
         {item.field for item in view.bindings},
+        control_types=_upstream_control_types(flow, step.name, _links(flow)),
     )
 
 
@@ -206,9 +210,41 @@ def _check_bindings(
     writes: Mapping[str, set[str]],
 ) -> None:
     available = _available(flow, step.name, links, writes)
-    for binding in view_op(step.op).bindings:
-        if binding.ledger_key not in available:
-            raise FlowCheckError(f"{step.name} ledger key {binding.ledger_key} has no upstream writer")
+    view = view_op(step.op)
+    sources = dict(step.inputs)
+    for binding in view.bindings:
+        sources.setdefault(binding.field, LedgerRefs(binding.ledger_key, binding.many))
+    _check_ledger_sources(
+        step.name,
+        view.input_model,
+        sources,
+        available,
+        implicit=set(sources) - set(step.inputs),
+        fallback=set(flow.input.model_fields) | set(_upstream_control_types(flow, step.name, links)),
+    )
+
+
+def _check_ledger_sources(
+    label: str,
+    model: type[BaseModel],
+    sources: Mapping[str, InputSource],
+    available: set[str],
+    *,
+    implicit: set[str] | None = None,
+    fallback: set[str] | None = None,
+) -> None:
+    for name, source in sources.items():
+        if not isinstance(source, (LedgerRefs, LedgerReceipt)) or source.key in available:
+            continue
+        field = model.model_fields[name]
+        if name in (implicit or set()):
+            if not field.is_required() or name in (fallback or set()):
+                continue
+        elif unwrap_optional(field.annotation) != unwrap_annotated(field.annotation):
+            continue
+        raise FlowCheckError(
+            f"ledger key {source.key} is not available at {label}; has no upstream writer guaranteed on every path"
+        )
 
 
 def _check_parallel(
@@ -237,9 +273,17 @@ def _check_parallel(
             view = view_op(branch)
             outcomes = ("succeeded", "failed")
             groups.append((key, set(view.write_keys())))
-            for binding in view.bindings:
-                if binding.ledger_key not in available:
-                    raise FlowCheckError(f"ledger key {binding.ledger_key} is not available at {node.name}")
+            sources = {
+                binding.field: LedgerRefs(binding.ledger_key, binding.many) for binding in view.bindings
+            }
+            _check_ledger_sources(
+                f"{node.name}.{key}",
+                view.input_model,
+                sources,
+                available,
+                implicit=set(sources),
+                fallback=set(flow.input.model_fields),
+            )
             _check_call_inputs(
                 flow,
                 f"{node.name}.{key}",
@@ -297,10 +341,27 @@ def _check_controls(flow: Flow) -> None:
             seen.add(name)
             _reject_channel_name(name, input_fields)
             assert_model_path(output_model, path, what=f"control {name}")
-            if _path_annotation(output_model, path) is None:
+            annotation = _path_annotation(output_model, path)
+            if annotation is None:
                 raise FlowCheckError(f"control {name} path {path} has no type")
+            if not _control_type(annotation):
+                raise FlowCheckError(f"control {name} must be scalar metadata or typed artifact references")
     for name in surface_controls(flow):
         _reject_channel_name(name, input_fields)
+
+
+def _control_type(annotation: Any) -> bool:
+    inner = unwrap_optional(unwrap_annotated(annotation))
+    if inner in (str, int, float, bool, type(None)):
+        return True
+    if isinstance(inner, type) and issubclass(inner, ArtifactRef):
+        return True
+    origin, args = get_origin(inner), get_args(inner)
+    if origin is Literal:
+        return all(isinstance(value, (str, int, float, bool)) or value is None for value in args)
+    if origin in (list, tuple, set, frozenset):
+        return bool(args) and all(arg is Ellipsis or _control_type(arg) for arg in args)
+    return False
 
 
 def _check_public_receipts(flow: Flow) -> None:
@@ -367,9 +428,7 @@ def _check_child_inputs(
         set(),
         control_types=controls,
     )
-    for source in node.inputs.values():
-        if isinstance(source, (LedgerRefs, LedgerReceipt)) and source.key not in available_ledger:
-            raise FlowCheckError(f"ledger key {source.key} is not available at {node.name}")
+    _check_ledger_sources(node.name, model, node.inputs, available_ledger)
 
 
 def _upstream_control_types(
@@ -379,6 +438,7 @@ def _upstream_control_types(
 ) -> dict[str, Any]:
     """Source types of control outputs written before ``node_name``."""
     found: dict[str, Any] = {}
+    available = guaranteed(flow, "control").get(node_name, set())
     steps = {node.name: node for node in flow.nodes if isinstance(node, StepNode)}
     for item in flow.controls:
         if not _reaches(item.step, node_name, links):
@@ -387,7 +447,8 @@ def _upstream_control_types(
         output_model = None if step is None else view_op(step.op).output_model
         for name, path in item.fields.items():
             annotation = None if output_model is None else _path_annotation(output_model, path)
-            found.setdefault(name, annotation)
+            if name in available:
+                found.setdefault(name, annotation)
     for other in flow.nodes:
         if not isinstance(other, SubflowNode) or not _reaches(other.name, node_name, links):
             continue
@@ -395,7 +456,8 @@ def _upstream_control_types(
         if child is None:
             continue
         for name, annotation in surface_controls(child).items():
-            found.setdefault(name, annotation)
+            if name in available:
+                found.setdefault(name, annotation)
     return found
 
 
@@ -486,8 +548,8 @@ def _check_source(
             raise FlowCheckError(f"{label} gate is not in {flow.name}")
         if isinstance(source, GateField) and source.name not in gate.decision.model_fields:
             raise FlowCheckError(f"gate {gate.name} has no field {source.name}")
-        if not _reaches(gate_name, label.split(".", 1)[0], _links(flow)):
-            raise FlowCheckError(f"gate {gate.name} is not upstream of {label}")
+        if gate_name not in guaranteed(flow, "gate").get(label.split(".", 1)[0], set()):
+            raise FlowCheckError(f"gate {gate.name} is not upstream of {label} on every path")
         return
     raise FlowCheckError(f"{label} input source is not supported")
 
@@ -593,11 +655,7 @@ def _available(
     links: Mapping[str, tuple[str, ...]],
     writes: Mapping[str, set[str]],
 ) -> set[str]:
-    found = set(flow.ledger_input_keys)
-    for writer, keys in writes.items():
-        if _reaches(writer, node_name, links):
-            found.update(keys)
-    return found
+    return guaranteed(flow).get(node_name, set())
 
 
 def _direct_writes(node: Node, stack: tuple[int, ...]) -> set[str]:

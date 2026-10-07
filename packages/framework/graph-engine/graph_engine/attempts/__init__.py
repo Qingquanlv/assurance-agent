@@ -16,7 +16,6 @@ from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_at
 from graph_engine.attempts.phase import AttemptPhase, AttemptPhaseIntegrityError, derive_attempt_phase
 from graph_engine.attempts.resolutions import (
     AttemptResolution,
-    CommittedEffectFailure,
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,
@@ -37,7 +36,6 @@ __all__ = [
     "AttemptTimeoutPolicy",
     "AuthorizedAttemptScope",
     "BusinessActivation",
-    "CommittedEffectFailure",
     "CommittedTaskResult",
     "ExecutedAttemptResult",
     "ExecutorResolution",

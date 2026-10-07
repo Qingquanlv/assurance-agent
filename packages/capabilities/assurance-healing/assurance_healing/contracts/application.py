@@ -1,4 +1,4 @@
-"""Contracts for applying an approved repair to existing generated tests."""
+"""Contracts for applying a bounded repair to existing generated tests."""
 
 from __future__ import annotations
 
@@ -55,7 +55,6 @@ class ApplyTestRepairInputV1(FrozenModel):
     repair_round: int = Field(ge=1)
     reviewed_case: ReviewedCaseV1
     proposal_ref: EvidenceArtifactRefV1
-    approval_ref: EvidenceArtifactRefV1 | None
     execution_ref: EvidenceArtifactRefV1
     mapping_ref: EvidenceArtifactRefV1
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
@@ -89,7 +88,6 @@ class ApplyTestRepairInputV1(FrozenModel):
             self.proposal_ref,
             self.execution_ref,
             self.mapping_ref,
-            *(() if self.approval_ref is None else (self.approval_ref,)),
         )
         if any(not ref.path.startswith(prefix) for ref in refs):
             raise ValueError("repair evidence must belong to the current change")

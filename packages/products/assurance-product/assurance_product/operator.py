@@ -27,6 +27,7 @@ from assurance_product.bootstrap.status import (
 )
 from assurance_product.models import TEST_FAMILY_ORDER
 from assurance_product.sut_worktree import ensure_run_worktree
+from assurance_product.worker_lifecycle import ExecutionConflict
 
 _FAMILIES = tuple(TEST_FAMILY_ORDER)
 _LOOPBACK = frozenset({"127.0.0.1", "localhost"})
@@ -47,18 +48,16 @@ def _nonce() -> str:
 
 
 def launch_worker(*, run_dir: Path, change_id: str, environ: Mapping[str, str]) -> None:
-    import subprocess
     import sys
+    from assurance_product.worker_lifecycle import acquire_execution, launch_reserved, run_workspace
 
-    del change_id
-    subprocess.Popen(  # noqa: S603 - fixed interpreter and module, run dir is the only argument
-        [sys.executable, "-m", "assurance_product.operator_worker", str(run_dir)],
-        env=dict(environ),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    workspace, invocation = run_workspace(run_dir)
+    if invocation != change_id:
+        raise OperatorError("invalid_input", "worker invocation identity differs")
+    with acquire_execution(workspace, invocation, run_dir=run_dir) as owner:
+        launch_reserved(
+            owner, [sys.executable, "-m", "assurance_product.operator_worker", str(run_dir)], environ
+        )
 
 
 def serve_run(run_dir: Path, *, environ: Mapping[str, str] | None = None) -> BootstrapStatusV1:
@@ -326,6 +325,8 @@ class AssuranceOperator:
         child_env = dict(environ or os.environ)
         try:
             launch_worker(run_dir=run_dir, change_id=change_id, environ=child_env)
+        except ExecutionConflict as error:
+            raise OperatorError("conflict", str(error)) from error
         except OperatorError:
             raise
         except Exception as error:
@@ -395,74 +396,87 @@ class AssuranceOperator:
             config_source=config_source,
             endpoint=endpoint,
         )
-        try:
-            with allocation_lock(task_directory, definition.task_id):
-                manifests = run_manifests(task_directory)
-                matches = [row for row in manifests if row.get("request_id") == request_id]
-                if matches:
-                    if matches[0].get("input_digest") != digest:
-                        raise OperatorError("conflict", "request ID already belongs to different inputs")
-                    allocated = matches[0]
-                    change_id = str(allocated["change_id"])
-                    run_dir = Path(str(allocated["run_dir"]))
-                    launch = False
-                else:
-                    if active_manifest(manifests) is not None:
-                        raise OperatorError("conflict", "task already has an active run")
-                    change_id = derive_bootstrap_change_id(stamp=_stamp(), nonce=_nonce())
-                    number = definition.next_run_number
-                    definition = write_next_run_number(task_directory, definition, number + 1)
-                    run_dir = run_dir_for(task_directory / ".aa" / "runs", change_id)
-                    baseline = list(
-                        managed_baseline(
-                            (
-                                {"path": ".aa/task.json"},
-                                {"path": f".aa/runs/{change_id}/bootstrap-status.json"},
+        from contextlib import ExitStack
+        from assurance_product.worker_lifecycle import acquire_execution
+
+        with ExitStack() as ownership:
+            try:
+                with allocation_lock(task_directory, definition.task_id):
+                    manifests = run_manifests(task_directory)
+                    matches = [row for row in manifests if row.get("request_id") == request_id]
+                    if matches:
+                        if matches[0].get("input_digest") != digest:
+                            raise OperatorError("conflict", "request ID already belongs to different inputs")
+                        allocated = matches[0]
+                        change_id = str(allocated["change_id"])
+                        run_dir = Path(str(allocated["run_dir"]))
+                        launch = False
+                    else:
+                        if active_manifest(manifests) is not None:
+                            raise OperatorError("conflict", "task already has an active run")
+                        change_id = derive_bootstrap_change_id(stamp=_stamp(), nonce=_nonce())
+                        ownership.enter_context(
+                            acquire_execution(
+                                task_directory,
+                                change_id,
+                                run_dir=run_dir_for(task_directory / ".aa" / "runs", change_id),
                             )
                         )
-                    )
-                    write_effective_spec(run_dir, spec)
-                    write_run_manifest(
-                        run_dir,
-                        {
-                            "source_project_dir": str(root),
-                            "project_dir": str(task_directory),
-                            "worktree": str(task_directory),
-                            "task_directory": str(task_directory),
-                            "task_id": definition.task_id,
-                            "change_id": change_id,
-                            "invocation_id": change_id,
-                            "run_number": number,
-                            "request_id": request_id,
-                            "input_digest": digest,
-                            "baseline": baseline,
-                            "origin_session_id": origin_session_id,
-                            "ownership": "shared",
-                            "requested_opencode_endpoint": endpoint,
-                            "config_source": config_source,
-                        },
-                    )
-                    write_bootstrap_status(
-                        run_dir,
-                        BootstrapStatusV1(phase="preparing", change_id=change_id),
-                    )
-                    launch = True
-        except TaskRecordError as error:
-            raise OperatorError(error.kind, str(error)) from error
-        if launch:
-            self._launch_or_fail(run_dir=run_dir, change_id=change_id, environ=environ)
-        status = read_bootstrap_status(run_dir)
-        recorded = read_run_manifest(run_dir)
-        number = recorded.get("run_number")
-        return {
-            "run_id": change_id,
-            "change_id": change_id,
-            "project_dir": str(root),
-            "worktree": str(task_directory),
-            "task_directory": str(task_directory),
-            "run_number": "" if number is None else str(number),
-            "phase": status.phase,
-        }
+                        number = definition.next_run_number
+                        definition = write_next_run_number(task_directory, definition, number + 1)
+                        run_dir = run_dir_for(task_directory / ".aa" / "runs", change_id)
+                        baseline = list(
+                            managed_baseline(
+                                (
+                                    {"path": ".aa/task.json"},
+                                    {"path": f".aa/runs/{change_id}/bootstrap-status.json"},
+                                )
+                            )
+                        )
+                        write_effective_spec(run_dir, spec)
+                        write_run_manifest(
+                            run_dir,
+                            {
+                                "source_project_dir": str(root),
+                                "project_dir": str(task_directory),
+                                "worktree": str(task_directory),
+                                "task_directory": str(task_directory),
+                                "task_id": definition.task_id,
+                                "change_id": change_id,
+                                "invocation_id": change_id,
+                                "run_number": number,
+                                "request_id": request_id,
+                                "input_digest": digest,
+                                "baseline": baseline,
+                                "origin_session_id": origin_session_id,
+                                "ownership": "shared",
+                                "requested_opencode_endpoint": endpoint,
+                                "config_source": config_source,
+                            },
+                        )
+                        write_bootstrap_status(
+                            run_dir,
+                            BootstrapStatusV1(phase="preparing", change_id=change_id),
+                        )
+                        launch = True
+            except ExecutionConflict as error:
+                raise OperatorError("conflict", str(error)) from error
+            except TaskRecordError as error:
+                raise OperatorError(error.kind, str(error)) from error
+            if launch:
+                self._launch_or_fail(run_dir=run_dir, change_id=change_id, environ=environ)
+            status = read_bootstrap_status(run_dir)
+            recorded = read_run_manifest(run_dir)
+            number = recorded.get("run_number")
+            return {
+                "run_id": change_id,
+                "change_id": change_id,
+                "project_dir": str(root),
+                "worktree": str(task_directory),
+                "task_directory": str(task_directory),
+                "run_number": "" if number is None else str(number),
+                "phase": status.phase,
+            }
 
     def _launch_or_fail(
         self,
@@ -472,13 +486,19 @@ class AssuranceOperator:
         environ: Mapping[str, str] | None,
     ) -> None:
         try:
-            recorded = read_run_manifest(run_dir)
-            task_value = recorded.get("task_directory")
-            if isinstance(task_value, str) and task_value:
-                from assurance_product.task_records import prepare_managed_workspace
+            from assurance_product.worker_lifecycle import acquire_execution, run_workspace
 
-                prepare_managed_workspace(Path(task_value), change_id)
-            launch_worker(run_dir=run_dir, change_id=change_id, environ=dict(environ or os.environ))
+            workspace, invocation = run_workspace(run_dir)
+            with acquire_execution(workspace, invocation, run_dir=run_dir):
+                recorded = read_run_manifest(run_dir)
+                task_value = recorded.get("task_directory")
+                if isinstance(task_value, str) and task_value:
+                    from assurance_product.task_records import prepare_managed_workspace
+
+                    prepare_managed_workspace(Path(task_value), change_id)
+                launch_worker(run_dir=run_dir, change_id=change_id, environ=dict(environ or os.environ))
+        except ExecutionConflict as error:
+            raise OperatorError("conflict", str(error)) from error
         except OperatorError:
             raise
         except Exception as error:
@@ -522,9 +542,16 @@ class AssuranceOperator:
         run_dir = _require_run(project_dir.resolve(), run_id)
         return read_bootstrap_status(run_dir).model_dump(mode="json")
 
-    def stop(self, *, project_dir: Path, run_id: str) -> dict[str, object]:
+    def stop(self, *, project_dir: Path, run_id: str, force: bool = False) -> dict[str, object]:
         run_dir = _require_run(project_dir.resolve(), run_id)
         current = read_bootstrap_status(run_dir)
+        if force:
+            from assurance_product.bootstrap.driver import stop_bootstrap
+
+            try:
+                return stop_bootstrap(run_dir, force=True).model_dump(mode="json")
+            except (ValueError, RuntimeError) as error:
+                raise OperatorError("stop_unconfirmed", str(error)) from error
         if current.phase == "terminal":
             return current.model_dump(mode="json")
         from assurance_product.application import AssuranceProductApplication
@@ -532,6 +559,8 @@ class AssuranceOperator:
         AssuranceProductApplication().request_stop(run_dir, change_id=run_id)
         try:
             drive_stop(run_dir)
+        except ExecutionConflict as error:
+            raise OperatorError("conflict", str(error)) from error
         except OperatorError:
             raise
         resolved = read_bootstrap_status(run_dir)

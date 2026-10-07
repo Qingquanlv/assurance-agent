@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from graph_engine.attempts.events import AttemptEffectState, AttemptSnapshot, AttemptTerminated
+from graph_engine.attempts.events import AttemptSnapshot, AttemptTerminated
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.phase import (
     AttemptPhase,
@@ -90,47 +90,6 @@ def _snapshot(**updates: object) -> AttemptSnapshot:
 )
 def test_derive_attempt_phase(snapshot: AttemptSnapshot, expected: AttemptPhase) -> None:
     assert derive_attempt_phase(snapshot) is expected
-
-
-def test_promoted_effects_are_pending_until_every_receipt_is_recorded() -> None:
-    snapshot = _snapshot(
-        promotion_receipt_id="receipt-1",
-        promotion_receipt_digest="e" * 64,
-        promotion_staged_digest="f" * 64,
-        effects=(
-            AttemptEffectState(
-                ordinal=1,
-                kind="example.effect.v1",
-                intent_digest="1" * 64,
-                receipt_digest="2" * 64,
-            ),
-            AttemptEffectState(
-                ordinal=2,
-                kind="example.effect.v1",
-                intent_digest="3" * 64,
-            ),
-        ),
-    )
-
-    assert derive_attempt_phase(snapshot) is AttemptPhase.EFFECTS_PENDING
-
-
-def test_promoted_effects_are_settled_when_every_receipt_is_recorded() -> None:
-    snapshot = _snapshot(
-        promotion_receipt_id="receipt-1",
-        promotion_receipt_digest="e" * 64,
-        promotion_staged_digest="f" * 64,
-        effects=(
-            AttemptEffectState(
-                ordinal=1,
-                kind="example.effect.v1",
-                intent_digest="1" * 64,
-                receipt_digest="2" * 64,
-            ),
-        ),
-    )
-
-    assert derive_attempt_phase(snapshot) is AttemptPhase.EFFECTS_SETTLED
 
 
 def test_terminal_failure_takes_precedence_over_earlier_progress() -> None:

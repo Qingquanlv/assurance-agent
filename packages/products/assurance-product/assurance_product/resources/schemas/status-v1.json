@@ -118,42 +118,6 @@
       "title": "CoverageProgressV1",
       "type": "object"
     },
-    "EffectStatusV1": {
-      "additionalProperties": false,
-      "properties": {
-        "effect_id": {
-          "title": "Effect Id",
-          "type": "string"
-        },
-        "kind": {
-          "title": "Kind",
-          "type": "string"
-        },
-        "receipt_digest": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Receipt Digest"
-        },
-        "state": {
-          "title": "State",
-          "type": "string"
-        }
-      },
-      "required": [
-        "effect_id",
-        "kind",
-        "state",
-        "receipt_digest"
-      ],
-      "title": "EffectStatusV1",
-      "type": "object"
-    },
     "EvidenceArtifactRefV1": {
       "additionalProperties": false,
       "properties": {
@@ -299,6 +263,7 @@
             "satisfied",
             "coverage_insufficient",
             "repairable_execution_failure",
+            "analysis_required",
             "needs_human",
             "blocked"
           ],
@@ -607,6 +572,9 @@
         },
         "review_ref": {
           "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "selection_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
         }
       },
       "required": [
@@ -616,7 +584,8 @@
         "plan_ref",
         "preparation_refs",
         "case_refs",
-        "review_ref"
+        "review_ref",
+        "selection_ref"
       ],
       "title": "ReviewedCaseV1",
       "type": "object"
@@ -646,13 +615,6 @@
           "type": "null"
         }
       ]
-    },
-    "durable_effects": {
-      "items": {
-        "$ref": "#/$defs/EffectStatusV1"
-      },
-      "title": "Durable Effects",
-      "type": "array"
     },
     "entrypoint": {
       "title": "Entrypoint",
@@ -764,7 +726,6 @@
     "node_states",
     "selected_test_families",
     "coverage_progress",
-    "durable_effects",
     "adapter_evidence",
     "execution_gate",
     "quality_gate",

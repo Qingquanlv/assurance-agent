@@ -21,7 +21,7 @@ from graph_engine.attempts import (
     TerminalReceiptRef,
     resolve_contract,
 )
-from graph_engine.plugin_api import EffectIntent, ResourceClaimTemplate, TaskOutcome
+from graph_engine.plugin_api import ResourceClaimTemplate, TaskOutcome
 
 from agent_runtime_contracts.executor.phases import (
     AgentResultT,
@@ -83,7 +83,6 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         self._host = host
         self._graph_revision = graph_revision
         self._product_lock_digest = product_lock_digest
-        self.effects: tuple[EffectIntent, ...] = ()
         self.phase_log: list[str] = []
         self.phase_deltas: dict[str, set[str]] = {
             "prepare": set(),
@@ -191,7 +190,6 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
             return output_failure
         return ExecutedAttemptResult(
             output=cast(OutputT, output),
-            effects=self.effects,
             source_terminal_receipt=self._phase_receipts.get("runtime"),
         )
 
@@ -254,7 +252,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         output_failure = _typed_failure(output)
         if output_failure is not None:
             return output_failure
-        return ExecutedAttemptResult(output=cast(OutputT, output), effects=self.effects)
+        return ExecutedAttemptResult(output=cast(OutputT, output))
 
     async def _run_phase(
         self,

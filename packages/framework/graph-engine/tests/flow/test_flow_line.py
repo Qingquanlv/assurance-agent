@@ -102,13 +102,13 @@ async def test_a_recovered_failure_does_not_reroute_the_next_success() -> None:
     assert finished["attempt_failure"]["kind"] == "invalid_output"
 
 
-async def test_failure_kinds_prefer_a_specific_permanent_key() -> None:
+async def test_failure_kinds_prefer_a_specific_stable_category() -> None:
     step = contract("step")
     flow = Flow("kinds", input=ChangeInput, outcomes=("bad_output", "failed", "done"))
     flow.step(
         "step",
         step,
-        on_failure={"permanent:invalid_output": "bad_output", "*": "failed"},
+        on_failure={"invalid_output": "bad_output", "*": "failed"},
         then="done",
     )
     harness, context = open_harness(step)

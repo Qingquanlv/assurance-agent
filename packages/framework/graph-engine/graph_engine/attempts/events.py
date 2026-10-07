@@ -181,69 +181,6 @@ class WorkspacePromoted:
 
 
 @dataclass(frozen=True, slots=True)
-class EffectIntentRecorded:
-    kind: ClassVar[str] = "effect_intent_recorded"
-    effect_ordinal: int = 1
-    effect_kind: str = ""
-    intent_digest: str = ""
-    payload: JSONValue = None
-
-    def __post_init__(self) -> None:
-        if self.effect_ordinal < 1:
-            raise ValueError("effect ordinal must be positive")
-        if not self.effect_kind:
-            raise ValueError("effect kind must be nonempty")
-        _sha256(self.intent_digest, "effect intent")
-
-    def canonical_projection(self) -> dict[str, JSONValue]:
-        return {
-            "effect_kind": self.effect_kind,
-            "effect_ordinal": self.effect_ordinal,
-            "intent_digest": self.intent_digest,
-            "kind": self.kind,
-            "payload": self.payload,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class EffectApplied:
-    kind: ClassVar[str] = "effect_applied"
-    effect_ordinal: int = 1
-    apply_digest: str = ""
-
-    def __post_init__(self) -> None:
-        if self.effect_ordinal < 1:
-            raise ValueError("effect ordinal must be positive")
-        _sha256(self.apply_digest, "effect apply")
-
-    def canonical_projection(self) -> dict[str, JSONValue]:
-        return {
-            "apply_digest": self.apply_digest,
-            "effect_ordinal": self.effect_ordinal,
-            "kind": self.kind,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class EffectReceiptRecorded:
-    kind: ClassVar[str] = "effect_receipt_recorded"
-    effect_ordinal: int = 1
-    receipt_digest: str = ""
-
-    def __post_init__(self) -> None:
-        if self.effect_ordinal < 1:
-            raise ValueError("effect ordinal must be positive")
-        _sha256(self.receipt_digest, "effect receipt")
-
-    def canonical_projection(self) -> dict[str, JSONValue]:
-        return {
-            "effect_ordinal": self.effect_ordinal,
-            "kind": self.kind,
-            "receipt_digest": self.receipt_digest,
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class SystemInterruptIssued:
     kind: ClassVar[str] = "system_interrupt_issued"
     generation: int = 1
@@ -332,8 +269,8 @@ class AttemptTerminated:
     message: str = ""
 
     def __post_init__(self) -> None:
-        if not self.resolution_kind:
-            raise ValueError("resolution kind must be nonempty")
+        if self.resolution_kind not in {"committed", "rejected", "permanent", "retryable"}:
+            raise ValueError("unsupported resolution kind")
         if self.receipt_id:
             if not self.receipt_digest:
                 raise ValueError("receipt digest is required with a receipt id")
@@ -373,9 +310,6 @@ AttemptEvent: TypeAlias = (
     | ActivityTerminalObserved
     | CommitPrepared
     | WorkspacePromoted
-    | EffectIntentRecorded
-    | EffectApplied
-    | EffectReceiptRecorded
     | SystemInterruptIssued
     | SystemInterruptIssuanceAnchored
     | SystemInterruptCompletionCheckpointed
@@ -391,17 +325,6 @@ class ActiveSystemInterrupt:
     envelope_digest: str
     issuance_anchored: bool = False
     retired: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class AttemptEffectState:
-    ordinal: int
-    kind: str
-    intent_digest: str
-    payload: JSONValue = None
-    apply_digest: str | None = None
-    receipt_digest: str | None = None
-    apply_attempts: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,7 +352,6 @@ class AttemptSnapshot:
     promotion_receipt_id: str | None = None
     promotion_receipt_digest: str | None = None
     promotion_staged_digest: str | None = None
-    effects: tuple[AttemptEffectState, ...] = ()
     terminal: AttemptTerminated | None = None
     released: bool = False
     active_interrupt: ActiveSystemInterrupt | None = None
@@ -480,7 +402,6 @@ def fold_attempt_events(
                 promotion_receipt_id=snapshot.promotion_receipt_id,
                 promotion_receipt_digest=snapshot.promotion_receipt_digest,
                 promotion_staged_digest=snapshot.promotion_staged_digest,
-                effects=snapshot.effects,
                 terminal=snapshot.terminal,
                 released=snapshot.released,
                 active_interrupt=snapshot.active_interrupt,
@@ -534,56 +455,6 @@ def fold_attempt_events(
                 promotion_receipt_id=event.receipt_id,
                 promotion_receipt_digest=event.receipt_digest,
                 promotion_staged_digest=event.staged_digest,
-            )
-            continue
-        if isinstance(event, EffectIntentRecorded):
-            snapshot = _replace(
-                snapshot,
-                effects=_upsert_effect(
-                    snapshot.effects,
-                    AttemptEffectState(
-                        ordinal=event.effect_ordinal,
-                        kind=event.effect_kind,
-                        intent_digest=event.intent_digest,
-                        payload=event.payload,
-                    ),
-                ),
-            )
-            continue
-        if isinstance(event, EffectApplied):
-            current = _effect_at(snapshot.effects, event.effect_ordinal)
-            snapshot = _replace(
-                snapshot,
-                effects=_upsert_effect(
-                    snapshot.effects,
-                    AttemptEffectState(
-                        ordinal=event.effect_ordinal,
-                        kind=current.kind if current is not None else "",
-                        intent_digest=current.intent_digest if current is not None else "",
-                        payload=current.payload if current is not None else None,
-                        apply_digest=event.apply_digest,
-                        receipt_digest=current.receipt_digest if current is not None else None,
-                        apply_attempts=(current.apply_attempts if current is not None else 0) + 1,
-                    ),
-                ),
-            )
-            continue
-        if isinstance(event, EffectReceiptRecorded):
-            current = _effect_at(snapshot.effects, event.effect_ordinal)
-            snapshot = _replace(
-                snapshot,
-                effects=_upsert_effect(
-                    snapshot.effects,
-                    AttemptEffectState(
-                        ordinal=event.effect_ordinal,
-                        kind=current.kind if current is not None else "",
-                        intent_digest=current.intent_digest if current is not None else "",
-                        payload=current.payload if current is not None else None,
-                        apply_digest=current.apply_digest if current is not None else None,
-                        receipt_digest=event.receipt_digest,
-                        apply_attempts=current.apply_attempts if current is not None else 0,
-                    ),
-                ),
             )
             continue
         if isinstance(event, SystemInterruptIssued):
@@ -684,22 +555,6 @@ def _upsert_interrupt(
     return tuple(merged)
 
 
-def _effect_at(effects: tuple[AttemptEffectState, ...], ordinal: int) -> AttemptEffectState | None:
-    for item in effects:
-        if item.ordinal == ordinal:
-            return item
-    return None
-
-
-def _upsert_effect(
-    effects: tuple[AttemptEffectState, ...], state: AttemptEffectState
-) -> tuple[AttemptEffectState, ...]:
-    merged = [item for item in effects if item.ordinal != state.ordinal]
-    merged.append(state)
-    merged.sort(key=lambda item: item.ordinal)
-    return tuple(merged)
-
-
 def _replace(snapshot: AttemptSnapshot, **changes: object) -> AttemptSnapshot:
     values = {
         "attempt_key": snapshot.attempt_key,
@@ -725,7 +580,6 @@ def _replace(snapshot: AttemptSnapshot, **changes: object) -> AttemptSnapshot:
         "promotion_receipt_id": snapshot.promotion_receipt_id,
         "promotion_receipt_digest": snapshot.promotion_receipt_digest,
         "promotion_staged_digest": snapshot.promotion_staged_digest,
-        "effects": snapshot.effects,
         "terminal": snapshot.terminal,
         "released": snapshot.released,
         "active_interrupt": snapshot.active_interrupt,
@@ -742,7 +596,6 @@ def event_digest(event: AttemptEvent) -> str:
 
 __all__ = [
     "ActiveSystemInterrupt",
-    "AttemptEffectState",
     "ActivityBound",
     "ActivityDispatchStarted",
     "ActivityPrepared",
@@ -752,9 +605,6 @@ __all__ = [
     "AttemptSnapshot",
     "AttemptTerminated",
     "CommitPrepared",
-    "EffectApplied",
-    "EffectIntentRecorded",
-    "EffectReceiptRecorded",
     "ResourcesAuthorized",
     "ResourcesReleased",
     "SystemInterruptCompletionCheckpointed",

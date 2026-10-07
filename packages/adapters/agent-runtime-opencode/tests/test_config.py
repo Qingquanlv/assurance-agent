@@ -141,7 +141,6 @@ def test_plugin_registers_only_execute_capability_and_request_result_schemas() -
         "runtime.opencode.result",
     }
     assert descriptor.bindings == ()
-    assert descriptor.effects == ()
     assert descriptor.commit_validators == ()
     assert descriptor.resources == ()
     assert tuple(contribution.task_handlers) == ("runtime.opencode.execute",)

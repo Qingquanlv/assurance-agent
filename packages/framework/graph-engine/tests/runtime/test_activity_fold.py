@@ -359,7 +359,7 @@ def test_fold_rejects_illegal_activity_histories(mutation: str, message: str) ->
         fold_events(envelopes)
 
 
-def test_effect_free_history_without_activity_remains_legal() -> None:
+def test_committed_history_without_activity_remains_legal() -> None:
     staged = _staged()
     envelopes = _envelopes(
         *_running_prefix(),

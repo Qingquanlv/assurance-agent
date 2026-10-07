@@ -234,8 +234,6 @@ def _authenticate_configuration_plugin(loaded: DeclarativePlugin) -> None:
         raise ProjectConfigurationError("project configuration must not contribute handlers")
     if loaded.contribution.commit_validators:
         raise ProjectConfigurationError("project configuration must not contribute validators")
-    if loaded.contribution.effects:
-        raise ProjectConfigurationError("project configuration must not contribute effects")
     declared_ids = {item.resource_id for item in loaded.document.files}
     unknown = declared_ids - _ALLOWED_DECLARED_RESOURCE_IDS
     if unknown:

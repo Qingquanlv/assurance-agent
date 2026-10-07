@@ -49,14 +49,12 @@ def load_old_invocation_lock_fixture() -> dict[str, object]:
         "engine_api": "2.0",
         "registry_digests": {
             "capabilities": "a" * 64,
-            "effects": "b" * 64,
             "resources": "c" * 64,
             "schemas": "d" * 64,
             "sources": "e" * 64,
         },
         "registry_projections": {
             "capabilities": [],
-            "effects": [],
             "resources": [],
             "schemas": [],
             "sources": [],
@@ -73,7 +71,6 @@ def _empty_contribution(plugin_id: str, source_digest: str) -> dict[str, object]
         "commit_validators": [],
         "schemas": [],
         "resources": [],
-        "effects": [],
         "bindings": [],
     }
 
@@ -259,7 +256,6 @@ def _lock(*, reverse_manifest: bool = False) -> ProductLock:
                 "sha256": prompt_digest,
             }
         ],
-        effects=[],
         attempt_contracts=(),
     )
     registry_digests = RegistryDigests(
@@ -304,7 +300,6 @@ def _lock(*, reverse_manifest: bool = False) -> ProductLock:
                 }
             ]
         ),
-        effects=canonical_digest([]),
         attempt_contracts=_EMPTY_ATTEMPT_CONTRACTS_DIGEST,
     )
     configuration = {"toy.runtime": {"greeting": "你好"}}
@@ -677,7 +672,6 @@ def test_invocation_lock_rejects_self_consistent_missing_binding_target() -> Non
         capabilities=capabilities,
         schemas=thaw_json(lock.registry_projections.schemas),
         resources=thaw_json(lock.registry_projections.resources),
-        effects=thaw_json(lock.registry_projections.effects),
         attempt_contracts=thaw_json(lock.registry_projections.attempt_contracts),
     )
     digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
@@ -745,7 +739,6 @@ def test_lock_rejects_an_extra_unsupported_executable_projection_kind() -> None:
         capabilities=capabilities,
         schemas=lock.registry_projections.schemas,
         resources=lock.registry_projections.resources,
-        effects=lock.registry_projections.effects,
         attempt_contracts=lock.registry_projections.attempt_contracts,
     )
     digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
@@ -847,7 +840,6 @@ def test_product_lock_v3_and_attempt_registry_digests_change_with_contract_data(
             capabilities=lock.registry_projections.capabilities,
             schemas=lock.registry_projections.schemas,
             resources=lock.registry_projections.resources,
-            effects=lock.registry_projections.effects,
             attempt_contracts=registry.projection(),
         )
         digests = RegistryDigests(
@@ -855,7 +847,6 @@ def test_product_lock_v3_and_attempt_registry_digests_change_with_contract_data(
             capabilities=lock.registry_digests.capabilities,
             schemas=lock.registry_digests.schemas,
             resources=lock.registry_digests.resources,
-            effects=lock.registry_digests.effects,
             attempt_contracts=registry.digest,
         )
         return ProductLock.create(
@@ -950,7 +941,6 @@ def test_historical_invocation_lock_is_not_a_composition_lock() -> None:
     from graph_engine.composition.lock import authenticate_composition_lock
     from graph_engine.composition.models import (
         CapabilityRegistry,
-        EffectRegistry,
         ProductManifest,
         RegistrySet,
         ResourceRegistry,
@@ -974,7 +964,6 @@ def test_historical_invocation_lock_is_not_a_composition_lock() -> None:
         capabilities=CapabilityRegistry.empty(),
         schemas=SchemaRegistry({}),
         resources=ResourceRegistry({}),
-        effects=EffectRegistry({}),
     )
     with pytest.raises(TypeError):
         authenticate_composition_lock(

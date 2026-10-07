@@ -18,7 +18,7 @@ from graph_engine.attempts.contracts import (
     TerminalReceiptRef,
     resolve_contract,
 )
-from graph_engine.attempts.events import CommitPrepared
+from graph_engine.attempts.events import ActivityTerminalObserved, CommitPrepared
 from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIntegrityError
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import (
@@ -27,7 +27,6 @@ from graph_engine.attempts.resolutions import (
     PermanentTaskFailure,
     RejectedTaskResult,
 )
-from graph_engine.effects.state import MemoryEffectState
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.persistence.attempt_journal import (
@@ -41,8 +40,6 @@ from graph_engine.persistence.resource_authorization import (
 from graph_engine.plugin_api import (
     CommitValidator,
     DirectoryIdentity,
-    EffectApplyResult,
-    EffectIntent,
     PreparedWorkspaceRef,
     PromotionReceipt,
     ResourceClaims,
@@ -316,7 +313,6 @@ async def test_happy_path_trace_commits_receipt(tmp_path: Path) -> None:
             "run_validators",
             "durable_prepare",
             "promote",
-            "settle_effects",
             "record_terminal",
             "release_resources",
             "record_release_proof",
@@ -611,9 +607,6 @@ async def test_unadoptable_in_flight_activity_terminates_releases_and_replays(tm
         store.close()
 
 
-DELIVERY_KIND = "example.beta.effect.delivery.v1"
-
-
 class ValidOutput(BaseModel):
     value: str
 
@@ -707,7 +700,6 @@ class _CanonicalJournalExecutor:
         del validated_input, scope
         return ExecutedAttemptResult(
             output=ValidOutput(value="done"),
-            effects=(EffectIntent(kind=DELIVERY_KIND, payload=valid_delivery_payload()),),
             source_terminal_receipt=TerminalReceiptRef(
                 identity_digest="a" * 64,
                 receipt_digest="b" * 64,
@@ -816,27 +808,9 @@ class _KernelFixture:
         assert not isinstance(granted, PendingTaskResult)
 
 
-def _effect_helpers() -> Any:
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "test_kernel_effects",
-        Path(__file__).with_name("test_kernel_effects.py"),
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture
 def kernel_fixture(tmp_path: Path) -> Any:
-    helpers = _effect_helpers()
-    from graph_engine.effects.state import MemoryEffectState
-    from graph_engine.plugin_api import EffectApplyResult
 
-    handler = helpers.RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
-    effects, schemas = helpers.build_effect_registries(handler)
     project = tmp_path / "project"
     project.mkdir()
     store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
@@ -861,9 +835,6 @@ def kernel_fixture(tmp_path: Path) -> Any:
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=workspace,
         graph_revision=graph_revision(),
-        effects=effects,
-        schemas=schemas,
-        effect_state=MemoryEffectState(),
     )
     validated = RunInput(change_id="chg-1")
     key = derive_attempt_key(
@@ -882,7 +853,6 @@ def kernel_fixture(tmp_path: Path) -> Any:
         attempt_key=key,
         fencing_token=4,
     )
-    assert DELIVERY_KIND in effects.entries
     try:
         yield _KernelFixture(
             kernel=kernel,
@@ -897,11 +867,9 @@ def kernel_fixture(tmp_path: Path) -> Any:
         store.close()
 
 
-async def test_output_and_effect_intents_share_one_journal_revision(kernel_fixture) -> None:
-    intent = EffectIntent(kind=DELIVERY_KIND, payload=valid_delivery_payload())
+async def test_output_and_source_receipt_share_one_journal_revision(kernel_fixture) -> None:
     kernel_fixture.executor.result = ExecutedAttemptResult(
         output=ValidOutput(value="done"),
-        effects=(intent,),
         source_terminal_receipt=TerminalReceiptRef(
             identity_digest="a" * 64,
             receipt_digest="b" * 64,
@@ -911,8 +879,12 @@ async def test_output_and_effect_intents_share_one_journal_revision(kernel_fixtu
     records = kernel_fixture.journal.records(kernel_fixture.attempt_key)
     assert [event.kind for event in records[-1].events] == [
         "activity_terminal_observed",
-        "effect_intent_recorded",
     ]
+    event = records[-1].events[0]
+    assert isinstance(event, ActivityTerminalObserved)
+    assert event.outcome == {"value": "done"}
+    assert event.source_identity_digest == "a" * 64
+    assert event.source_receipt_digest == "b" * 64
 
 
 async def test_terminal_state_with_active_grant_is_cleaned_before_replay(kernel_fixture) -> None:
@@ -945,9 +917,6 @@ def _canonical_journal_scenario() -> tuple[
     RunInput,
     AttemptExecutionContext,
 ]:
-    helpers = _effect_helpers()
-    handler = helpers.RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
-    effects, schemas = helpers.build_effect_registries(handler)
     executor = _CanonicalJournalExecutor()
     resolved = resolve_contract(
         TaskAttemptContract(
@@ -969,9 +938,6 @@ def _canonical_journal_scenario() -> tuple[
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=_CanonicalJournalWorkspace(),
         graph_revision=graph_revision(),
-        effects=effects,
-        schemas=schemas,
-        effect_state=MemoryEffectState(),
     )
     validated = RunInput(change_id="chg-1")
     attempt_key = derive_attempt_key(
@@ -1035,7 +1001,7 @@ async def _run_canonical_journal_scenario(*, replay_prepared_state: bool) -> byt
     return _canonical_journal_bytes(journal, attempt_key)
 
 
-async def test_effectful_attempt_journal_bytes_match_phase_p_golden() -> None:
+async def test_attempt_journal_bytes_match_golden() -> None:
     fresh = await _run_canonical_journal_scenario(replay_prepared_state=False)
     replay = await _run_canonical_journal_scenario(replay_prepared_state=True)
 

@@ -9,7 +9,6 @@
     "bindings": [],
     "commit_validators": [],
     "dependencies": [],
-    "effects": [],
     "engine_api": "2.0",
     "plugin_id": "toy.a",
     "plugin_version": "1.0.0",

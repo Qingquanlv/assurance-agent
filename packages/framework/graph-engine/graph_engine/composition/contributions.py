@@ -8,8 +8,6 @@ from typing import cast
 
 from pydantic import (
     SerializerFunctionWrapHandler,
-    StrictFloat,
-    StrictInt,
     field_validator,
     model_serializer,
     model_validator,
@@ -36,8 +34,6 @@ from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
     CommitValidator,
-    EffectPolicy,
-    EffectRegistration,
     FrozenModel,
     PluginContribution,
     PluginDescriptor,
@@ -61,14 +57,13 @@ class ValidatedContribution:
     commit_validators: tuple[tuple[str, CommitValidator], ...]
     schemas: tuple[SchemaEntry, ...]
     resources: tuple[ResourceEntry, ...]
-    effects: tuple[EffectRegistration, ...]
     bindings: tuple[CapabilityBindingContribution, ...]
 
 
 def validate_contribution_values(
     values: tuple[tuple[str, PluginDescriptor, PluginContribution], ...],
 ) -> tuple[ValidatedContribution, ...]:
-    """Validate and normalize the six provenance-free contribution categories."""
+    """Validate and normalize the five provenance-free contribution categories."""
 
     schemas: dict[str, SchemaEntry] = {}
     resources: dict[str, ResourceEntry] = {}
@@ -141,19 +136,6 @@ def validate_contribution_values(
             )
             resources[resource.resource_id] = entry
             selected_resources.append(entry)
-        for registration in contribution.effects:
-            if not isinstance(registration, EffectRegistration):
-                raise ContributionValueError(f"plugin {owner_id} contributed an invalid effect entry")
-            _owned_id(registration.kind, owner_id, "effect")
-            reserve(registration.kind, "effect")
-            if not callable(getattr(registration.handler, "apply", None)) or not callable(
-                getattr(registration.handler, "reconcile", None)
-            ):
-                raise ContributionValueError(
-                    f"effect handler must provide apply and reconcile: {registration.kind}"
-                )
-            if not isinstance(registration.policy, EffectPolicy):
-                raise ContributionValueError(f"effect policy is invalid: {registration.kind}")
         for binding in contribution.bindings:
             if not isinstance(binding, CapabilityBindingContribution):
                 raise ContributionValueError(f"plugin {owner_id} contributed an invalid binding entry")
@@ -180,22 +162,12 @@ def validate_contribution_values(
                 commit_validators=tuple(selected_validators),
                 schemas=tuple(selected_schemas),
                 resources=tuple(selected_resources),
-                effects=tuple(contribution.effects),
                 bindings=tuple(contribution.bindings),
             )
         )
 
     _reject_alias_cycles(bindings)
     for item in validated:
-        for registration in item.effects:
-            if registration.intent_schema_id not in schemas:
-                raise ContributionValueError(
-                    f"unknown effect intent schema for {registration.kind}: {registration.intent_schema_id}"
-                )
-            if registration.receipt_schema_id not in schemas:
-                raise ContributionValueError(
-                    f"unknown effect receipt schema for {registration.kind}: {registration.receipt_schema_id}"
-                )
         for binding in item.bindings:
             if binding.target_capability_id not in tasks:
                 raise ContributionValueError(
@@ -253,23 +225,6 @@ class ResourceContributionProjection(FrozenModel):
         return self
 
 
-class EffectPolicyProjection(FrozenModel):
-    max_attempts: StrictInt
-    timeout_seconds: StrictFloat
-    backoff_seconds: StrictFloat
-
-
-class EffectContributionProjection(FrozenModel):
-    kind: str
-    intent_schema_id: str
-    receipt_schema_id: str
-    policy: EffectPolicyProjection
-    apply_implementation: FrozenJSONValue
-    apply_implementation_digest: str
-    reconcile_implementation: FrozenJSONValue
-    reconcile_implementation_digest: str
-
-
 class BindingContributionProjection(FrozenModel):
     capability_id: str
     target_capability_id: str
@@ -304,7 +259,6 @@ class ContributionProjection(FrozenModel):
     commit_validators: tuple[ExecutableContributionProjection, ...]
     schemas: tuple[SchemaContributionProjection, ...]
     resources: tuple[ResourceContributionProjection, ...]
-    effects: tuple[EffectContributionProjection, ...]
     bindings: tuple[BindingContributionProjection, ...]
     attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
@@ -313,7 +267,6 @@ class ContributionProjection(FrozenModel):
         "commit_validators",
         "schemas",
         "resources",
-        "effects",
         "bindings",
         "attempt_contracts",
     )
@@ -341,7 +294,6 @@ class ContributionProjection(FrozenModel):
             *((item.capability_id, "commit validator") for item in self.commit_validators),
             *((item.schema_id, "schema") for item in self.schemas),
             *((item.resource_id, "resource") for item in self.resources),
-            *((item.kind, "effect") for item in self.effects),
             *((item.capability_id, "binding") for item in self.bindings),
             *((item.contract_id, "attempt contract") for item in self.attempt_contracts),
         )
@@ -383,24 +335,6 @@ class ContributionProjection(FrozenModel):
             )
             if entry.dialect != item.dialect:
                 raise ValueError("schema contribution dialect does not authenticate its content")
-        for item in self.effects:
-            _qualified_id(item.intent_schema_id, "effect intent schema id")
-            _qualified_id(item.receipt_schema_id, "effect receipt schema id")
-            EffectPolicy.model_validate(item.policy.model_dump(mode="json"))
-            _validate_executable_projection(
-                item.apply_implementation,
-                item.apply_implementation_digest,
-                ExecutableKind.EFFECT_APPLY,
-                item.kind,
-                self,
-            )
-            _validate_executable_projection(
-                item.reconcile_implementation,
-                item.reconcile_implementation_digest,
-                ExecutableKind.EFFECT_RECONCILE,
-                item.kind,
-                self,
-            )
         for item in self.bindings:
             _qualified_id(item.target_capability_id, "binding target capability id")
             if item.contract_id is not None:
@@ -448,27 +382,6 @@ class ContributionProjection(FrozenModel):
             resources=tuple(
                 _resource_projection(item)
                 for item in sorted(contribution.resources, key=lambda item: item.resource_id)
-            ),
-            effects=tuple(
-                EffectContributionProjection(
-                    kind=item.kind,
-                    intent_schema_id=item.intent_schema_id,
-                    receipt_schema_id=item.receipt_schema_id,
-                    policy=EffectPolicyProjection(
-                        max_attempts=item.policy.max_attempts,
-                        timeout_seconds=item.policy.timeout_seconds,
-                        backoff_seconds=item.policy.backoff_seconds,
-                    ),
-                    apply_implementation=executable[(ExecutableKind.EFFECT_APPLY, item.kind)].projection(),
-                    apply_implementation_digest=executable[(ExecutableKind.EFFECT_APPLY, item.kind)].digest,
-                    reconcile_implementation=executable[
-                        (ExecutableKind.EFFECT_RECONCILE, item.kind)
-                    ].projection(),
-                    reconcile_implementation_digest=executable[
-                        (ExecutableKind.EFFECT_RECONCILE, item.kind)
-                    ].digest,
-                )
-                for item in sorted(contribution.effects, key=lambda item: item.kind)
             ),
             bindings=tuple(
                 BindingContributionProjection(
@@ -526,27 +439,6 @@ class ContributionProjection(FrozenModel):
                         contract_id=entry.contract_id,
                     )
                 )
-        effects = []
-        for kind, entry in registries.effects.entries.items():
-            if entry.owner_id != owner_id:
-                continue
-            _require_generation(entry.authority, authority)
-            effects.append(
-                EffectContributionProjection(
-                    kind=kind,
-                    intent_schema_id=entry.intent_schema_id,
-                    receipt_schema_id=entry.receipt_schema_id,
-                    policy=EffectPolicyProjection(
-                        max_attempts=entry.policy.max_attempts,
-                        timeout_seconds=entry.policy.timeout_seconds,
-                        backoff_seconds=entry.policy.backoff_seconds,
-                    ),
-                    apply_implementation=entry.apply_provenance.projection(),
-                    apply_implementation_digest=entry.apply_provenance.digest,
-                    reconcile_implementation=entry.reconcile_provenance.projection(),
-                    reconcile_implementation_digest=entry.reconcile_provenance.digest,
-                )
-            )
         return cls(
             owner_id=owner_id,
             source_key=ContributionSourceKeyProjection(
@@ -577,7 +469,6 @@ class ContributionProjection(FrozenModel):
                 for resource_id, entry in registries.resources.entries.items()
                 if entry.owner_id == owner_id
             ),
-            effects=tuple(effects),
             bindings=tuple(bindings),
             attempt_contracts=tuple(authority.attempt_contracts),
         )
@@ -600,7 +491,6 @@ class ContributionProjection(FrozenModel):
             "commit_validators": {item.capability_id for item in self.commit_validators},
             "schemas": {item.schema_id for item in self.schemas},
             "resources": {item.resource_id for item in self.resources},
-            "effects": {item.kind for item in self.effects},
             "bindings": {item.capability_id for item in self.bindings},
             "attempt_contracts": {(item.contract_id, item.digest) for item in self.attempt_contracts},
         }
@@ -609,7 +499,6 @@ class ContributionProjection(FrozenModel):
             "commit_validators": set(descriptor.commit_validators),
             "schemas": set(descriptor.schemas),
             "resources": set(descriptor.resources),
-            "effects": set(descriptor.effects),
             "bindings": set(descriptor.bindings),
             "attempt_contracts": {(item.contract_id, item.digest) for item in descriptor.attempt_contracts},
         }
@@ -681,28 +570,6 @@ class ContributionProjection(FrozenModel):
             for item in self.resources
         ]
 
-    def effect_registry_projection(self) -> list[JSONValue]:
-        return [
-            {
-                "kind": item.kind,
-                "owner_id": self.owner_id,
-                "intent_schema_id": item.intent_schema_id,
-                "receipt_schema_id": item.receipt_schema_id,
-                "policy": item.policy.model_dump(mode="json"),
-                "apply_implementation": cast(
-                    JSONValue,
-                    thaw_json(item.apply_implementation),
-                ),
-                "apply_implementation_digest": item.apply_implementation_digest,
-                "reconcile_implementation": cast(
-                    JSONValue,
-                    thaw_json(item.reconcile_implementation),
-                ),
-                "reconcile_implementation_digest": item.reconcile_implementation_digest,
-            }
-            for item in self.effects
-        ]
-
 
 def contribution_authority_projection(authority: ContributionAuthority) -> dict[str, JSONValue]:
     return cast(
@@ -745,7 +612,6 @@ def validate_contribution_projection_set(
     if len(owners) != len(set(owners)):
         raise ValueError("contribution projection owners must be unique")
     task_ids = {item.capability_id for projection in projections for item in projection.task_handlers}
-    schema_ids = {item.schema_id for projection in projections for item in projection.schemas}
     resource_ids = {item.resource_id for projection in projections for item in projection.resources}
     all_ids: dict[str, str] = {}
     for projection in projections:
@@ -754,7 +620,6 @@ def validate_contribution_projection_set(
             *((item.capability_id, "commit validator") for item in projection.commit_validators),
             *((item.schema_id, "schema") for item in projection.schemas),
             *((item.resource_id, "resource") for item in projection.resources),
-            *((item.kind, "effect") for item in projection.effects),
             *((item.capability_id, "binding") for item in projection.bindings),
             *((item.contract_id, "attempt contract") for item in projection.attempt_contracts),
         )
@@ -766,13 +631,6 @@ def validate_contribution_projection_set(
             ):
                 raise ValueError(f"cross-kind contribution id: {entry_id} is both {previous} and {kind}")
             all_ids[entry_id] = kind if previous is None else previous
-        for effect in projection.effects:
-            if effect.intent_schema_id not in schema_ids:
-                raise ValueError(f"unknown effect intent schema for {effect.kind}: {effect.intent_schema_id}")
-            if effect.receipt_schema_id not in schema_ids:
-                raise ValueError(
-                    f"unknown effect receipt schema for {effect.kind}: {effect.receipt_schema_id}"
-                )
         for binding in projection.bindings:
             if binding.target_capability_id not in task_ids:
                 raise ValueError(

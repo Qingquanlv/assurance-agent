@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, replace
 from typing import Protocol
 
@@ -14,9 +14,6 @@ from graph_engine.attempts.events import (
     AttemptSnapshot,
     AttemptTerminated,
     CommitPrepared,
-    EffectApplied,
-    EffectIntentRecorded,
-    EffectReceiptRecorded,
     ResourcesAuthorized,
     ResourcesReleased,
     SystemInterruptCompletionCheckpointed,
@@ -40,9 +37,6 @@ _EVENT_TYPES: dict[str, type[AttemptEvent]] = {
     AttemptOpened.kind: AttemptOpened,
     AttemptTerminated.kind: AttemptTerminated,
     CommitPrepared.kind: CommitPrepared,
-    EffectApplied.kind: EffectApplied,
-    EffectIntentRecorded.kind: EffectIntentRecorded,
-    EffectReceiptRecorded.kind: EffectReceiptRecorded,
     ResourcesAuthorized.kind: ResourcesAuthorized,
     ResourcesReleased.kind: ResourcesReleased,
     SystemInterruptCompletionCheckpointed.kind: SystemInterruptCompletionCheckpointed,
@@ -174,6 +168,19 @@ def decode_attempt_journal_record(
 
 
 class AttemptJournalPort(Protocol):
+    async def latest_generation(
+        self, scope: Mapping[str, JSONValue]
+    ) -> tuple[int, AttemptKey, bool, JSONValue] | None: ...
+
+    async def register_generation(
+        self,
+        scope: Mapping[str, JSONValue],
+        make_key: Callable[[int], AttemptKey],
+        *,
+        max_attempts: int,
+        validated_input: JSONValue = None,
+    ) -> tuple[int, AttemptKey] | None: ...
+
     async def load(self, attempt_key: AttemptKey) -> AttemptSnapshot | None: ...
 
     async def append(
@@ -190,8 +197,39 @@ class AttemptJournalPort(Protocol):
 
 class MemoryAttemptJournal:
     def __init__(self) -> None:
+        self._abandoned: set[str] = set()
+        self._generations: dict[str, list[tuple[AttemptKey, JSONValue]]] = {}
         self._logs: dict[str, list[AttemptJournalRecord]] = {}
         self._durable: dict[str, int] = {}
+
+    async def abandon_generations(self, attempt_key_digests: set[str]) -> None:
+        self._abandoned.update(attempt_key_digests)
+
+    async def latest_generation(
+        self, scope: Mapping[str, JSONValue]
+    ) -> tuple[int, AttemptKey, bool, JSONValue] | None:
+        entries = self._generations.get(canonical_digest(dict(scope)), [])
+        return (
+            (len(entries), entries[-1][0], entries[-1][0].digest in self._abandoned, entries[-1][1])
+            if entries
+            else None
+        )
+
+    async def register_generation(
+        self,
+        scope: Mapping[str, JSONValue],
+        make_key: Callable[[int], AttemptKey],
+        *,
+        max_attempts: int,
+        validated_input: JSONValue = None,
+    ) -> tuple[int, AttemptKey] | None:
+        entries = self._generations.setdefault(canonical_digest(dict(scope)), [])
+        ordinal = len(entries) + 1
+        if ordinal > max_attempts:
+            return None
+        key = make_key(ordinal)
+        entries.append((key, validated_input))
+        return ordinal, key
 
     async def load(self, attempt_key: AttemptKey) -> AttemptSnapshot | None:
         records = self._logs.get(attempt_key.digest)

@@ -29,7 +29,6 @@ class RepairBoundInputV1(FrozenModel):
 
 class ApplyBoundInputV1(RepairBoundInputV1):
     proposal_ref: EvidenceArtifactRefV1
-    approval_ref: EvidenceArtifactRefV1 | None = None
 
 
 __all__ = ["ApplyBoundInputV1", "RepairBoundInputV1"]

@@ -129,6 +129,23 @@ CREATE TABLE IF NOT EXISTS assurance_attempt_batches (
     payload BLOB NOT NULL,
     PRIMARY KEY (attempt_key_digest, revision)
 );
+CREATE TABLE IF NOT EXISTS assurance_attempt_generations (
+    scope_digest TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    scope BLOB NOT NULL,
+    attempt_key_digest TEXT NOT NULL UNIQUE,
+    abandoned INTEGER NOT NULL DEFAULT 0,
+    owner_nonce TEXT,
+    input_payload BLOB NOT NULL,
+    PRIMARY KEY (scope_digest, ordinal)
+);
+CREATE TABLE IF NOT EXISTS assurance_host_calls (
+    call_digest TEXT PRIMARY KEY,
+    owner_nonce TEXT NOT NULL,
+    attempt_key_digest TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    confirmed INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS assurance_attempt_durable (
     attempt_key_digest TEXT PRIMARY KEY,
     durable_revision INTEGER NOT NULL
@@ -139,17 +156,6 @@ CREATE TABLE IF NOT EXISTS assurance_resource_authorizations (
     fencing_token INTEGER NOT NULL,
     record_digest TEXT NOT NULL,
     payload BLOB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS assurance_effect_state (
-    effect_kind TEXT NOT NULL,
-    settlement_key TEXT NOT NULL,
-    business_key TEXT NOT NULL,
-    intent_digest TEXT NOT NULL,
-    fencing_token INTEGER NOT NULL,
-    payload BLOB NOT NULL,
-    receipt BLOB NOT NULL,
-    PRIMARY KEY (effect_kind, settlement_key),
-    UNIQUE (effect_kind, business_key)
 );
 """
 

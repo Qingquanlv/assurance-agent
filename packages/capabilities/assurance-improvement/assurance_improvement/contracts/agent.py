@@ -185,7 +185,6 @@ class ArchivePublishedV1(FrozenModel):
     archive_status: Literal["archived", "archived_with_warnings"]
     lifecycle_state: str | None = None
     evidence_refs: tuple[dict[str, str], ...] = ()
-    effect_refs: tuple[dict[str, str], ...] = ()
     result: ArchiveResultV1
 
 

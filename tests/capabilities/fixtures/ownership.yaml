@@ -2072,18 +2072,18 @@ items:
   verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.improvement-effect-intent.v1
-  disposition: migrate
-  owner: assurance.improvement
-  new_id: assurance.improvement.schema.improvement-effect-intent.v1
-  status: verified
-  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: schema
   legacy_id: assurance.improvement.schema.improvement-effect-receipt.v1
-  disposition: migrate
-  owner: assurance.improvement
-  new_id: assurance.improvement.schema.improvement-effect-receipt.v1
-  status: verified
-  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: schema
   legacy_id: assurance.improvement.schema.improvement-review.v1
   disposition: migrate
@@ -3024,25 +3024,25 @@ items:
   verification: null
 - kind: effect
   legacy_id: fixer_proposal_approved/v1
-  disposition: migrate
-  owner: assurance.healing
-  new_id: assurance.healing.effect.proposal-approved.v1
-  status: verified
-  verification: packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: effect
   legacy_id: heal_record_apply/v2
-  disposition: migrate
-  owner: assurance.healing
-  new_id: assurance.healing.effect.heal-apply.v2
-  status: verified
-  verification: packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: effect
   legacy_id: healing_allocation/v2
-  disposition: migrate
-  owner: assurance.healing
-  new_id: assurance.healing.effect.allocation.v2
-  status: verified
-  verification: packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: hook
   legacy_id: assert_test_changes_override_allowed
   disposition: migrate
@@ -3073,11 +3073,11 @@ items:
   verification: tests/capabilities/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: commit_healing_allocation_ledger
-  disposition: migrate
-  owner: assurance.healing
-  new_id: assurance.healing.effect.allocation.v2
-  status: verified
-  verification: tests/capabilities/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: hook
   legacy_id: complete_candidate_outputs
   disposition: migrate
@@ -3129,32 +3129,32 @@ items:
   verification: tests/capabilities/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: reconcile_fixer_proposal_approved
-  disposition: migrate
-  owner: assurance.healing
-  new_id: assurance.healing.effect.proposal-approved.v1
-  status: verified
-  verification: tests/capabilities/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: hook
   legacy_id: reconcile_heal_record_apply
-  disposition: migrate
-  owner: assurance.healing
-  new_id: assurance.healing.effect.heal-apply.v2
-  status: verified
-  verification: tests/capabilities/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: hook
   legacy_id: reconcile_healing_allocation
-  disposition: migrate
-  owner: assurance.healing
-  new_id: assurance.healing.effect.allocation.v2
-  status: verified
-  verification: tests/capabilities/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: hook
   legacy_id: register_healing_effects
-  disposition: migrate
-  owner: assurance.healing
-  new_id: assurance.healing.effect.allocation.v2
-  status: verified
-  verification: tests/capabilities/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: hook
   legacy_id: semantic_pins
   disposition: delete_phase6
@@ -3178,11 +3178,12 @@ items:
   verification: null
 - kind: artifact
   legacy_id: api_codegen_fix_apply_intent_v1
-  disposition: migrate
-  owner: assurance.healing
+  # Removed unused test-repair apply intent; ordinary Attempt commit owns staged files.
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: tests/capabilities/test_ownership_live.py::test_migrate_artifact_is_live_contract[api_codegen_fix_apply_intent_v1]
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: api_codegen_fix_apply_summary_v1
   disposition: migrate
@@ -3367,11 +3368,12 @@ items:
   verification: null
 - kind: artifact
   legacy_id: e2e_codegen_fix_apply_intent_v1
-  disposition: migrate
-  owner: assurance.healing
+  # Removed unused test-repair apply intent; ordinary Attempt commit owns staged files.
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: tests/capabilities/test_ownership_live.py::test_migrate_artifact_is_live_contract[e2e_codegen_fix_apply_intent_v1]
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: e2e_codegen_fix_apply_summary_v1
   disposition: migrate
@@ -3437,11 +3439,12 @@ items:
   verification: tests/capabilities/test_ownership_live.py::test_migrate_artifact_is_live_contract[fixer_authority_v1]
 - kind: artifact
   legacy_id: fixer_proposal_approval_receipt_v1
-  disposition: migrate
-  owner: assurance.healing
+  # Removed unused receipt for the deleted healing proposal approval gate.
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: tests/capabilities/test_ownership_live.py::test_migrate_artifact_is_live_contract[fixer_proposal_approval_receipt_v1]
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: fuzz_generated_files_v1
   disposition: migrate

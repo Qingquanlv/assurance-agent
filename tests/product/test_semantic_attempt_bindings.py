@@ -735,7 +735,6 @@ def test_installed_proposal_finalize_uses_current_input_without_approval_envelop
         candidate_digest="b" * 64,
         policy_digest="c" * 64,
         mapping_paths=("qa/results/generated/mapping.json",),
-        require_approval=True,
         execution_evidence_digest="d" * 64,
     )
     bundle = replace(_finalize_bundle(tmp_path), validated_input=business)
@@ -748,7 +747,6 @@ def test_installed_proposal_finalize_uses_current_input_without_approval_envelop
     projected = FixProposalFinalizeInputV1.model_validate(handler.input)
     assert projected.prepare == business
     assert projected.agent_result == bundle.run_evidence
-    assert projected.require_approval is True
     assert isinstance(handler.input, dict)
     assert not {"validated_input", "prepared", "approval", "mapping", "artifact_paths"} & handler.input.keys()
 

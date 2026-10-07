@@ -7,7 +7,6 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.errors import GraphInterrupt
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command
 
 from assurance_healing.graphs.factory import build_healing_graphs as _build_healing_graphs
 from graph_engine.attempts.resolutions import AttemptResolution, PermanentTaskFailure
@@ -15,7 +14,6 @@ from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.graph_harness import _prepare_anchored_backend
 
 from test_healing_graph_factory import (  # type: ignore[import-not-found]
-    EFFECT_IDS,
     application_output,
     failure_agent_output,
     failure_graph_input,
@@ -54,10 +52,7 @@ class _RepairChannels(CheckpointBridgeState, total=False):
     source_refs: list[dict[str, str]]
     allowed_test_paths: list[str]
     proposal_ref: dict[str, str]
-    approval_ref: dict[str, str]
-    human_action: str
     status: str
-    effect_refs: list[dict[str, str]]
     repair_result: dict[str, object]
     attempt_failure: dict[str, object]
 
@@ -78,31 +73,7 @@ def _config() -> RunnableConfig:
     }
 
 
-def test_kernel_protocol_receipts_use_exactly_the_three_healing_effect_ids() -> None:
-    from graph_engine import RegistryPorts
-
-    from assurance_healing.contracts.attempts import HEALING_EFFECT_IDS
-    from assurance_healing.plugin import HealingPlugin
-
-    contribution = HealingPlugin.contribute(RegistryPorts(engine_api="2.0"))
-    protocol_kinds = tuple(sorted(item.kind for item in contribution.effects))
-    receipt_schemas = tuple(sorted(item.receipt_schema_id for item in contribution.effects))
-    expected = tuple(sorted(HEALING_EFFECT_IDS))
-    assert expected == (
-        "assurance.healing.effect.allocation.v2",
-        "assurance.healing.effect.heal-apply.v2",
-        "assurance.healing.effect.proposal-approved.v1",
-    )
-    assert protocol_kinds == expected
-    assert receipt_schemas == (
-        "assurance.healing.schema.allocation-receipt.v2",
-        "assurance.healing.schema.heal-apply-receipt.v2",
-        "assurance.healing.schema.proposal-approved-receipt.v1",
-    )
-    assert set(EFFECT_IDS) == set(expected)
-
-
-async def test_published_effect_refs_come_from_kernel_receipt_not_output_extras() -> None:
+async def test_published_receipt_refs_come_from_kernel_receipt_not_output_extras() -> None:
     from graph_engine.attempts.resolutions import ReceiptRef
 
     harness = GraphHarness()
@@ -110,74 +81,27 @@ async def test_published_effect_refs_come_from_kernel_receipt_not_output_extras(
     bundle = build_healing_graphs(context)
     receipt = ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA)
     failure_output = failure_agent_output()
-    failure_output["effect_refs"] = [{"kind": "forged.failure.effect", "digest": _SHA}]
+    failure_output["receipt_refs"] = [{"receipt_id": "forged-receipt", "receipt_digest": _SHA}]
     failure = await harness.run(
         bundle.repair_failure,
         input=failure_graph_input(),
         script={
-            "healing.fix-proposal": [committed(failure_output, receipt)],
-            "healing.apply-test-repair": [committed(application_output(), receipt)],
-        },
-    )
-    published = failure.published_update
-    assert published is None or "forged.failure.effect" not in str(published)
-    assert failure.interrupt_envelope is not None
-
-
-async def test_fix_proposal_waits_for_approval_ref_before_application() -> None:
-    harness = GraphHarness()
-    backend = harness.anchored_memory_checkpointer()
-    await _prepare_anchored_backend(backend)
-    bundle = build_healing_graphs(
-        harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
-    )
-    from graph_engine.attempts.resolutions import ReceiptRef
-
-    receipt = ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA)
-    harness._kernel.load_script(
-        {
             "healing.fix-proposal": [
                 committed(
-                    failure_agent_output(),
+                    failure_output,
                     receipt,
                     artifacts=[{"path": "qa/results/healing/fix-proposal.json", "digest": _SHA}],
                 )
             ],
             "healing.apply-test-repair": [committed(application_output(), receipt)],
-        }
+        },
     )
-
-    wrapper: StateGraph[_RepairChannels] = StateGraph(_RepairChannels)
-    wrapper.add_node("repair", cast(Any, bundle.repair_failure))
-    wrapper.add_edge(START, "repair")
-    wrapper.add_edge("repair", END)
-    graph = wrapper.compile(checkpointer=backend)
-    config = _config()
-    initial = failure_graph_input()
-
-    interrupted = await graph.ainvoke(cast(Any, initial), config=config)
-    value = _interrupt_value(interrupted)
-    assert isinstance(value, dict)
-    assert value["interrupt_id"] == "healing.approval"
-    assert "healing.proposal" in value["show"]
-
-    resumed = await graph.ainvoke(
-        Command(
-            resume={
-                "action": "approve",
-                "approval_ref": {
-                    "path": "qa/results/healing/approval.json",
-                    "digest": _SHA,
-                },
-            }
-        ),
-        config=config,
-    )
-    assert resumed["status"] == "applied"
-    assert _interrupt_value(resumed) is None
+    published = failure.published_update
+    assert published is None or "forged-receipt" not in str(published)
+    assert failure.interrupt_envelope is None
 
 
-async def _resume_repair(apply: AttemptResolution, resume: dict[str, object]):
+async def _run_repair(apply: AttemptResolution):
     from graph_engine.attempts.resolutions import ReceiptRef
 
     harness = GraphHarness()
@@ -205,50 +129,26 @@ async def _resume_repair(apply: AttemptResolution, resume: dict[str, object]):
     wrapper.add_edge("repair", END)
     graph = wrapper.compile(checkpointer=backend)
     config = _config()
-    interrupted = await graph.ainvoke(cast(Any, failure_graph_input()), config=config)
-    assert _interrupt_value(interrupted) is not None
-    return await graph.ainvoke(Command(resume=resume), config=config)
+    result = await graph.ainvoke(cast(Any, failure_graph_input()), config=config)
+    assert _interrupt_value(result) is None
+    snapshot = await graph.aget_state(config)
+    assert not snapshot.next
+    return result
 
 
 @pytest.mark.parametrize(
-    ("resume", "apply", "expected"),
-    [
-        (
-            {
-                "action": "approve",
-                "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-            },
-            "committed",
-            "applied",
-        ),
-        ({"action": "reject"}, "committed", "needs_review"),
-        (
-            {
-                "action": "approve",
-                "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-            },
-            "invalid_output",
-            "needs_review",
-        ),
-        (
-            {
-                "action": "approve",
-                "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-            },
-            "invalid_input",
-            "failed",
-        ),
-    ],
+    ("apply", "expected"),
+    [("committed", "applied"), ("invalid_output", "needs_review"), ("invalid_input", "failed")],
 )
-async def test_repair_failure_routes_approval_and_apply(resume, apply, expected) -> None:
+async def test_repair_runs_without_approval_and_routes_apply_result(apply, expected) -> None:
     from graph_engine.attempts.resolutions import ReceiptRef
 
     if apply == "committed":
         resolution = committed(application_output(), ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA))
     else:
         resolution = PermanentTaskFailure(kind=apply, message=apply)
-    resumed = await _resume_repair(resolution, resume)
-    assert resumed["status"] == expected
+    result = await _run_repair(resolution)
+    assert result["status"] == expected
 
 
 def _interrupt_value(result: object) -> object | None:

@@ -315,11 +315,17 @@ DELETED_VALIDATORS = frozenset(
     }
 )
 
-EFFECT_NEW_IDS: dict[str, str] = {
-    "healing_allocation/v2": "assurance.healing.effect.allocation.v2",
-    "fixer_proposal_approved/v1": "assurance.healing.effect.proposal-approved.v1",
-    "heal_record_apply/v2": "assurance.healing.effect.heal-apply.v2",
-}
+DELETED_EFFECTS = frozenset({"healing_allocation/v2", "fixer_proposal_approved/v1", "heal_record_apply/v2"})
+DELETED_HOOKS = frozenset(
+    {
+        "commit_healing_allocation_ledger",
+        "register_healing_effects",
+        "reconcile_healing_allocation",
+        "reconcile_fixer_proposal_approved",
+        "reconcile_heal_record_apply",
+        "semantic_pins",
+    }
+)
 
 ARTIFACT_NEW_IDS: frozenset[str] = frozenset(
     {
@@ -406,10 +412,6 @@ ARTIFACT_NEW_IDS: frozenset[str] = frozenset(
 HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     "load_product_code_roots": ("assurance.healing", "assurance.healing.validator.test-tree.v1"),
     "candidate_document_digest": ("assurance.quality", "assurance.quality.candidate-document-digest"),
-    "commit_healing_allocation_ledger": (
-        "assurance.healing",
-        "assurance.healing.effect.allocation.v2",
-    ),
     "complete_issue_analyzer_outputs": (
         "assurance.quality",
         "assurance.quality.issue-analysis.finalize",
@@ -420,7 +422,6 @@ HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     ),
     "complete_signal_outputs": ("assurance.improvement", "assurance.improvement.retro.finalize"),
     "complete_candidate_outputs": ("assurance.improvement", "assurance.improvement.retro.finalize"),
-    "register_healing_effects": ("assurance.healing", "assurance.healing.effect.allocation.v2"),
     "project_healing_episode": ("assurance.healing", "assurance.healing.project-episode"),
     "assert_test_tree_unchanged_or_healing": (
         "assurance.healing",
@@ -439,15 +440,6 @@ HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
         "assurance.healing.policy.test-change-policy.v1",
     ),
     "token_json_bytes": ("assurance.healing", "assurance.healing.validator.override.v1"),
-    "reconcile_healing_allocation": (
-        "assurance.healing",
-        "assurance.healing.effect.allocation.v2",
-    ),
-    "reconcile_fixer_proposal_approved": (
-        "assurance.healing",
-        "assurance.healing.effect.proposal-approved.v1",
-    ),
-    "reconcile_heal_record_apply": ("assurance.healing", "assurance.healing.effect.heal-apply.v2"),
 }
 
 DELETED_MODULES: tuple[str, ...] = (
@@ -489,6 +481,10 @@ RESOURCE_LEFTOVER_OVERRIDES: dict[str, tuple[Disposition, str | None]] = {
 
 ARTIFACT_LEFTOVER_TYPES = frozenset(
     {
+        # These unconsumed protocol contracts have no replacement artifact.
+        "api_codegen_fix_apply_intent_v1",
+        "e2e_codegen_fix_apply_intent_v1",
+        "fixer_proposal_approval_receipt_v1",
         "advisory",
         "coverage_repair_apply_summary",
         "coverage_repair_baseline",
@@ -721,11 +717,11 @@ def legacy_validator_ids() -> frozenset[str]:
 
 
 def legacy_effect_kinds() -> frozenset[str]:
-    return frozenset(EFFECT_NEW_IDS)
+    return DELETED_EFFECTS
 
 
 def legacy_hook_fields() -> frozenset[str]:
-    return frozenset(HOOK_PRIMARY_SEAMS) | {"semantic_pins"}
+    return frozenset(HOOK_PRIMARY_SEAMS) | DELETED_HOOKS
 
 
 def legacy_artifact_types() -> frozenset[str]:
@@ -1044,10 +1040,10 @@ def seed_ownership_items() -> tuple[OwnershipItem, ...]:
         items.append(_item("validator", validator_id, "migrate", owner, new_id))
 
     for effect_id in sorted(legacy_effect_kinds()):
-        items.append(_item("effect", effect_id, "migrate", "assurance.healing", EFFECT_NEW_IDS[effect_id]))
+        items.append(_item("effect", effect_id, "delete_phase6", None, None))
 
     for hook_name in sorted(legacy_hook_fields()):
-        if hook_name == "semantic_pins":
+        if hook_name in DELETED_HOOKS:
             items.append(_item("hook", hook_name, "delete_phase6", None, None))
             continue
         owner, seam = HOOK_PRIMARY_SEAMS[hook_name]

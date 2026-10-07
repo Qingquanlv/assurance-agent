@@ -1532,19 +1532,6 @@ def _authenticated_contribution(
                 source_key,
             )
         )
-    for registration in contribution.effects:
-        for kind in (ExecutableKind.EFFECT_APPLY, ExecutableKind.EFFECT_RECONCILE):
-            authorities.append(
-                _executable_binding(
-                    binding,
-                    authenticated_modules,
-                    registration.handler,
-                    kind,
-                    registration.kind,
-                    owner_id,
-                    source_key,
-                )
-            )
     ordered = tuple(
         sorted(authorities, key=lambda item: (item.provenance.registry_id, item.provenance.kind.value))
     )

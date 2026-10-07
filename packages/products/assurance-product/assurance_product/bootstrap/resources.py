@@ -13,7 +13,9 @@ from graph_engine.persistence.resource_authorization import (
 )
 
 
-def release_active_resource_authorizations(db_path: Path) -> int:
+def release_active_resource_authorizations(
+    db_path: Path, *, attempt_key_digests: set[str] | None = None
+) -> int:
     if not db_path.is_file():
         return 0
     connection = sqlite3.connect(str(db_path), timeout=30)
@@ -33,6 +35,8 @@ def release_active_resource_authorizations(db_path: Path) -> int:
         ]
         released = 0
         for grant in _active_grants(records):
+            if attempt_key_digests is not None and grant.attempt_key_digest not in attempt_key_digests:
+                continue
             record = ResourceAuthorizationRecord.build(
                 revision=len(records),
                 action="release",

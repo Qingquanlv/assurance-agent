@@ -27,10 +27,9 @@ _FIELD_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FAILURE_KEYS = frozenset(
     {
         "rejected",
-        "permanent",
-        "permanent:invalid_output",
-        "permanent:invalid_input",
-        "committed_effect_failure",
+        "failed",
+        "invalid_output",
+        "invalid_input",
         "*",
     }
 )

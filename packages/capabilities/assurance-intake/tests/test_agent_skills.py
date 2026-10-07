@@ -3954,6 +3954,15 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
     assert executed.status == "succeeded", executed.failure
     output = cast(dict[str, object], executed.output)
     reviewed = cast(dict[str, object], output["reviewed_case"])
+    from pydantic import ValidationError
+    from assurance_intake.contracts.review import CaseReviewOutputV1
+
+    CaseReviewOutputV1.model_validate(output)
+    missing_reviewed = {name: value for name, value in output.items() if name != "reviewed_case"}
+    with pytest.raises(ValidationError, match="reviewed_case"):
+        CaseReviewOutputV1.model_validate(missing_reviewed)
+    with pytest.raises(ValidationError, match="reviewed_case"):
+        CaseReviewOutputV1.model_validate({**output, "reviewed_case": None})
     assert reviewed["case_refs"] == case_refs
     manifest = write_root / "qa/cases/reviewed-case.json"
     assert json.loads(manifest.read_bytes()) == reviewed

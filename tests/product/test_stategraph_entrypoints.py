@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Checkpointer
 from pydantic import ValidationError, create_model
 
+from assurance_execution.contracts.agent import RerunPrepareInputV1 as RerunPrepareInputV1
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_JOBS
 from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS as EXECUTION_TASKS
 from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_graphs

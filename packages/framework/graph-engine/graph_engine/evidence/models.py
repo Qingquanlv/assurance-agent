@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal, NoReturn, Self, cast
+from typing import Literal, NoReturn, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.canonical import canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
     ResourceClaims,
@@ -14,9 +14,6 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
 )
 from graph_engine.evidence.events import (
-    EffectApplyStarted,
-    EffectIntentCommitted,
-    EffectReceiptRecorded,
     EventEnvelope,
     GraphCompleted,
     GraphFailed,
@@ -34,7 +31,6 @@ from graph_engine.evidence.events import (
     TaskActivityDispatchStarted,
     TaskActivityPrepared,
     TaskActivityTerminalObserved,
-    TaskAttemptCommittedEffectFailed,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -106,15 +102,12 @@ class ProjectionModel(BaseModel):
 AttemptStatus = Literal[
     "running",
     "promotion_pending",
-    "effect_pending",
     "succeeded",
     "failed",
-    "committed_effect_failed",
     "stopped",
 ]
-EffectStatus = Literal["committed", "applying", "applied", "permanently_failed"]
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
-_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending", "effect_pending"}
+_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending"}
 _LIVE_ACTIVITY_STATES = {"prepared", "dispatch_started", "bound"}
 
 
@@ -127,43 +120,13 @@ class PreparedTaskCommit(ProjectionModel):
     staged_write_set: StagedWriteSet
     staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
     promotion_receipt_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    effect_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
-    def _validate_effect_ids(self) -> Self:
+    def _validate_prepared_commit(self) -> Self:
         if self.workspace_identity.identity_digest != self.staged_write_set.identity_digest:
             raise ValueError("prepared staged write set belongs to another workspace")
         if self.staged_write_set_digest != self.staged_write_set.staged_digest:
             raise ValueError("prepared staged write-set digest is not canonical")
-        if any(not effect_id for effect_id in self.effect_ids):
-            raise ValueError("prepared effect ids must be non-empty")
-        if len(set(self.effect_ids)) != len(self.effect_ids):
-            raise ValueError("prepared effect ids must be unique")
-        return self
-
-
-class EffectRecord(ProjectionModel):
-    effect_id: str
-    task_id: str
-    activation_id: str
-    task_attempt: int = Field(ge=1)
-    index: int = Field(ge=0)
-    kind: str
-    payload: FrozenJSONValue
-    idempotency_key: str = Field(pattern=_SHA256_PATTERN)
-    status: EffectStatus = "committed"
-    apply_attempts: int = Field(default=0, ge=0)
-    receipt: FrozenJSONValue = None
-    failure: TaskFailure | None = None
-
-    @model_validator(mode="after")
-    def _validate_outcome(self) -> Self:
-        if (self.failure is not None) != (self.status == "permanently_failed"):
-            raise ValueError("effect failure is required exactly for permanently_failed status")
-        if self.status != "applied" and self.receipt is not None:
-            raise ValueError("effect receipt is allowed only for applied status")
-        if self.status == "applying" and self.apply_attempts < 1:
-            raise ValueError("applying effect requires at least one apply attempt")
         return self
 
 
@@ -256,19 +219,15 @@ class AttemptRecord(ProjectionModel):
 
     @model_validator(mode="after")
     def _validate_outcome(self) -> Self:
-        if (self.failure is not None) != (self.status in {"failed", "committed_effect_failed"}):
+        if (self.failure is not None) != (self.status == "failed"):
             raise ValueError("attempt failure is required exactly for failed status")
         if self.status == "stopped":
             if not self.stop_reason:
                 raise ValueError("stopped attempt requires a stop reason")
         elif self.stop_reason is not None:
             raise ValueError("stop reason is allowed only for stopped status")
-        if self.status in {"promotion_pending", "effect_pending"} and self.prepared_commit is None:
+        if self.status == "promotion_pending" and self.prepared_commit is None:
             raise ValueError("pending attempt requires a prepared commit")
-        if self.status == "committed_effect_failed" and (
-            self.prepared_commit is None or self.prepared_commit.promotion_receipt_digest is None
-        ):
-            raise ValueError("committed effect failure requires a promotion receipt")
         if self.prepared_commit is not None and self.prepared_commit.attempt != self.attempt:
             raise ValueError("prepared commit does not match the attempt")
         lease_values = (
@@ -406,7 +365,6 @@ class InvocationProjection(ProjectionModel):
     offered_tokens: tuple[TokenRecord, ...] = ()
     consumed_tokens: tuple[str, ...] = ()
     activations: tuple[ActivationRecord, ...] = ()
-    effects: tuple[EffectRecord, ...] = ()
     pending_interrupt: PendingInterrupt | None = None
     terminal_reason: str | None = None
 
@@ -420,7 +378,6 @@ class InvocationProjection(ProjectionModel):
                     self.offered_tokens,
                     self.consumed_tokens,
                     self.activations,
-                    self.effects,
                     self.pending_interrupt,
                     self.terminal_reason,
                 )
@@ -438,7 +395,6 @@ class InvocationProjection(ProjectionModel):
         _require_unique((item.token_id for item in self.offered_tokens), "token")
         _require_unique(self.consumed_tokens, "consumed token")
         _require_unique((item.activation_id for item in self.activations), "activation")
-        _require_unique((item.effect_id for item in self.effects), "effect")
 
         graph_ids = {item.graph_instance_id for item in self.graph_instances}
         activation_by_id = {item.activation_id: item for item in self.activations}
@@ -486,7 +442,6 @@ class InvocationProjection(ProjectionModel):
                     or token.consumed_by != activation.node_id
                 ):
                     raise ValueError("activation token graph/node binding is inconsistent")
-        _validate_effect_projection(self, activation_by_id)
         for token in self.offered_tokens:
             if token.activation_id is not None:
                 activation = activation_by_id.get(token.activation_id)
@@ -561,7 +516,6 @@ def _validate_attempt_history(activation: ActivationRecord) -> None:
     if activation.status == "failed":
         if activation.attempts and activation.attempts[-1].status not in {
             "failed",
-            "committed_effect_failed",
         }:
             raise ValueError("failed activation requires a failed attempt")
         if not activation.attempts and not activation.structural_failure:
@@ -817,15 +771,9 @@ def _advance_fold(
             projection = _fold_task_commit_prepared(projection, event, envelope.seq)
         elif isinstance(event, TaskPromotionCompleted):
             projection = _fold_task_promotion_completed(projection, event, envelope.seq)
-        elif isinstance(event, EffectIntentCommitted):
-            projection = _fold_effect_intent_committed(projection, event, envelope.seq)
-        elif isinstance(event, EffectApplyStarted):
-            projection = _fold_effect_apply_started(projection, event, envelope.seq)
-        elif isinstance(event, EffectReceiptRecorded):
-            projection = _fold_effect_receipt_recorded(projection, event, envelope.seq)
         elif isinstance(
             event,
-            TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptCommittedEffectFailed | TaskAttemptStopped,
+            TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped,
         ):
             projection = _fold_task_attempt_outcome(projection, event, envelope.seq)
         elif isinstance(event, NodeCompleted):
@@ -847,7 +795,6 @@ def _advance_fold(
             if activation.attempts:
                 if activation.attempts[-1].status not in {
                     "failed",
-                    "committed_effect_failed",
                 }:
                     _fail(envelope.seq, "node failed without a failed latest attempt")
                 if activation.attempts[-1].failure != event.failure:
@@ -936,7 +883,6 @@ def _advance_fold(
                 _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} already completed")
             if graph.status == "failed":
                 _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} already failed")
-            _require_no_pending_effects(projection, envelope.seq, event.graph_instance_id)
             for token in projection.offered_tokens:
                 if token.graph_instance_id != event.graph_instance_id:
                     continue
@@ -983,7 +929,6 @@ def _advance_fold(
                 _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} was not started")
             if graph.status != "running":
                 _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} is not running")
-            _require_no_pending_effects(projection, envelope.seq, event.graph_instance_id)
             if any(
                 item.graph_instance_id == event.graph_instance_id
                 and item.attempts
@@ -1017,12 +962,10 @@ def _advance_fold(
                 ):
                     _fail(envelope.seq, "successful invocation finished with an unsettled token")
             elif event.status == "failed":
-                _require_no_pending_effects(projection, envelope.seq, None)
                 _require_no_live_attempt_or_interrupt(projection, envelope.seq, "failed")
                 if any(item.status == "stopped" for item in projection.activations):
                     _fail(envelope.seq, "failed invocation contains a stopped activation")
             else:
-                _require_no_pending_effects(projection, envelope.seq, None)
                 _require_no_live_attempt_or_interrupt(projection, envelope.seq, "stopped")
             projection = projection.model_copy(
                 update={"status": event.status, "terminal_reason": event.terminal_reason}
@@ -1033,36 +976,6 @@ def _advance_fold(
     except ValueError as error:
         raise ProjectionError(f"fold produced an invalid projection: {error}") from error
     return FoldCursor(projection=validated, next_seq=expected_seq)
-
-
-def _validate_effect_projection(
-    projection: InvocationProjection,
-    activation_by_id: dict[str, ActivationRecord],
-) -> None:
-    for effect in projection.effects:
-        activation = activation_by_id.get(effect.activation_id)
-        if activation is None:
-            raise ValueError("effect has a dangling activation")
-        attempt = next(
-            (item for item in activation.attempts if item.attempt == effect.task_attempt),
-            None,
-        )
-        if attempt is None or attempt.prepared_commit is None:
-            raise ValueError("effect has a dangling prepared commit")
-        prepared = attempt.prepared_commit
-        if (
-            effect.task_id != prepared.task_id
-            or effect.index >= len(prepared.effect_ids)
-            or prepared.effect_ids[effect.index] != effect.effect_id
-        ):
-            raise ValueError("effect does not match the prepared commit")
-    grouped: dict[tuple[str, int], list[EffectRecord]] = {}
-    for effect in projection.effects:
-        grouped.setdefault((effect.activation_id, effect.task_attempt), []).append(effect)
-    for records in grouped.values():
-        ordered = sorted(records, key=lambda item: item.index)
-        if [item.index for item in ordered] != list(range(len(ordered))):
-            raise ValueError("effect indexes must be contiguous")
 
 
 def _fold_task_commit_prepared(
@@ -1090,7 +1003,6 @@ def _fold_task_commit_prepared(
         workspace_identity=event.workspace_identity,
         staged_write_set=event.staged_write_set,
         staged_write_set_digest=event.staged_write_set_digest,
-        effect_ids=event.effect_ids,
     )
     attempt = attempt.model_copy(
         update={
@@ -1128,7 +1040,7 @@ def _fold_task_promotion_completed(
     prepared = prepared.model_copy(update={"promotion_receipt_digest": event.promotion_receipt_digest})
     attempt = attempt.model_copy(
         update={
-            "status": "effect_pending" if prepared.effect_ids else "promotion_pending",
+            "status": "promotion_pending",
             "prepared_commit": prepared,
         }
     )
@@ -1138,115 +1050,9 @@ def _fold_task_promotion_completed(
     )
 
 
-def _fold_effect_intent_committed(
-    projection: InvocationProjection,
-    event: EffectIntentCommitted,
-    seq: int,
-) -> InvocationProjection:
-    activation = _activation(projection, event.activation_id, seq)
-    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
-    if not activation.attempts:
-        _fail(seq, "intent committed without a prepared commit")
-    attempt = activation.attempts[-1]
-    prepared = attempt.prepared_commit
-    if attempt.status != "promotion_pending" or prepared is None:
-        _fail(seq, "intent committed without a prepared commit")
-    if attempt.attempt != event.attempt:
-        _fail(seq, "intent committed without a matching prepared commit")
-    if any(item.effect_id == event.effect_id for item in projection.effects):
-        _fail(seq, "duplicate effect intent")
-    expected_index = sum(
-        1
-        for item in projection.effects
-        if item.activation_id == activation.activation_id and item.task_attempt == attempt.attempt
-    )
-    if event.index != expected_index:
-        _fail(seq, "effect intent index is not contiguous")
-    if event.index >= len(prepared.effect_ids) or event.effect_id != prepared.effect_ids[event.index]:
-        _fail(seq, "effect id does not match the prepared commit")
-    expected_key = _effect_idempotency_key(
-        projection.lock_digest,
-        event.effect_id,
-        event.effect_kind,
-        event.payload,
-    )
-    if event.idempotency_key != expected_key:
-        _fail(seq, "idempotency key does not match the committed intent")
-    record = EffectRecord(
-        effect_id=event.effect_id,
-        task_id=prepared.task_id,
-        activation_id=event.activation_id,
-        task_attempt=event.attempt,
-        index=event.index,
-        kind=event.effect_kind,
-        payload=event.payload,
-        idempotency_key=event.idempotency_key,
-    )
-    return projection.model_copy(update={"effects": (*projection.effects, record)})
-
-
-def _fold_effect_apply_started(
-    projection: InvocationProjection,
-    event: EffectApplyStarted,
-    seq: int,
-) -> InvocationProjection:
-    effect = _effect(projection, event.effect_id, seq)
-    if effect.status not in {"committed", "applying"}:
-        _fail(seq, "effect apply started after the effect settled")
-    predecessors = tuple(
-        item
-        for item in projection.effects
-        if item.activation_id == effect.activation_id
-        and item.task_attempt == effect.task_attempt
-        and item.index < effect.index
-    )
-    if any(item.status != "applied" for item in predecessors):
-        _fail(seq, "effect apply started before a prior receipt")
-    expected_attempt = effect.apply_attempts + 1
-    if event.apply_attempt != expected_attempt:
-        _fail(seq, f"expected apply attempt {expected_attempt}, found {event.apply_attempt}")
-    activation = _activation(projection, effect.activation_id, seq)
-    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
-    attempt = next(
-        (item for item in activation.attempts if item.attempt == effect.task_attempt),
-        None,
-    )
-    if (
-        attempt is None
-        or attempt.status != "effect_pending"
-        or attempt.prepared_commit is None
-        or attempt.prepared_commit.promotion_receipt_digest is None
-    ):
-        _fail(seq, "effect apply started before staged output promotion")
-    return _replace_effect(
-        projection,
-        effect.model_copy(update={"status": "applying", "apply_attempts": event.apply_attempt}),
-    )
-
-
-def _fold_effect_receipt_recorded(
-    projection: InvocationProjection,
-    event: EffectReceiptRecorded,
-    seq: int,
-) -> InvocationProjection:
-    effect = _effect(projection, event.effect_id, seq)
-    if effect.status == "applied":
-        _fail(seq, "duplicate effect receipt")
-    if effect.status != "applying":
-        _fail(seq, "effect receipt recorded without apply")
-    if event.apply_attempt != effect.apply_attempts:
-        _fail(seq, "effect receipt does not match the apply attempt")
-    activation = _activation(projection, effect.activation_id, seq)
-    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
-    return _replace_effect(
-        projection,
-        effect.model_copy(update={"status": "applied", "receipt": event.receipt}),
-    )
-
-
 def _fold_task_attempt_outcome(
     projection: InvocationProjection,
-    event: (TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptCommittedEffectFailed | TaskAttemptStopped),
+    event: (TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped),
     seq: int,
 ) -> InvocationProjection:
     activation = _activation(projection, event.activation_id, seq)
@@ -1262,17 +1068,9 @@ def _fold_task_attempt_outcome(
     if isinstance(event, TaskAttemptSucceeded):
         prepared = attempt.prepared_commit
         if attempt.status == "promotion_pending":
-            if prepared is None or prepared.effect_ids or prepared.promotion_receipt_digest is None:
-                _fail(seq, "task succeeded before staged output promotion")
-            if thaw_json(event.output) != thaw_json(prepared.output):
-                _fail(seq, "task success output disagrees with the prepared commit")
-            attempt = attempt.model_copy(update={"status": "succeeded", "output": event.output})
-        elif attempt.status == "effect_pending":
             if prepared is None or prepared.promotion_receipt_digest is None:
                 _fail(seq, "task succeeded before staged output promotion")
-            if not _all_effect_receipts_present(projection, activation.activation_id, attempt):
-                _fail(seq, "task succeeded before all effect receipts")
-            if thaw_json(event.output) != thaw_json(attempt.output):
+            if thaw_json(event.output) != thaw_json(prepared.output):
                 _fail(seq, "task success output disagrees with the prepared commit")
             attempt = attempt.model_copy(update={"status": "succeeded", "output": event.output})
         else:
@@ -1285,20 +1083,6 @@ def _fold_task_attempt_outcome(
             _fail(seq, "task success receipt digests disagree with the prepared commit")
         activation = activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)})
         return _replace_activation(projection, activation)
-    if isinstance(event, TaskAttemptCommittedEffectFailed):
-        if attempt.status != "effect_pending":
-            _fail(seq, "committed effect failure without a matching pending effect")
-        prepared = attempt.prepared_commit
-        if prepared is None or prepared.promotion_receipt_digest is None:
-            _fail(seq, "committed effect failure before staged output promotion")
-        if (
-            event.staged_write_set_digest != prepared.staged_write_set_digest
-            or event.promotion_receipt_digest != prepared.promotion_receipt_digest
-        ):
-            _fail(seq, "committed effect failure receipt digests disagree with the prepared commit")
-        return _fail_pending_effect(projection, activation, attempt, event.failure, seq)
-    if attempt.status == "effect_pending":
-        _fail(seq, "ordinary attempt outcome cannot follow staged output promotion")
     if attempt.status != "running":
         _fail(seq, "attempt outcome without a matching active attempt")
     if isinstance(event, TaskAttemptFailed):
@@ -1318,7 +1102,7 @@ def _fold_task_attempt_outcome(
 
 def _require_activity_attempt_outcome(
     attempt: AttemptRecord,
-    event: (TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptCommittedEffectFailed | TaskAttemptStopped),
+    event: (TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped),
     seq: int,
 ) -> None:
     activity = attempt.activity
@@ -1334,12 +1118,6 @@ def _require_activity_attempt_outcome(
             _fail(seq, "task success output disagrees with the observed terminal activity")
         if activity.staged_write_set_digest != event.staged_write_set_digest:
             _fail(seq, "task success staged write set disagrees with observed activity")
-        return
-    if isinstance(event, TaskAttemptCommittedEffectFailed):
-        if terminal.status != "succeeded":
-            _fail(seq, "committed effect failure requires a succeeded terminal activity")
-        if activity.staged_write_set_digest != event.staged_write_set_digest:
-            _fail(seq, "committed effect failure staged write set disagrees with observed activity")
         return
     if terminal.status == "succeeded":
         return
@@ -1597,109 +1375,6 @@ def _replace_latest_attempt(
     return _replace_activation(projection, activation.model_copy(update={"attempts": attempts}))
 
 
-def _all_effect_receipts_present(
-    projection: InvocationProjection,
-    activation_id: str,
-    attempt: AttemptRecord,
-) -> bool:
-    prepared = attempt.prepared_commit
-    if prepared is None:
-        return False
-    records = tuple(
-        item
-        for item in projection.effects
-        if item.activation_id == activation_id and item.task_attempt == attempt.attempt
-    )
-    if len(records) != len(prepared.effect_ids):
-        return False
-    return all(item.status == "applied" for item in records)
-
-
-def _fail_pending_effect(
-    projection: InvocationProjection,
-    activation: ActivationRecord,
-    attempt: AttemptRecord,
-    failure: TaskFailure,
-    seq: int,
-) -> InvocationProjection:
-    remaining_ids = {
-        item.effect_id
-        for item in projection.effects
-        if item.activation_id == activation.activation_id
-        and item.task_attempt == attempt.attempt
-        and item.status in {"committed", "applying"}
-    }
-    if not remaining_ids:
-        _fail(seq, "effect failure without a pending effect")
-    attempt = attempt.model_copy(update={"status": "committed_effect_failed", "failure": failure})
-    activation = activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)})
-    effects = tuple(
-        item.model_copy(update={"status": "permanently_failed", "failure": failure})
-        if item.effect_id in remaining_ids
-        else item
-        for item in projection.effects
-    )
-    return _replace_activation(projection.model_copy(update={"effects": effects}), activation)
-
-
-def _effect_idempotency_key(
-    lock_digest: str | None,
-    effect_id: str,
-    kind: str,
-    payload: FrozenJSONValue,
-) -> str:
-    if lock_digest is None:
-        raise ProjectionError("started projection requires complete invocation identity")
-    return canonical_digest(
-        {
-            "lock_digest": lock_digest,
-            "effect_id": effect_id,
-            "kind": kind,
-            "payload_digest": canonical_digest(cast(JSONValue, thaw_json(payload))),
-        }
-    )
-
-
-def _effect(projection: InvocationProjection, effect_id: str, seq: int) -> EffectRecord:
-    effect = next((item for item in projection.effects if item.effect_id == effect_id), None)
-    if effect is None:
-        _fail(seq, f"effect {effect_id!r} was not committed")
-    return effect
-
-
-def _replace_effect(projection: InvocationProjection, replacement: EffectRecord) -> InvocationProjection:
-    effects = tuple(
-        replacement if item.effect_id == replacement.effect_id else item for item in projection.effects
-    )
-    return projection.model_copy(update={"effects": effects})
-
-
-def _require_no_pending_effects(
-    projection: InvocationProjection,
-    seq: int,
-    graph_instance_id: str | None,
-) -> None:
-    pending_activations = any(
-        item.attempts
-        and item.attempts[-1].status == "effect_pending"
-        and (graph_instance_id is None or item.graph_instance_id == graph_instance_id)
-        for item in projection.activations
-    )
-    pending_effects = False
-    for item in projection.effects:
-        if item.status not in {"committed", "applying"}:
-            continue
-        if graph_instance_id is None:
-            pending_effects = True
-            break
-        activation = _find_activation(projection, item.activation_id)
-        if activation is not None and activation.graph_instance_id == graph_instance_id:
-            pending_effects = True
-            break
-    if pending_activations or pending_effects:
-        _fail(seq, "graph terminal while effects remain pending")
-
-
 def _activation(projection: InvocationProjection, activation_id: str, seq: int) -> ActivationRecord:
     activation = _find_activation(projection, activation_id)
     if activation is None:
@@ -1783,7 +1458,6 @@ __all__ = [
     "AttemptRecord",
     "AttemptStatus",
     "CommitResult",
-    "EffectRecord",
     "FoldCursor",
     "GraphInstanceRecord",
     "InvocationProjection",

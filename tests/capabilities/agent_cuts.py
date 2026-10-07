@@ -63,7 +63,6 @@ _PLAN_REF = {
 class IndeterminateObservation:
     status: str
     failure_kind: str | None
-    effects: tuple[object, ...]
     stop_reason: str | None
     workspace_bytes: dict[str, bytes]
     finalize_invoked: bool
@@ -375,7 +374,6 @@ async def run_six_wheel_cut(cut: str) -> IndeterminateObservation:
     return IndeterminateObservation(
         status=status if status != "completed" else "failed",
         failure_kind=None if status != "completed" else None,
-        effects=(),
         stop_reason=None,
         workspace_bytes=workspace_bytes,
         finalize_invoked=host.finalize_calls > 0,
@@ -422,7 +420,6 @@ def _install_case_review_reads(workspace: Path) -> None:
 def assert_indeterminate_is_inert(observed: IndeterminateObservation) -> None:
     if isinstance(observed, ExecutedTask):
         raise TypeError("expected IndeterminateObservation")
-    assert observed.effects == ()
     assert observed.status != "succeeded"
     assert observed.status != "stopped"
     if observed.failure_kind is not None:
@@ -431,9 +428,7 @@ def assert_indeterminate_is_inert(observed: IndeterminateObservation) -> None:
     business = [
         name
         for name in observed.workspace_bytes
-        if name.endswith(("review.json", "proposal.json", "report.json"))
-        or "effect" in name
-        or name.endswith(".stop")
+        if name.endswith(("review.json", "proposal.json", "report.json")) or name.endswith(".stop")
     ]
     assert business == []
 
@@ -445,7 +440,6 @@ def _from_executed(executed: ExecutedTask, workspace: Path, leaked: bool) -> Ind
     return IndeterminateObservation(
         status=executed.status,
         failure_kind=None if failure is None else failure.kind,
-        effects=tuple(executed.effects),
         stop_reason=executed.stop_reason,
         workspace_bytes=dict(executed.workspace_bytes),
         finalize_invoked=True,

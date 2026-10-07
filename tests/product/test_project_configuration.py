@@ -38,7 +38,6 @@ def test_project_config_contributes_business_data_only(config_tree):
     assert contribution.bindings == ()
     assert contribution.task_handlers == {}
     assert contribution.commit_validators == {}
-    assert contribution.effects == ()
     assert {resource.resource_id for resource in contribution.resources} == {
         "assurance.product.configuration.product-policy",
         "assurance.product.configuration.data-knowledge",

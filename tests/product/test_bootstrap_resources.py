@@ -78,3 +78,46 @@ def test_release_active_resource_authorizations_clears_stale_grant(tmp_path: Pat
     assert len(records) == 2
     assert records[1].action == "release"
     assert active_authorization_grant(records, acquire.authorization_id) is None
+
+
+def test_scoped_cleanup_preserves_unrelated_grants(tmp_path: Path) -> None:
+    from assurance_product.change_workspace import ChangeWorkspace
+    from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
+    from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
+    from graph_engine.attempts.resource_arbiter import ResourceArbiter
+    from graph_engine.attempts.keys import AttemptKey
+    import asyncio
+
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace = ChangeWorkspace.prepare(project.resolve(), "one")
+
+    async def setup():
+        async with open_sqlite_checkpointer(workspace) as backend:
+            arbiter = ResourceArbiter(SqliteResourceAuthorizationStore(backend))
+            await arbiter.acquire(
+                AttemptKey(digest="a" * 64), ResourceClaims(writes=("one",)), fencing_token=1
+            )
+            await arbiter.acquire(
+                AttemptKey(digest="b" * 64), ResourceClaims(writes=("two",)), fencing_token=1
+            )
+
+    asyncio.run(setup())
+    assert (
+        release_active_resource_authorizations(
+            workspace.paths.langgraph_checkpoints, attempt_key_digests={"a" * 64}
+        )
+        == 1
+    )
+    assert (
+        release_active_resource_authorizations(
+            workspace.paths.langgraph_checkpoints, attempt_key_digests={"a" * 64}
+        )
+        == 0
+    )
+    assert (
+        release_active_resource_authorizations(
+            workspace.paths.langgraph_checkpoints, attempt_key_digests={"b" * 64}
+        )
+        == 1
+    )

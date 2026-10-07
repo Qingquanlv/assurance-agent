@@ -18,14 +18,13 @@ from graph_engine.attempts.events import (
 )
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import (
-    CommittedEffectFailure,
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,
     PermanentTaskFailure,
     RejectedTaskResult,
 )
-from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
 from graph_engine.stategraph.publish import call_publish
 from graph_engine.stategraph.checkpoint_bridge import (
@@ -53,7 +52,9 @@ class AttemptNodeFactory:
         journal: AttemptJournalPort,
         kernel: object | None = None,
         trace: list[str] | None = None,
+        regenerate: bool = False,
     ) -> None:
+        self._regenerate = regenerate
         self._journal = journal
         self._kernel = kernel
         self.trace = [] if trace is None else trace
@@ -114,17 +115,65 @@ class AttemptNodeFactory:
             raise TypeError("attempt kernel is required")
         completions: list[tuple[AttemptKey, ActiveSystemInterrupt]] = []
         seed_from: AttemptKey | None = None
-        for technical_attempt in range(1, task.retry.max_attempts + 1):
-            key = derive_attempt_key(
-                invocation_id=invocation_id,
-                graph_revision=revision,
-                public_entrypoint=entrypoint,
-                semantic_node_id=semantic_node_id,
-                business_activation=business,
-                contract_id=task.contract_id,
-                validated_input=validated,
-                technical_attempt=technical_attempt,
-            )
+        scope: dict[str, JSONValue] = {
+            "invocation_id": invocation_id,
+            "graph_revision": revision,
+            "public_entrypoint": entrypoint,
+            "semantic_node_id": semantic_node_id,
+            "business_activation": business.model_dump(mode="json"),
+            "contract_id": task.contract_id,
+            "contract_digest": canonical_digest(task.canonical_projection()),
+        }
+        latest = await self._journal.latest_generation(scope) if self._regenerate else None
+        waiting = None
+        if latest is not None:
+            previous = await self._journal.load(latest[1])
+            if previous is not None and _active_issued(previous):
+                if latest[2]:
+                    completions.extend((latest[1], item) for item in _active_issued(previous))
+                else:
+                    waiting = latest
+        for local_attempt in range(1, task.retry.max_attempts + 1):
+
+            def make_key(ordinal: int) -> AttemptKey:
+                return derive_attempt_key(
+                    invocation_id=invocation_id,
+                    graph_revision=revision,
+                    public_entrypoint=entrypoint,
+                    semantic_node_id=semantic_node_id,
+                    business_activation=business,
+                    contract_id=task.contract_id,
+                    validated_input=validated,
+                    technical_attempt=ordinal,
+                )
+
+            if waiting is not None:
+                technical_attempt, key, _, saved_input = waiting
+                if saved_input is not None:
+                    validated = _validated_selection(saved_input, task)
+                if make_key(technical_attempt) != key:
+                    raise ValueError("waiting generation input identity drifted")
+                waiting = None
+            elif self._regenerate:
+                registered = await self._journal.register_generation(
+                    scope,
+                    make_key,
+                    max_attempts=task.retry.max_attempts,
+                    validated_input=validated.model_dump(mode="json"),
+                )
+                if registered is None:
+                    return _map_resolution(
+                        PermanentTaskFailure(
+                            kind="internal", message="attempt generation budget exhausted", retryable=False
+                        ),
+                        state,
+                        publish,
+                        tuple(completions),
+                    )
+                technical_attempt, key = registered
+            else:
+                technical_attempt = local_attempt
+                key = make_key(technical_attempt)
             snapshot = await self._journal.load(key)
             issued = _active_issued(snapshot)
             for item in issued:
@@ -398,18 +447,6 @@ def _map_resolution(
                     "kind": resolution.kind,
                     "message": resolution.message,
                     "writes_promoted": False,
-                }
-            },
-            completions,
-        )
-    if isinstance(resolution, CommittedEffectFailure):
-        return _with_completion(
-            {
-                "attempt_failure": {
-                    "resolution_kind": "committed_effect_failure",
-                    "reason": resolution.reason,
-                    "writes_promoted": True,
-                    "promotion_receipt": resolution.promotion_receipt,
                 }
             },
             completions,

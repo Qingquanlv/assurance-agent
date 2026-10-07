@@ -17,7 +17,6 @@ from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
     AttemptResolution,
-    CommittedEffectFailure,
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,
@@ -292,8 +291,6 @@ def _promotion_decision(resolution: AttemptResolution) -> str:
         return "rejected"
     if isinstance(resolution, PermanentTaskFailure):
         return "permanent"
-    if isinstance(resolution, CommittedEffectFailure):
-        return "committed_effect_failure"
     if isinstance(resolution, PendingTaskResult):
         return "pending"
     if isinstance(resolution, IndeterminateTaskResult):

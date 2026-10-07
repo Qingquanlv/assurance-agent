@@ -1,5 +1,46 @@
 # Flow 层：用声明式拓扑替换手写 StateGraph
 
+> 2026-10-06 更新：独立 Effect/Intent 机制已删除。业务记录由 op 的 after 或普通 task
+> handler 生成，随 Attempt 提交。
+> 本文后半部分审计快照中的 Effect 清理建议仅保留为历史记录。
+
+## Implemented binding rules (2026-10-07)
+
+`flow/dataflow.py` intersects guaranteed availability across every reachable incoming
+path. Explicit ledger sources, implicit op slots, child inputs and parallel op slots
+share the checker; explicit bindings override slots. Successful edges add declared
+writes and controls; failed edges add neither. Child outcomes supply only their
+guaranteed values. Dynamically omitted branches guarantee no output; static op
+branches supply writes only when their required outcome is `succeeded`.
+
+Defaults, optional implicit fields and guaranteed same-name parent/control values
+retain runtime fallback behavior. Required nullable implicit slots still require a
+value. Explicit nullable ledger sources can resolve None; explicit non-null sources
+require a guaranteed key even when the model field has a default. Cardinality and
+receipt validation remain runtime-owned.
+
+Loop first entry must have its dependencies already available; future back-edge
+writes cannot seed it. `loop.next` retains committed last-write-wins ledger values,
+including deliberately seeded prior-round handoffs. This guarantees availability,
+not current-round freshness; no freshness DSL or second scheduler was added.
+Required controls and explicit gate decisions must also exist on every incoming path.
+An optional intermediate model omits the export and therefore supplies no guarantee;
+a None leaf is still published. Finalized case-review output now requires its
+`reviewed_case` manifest, matching the After hook that always creates it. This tightens
+the finalized output schema; Agent-authored review input/results remain unchanged.
+The normal generator and digest checks show no declaration or canonical digest change.
+Rebuild/deploy the wheel; older recorded outputs missing that manifest cannot satisfy
+the tightened output model and must stay on their original revision or restart.
+
+Controls accept typed scalar metadata, scalar Literal selections, ArtifactRef
+subclasses and typed collections of those. Arbitrary dictionaries and nested
+business models are rejected; the framework has no Assurance field-name allowlist.
+Flow failure routes use only `invalid_output`, `invalid_input`, `rejected`, `failed`
+and `*` (mapping routes require `*`). The compiler adapter maps runtime `kind` and
+`resolution_kind` to these stable categories; raw diagnostics remain in failure
+state and gate notices. The original design and migration audit below are retained
+as historical context where superseded by this update and the F4 implementation.
+
 ## 背景
 
 六个 capability wheel 和 product 现在直接写 LangGraph `StateGraph`，图层代码约
@@ -98,8 +139,8 @@ flow.step(
 - `then` 和 `route_on`+`routes` 二选一。`route_on` 指向 op 输出模型上的 `Literal`
   字段，编译时检查字段存在、类型是 `Literal`、`routes` 覆盖全部取值。
 - `on_failure` 可以是一个目标，也可以按失败种类分流。可用的键有：`rejected`、
-  `permanent`、`permanent:invalid_output`、`permanent:invalid_input`、
-  `committed_effect_failure`、`*`。匹配时越具体越优先，映射里必须带 `*`。
+  `failed`、`invalid_output`、`invalid_input`、
+  `*`。按稳定类别匹配，映射里必须带 `*`。
 - `inputs` 只做来源绑定，不接受函数。可用的来源：入参字段名、`loop.round`、
   `gate.action`、`gate.field("名字")`、`const(值)`。没写在 `inputs` 里的字段先按
   同名入参取，再按 handle 的 slot 从 ledger 取。
@@ -143,7 +184,7 @@ approval = flow.gate(
     interrupt_id: str | None = None,
 )
 approval.action                          # 输入来源
-approval.field("approval_ref")           # 输入来源：decision 上的其他字段
+approval.field("reason")                 # 输入来源：decision 上的其他字段
 ```
 
 - 编译成 LangGraph `interrupt()`。payload 由框架生成：原因（gate 名）、可选动作
@@ -151,10 +192,9 @@ approval.field("approval_ref")           # 输入来源：decision 上的其他�
   payload 函数。
 - `routes` 必须覆盖全部动作，目标可以是 `loop.next(...)`。case 和 generation 的
   `request_rework` 就是这样写的，预算用完时自动去 `on_exhausted`。
-- decision 上 action 以外的字段由框架保存，下一步通过 `gate.field(...)` 取用。healing
-  审批带回的 `approval_ref`（healing `nodes.py:284-288`）走这条路。
+- decision 上 action 以外的字段由框架保存，下一步通过 `gate.field(...)` 取用。
 - `interrupt_id` 默认由挂载路径生成，例如 `generation.api.human-review`。挂到
-  `full` 上是 `full.human-review`、`full.approval`、`full.api.human-review`。产品
+  `full` 上是 `full.human-review`、`full.api.human-review`。产品
   不传入旧值。`aa resume` 按 LangGraph snapshot 的 `item.id` 匹配。
 
 ### parallel
@@ -326,29 +366,24 @@ generation.step("publish-cycle", publish_cycle, then="passed", on_failure="faile
 - 四个 codegen 都写 `qa/tests`，router 读整个 `qa`（`ops/__init__.py:12`），所以现在
   仍然会排队执行。要真正并行，需要每个 family 写自己的目录。
 
-### healing：审批带回文件引用
+### healing：自动执行限定范围的测试修复（2026-10-06 更新）
 
 ```python
 repair = Flow("repair-failure", input=RepairInput, outcomes=("applied", "needs_review", "failed"))
-repair.step("fix-proposal", fix_proposal, then="approval", on_failure="failed")
-approval = repair.gate(
-    "approval", decision=ProposalApprovalDecision, show=(FIX_PROPOSAL,),
-    routes={"approve": "apply", "reject": "needs_review"},
-    interrupt_id="fix-proposal-approval",
-)
+repair.step("fix-proposal", fix_proposal, then="apply", on_failure="failed")
 repair.step(
     "apply", apply_test_repair,
-    inputs={"approval_ref": approval.field("approval_ref")},
     then="applied",
-    on_failure={"permanent:invalid_output": "needs_review", "*": "failed"},
+    on_failure={"invalid_output": "needs_review", "*": "failed"},
 )
 ```
 
 - `admit` 节点的资格和预算判断（`failure.py:67-76`）上移：资格由 quality 或 issue
   analysis 的结局决定，预算由 product 的 healing 循环管理。healing Flow 因此不再有
   `not_eligible` 和 `exhausted` 两个结局。
-- 审批节点在 `approval_ref` 已存在时跳过中断（`nodes.py:269-272`），只有测试夹具会
-  走到这条路。建议删除这种跳过，测试改用 `Command(resume=...)`。
+- 测试修复不再设置人工审批门，也不再传入独立的审批文件。只处理有效提案中允许自动
+  修复的条目；prepare 校验来源摘要、当前生成文件和已审查 mapping，finalize 校验
+  实际改动、断言和测试身份。超出修复边界的内容仍被拒绝。
 - 提案文件起名，`proposal_ref` 由 ledger 提供，`publish_proposal` 里的重算哈希
   （`nodes.py:207-211`）删掉。
 
@@ -728,7 +763,7 @@ ledger 回执：ledger 在同一次更新里把提交回执 `ReceiptRef` 记在�
 覆盖旧值）。入参来源 `ledger_receipt(handle)` 把回执绑定到入参。文件本身不再内嵌
 自己的回执。
 
-控制输出 `flow.control`：常驻的、有类型的少量值。白名单是 prepare 的
+控制输出 `flow.control`：常驻的、有类型的少量值。产品当前发布 prepare 的
 `plan_digest`、`selected_test_families`、`preparation_refs`，以及 case 的
 `reviewed_refs`（`reviewed_case.preparation_refs`）。名字在整个挂载面上唯一。路径
 中间为 None 时省略该字段；叶子为 None 时仍写入。
@@ -810,8 +845,8 @@ import langgraph，唯一例外 `assurance_product.sqlite_checkpointer`
 - **semantic id 尽量不变。** 按"ledger namespace + Flow 内路径"的规则，现有 id 都能
   保留。
 - **interrupt id 换成挂载路径。** 产品不保留旧值（已定决策第 4 条）。Flow payload
-  的 `interrupt_id` 挂到 `full` 上是 `full.human-review`、`full.approval`、
-  `full.api.human-review`。`aa resume` 按 LangGraph snapshot 的 `item.id` 匹配
+  的 `interrupt_id` 挂到 `full` 上是 `full.human-review`、`full.api.human-review`。
+  `aa resume` 按 LangGraph snapshot 的 `item.id` 匹配
   （`application.py` 的 `_pending_graph_interrupt_ids`）。
 - **契约 digest 会变。** 凡是输出模型新增路由 `Literal`、或输入模型删掉派生字段的 op
   都会变，`tests/product/goldens/contract-digests.json` 要随之更新。

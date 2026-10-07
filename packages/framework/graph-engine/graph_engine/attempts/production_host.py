@@ -127,6 +127,7 @@ def create_production_task_execution_host(
     activity_factory: TaskActivityPortFactory,
     invocation_root: Path,
     handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
+    process_observer: Callable[[int, str], None] | None = None,
 ) -> TaskExecutionHost:
     return _ProductionTaskExecutionHost(
         authorization=authorization,
@@ -136,6 +137,7 @@ def create_production_task_execution_host(
         activity_factory=activity_factory,
         invocation_root=invocation_root,
         handler_import_roots=handler_import_roots,
+        process_observer=process_observer,
     )
 
 
@@ -149,7 +151,7 @@ class _BoundRuntime:
 
 
 class _ProductionTaskExecutionHost:
-    __slots__ = ("_authorization", "_bound", "_root", "_read_buffers")
+    __slots__ = ("_authorization", "_bound", "_root", "_read_buffers", "_process_observer")
 
     def __init__(
         self,
@@ -161,7 +163,9 @@ class _ProductionTaskExecutionHost:
         activity_factory: TaskActivityPortFactory,
         invocation_root: Path,
         handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
+        process_observer: Callable[[int, str], None] | None = None,
     ) -> None:
+        self._process_observer = process_observer
         self._root = Path(invocation_root).absolute()
         self._authorization = authorization
         self._bound = _BoundRuntime(
@@ -336,6 +340,8 @@ class _ProductionTaskExecutionHost:
         try:
             secrets = self._resolve_authorized_secrets(call.authorized_secret_handles)
             process = supervisor.spawn(attempt_root=workspace.write_root, call_digest=call_digest)
+            if self._process_observer is not None:
+                self._process_observer(process.popen.pid, call_digest)
             _host_fault_cut("host-after-spawn-before-dispatch")
             return await asyncio.to_thread(
                 self._drive_worker,

@@ -28,7 +28,7 @@ from graph_engine.evidence.ledger import (
 from graph_engine.evidence.models import ProjectionError, fold_events
 from graph_engine.plugin_api import TaskActivitySnapshot
 
-_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending", "effect_pending"}
+_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending"}
 
 
 class LedgerTaskActivityPort:

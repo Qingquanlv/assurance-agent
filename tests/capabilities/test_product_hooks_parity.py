@@ -6,7 +6,12 @@ from pathlib import Path
 
 import yaml
 
-from tests.capabilities.ownership import OWNERSHIP_PATH, legacy_hook_fields, load_ownership_ledger
+from tests.capabilities.ownership import (
+    DELETED_HOOKS,
+    OWNERSHIP_PATH,
+    legacy_hook_fields,
+    load_ownership_ledger,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEW_WHEEL_ROOTS: tuple[Path, ...] = (
@@ -23,8 +28,6 @@ _REGISTRY_KINDS = frozenset(
     {
         "TaskHandler",
         "CommitValidator",
-        "DurableEffectHandler",
-        "EffectRegistration",
     }
 )
 
@@ -77,14 +80,16 @@ def test_every_product_hook_has_one_verified_replacement() -> None:
         item.legacy_id for item in ledger.items if item.kind == "hook" and item.disposition == "migrate"
     }
     verified = {item.legacy_id for item in ledger.items if item.kind == "hook" and item.status == "verified"}
-    pins = next(item for item in ledger.items if item.kind == "hook" and item.legacy_id == "semantic_pins")
     assert migrate == verified
-    assert migrate | {pins.legacy_id} == legacy_fields
-    assert pins.disposition == "delete_phase6"
-    assert pins.owner is None
-    assert pins.new_id is None
-    assert pins.status == "planned"
-    assert pins.verification is None
+    assert migrate | DELETED_HOOKS == legacy_fields
+    for item in ledger.items:
+        if item.kind != "hook" or item.legacy_id not in DELETED_HOOKS:
+            continue
+        assert item.disposition == "delete_phase6"
+        assert item.owner is None
+        assert item.new_id is None
+        assert item.status == "planned"
+        assert item.verification is None
 
 
 def test_no_new_wheel_imports_or_recreates_product_hooks() -> None:

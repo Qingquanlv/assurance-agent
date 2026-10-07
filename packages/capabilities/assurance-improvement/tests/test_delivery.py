@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import cast
 
@@ -54,7 +56,7 @@ def _eval_receipt(projection: dict[str, object] | None = None, **overrides: obje
 
 
 @pytest.mark.asyncio
-async def test_rollback_emits_delivery_effect_with_memory_rollback(tmp_path: Path) -> None:
+async def test_rollback_publishes_receipt_with_memory_rollback(tmp_path: Path) -> None:
     outcome = await execute_task(
         RollbackMemoryImprovementHandler(),
         json_value(
@@ -70,9 +72,7 @@ async def test_rollback_emits_delivery_effect_with_memory_rollback(tmp_path: Pat
     assert outcome.status == "succeeded"
     payload = as_object(outcome.output)
     assert payload["reason"] == "regressed"
-    assert len(outcome.effects) == 1
-    assert outcome.effects[0].kind == "assurance.improvement.effect.delivery.v1"
-    assert as_object(outcome.effects[0].payload)["kind"] == "memory_rollback"
+    assert "qa/results/improvement/memory-rollback.json" in outcome.workspace_bytes
 
 
 def test_apply_proof_rejects_missing_and_stale_evaluation_binding() -> None:
@@ -178,7 +178,7 @@ async def test_apply_rejects_eval_bound_to_other_approved_state(tmp_path: Path) 
     )
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.effects == ()
+    assert "qa/results/improvement/memory-apply.json" not in outcome.workspace_bytes
 
 
 @pytest.mark.asyncio
@@ -204,7 +204,7 @@ async def test_apply_rejects_eval_missing_approved_binding(tmp_path: Path) -> No
     )
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.effects == ()
+    assert "qa/results/improvement/memory-apply.json" not in outcome.workspace_bytes
 
 
 def _publish_receipt(change_id: str = "CH-DEMO-001") -> dict[str, object]:
@@ -352,3 +352,110 @@ async def test_archive_finalize_rejects_risk_mismatch(tmp_path: Path) -> None:
     )
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_output"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ("memory_eval", "memory_apply", "memory_rollback", "change_export"))
+async def test_delivery_stages_full_identity_and_nested_receipt(kind: str, tmp_path: Path) -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest
+
+    projection = _projection(delivery="change_draft" if kind == "change_export" else "memory_patch")
+    payload: dict[str, object] = {"projection": projection, "target_digest": HEX_A}
+    handler: TaskHandler
+    if kind == "memory_eval":
+        handler = EvaluateMemoryImprovementHandler()
+        payload.update(eval_run_id="eval-1", outcome="passed", report_sha256="r", staged_sha256="s")
+    elif kind == "memory_apply":
+        handler = ApplyMemoryImprovementHandler()
+        payload.update(
+            eval_receipt=_eval_receipt(projection),
+            approved_state_digest=artifact_digest(ImprovementProjection.model_validate(projection)),
+            approved_version=1,
+            before_sha256="b",
+            after_sha256="a",
+            receipt_sha256="r",
+        )
+    elif kind == "memory_rollback":
+        handler = RollbackMemoryImprovementHandler()
+        payload.update(reason="regressed", restored_sha256="x")
+    else:
+        handler = ExportChangeImprovementHandler()
+        payload.update(artifact_path="qa/improvements/drafts/IMP-1.yaml", sha256="x", created=True)
+    outcome = await execute_task(handler, json_value(payload), tmp_path)
+    assert outcome.status == "succeeded"
+    record_path = "qa/results/improvement/" + kind.replace("_", "-") + ".json"
+    assert record_path in outcome.workspace_bytes
+    record = json.loads(outcome.workspace_bytes[record_path])
+    assert record["improvement_id"] == "IMP-1"
+    assert record["version"] == 1
+    assert record["target_kind"] == kind
+    assert record["target_digest"] == HEX_A
+    receipt = record["receipt"]
+    if kind == "memory_eval":
+        assert record["target"] == ".aa/memory/aa-api-plan.md"
+        assert receipt == as_object(outcome.output)["memory_eval"]
+    elif kind == "memory_rollback":
+        assert receipt == {
+            "target": ".aa/memory/aa-api-plan.md",
+            "restored_sha256": "x",
+            "reason": "regressed",
+        }
+    else:
+        assert receipt == as_object(outcome.output)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evaluation_outcome", ("passed", "regressed", "awaiting_baseline", "error"))
+async def test_apply_reads_and_validates_the_bound_evaluation_record(
+    evaluation_outcome: str, tmp_path: Path
+) -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest
+
+    projection = _projection()
+    evaluated = await execute_task(
+        EvaluateMemoryImprovementHandler(),
+        json_value(
+            {
+                "projection": projection,
+                "eval_run_id": "eval-1",
+                "outcome": evaluation_outcome,
+                "report_sha256": "r",
+                "staged_sha256": "s",
+                "target_digest": HEX_A,
+            }
+        ),
+        tmp_path,
+        write_root=tmp_path / "evaluate-stage",
+    )
+    assert evaluated.status == "succeeded"
+    assert as_object(evaluated.output)["route"] == ("apply" if evaluation_outcome == "passed" else "failed")
+    record_path = "qa/results/improvement/memory-eval.json"
+    record_bytes = evaluated.workspace_bytes[record_path]
+    committed_path = tmp_path / record_path
+    committed_path.parent.mkdir(parents=True, exist_ok=True)
+    committed_path.write_bytes(record_bytes)
+    applied = await execute_task(
+        ApplyMemoryImprovementHandler(),
+        json_value(
+            {
+                "projection": projection,
+                "eval_receipt_ref": {"path": record_path, "digest": hashlib.sha256(record_bytes).hexdigest()},
+                "approved_state_digest": artifact_digest(ImprovementProjection.model_validate(projection)),
+                "approved_version": 1,
+                "before_sha256": "b",
+                "after_sha256": "a",
+                "receipt_sha256": "r",
+                "target_digest": HEX_A,
+            }
+        ),
+        tmp_path,
+        write_root=tmp_path / "apply-stage",
+    )
+    apply_path = tmp_path / "apply-stage/qa/results/improvement/memory-apply.json"
+    if evaluation_outcome == "passed":
+        assert applied.status == "succeeded"
+        assert json.loads(apply_path.read_bytes())["receipt"]["after_sha256"] == "a"
+    else:
+        assert applied.failure is not None
+        assert applied.failure.kind == "invalid_input"
+        assert not apply_path.exists()

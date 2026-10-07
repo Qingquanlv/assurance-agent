@@ -480,11 +480,11 @@ def _reject_organization_overrides(root: Path | None) -> None:
             )
 
 
-def bind_attempt_factory(kernel: object | None) -> AttemptNodeFactory | None:
+def bind_attempt_factory(kernel: object | None, *, regenerate: bool = False) -> AttemptNodeFactory | None:
     if kernel is None:
         return None
     if isinstance(kernel, AssuranceAttemptKernel):
-        return AttemptNodeFactory(journal=kernel.journal, kernel=kernel)
+        return AttemptNodeFactory(journal=kernel.journal, kernel=kernel, regenerate=regenerate)
     raise BootValidationError("attempt kernel must expose its journal")
 
 

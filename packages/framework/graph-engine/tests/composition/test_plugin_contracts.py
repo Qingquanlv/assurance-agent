@@ -15,7 +15,6 @@ from graph_engine.composition.models import (
     AttemptContractRef,
     CapabilityRegistry,
     ContributionAuthority,
-    EffectRegistry,
     RegistrySet,
     ResourceRegistry,
     SchemaRegistry,
@@ -27,11 +26,6 @@ from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
     CapabilityBindingContribution,
-    EffectApplyResult,
-    EffectIntent,
-    EffectPolicy,
-    EffectReconcileResult,
-    EffectRegistration,
     PluginDependency,
     PluginContribution,
     PluginContractError,
@@ -139,14 +133,6 @@ def test_provider_source_authenticates_canonical_import_roots() -> None:
             )
 
 
-class _EffectHandler:
-    async def apply(self, _intent: EffectIntent, _idempotency_key: str) -> EffectApplyResult:
-        return EffectApplyResult.applied({"receipt": "ok"})
-
-    async def reconcile(self, _intent: EffectIntent, _idempotency_key: str) -> EffectReconcileResult:
-        return EffectReconcileResult.applied({"receipt": "ok"})
-
-
 @dataclass(frozen=True)
 class _Provider:
     descriptor_value: PluginDescriptor
@@ -159,14 +145,17 @@ class _Provider:
         return self.contribution
 
 
-def test_task_failure_retryability_and_effect_outcome_invariants() -> None:
+def test_task_failure_retryability_and_outcome_invariants() -> None:
     failure = TaskFailure(kind="external_effect", message="denied", retryable=False)
     assert failure.retryable is False
-    intent = EffectIntent(kind="toy.audit.append", payload={"line": "hello"})
-    outcome = TaskOutcome.succeeded(output={"ok": True}, effects=(intent,))
-    assert outcome.effects == (intent,)
-    with pytest.raises(ValueError, match="effects are allowed only"):
-        TaskOutcome(status="failed", failure=failure, effects=(intent,))
+    outcome = TaskOutcome.succeeded(output={"ok": True})
+    assert outcome.output == {"ok": True}
+    with pytest.raises(ValueError, match="failure"):
+        TaskOutcome(status="failed")
+    with pytest.raises(ValueError, match="Extra inputs"):
+        TaskOutcome.model_validate(
+            {"status": "succeeded", "effects": [{"kind": "toy.audit.append", "payload": {}}]}
+        )
 
 
 def test_plugin_contribution_must_match_descriptor_ids() -> None:
@@ -182,7 +171,6 @@ def test_plugin_contribution_must_match_descriptor_ids() -> None:
             commit_validators=(),
             schemas=(),
             resources=(),
-            effects=(),
             bindings=(),
         ),
         contribution=PluginContribution.empty(),
@@ -272,120 +260,6 @@ def test_phase_one_registry_spi_has_no_public_aliases() -> None:
     assert all(not hasattr(graph_engine, name) for name in retired)
 
 
-@pytest.mark.parametrize(
-    ("result_type", "status"),
-    [
-        (EffectApplyResult, "permanent"),
-        (EffectReconcileResult, "permanently_failed"),
-    ],
-)
-def test_permanent_effect_results_require_non_retryable_failures(
-    result_type: type[EffectApplyResult] | type[EffectReconcileResult], status: str
-) -> None:
-    retryable_failure = TaskFailure(kind="external_effect", message="denied")
-    with pytest.raises(ValueError, match="permanent effect failure must not be retryable"):
-        result_type(status=status, failure=retryable_failure)  # type: ignore[arg-type]
-
-    result = result_type(
-        status=status,
-        failure=TaskFailure(kind="external_effect", message="denied", retryable=False),
-    )  # type: ignore[arg-type]
-    assert result.failure is not None
-    assert result.failure.retryable is False
-
-
-@pytest.mark.parametrize(
-    ("result_type", "fields"),
-    [
-        (EffectApplyResult, {"status": "applied", "receipt": {"receipt": "ok"}}),
-        (
-            EffectApplyResult,
-            {
-                "status": "transient",
-                "failure": TaskFailure(kind="transient", message="retry"),
-            },
-        ),
-        (
-            EffectApplyResult,
-            {
-                "status": "permanent",
-                "failure": TaskFailure(kind="external_effect", message="denied", retryable=False),
-            },
-        ),
-        (EffectReconcileResult, {"status": "not_applied"}),
-        (EffectReconcileResult, {"status": "pending"}),
-        (EffectReconcileResult, {"status": "applied", "receipt": {"receipt": "ok"}}),
-        (
-            EffectReconcileResult,
-            {
-                "status": "permanently_failed",
-                "failure": TaskFailure(kind="external_effect", message="denied", retryable=False),
-            },
-        ),
-    ],
-)
-def test_effect_result_statuses_accept_only_their_valid_fields(
-    result_type: type[EffectApplyResult] | type[EffectReconcileResult], fields: dict[str, object]
-) -> None:
-    assert result_type(**fields).status == fields["status"]  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(
-    ("result_type", "fields"),
-    [
-        (
-            EffectApplyResult,
-            {
-                "status": "applied",
-                "failure": TaskFailure(kind="internal", message="unexpected"),
-            },
-        ),
-        (EffectApplyResult, {"status": "transient"}),
-        (
-            EffectApplyResult,
-            {
-                "status": "permanent",
-                "receipt": {"receipt": "unexpected"},
-                "failure": TaskFailure(kind="external_effect", message="denied", retryable=False),
-            },
-        ),
-        (
-            EffectReconcileResult,
-            {
-                "status": "not_applied",
-                "receipt": {"receipt": "unexpected"},
-            },
-        ),
-        (
-            EffectReconcileResult,
-            {
-                "status": "pending",
-                "failure": TaskFailure(kind="transient", message="unexpected"),
-            },
-        ),
-        (EffectReconcileResult, {"status": "permanently_failed"}),
-    ],
-)
-def test_effect_result_statuses_reject_conflicting_fields(
-    result_type: type[EffectApplyResult] | type[EffectReconcileResult], fields: dict[str, object]
-) -> None:
-    with pytest.raises(ValueError):
-        result_type(**fields)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(
-    "fields",
-    [
-        {"max_attempts": 0, "timeout_seconds": 1, "backoff_seconds": 0},
-        {"max_attempts": 1, "timeout_seconds": 0, "backoff_seconds": 0},
-        {"max_attempts": 1, "timeout_seconds": 1, "backoff_seconds": -1},
-    ],
-)
-def test_effect_policy_rejects_invalid_bounds(fields: dict[str, float | int]) -> None:
-    with pytest.raises(ValueError):
-        EffectPolicy(**fields)
-
-
 def test_plugin_contribution_snapshots_implementation_mappings() -> None:
     handlers = {"toy.runtime.run": _handler}
     contribution = PluginContribution(task_handlers=handlers)
@@ -467,7 +341,6 @@ def test_validate_contribution_matches_all_declared_contribution_kinds() -> None
         commit_validators=("toy.runtime.validate",),
         schemas=("toy.runtime.schema",),
         resources=("toy.runtime.resource",),
-        effects=("toy.runtime.effect",),
         bindings=("toy.runtime.alias",),
     )
     contribution = PluginContribution(
@@ -475,15 +348,6 @@ def test_validate_contribution_matches_all_declared_contribution_kinds() -> None
         commit_validators={"toy.runtime.validate": object()},
         schemas=(SchemaContribution("toy.runtime.schema", "application/json", b"{}"),),
         resources=(ResourceContribution("toy.runtime.resource", "text/plain", b"prompt"),),
-        effects=(
-            EffectRegistration(
-                "toy.runtime.effect",
-                "toy.runtime.schema",
-                "toy.runtime.schema",
-                _EffectHandler(),
-                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
-            ),
-        ),
         bindings=(
             CapabilityBindingContribution(
                 capability_id="toy.runtime.alias",
@@ -595,7 +459,6 @@ def test_descriptor_and_realized_attempt_contracts_must_match_ids_and_digests() 
             capabilities=CapabilityRegistry.empty(),
             schemas=SchemaRegistry(entries={}),
             resources=ResourceRegistry(entries={}),
-            effects=EffectRegistry(entries={}),
         ),
         authority,
     )
@@ -627,7 +490,6 @@ def test_configuration_tree_contributions_cannot_declare_attempt_contracts() -> 
             commit_validators=(),
             schemas=(),
             resources=(),
-            effects=(),
             bindings=(),
             attempt_contracts=(contract,),
         )

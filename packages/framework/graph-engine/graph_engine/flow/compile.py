@@ -145,7 +145,7 @@ class _Compiler:
             input_schema=input_type,
             output_schema=output_type,
         )
-        self._input_names = frozenset(flow.input.model_fields)
+        self._input_names = frozenset(flow.input.model_fields) | frozenset(surface_controls(flow))
 
     def build(self) -> CompiledFlow:
         entry_name = self.flow.nodes[0].name
@@ -686,19 +686,22 @@ def _action_values(model: type[BaseModel]) -> tuple[str, ...]:
     return tuple(item for item in get_args(annotation) if isinstance(item, str))
 
 
+def _failure_category(failure: Mapping[str, Any]) -> str:
+    """Translate runtime diagnostics into the stable Flow routing vocabulary."""
+    kind = failure.get("kind")
+    if kind in ("invalid_output", "invalid_input"):
+        return str(kind)
+    if failure.get("resolution_kind") == "rejected":
+        return "rejected"
+    return "failed"
+
+
 def _match_failure(on_failure: str | Mapping[str, str], failure: Mapping[str, Any]) -> str:
     if isinstance(on_failure, str):
         return on_failure
-    kind = failure.get("resolution_kind")
-    if kind == "permanent":
-        detail = failure.get("kind")
-        specific = f"permanent:{detail}" if isinstance(detail, str) else ""
-        if specific in on_failure:
-            return on_failure[specific]
-        if "permanent" in on_failure:
-            return on_failure["permanent"]
-    elif isinstance(kind, str) and kind in on_failure:
-        return on_failure[kind]
+    category = _failure_category(failure)
+    if category in on_failure:
+        return on_failure[category]
     if "*" not in on_failure:
         raise ValueError("on_failure mapping is missing '*'")
     return on_failure["*"]

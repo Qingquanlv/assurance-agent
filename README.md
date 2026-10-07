@@ -59,6 +59,21 @@ validates the static dependency closure before loading providers, checks live
 registrations against the declaration, and authenticates wheel bytes. Product
 declarations and deployment binding generation are unchanged.
 
+Healing proposes a bounded repair to existing generated tests, applies it automatically,
+and reruns execution. It requires no human repair approval or separate approval file.
+Source authentication, generated-file scope, assertion checks, and healing budgets
+still apply. Deploy the rebuilt wheels; runs pinned to an older graph revision must
+finish with that revision or be restarted.
+
+Nodes generate business records in Python: Agent operations use their `after`
+hook, and ordinary tasks stage records in their handler. Attempt validates,
+seals, commits, and recovers those artifacts together with the node's files.
+There is no separate Effect/Intent stage or global business-registration ledger;
+different Attempts may record the same business operation. Improvement delivery
+records retain the improvement id, version, target identity, and receipt.
+Runs created with the former Effect protocol must finish on their original
+wheels or restart with the rebuilt product; old Effect journals are not migrated.
+
 `aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`,
 `aa bindings build`, `aa lock show`, and `aa retro show` operate on an installed
 product plus an explicit binding wheel and project configuration tree.
@@ -89,6 +104,36 @@ Standalone `case` and `execute` entrypoints are not supported. Start with `full`
 (or `intake` for preparation and case review only); use `aa resume` to recover an
 existing invocation. Public input does not accept `resolved_plan_ref`. Internal
 case and execution subgraphs still use the plan produced earlier in the workflow.
+
+Execution admission excludes other Workers in the same canonical workspace across
+application, CLI, bootstrap and operator start/run/resume paths. Independent
+workspaces can execute separately; status remains read-only. Soft stop requests
+pause at a durable boundary. Explicit force stop uses:
+
+```sh
+uv run aa operator stop --json --project-dir PATH --run-id ID --force
+uv run aa bootstrap stop --run-dir RUN_DIR --force
+```
+
+Force stop confirms recorded Worker identities, owned children and external calls
+have ended, then releases only that execution's resource grants. Shared OpenCode
+services are never signaled. Confirmed stop exits 0; unconfirmed stop exits 40 and
+keeps replacement execution blocked. Cancellation acknowledgment alone is
+insufficient. Resume clears the stop request under the lifecycle guard.
+
+Production resume continues completed graph checkpoints and regenerates unfinished
+work with a fresh Attempt and staging after confirmed stop and cleanup. Durable
+generation registration occurs before dispatch; a registration-only crash consumes
+an attempt. The finite budget includes the first generation and survives restarts
+and technical-feedback input changes. Ordinary system/resource waits retain their
+Attempt and original input; human waits retain graph checkpoint behavior. Neither
+allocates another generation while waiting. Generation/phase journals record
+counters and dispatch evidence separately from graph checkpoints.
+
+Legacy ambiguous ownership or budget records, lost registered persistence, missing
+authenticated call envelopes and unverifiable process identities refuse execution
+with a diagnostic; read-only historical status remains available. Use a fresh
+isolated diagnostic run rather than guessing takeover or resetting a budget.
 
 Product tests live in `tests/product/`. The live OpenCode benchmark lives in
 `benchmark/assurance-product/`; it is an optional operator/research tool, not a
@@ -201,8 +246,13 @@ use native `add_node`. Routing, activation, selection and post-commit
 publication stay in the graph. All 28 Feature graph exports and 15 Product
 roots are covered.
 
-Finalize validates business output before Kernel commit. Existing production
-in-flight recovery gaps are not closed by this authoring refactor.
+Finalize validates business output before Kernel commit. Production uses durable
+finite regeneration for unfinished work, including promotion before a completion
+receipt; existing promotion evidence remains historical. The low-level Kernel
+`execute_or_recover` API and default node-factory recovery compatibility remain
+available to direct callers and are distinct from production resume policy.
+Installed handlers retain the existing host containment model; external activity
+whose terminal state cannot be confirmed keeps replacement execution blocked.
 
 Execute and run are deterministic tasks. They do not call an LLM. Same-process
 `aa_observe` collection detects omitted or mismatched observations; it is not a

@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -13,13 +13,8 @@ from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_b
 
 from assurance_healing.contracts import (
     FixProposal,
-    HealApplyIntentV2,
-    HealApplyReceiptV2,
-    HealingAllocationIntentV2,
     HealingOverrideTokenV1,
     HealingStatusV1,
-    ProposalApprovedIntentV1,
-    ProposalApprovedReceiptV1,
     SafetyCheck,
     TestChangePolicyV1,
 )
@@ -27,25 +22,9 @@ from assurance_healing.plugin import HealingPlugin
 from tests.capabilities.import_boundary_exceptions import is_declared_cross_wheel_import
 
 _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
-    "assurance.healing.schema.allocation-intent.v2": (
-        "1",
-        "dbd980c555b0bafa38e59c565f3da7eac505ae0b98bd8cfb8d8c00a5002aef84",
-    ),
-    "assurance.healing.schema.allocation-receipt.v2": (
-        "1",
-        "48e8dde3a6cefde2e027ba55886e9cb5844085983e05ad8f81935f23afdf797e",
-    ),
     "assurance.healing.schema.fix-proposal.v1": (
         "1",
         "45baef416a046697f7c9f7634c16f42a2fd765429a44be8e816119d7567020e4",
-    ),
-    "assurance.healing.schema.heal-apply-intent.v2": (
-        "1",
-        "1addb595efda8616f8e9fbaea045677abb9f733ad7bdc7d292dc6a719acad047",
-    ),
-    "assurance.healing.schema.heal-apply-receipt.v2": (
-        "1",
-        "e0ec92d710cab2f9697a422379e91d8b5dbec7e9a3a68a97720d3a7b4fb762c1",
     ),
     "assurance.healing.schema.healing-safety.v1": (
         "1",
@@ -54,14 +33,6 @@ _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.healing.schema.healing-status.v1": (
         "1",
         "6b7c39e35175fff1918929cbd51076b55d29173125905a95f9e04b6b688d9f27",
-    ),
-    "assurance.healing.schema.proposal-approved-intent.v1": (
-        "1",
-        "24f3d28027912dab7a3f699f82b1bd6dd6f745b3986bd0eacdde7a8230a54e0d",
-    ),
-    "assurance.healing.schema.proposal-approved-receipt.v1": (
-        "1",
-        "01872edb626924409496458706af1258add2b7f6bb6095e3c1df9e974e24ecf1",
     ),
 }
 
@@ -113,36 +84,6 @@ def valid_override_token(
             candidate_digest=candidate_digest,
         ),
     }
-
-
-def valid_heal_apply_receipt(*, idempotency_key: str | None = None) -> dict[str, object]:
-    from assurance_healing.contracts.wire import heal_apply_intent_digest
-
-    record_key = "heal-apply-CH-DEMO-001-api"
-    payload: dict[str, object] = {
-        "schema_version": "2",
-        "record_key": record_key,
-        "change_id": "CH-DEMO-001",
-        "owner_id": "assurance.healing",
-        "target": "api",
-        "entry_batch_id": "20260822T000000Z",
-        "outcome": "applied",
-        "candidate_digest": _HEX_A,
-        "baseline_digest": _HEX_B,
-        "policy_digest": _HEX_C,
-        "write_set_id": "ws-1",
-        "proposal_ids": ["P1"],
-        "claimed_modified_paths": ["tests/api/test_users.py"],
-        "safety_payload_digest": _HEX_E,
-    }
-    payload["intent_digest"] = heal_apply_intent_digest(payload)
-    payload["idempotency_key"] = record_key if idempotency_key is None else idempotency_key
-    payload["settlement_key"] = _HEX_A
-    return payload
-
-
-def forged_receipt() -> dict[str, object]:
-    return valid_heal_apply_receipt(idempotency_key="forged-record-key")
 
 
 def valid_policy() -> dict[str, object]:
@@ -217,65 +158,6 @@ def test_healing_product_lock_schema_mapping_is_current_only() -> None:
     assert _installed_schema_mapping() == _CURRENT_HEALING_SCHEMA_MAPPING
 
 
-def test_exclusive_document_versions_are_locked_on_models() -> None:
-    # SchemaContribution has no per-schema version field; exclusive document
-    # versions live on the Pydantic models themselves.
-    assert HealApplyIntentV2.model_fields["schema_version"].annotation == Literal["2"]
-    assert HealApplyReceiptV2.model_fields["schema_version"].annotation == Literal["2"]
-    assert ProposalApprovedIntentV1.model_fields["schema_version"].annotation == Literal["1"]
-    assert ProposalApprovedReceiptV1.model_fields["schema_version"].annotation == Literal["1"]
-    assert HealingAllocationIntentV2.model_fields["schema_version"].annotation == Literal["2"]
-
-
-def current_allocation_event(*, seq: int = 1) -> dict[str, object]:
-    return {
-        "type": "healing_attempt_allocated_v2",
-        "seq": seq,
-        "schema_version": "2",
-        "episode_id": "ep-1",
-        "attempt_id": "at-1",
-        "attempt_number": 1,
-        "operation_id": "op-1",
-        "change_id": "CH-DEMO-001",
-        "owner_id": "assurance.healing",
-        "source_batch_id": "batch-src",
-        "entry_batch_id": "batch-entry",
-        "candidate_digest": _HEX_A,
-        "baseline_digest": _HEX_B,
-        "policy_digest": _HEX_C,
-        "execution_evidence_digest": _HEX_D,
-        "baseline_embedded": True,
-    }
-
-
-def current_proposal_approved_event(*, seq: int = 1) -> dict[str, object]:
-    return {
-        "type": "fixer_proposal_approved",
-        "seq": seq,
-        "schema_version": "1",
-        "approval_id": "apr-1",
-        "change_id": "CH-DEMO-001",
-        "owner_id": "assurance.healing",
-        "root_invocation_id": "inv-1",
-        "interrupt_task_id": "task-1",
-        "source_gate_attempt_id": "gate-1",
-        "source_tree_id": "tree-src",
-        "target_tree_id": "tree-dst",
-        "proposal_digest": _HEX_A,
-        "fixer_authority_digest": _HEX_B,
-        "candidate_digest": _HEX_C,
-        "baseline_digest": _HEX_D,
-        "policy_digest": _HEX_E,
-        "targets": ["api"],
-        "paths": ["tests/api/test_users.py"],
-        "action": "approve_and_apply",
-    }
-
-
-def current_heal_apply_event(*, seq: int = 2) -> dict[str, object]:
-    return {"type": "heal_record_apply_v2", "seq": seq, **valid_heal_apply_receipt()}
-
-
 def test_override_token_is_bound_to_policy_and_candidate() -> None:
     with pytest.raises(ValidationError, match="override token digest"):
         HealingOverrideTokenV1.model_validate(
@@ -294,23 +176,6 @@ def test_override_token_rejects_rewritten_change_id() -> None:
     token["change_id"] = "CH-OTHER"
     with pytest.raises(ValidationError, match="override token digest"):
         HealingOverrideTokenV1.model_validate(token)
-
-
-def test_effect_receipt_rejects_wrong_idempotency_key() -> None:
-    with pytest.raises(ValidationError, match="idempotency key"):
-        HealApplyReceiptV2.model_validate(forged_receipt())
-
-
-def test_effect_receipt_accepts_matching_idempotency_key() -> None:
-    receipt = HealApplyReceiptV2.model_validate(valid_heal_apply_receipt())
-    assert receipt.idempotency_key == receipt.record_key
-
-
-def test_effect_receipt_rejects_unbound_intent_digest() -> None:
-    payload = valid_heal_apply_receipt()
-    payload["intent_digest"] = _HEX_D
-    with pytest.raises(ValidationError, match="intent digest"):
-        HealApplyReceiptV2.model_validate(payload)
 
 
 def test_test_change_policy_rejects_extra_keys() -> None:
@@ -335,61 +200,7 @@ def test_test_change_policy_accepts_closed_roots() -> None:
     assert policy.require_approval is True
 
 
-def test_allocation_intent_requires_binding_digests() -> None:
-    with pytest.raises(ValidationError):
-        HealingAllocationIntentV2.model_validate(
-            {
-                "schema_version": "2",
-                "episode_id": "ep-1",
-                "attempt_id": "at-1",
-                "attempt_number": 1,
-                "operation_id": "op-1",
-                "change_id": "CH-DEMO-001",
-                "owner_id": "assurance.healing",
-                "source_batch_id": "batch-src",
-                "entry_batch_id": "batch-entry",
-                "candidate_digest": "not-a-digest",
-                "baseline_digest": _HEX_B,
-                "policy_digest": _HEX_C,
-                "execution_evidence_digest": _HEX_D,
-                "baseline_embedded": True,
-            }
-        )
-
-
-def test_proposal_approved_receipt_rejects_wrong_idempotency_key() -> None:
-    with pytest.raises(ValidationError, match="idempotency key"):
-        ProposalApprovedReceiptV1.model_validate(
-            {
-                "schema_version": "1",
-                "approval_id": "apr-1",
-                "idempotency_key": "forged-approval",
-                "settlement_key": _HEX_A,
-                "change_id": "CH-DEMO-001",
-                "owner_id": "assurance.healing",
-                "root_invocation_id": "inv-1",
-                "interrupt_task_id": "task-1",
-                "source_gate_attempt_id": "gate-1",
-                "source_tree_id": "tree-src",
-                "target_tree_id": "tree-dst",
-                "proposal_digest": _HEX_A,
-                "fixer_authority_digest": _HEX_B,
-                "candidate_digest": _HEX_C,
-                "baseline_digest": _HEX_D,
-                "policy_digest": _HEX_E,
-                "targets": ["api"],
-                "paths": ["tests/api/test_users.py"],
-                "action": "approve_and_apply",
-            }
-        )
-
-
 def test_healing_schema_bytes_equal_model_schema() -> None:
-    from assurance_healing.contracts import (
-        HealApplyIntentV2,
-        HealingAllocationReceiptV2,
-        ProposalApprovedIntentV1,
-    )
 
     assert schema_bytes("assurance.healing.schema.fix-proposal.v1") == canonical_json_bytes(
         cast(JSONValue, FixProposal.model_json_schema())
@@ -399,24 +210,6 @@ def test_healing_schema_bytes_equal_model_schema() -> None:
     )
     assert schema_bytes("assurance.healing.schema.healing-status.v1") == canonical_json_bytes(
         cast(JSONValue, HealingStatusV1.model_json_schema())
-    )
-    assert schema_bytes("assurance.healing.schema.allocation-intent.v2") == canonical_json_bytes(
-        cast(JSONValue, HealingAllocationIntentV2.model_json_schema())
-    )
-    assert schema_bytes("assurance.healing.schema.allocation-receipt.v2") == canonical_json_bytes(
-        cast(JSONValue, HealingAllocationReceiptV2.model_json_schema())
-    )
-    assert schema_bytes("assurance.healing.schema.proposal-approved-intent.v1") == canonical_json_bytes(
-        cast(JSONValue, ProposalApprovedIntentV1.model_json_schema())
-    )
-    assert schema_bytes("assurance.healing.schema.proposal-approved-receipt.v1") == canonical_json_bytes(
-        cast(JSONValue, ProposalApprovedReceiptV1.model_json_schema())
-    )
-    assert schema_bytes("assurance.healing.schema.heal-apply-intent.v2") == canonical_json_bytes(
-        cast(JSONValue, HealApplyIntentV2.model_json_schema())
-    )
-    assert schema_bytes("assurance.healing.schema.heal-apply-receipt.v2") == canonical_json_bytes(
-        cast(JSONValue, HealApplyReceiptV2.model_json_schema())
     )
 
 

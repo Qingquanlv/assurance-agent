@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from graph_engine.attempts.keys import AttemptKey
     from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
     from graph_engine.canonical import JSONValue
-    from graph_engine.effects.state import EffectCallContext
 else:
     JSONValue = JsonValue
 
@@ -91,19 +90,6 @@ class TaskFailure(FrozenModel):
     kind: FailureKind
     message: str
     retryable: bool = True
-
-
-class EffectIntent(FrozenModel):
-    kind: str
-    payload: JSONValue
-
-    @field_validator("kind")
-    @classmethod
-    def _validate_kind(cls, value: str) -> str:
-        try:
-            return validate_qualified_id(value)
-        except IdentifierError as error:
-            raise ValueError(f"invalid effect kind: {value!r}") from error
 
 
 class TaskRequest(FrozenModel):
@@ -176,7 +162,6 @@ class TaskOutcome(FrozenModel):
     output: JSONValue = None
     failure: TaskFailure | None = None
     stop_reason: str | None = None
-    effects: tuple[EffectIntent, ...] = ()
 
     @model_validator(mode="after")
     def _validate_status_fields(self) -> TaskOutcome:
@@ -187,20 +172,11 @@ class TaskOutcome(FrozenModel):
                 raise ValueError("a non-empty stop_reason is required when status is stopped")
         elif self.stop_reason is not None:
             raise ValueError("stop_reason is allowed only when status is stopped")
-        if self.status != "succeeded" and self.effects:
-            raise ValueError("effects are allowed only when status is succeeded")
         return self
 
-    @model_serializer(mode="wrap")
-    def _serialize(self, handler: Any) -> Any:
-        serialized = handler(self)
-        if not self.effects:
-            serialized.pop("effects", None)
-        return serialized
-
     @classmethod
-    def succeeded(cls, output: JSONValue = None, *, effects: tuple[EffectIntent, ...] = ()) -> TaskOutcome:
-        return cls(status="succeeded", output=output, effects=tuple(effects))
+    def succeeded(cls, output: JSONValue = None) -> TaskOutcome:
+        return cls(status="succeeded", output=output)
 
     @classmethod
     def failed(cls, kind: FailureKind, message: str, *, retryable: bool = True) -> TaskOutcome:
@@ -384,67 +360,6 @@ class TaskActivityCancelResult(FrozenModel):
         return self
 
 
-class EffectPolicy(FrozenModel):
-    max_attempts: int = Field(ge=1)
-    timeout_seconds: float = Field(gt=0)
-    backoff_seconds: float = Field(ge=0)
-
-
-class EffectApplyResult(FrozenModel):
-    status: Literal["applied", "transient", "permanent"]
-    receipt: JSONValue = None
-    failure: TaskFailure | None = None
-
-    @model_validator(mode="after")
-    def _validate_status_fields(self) -> EffectApplyResult:
-        if self.status == "applied":
-            if self.failure is not None:
-                raise ValueError("failure is allowed only when effect application did not apply")
-        elif self.receipt is not None or self.failure is None:
-            raise ValueError("receipt and failure are mutually exclusive for effect application results")
-        elif self.status == "permanent" and self.failure.retryable:
-            raise ValueError("permanent effect failure must not be retryable")
-        return self
-
-    @classmethod
-    def applied(cls, receipt: JSONValue) -> EffectApplyResult:
-        return cls(status="applied", receipt=receipt)
-
-
-class EffectReconcileResult(FrozenModel):
-    status: Literal["not_applied", "pending", "applied", "permanently_failed"]
-    receipt: JSONValue = None
-    failure: TaskFailure | None = None
-
-    @model_validator(mode="after")
-    def _validate_status_fields(self) -> EffectReconcileResult:
-        if self.status == "applied":
-            if self.failure is not None:
-                raise ValueError("failure is not allowed when effect reconciliation applied")
-        elif self.status == "permanently_failed":
-            if self.receipt is not None or self.failure is None:
-                raise ValueError(
-                    "receipt and failure are mutually exclusive for effect reconciliation results"
-                )
-            if self.failure.retryable:
-                raise ValueError("permanent effect failure must not be retryable")
-        elif self.receipt is not None or self.failure is not None:
-            raise ValueError(
-                "receipt and failure are allowed only for terminal effect reconciliation results"
-            )
-        return self
-
-    @classmethod
-    def applied(cls, receipt: JSONValue) -> EffectReconcileResult:
-        return cls(status="applied", receipt=receipt)
-
-
-class DurableEffectHandler(Protocol):
-    async def apply(self, intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult: ...
-
-    async def reconcile(self, intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult: ...
-
-
 @runtime_checkable
 class SecretPort(Protocol):
     def resolve(self, handle: str) -> bytes: ...
@@ -471,9 +386,6 @@ class TaskContext:
     activity: TaskActivityPort | None = None
     secrets: SecretPort | None = None
     runtime_evidence: Callable[[], Awaitable[object]] | None = None
-
-    def effect(self, kind: str, payload: JSONValue) -> EffectIntent:
-        return EffectIntent(kind=kind, payload=payload)
 
 
 class TaskHandler(Protocol):
@@ -1220,26 +1132,11 @@ class CapabilityBindingContribution(FrozenModel):
 
 
 @dataclass(frozen=True, slots=True)
-class EffectRegistration:
-    kind: str
-    intent_schema_id: str
-    receipt_schema_id: str
-    handler: DurableEffectHandler
-    policy: EffectPolicy
-
-    def __post_init__(self) -> None:
-        _validate_contract_id(self.kind, "effect kind")
-        _validate_contract_id(self.intent_schema_id, "effect intent schema id")
-        _validate_contract_id(self.receipt_schema_id, "effect receipt schema id")
-
-
-@dataclass(frozen=True, slots=True)
 class PluginContribution:
     task_handlers: Mapping[str, TaskHandler] = dataclass_field(default_factory=dict)
     commit_validators: Mapping[str, CommitValidator] = dataclass_field(default_factory=dict)
     schemas: tuple[SchemaContribution, ...] = ()
     resources: tuple[ResourceContribution, ...] = ()
-    effects: tuple[EffectRegistration, ...] = ()
     bindings: tuple[CapabilityBindingContribution, ...] = ()
     attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
@@ -1252,7 +1149,6 @@ class PluginContribution:
         )
         object.__setattr__(self, "schemas", tuple(self.schemas))
         object.__setattr__(self, "resources", tuple(self.resources))
-        object.__setattr__(self, "effects", tuple(self.effects))
         object.__setattr__(self, "bindings", tuple(self.bindings))
         object.__setattr__(self, "attempt_contracts", _freeze_attempt_contracts(self.attempt_contracts))
 
@@ -1345,7 +1241,6 @@ class PluginDescriptor(FrozenModel):
     dependencies: tuple[PluginDependency, ...] = ()
     schemas: tuple[str, ...] = ()
     resources: tuple[str, ...] = ()
-    effects: tuple[str, ...] = ()
     bindings: tuple[str, ...] = ()
     attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
@@ -1467,7 +1362,6 @@ def _contribution_ids(
         ("commit validator", tuple(contribution.commit_validators)),
         ("schema", tuple(entry.schema_id for entry in contribution.schemas)),
         ("resource", tuple(entry.resource_id for entry in contribution.resources)),
-        ("effect", tuple(entry.kind for entry in contribution.effects)),
         ("binding", tuple(entry.capability_id for entry in contribution.bindings)),
         ("attempt contract", tuple(item.contract_id for item in contribution.attempt_contracts)),
     )
@@ -1494,7 +1388,6 @@ def _validate_descriptor_ids(descriptor: PluginDescriptor) -> tuple[tuple[str, t
         ("commit validator", descriptor.commit_validators),
         ("schema", descriptor.schemas),
         ("resource", descriptor.resources),
-        ("effect", descriptor.effects),
         ("binding", descriptor.bindings),
         ("attempt contract", tuple(item.contract_id for item in descriptor.attempt_contracts)),
     )
@@ -1544,12 +1437,6 @@ __all__ = [
     "CandidateWriteSet",
     "CommitValidator",
     "DirectoryIdentity",
-    "DurableEffectHandler",
-    "EffectApplyResult",
-    "EffectIntent",
-    "EffectPolicy",
-    "EffectReconcileResult",
-    "EffectRegistration",
     "FailureKind",
     "FrozenModel",
     "InvocationMetadata",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -21,7 +21,6 @@ from graph_engine.attempts.events import (
     AttemptSnapshot,
     AttemptTerminated,
     CommitPrepared,
-    EffectIntentRecorded,
     ResourcesAuthorized,
     ResourcesReleased,
     WorkspacePromoted,
@@ -29,7 +28,6 @@ from graph_engine.attempts.events import (
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resolutions import (
     AttemptResolution,
-    CommittedEffectFailure,
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,
@@ -43,14 +41,8 @@ from graph_engine.persistence.resource_authorization import ResourceAuthorizatio
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
-from graph_engine.composition.models import EffectRegistry, SchemaRegistry
-from graph_engine.effects.apply import AttemptEffectSettler
-from graph_engine.effects.state import EffectStatePort, effect_intent_digest
-from graph_engine.frozen_json import thaw_json
-from graph_engine.json_schema import validate_json_schema
 from graph_engine.plugin_api import (
     CommitValidator,
-    EffectIntent,
     FailureKind,
     PromotionReceipt,
     ResourceClaims,
@@ -120,9 +112,6 @@ class AssuranceAttemptKernel:
         workspace: WorkspaceProvider,
         graph_revision: str,
         validators: Mapping[str, CommitValidator] | None = None,
-        effects: EffectRegistry | None = None,
-        schemas: SchemaRegistry | None = None,
-        effect_state: EffectStatePort | None = None,
         transaction_cut: Callable[[str], None] | None = None,
         pause_requested: Callable[[], bool] | None = None,
         runtime_evidence: RuntimeEvidenceSource | None = None,
@@ -132,9 +121,6 @@ class AssuranceAttemptKernel:
         self.workspace = workspace
         self.graph_revision = graph_revision
         self.validators = dict(validators or {})
-        self.effects = effects
-        self.schemas = schemas
-        self.effect_state = effect_state
         self._transaction_cut = transaction_cut or _noop_cut
         self._pause_requested = pause_requested
         self.runtime_evidence = runtime_evidence
@@ -310,38 +296,10 @@ class AssuranceAttemptKernel:
                 output=commit.terminal_output,
             )
 
-        await self._assert_fence(attempt_key, context, "effect_application", cut)
-        settled, snapshot = await self._settle_effects(
-            attempt_key,
-            context,
-            commit.snapshot,
-            commit.receipt,
-            cut,
-        )
-        trace.append("settle_effects")
-        if isinstance(settled, (PendingTaskResult, IndeterminateTaskResult)):
-            return settled
-        if isinstance(settled, CommittedEffectFailure):
-            snapshot = await self._terminate(
-                attempt_key,
-                context,
-                snapshot,
-                authorization,
-                AttemptTerminated(
-                    resolution_kind="committed_effect_failure",
-                    receipt_id=commit.receipt.identity_digest,
-                    receipt_digest=commit.receipt.receipt_digest,
-                    reason=settled.reason,
-                ),
-                cut,
-            )
-            assert snapshot.terminal is not None
-            return _resolution_from_terminal(snapshot.terminal, contract)
-
         snapshot = await self._terminate(
             attempt_key,
             context,
-            snapshot,
+            commit.snapshot,
             authorization,
             AttemptTerminated(
                 resolution_kind="committed",
@@ -451,16 +409,6 @@ class AssuranceAttemptKernel:
                 step.output.model_dump(mode="json") if isinstance(step.output, BaseModel) else step.output,
                 context=contract.validation_context,
             )
-            if step.effects:
-                if self.effects is None or self.schemas is None:
-                    raise ValueError("declared effects require an effect registry")
-                intent_events = _recorded_effect_intent_events(
-                    self.effects,
-                    self.schemas,
-                    step.effects,
-                )
-            else:
-                intent_events = ()
             output: JSONValue = validated_output.model_dump(mode="json")
             source_receipt = step.source_terminal_receipt
             observed = ActivityTerminalObserved(
@@ -485,10 +433,7 @@ class AssuranceAttemptKernel:
         if snapshot.activity_state != "terminal_observed":
             snapshot = await self.journal.append(
                 attempt_key,
-                (
-                    observed,
-                    *intent_events,
-                ),
+                (observed,),
                 expected_revision=snapshot.revision,
                 fencing_token=context.fencing_token,
             )
@@ -577,28 +522,6 @@ class AssuranceAttemptKernel:
             output=output,
             receipt=receipt,
             artifacts=refs_from_write_set(sealed),
-        )
-
-    async def _settle_effects(
-        self,
-        attempt_key: AttemptKey,
-        context: AttemptExecutionContext,
-        snapshot: AttemptSnapshot,
-        receipt: PromotionReceipt,
-        cut: Callable[[str], None],
-    ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
-        if not snapshot.effects:
-            return None, snapshot
-        if self.effects is None or self.schemas is None or self.effect_state is None:
-            raise AttemptIdentityDrift("declared effects require an effect registry and state port")
-        settler = AttemptEffectSettler(self.effects, self.schemas, self.effect_state)
-        return await settler.settle(
-            attempt_key=attempt_key,
-            snapshot=snapshot,
-            journal=self.journal,
-            context=context,
-            promotion=receipt,
-            cut=cut,
         )
 
     async def _terminate(
@@ -703,7 +626,6 @@ _RESOLUTION_TYPES = (
     PermanentTaskFailure,
     PendingTaskResult,
     IndeterminateTaskResult,
-    CommittedEffectFailure,
     CommittedTaskResult,
 )
 
@@ -755,34 +677,8 @@ def _executed_from_snapshot(
         )
     return ExecutedAttemptResult(
         output=output,
-        effects=tuple(EffectIntent(kind=item.kind, payload=item.payload) for item in snapshot.effects),
         source_terminal_receipt=receipt,
     )
-
-
-def _recorded_effect_intent_events(
-    effects: EffectRegistry,
-    schemas: SchemaRegistry,
-    intents: Sequence[EffectIntent],
-) -> tuple[EffectIntentRecorded, ...]:
-    events: list[EffectIntentRecorded] = []
-    for ordinal, intent in enumerate(intents, start=1):
-        if intent.kind not in effects.entries:
-            raise KeyError(f"unknown effect kind: {intent.kind}")
-        registration = effects.require(intent.kind)
-        schema = schemas.entries.get(registration.intent_schema_id)
-        if schema is None:
-            raise ValueError(f"effect intent schema is not registered: {registration.intent_schema_id}")
-        validate_json_schema(thaw_json(intent.payload), schema.content)
-        events.append(
-            EffectIntentRecorded(
-                effect_ordinal=ordinal,
-                effect_kind=intent.kind,
-                intent_digest=effect_intent_digest(intent.kind, intent.payload),
-                payload=thaw_json(intent.payload),
-            )
-        )
-    return tuple(events)
 
 
 def _resolved_claims(
@@ -825,15 +721,6 @@ def _resolution_from_terminal(
 ) -> AttemptResolution:
     if terminal.resolution_kind == "committed":
         return _committed_from_terminal(terminal, contract)
-    if terminal.resolution_kind == "committed_effect_failure":
-        return CommittedEffectFailure(
-            writes_promoted=True,
-            promotion_receipt=ReceiptRef(
-                receipt_id=terminal.receipt_id,
-                receipt_digest=terminal.receipt_digest,
-            ),
-            reason=terminal.reason or "effect permanently failed",
-        )
     if terminal.resolution_kind == "rejected":
         return RejectedTaskResult(reason=terminal.reason or "rejected")
     if terminal.resolution_kind in {"permanent", "retryable"}:

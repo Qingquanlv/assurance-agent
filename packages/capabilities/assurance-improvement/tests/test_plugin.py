@@ -64,18 +64,16 @@ def test_improvement_source_identity() -> None:
     assert descriptor.engine_api == ENGINE_API_VERSION
     assert ENGINE_API_VERSION == "2.0"
     assert descriptor.schemas == tuple(sorted(descriptor.schemas))
-    assert len(descriptor.schemas) == 9
+    assert len(descriptor.schemas) == 7
     assert descriptor.task_handlers == tuple(sorted(descriptor.task_handlers))
     assert descriptor.commit_validators == tuple(sorted(descriptor.commit_validators))
     assert descriptor.resources == tuple(sorted(descriptor.resources))
-    assert descriptor.effects == tuple(sorted(descriptor.effects))
     assert "assurance.improvement.retro.prepare" in descriptor.task_handlers
     assert "assurance.improvement.improvement-review.finalize" in descriptor.task_handlers
     assert "assurance.improvement.archive.prepare" in descriptor.task_handlers
     assert "assurance.improvement.retro-collect-v3" in descriptor.task_handlers
     assert "assurance.improvement.rollback-memory-improvement" in descriptor.task_handlers
     assert descriptor.commit_validators == ()
-    assert "assurance.improvement.effect.delivery.v1" in descriptor.effects
     assert "assurance.improvement.skill.aa-improvement-reviewer.v1" in descriptor.resources
     assert descriptor.bindings == ()
 

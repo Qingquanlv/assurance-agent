@@ -106,7 +106,6 @@ class DeploymentPlugin:
             dependencies=dependencies,
             schemas=(),
             resources=tuple(str(item) for item in descriptor_doc["resources"]),
-            effects=(),
             bindings=tuple(str(item) for item in descriptor_doc["bindings"]),
         )
 
@@ -625,7 +624,6 @@ def _render_declaration(
             "task_handlers": [],
             "commit_validators": [],
             "schemas": [],
-            "effects": [],
             "resources": list(resource_ids),
             "bindings": list(binding_ids),
         },

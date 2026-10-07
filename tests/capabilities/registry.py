@@ -105,18 +105,17 @@ def contribution_ids(contributions: Sequence[PluginContribution]) -> tuple[str, 
         ids.extend(contribution.commit_validators)
         ids.extend(entry.schema_id for entry in contribution.schemas)
         ids.extend(entry.resource_id for entry in contribution.resources)
-        ids.extend(entry.kind for entry in contribution.effects)
         ids.extend(entry.capability_id for entry in contribution.bindings)
     return tuple(ids)
 
 
-def every_schema_resource_and_effect_reference_resolves(
+def every_schema_and_resource_reference_resolves(
     descriptors: Sequence[PluginDescriptor],
     contributions: Sequence[PluginContribution],
 ) -> bool:
     if len(descriptors) != len(contributions):
         raise AssertionError("descriptor and contribution counts must match")
-    schemas = _unique_map(
+    _unique_map(
         ((entry.schema_id, entry) for contribution in contributions for entry in contribution.schemas),
         "schema",
     )
@@ -131,7 +130,6 @@ def every_schema_resource_and_effect_reference_resolves(
             "commit validator": tuple(contribution.commit_validators),
             "schema": tuple(entry.schema_id for entry in contribution.schemas),
             "resource": tuple(entry.resource_id for entry in contribution.resources),
-            "effect": tuple(entry.kind for entry in contribution.effects),
             "binding": tuple(entry.capability_id for entry in contribution.bindings),
         }
         declared = {
@@ -139,7 +137,6 @@ def every_schema_resource_and_effect_reference_resolves(
             "commit validator": descriptor.commit_validators,
             "schema": descriptor.schemas,
             "resource": descriptor.resources,
-            "effect": descriptor.effects,
             "binding": descriptor.bindings,
         }
         for kind, ids in contributed.items():
@@ -149,13 +146,6 @@ def every_schema_resource_and_effect_reference_resolves(
                 raise AssertionError(f"{descriptor.plugin_id} {kind} id is outside the owner prefix")
         if descriptor.bindings or contribution.bindings:
             raise AssertionError(f"{descriptor.plugin_id} must not contribute binding targets")
-        for effect in contribution.effects:
-            if effect.intent_schema_id not in schemas:
-                raise AssertionError(f"unresolved effect intent schema: {effect.intent_schema_id}")
-            if effect.receipt_schema_id not in schemas:
-                raise AssertionError(f"unresolved effect receipt schema: {effect.receipt_schema_id}")
-            if not effect.kind.startswith(prefix):
-                raise AssertionError(f"effect kind is outside the owner prefix: {effect.kind}")
         for resource in contribution.resources:
             if resource.resource_id not in resources:
                 raise AssertionError(f"unresolved resource: {resource.resource_id}")
@@ -175,5 +165,5 @@ def _unique_map(pairs: Iterable[tuple[str, _T]], kind: str) -> Mapping[str, _T]:
 __all__ = [
     "all_six_provider_values",
     "contribution_ids",
-    "every_schema_resource_and_effect_reference_resolves",
+    "every_schema_and_resource_reference_resolves",
 ]

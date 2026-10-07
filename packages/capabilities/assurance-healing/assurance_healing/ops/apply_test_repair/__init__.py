@@ -1,4 +1,4 @@
-"""Apply test repair: edit the approved generated tests and record the round."""
+"""Apply test repair: edit the eligible generated tests and record the round."""
 
 from __future__ import annotations
 

@@ -41,7 +41,7 @@ One entry in the system-under-test capability catalog.
 _Avoid_: plugin (when meaning a catalog leaf)
 
 **Capability wheel**:
-One of the six installed Python packages that contribute handlers, validators, schemas, resources, and effects: Intake, Generation, Execution, Healing, Quality, and Improvement.
+One of the six installed Python packages that contribute handlers, validators, schemas, and resources: Intake, Generation, Execution, Healing, Quality, and Improvement.
 _Avoid_: feature (as a package role), client (as a package role)
 
 **Ledger**:
