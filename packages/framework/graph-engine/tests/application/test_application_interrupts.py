@@ -96,7 +96,7 @@ def _dual_human_graph():
 
 def _system_graph():
     def settle(state: SystemState) -> SystemState:
-        raw = interrupt({"kind": "system_wake", "reason": "effect_pending"})
+        raw = interrupt({"kind": "system_wake", "reason": "resource_pending"})
         if isinstance(raw, dict) and "wakeup" in raw:
             return {"settled": str(raw["wakeup"]["reference_id"])}
         return {"settled": str(raw)}
@@ -298,7 +298,7 @@ async def test_system_interrupt_accepts_only_wakeup_envelope(application: Assura
         entrypoint="execute",
         graph_input={"settled": ""},
     )
-    assert blocked == InvocationStatus(status="blocked", reason="effect_pending")
+    assert blocked == InvocationStatus(status="blocked", reason="resource_pending")
     with pytest.raises(InvalidResume):
         await application.resume(
             invocation_id="inv-system",

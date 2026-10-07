@@ -1,4 +1,4 @@
-"""Test-only plugin, handler, validator, and effect conformance helpers."""
+"""Test-only plugin, handler, and validator conformance helpers."""
 
 from __future__ import annotations
 
@@ -12,14 +12,10 @@ import json
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
-from graph_engine.frozen_json import thaw_json
-from graph_engine.effects.state import EffectCallContext, EffectStateObservation
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
     CommitValidator,
-    DurableEffectHandler,
-    EffectIntent,
     InvocationMetadata,
     PluginContribution,
     PluginContractError,
@@ -67,10 +63,6 @@ class ExecutedTask:
     @property
     def stop_reason(self) -> str | None:
         return self.outcome.stop_reason
-
-    @property
-    def effects(self) -> tuple[EffectIntent, ...]:
-        return self.outcome.effects
 
 
 def assert_plugin_conforms(provider: PluginProvider, expected: PluginExpectation) -> None:
@@ -137,66 +129,12 @@ def assert_validator_rejects(
     assert result.reason == reason
 
 
-class _UnusedEffectState:
-    async def commit(
-        self,
-        *,
-        effect_kind: str,
-        settlement_key: str,
-        business_key: str,
-        intent_digest: str,
-        payload: JSONValue,
-        receipt: JSONValue,
-        fencing_token: int,
-    ) -> EffectStateObservation:
-        del effect_kind, settlement_key, business_key, intent_digest, payload, fencing_token
-        return EffectStateObservation(status="committed", receipt=receipt)
-
-    async def observe(
-        self,
-        *,
-        effect_kind: str,
-        settlement_key: str,
-        business_key: str,
-        intent_digest: str,
-        fencing_token: int,
-    ) -> EffectStateObservation:
-        del effect_kind, settlement_key, business_key, intent_digest, fencing_token
-        return EffectStateObservation(status="absent")
-
-
-def _effect_context(idempotency_key: str, *, kind: str) -> EffectCallContext:
-    return EffectCallContext(
-        _UnusedEffectState(),
-        effect_kind=kind,
-        settlement_key=idempotency_key,
-        fencing_token=1,
-    )
-
-
-async def assert_effect_idempotent(
-    handler: DurableEffectHandler,
-    intent: EffectIntent,
-    idempotency_key: str,
-) -> None:
-    context = _effect_context(idempotency_key, kind=intent.kind)
-    first = await handler.apply(intent, context)
-    second = await handler.apply(intent, context)
-    assert first.status == "applied"
-    assert second.status == "applied"
-    assert _receipt_bytes(first.receipt) == _receipt_bytes(second.receipt)
-    reconciled = await handler.reconcile(intent, context)
-    assert reconciled.status == "applied"
-    assert _receipt_bytes(reconciled.receipt) == _receipt_bytes(first.receipt)
-
-
 def _contribution_id_groups(contribution: PluginContribution) -> tuple[tuple[str, ...], ...]:
     return (
         tuple(contribution.task_handlers),
         tuple(contribution.commit_validators),
         tuple(entry.schema_id for entry in contribution.schemas),
         tuple(entry.resource_id for entry in contribution.resources),
-        tuple(entry.kind for entry in contribution.effects),
         tuple(entry.capability_id for entry in contribution.bindings),
         tuple(item.contract_id for item in contribution.attempt_contracts),
     )
@@ -287,14 +225,9 @@ def _workspace_bytes(root: Path) -> Mapping[str, bytes]:
     return MappingProxyType(files)
 
 
-def _receipt_bytes(receipt: JSONValue) -> bytes:
-    return canonical_json_bytes(cast(JSONValue, thaw_json(receipt)))
-
-
 __all__ = [
     "ExecutedTask",
     "PluginExpectation",
-    "assert_effect_idempotent",
     "assert_plugin_conforms",
     "assert_validator_rejects",
     "execute_task",

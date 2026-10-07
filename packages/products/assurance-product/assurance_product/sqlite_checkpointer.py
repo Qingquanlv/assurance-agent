@@ -129,6 +129,24 @@ CREATE TABLE IF NOT EXISTS assurance_attempt_batches (
     payload BLOB NOT NULL,
     PRIMARY KEY (attempt_key_digest, revision)
 );
+CREATE TABLE IF NOT EXISTS assurance_attempt_generations (
+    scope_digest TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    scope BLOB NOT NULL,
+    attempt_key_digest TEXT NOT NULL UNIQUE,
+    abandoned INTEGER NOT NULL DEFAULT 0,
+    owner_nonce TEXT,
+    input_payload BLOB NOT NULL,
+    PRIMARY KEY (scope_digest, ordinal)
+);
+CREATE TABLE IF NOT EXISTS assurance_host_calls (
+    call_digest TEXT PRIMARY KEY,
+    owner_nonce TEXT NOT NULL,
+    attempt_key_digest TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    stop_authority_digest TEXT
+);
 CREATE TABLE IF NOT EXISTS assurance_attempt_durable (
     attempt_key_digest TEXT PRIMARY KEY,
     durable_revision INTEGER NOT NULL
@@ -139,17 +157,6 @@ CREATE TABLE IF NOT EXISTS assurance_resource_authorizations (
     fencing_token INTEGER NOT NULL,
     record_digest TEXT NOT NULL,
     payload BLOB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS assurance_effect_state (
-    effect_kind TEXT NOT NULL,
-    settlement_key TEXT NOT NULL,
-    business_key TEXT NOT NULL,
-    intent_digest TEXT NOT NULL,
-    fencing_token INTEGER NOT NULL,
-    payload BLOB NOT NULL,
-    receipt BLOB NOT NULL,
-    PRIMARY KEY (effect_kind, settlement_key),
-    UNIQUE (effect_kind, business_key)
 );
 """
 
@@ -641,6 +648,15 @@ class _JournalLinkedLease:
         return self._lease.current(invocation_id)
 
 
+@dataclass(frozen=True)
+class RetainedHostCall:
+    call_digest: str
+    attempt_key_digest: str
+    payload: bytes
+    confirmed: bool
+    stop_authority_digest: str | None
+
+
 @dataclass(slots=True)
 class AssuranceSqliteBackend:
     store: SqliteCheckpointStoreTransaction
@@ -675,6 +691,51 @@ class AssuranceSqliteBackend:
         cursor = await self._conn.execute("PRAGMA synchronous")
         row = await cursor.fetchone()
         return row is not None and int(row[0]) == 2
+
+    async def retain_host_call(
+        self,
+        *,
+        call_digest: str,
+        owner_nonce: str,
+        attempt_key_digest: str,
+        payload: bytes,
+        stop_authority_digest: str,
+    ) -> None:
+        """Commit dispatch evidence before the caller can invoke an external host."""
+        async with self.store._lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                await self._conn.execute(
+                    "INSERT INTO assurance_host_calls (call_digest, owner_nonce, attempt_key_digest, payload, stop_authority_digest) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(call_digest) DO NOTHING",
+                    (call_digest, owner_nonce, attempt_key_digest, payload, stop_authority_digest),
+                )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def confirm_host_call(self, call_digest: str) -> None:
+        async with self.store._lock:
+            try:
+                await self._conn.execute(
+                    "UPDATE assurance_host_calls SET confirmed = 1 WHERE call_digest = ?", (call_digest,)
+                )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def read_host_calls(self, owner_nonce: str) -> tuple[RetainedHostCall, ...]:
+        async with self.store._lock:
+            cursor = await self._conn.execute(
+                "SELECT call_digest, attempt_key_digest, payload, confirmed, stop_authority_digest FROM assurance_host_calls WHERE owner_nonce = ?",
+                (owner_nonce,),
+            )
+            return tuple(
+                RetainedHostCall(str(digest), str(key), bytes(payload), bool(confirmed), authority)
+                for digest, key, payload, confirmed, authority in await cursor.fetchall()
+            )
 
     async def remember_entrypoint(self, invocation_id: str, entrypoint: str) -> None:
         async with self.store._lock:
@@ -841,6 +902,10 @@ async def _configure_connection(conn: Any) -> None:
 
 async def _setup_assurance_tables(conn: Any) -> None:
     await conn.executescript(_ASSURANCE_SCHEMA)
+    cursor = await conn.execute("PRAGMA table_info(assurance_host_calls)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "stop_authority_digest" not in columns:
+        await conn.execute("ALTER TABLE assurance_host_calls ADD COLUMN stop_authority_digest TEXT")
     await conn.commit()
 
 

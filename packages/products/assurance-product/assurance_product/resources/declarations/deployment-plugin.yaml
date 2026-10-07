@@ -13,7 +13,6 @@ contributes:
   task_handlers: []
   commit_validators: []
   schemas: []
-  effects: []
   workflow: null
 secret_values: forbidden
 depends_on:

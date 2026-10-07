@@ -245,3 +245,39 @@ def _table_rows(path: Path) -> dict[str, list[tuple[object, ...]]]:
             )
         )
     return {"checkpoints": checkpoints, "writes": writes}
+
+
+def test_retained_host_calls_survive_reopen_and_confirm_without_replacement(tmp_path):
+    workspace = _workspace(tmp_path)
+
+    async def scenario():
+        async with open_sqlite_checkpointer(workspace) as backend:
+            await backend.retain_host_call(
+                call_digest="call",
+                owner_nonce="owner",
+                attempt_key_digest="attempt",
+                payload=b'{"execution":"original"}',
+                stop_authority_digest="authority",
+            )
+            assert await backend.read_host_calls("other-owner") == ()
+        async with open_sqlite_checkpointer(workspace) as backend:
+            (row,) = await backend.read_host_calls("owner")
+            assert not row.confirmed
+            assert row.payload == b'{"execution":"original"}'
+            assert row.attempt_key_digest == "attempt"
+            assert row.stop_authority_digest == "authority"
+            await backend.confirm_host_call("call")
+            # Re-registering the same envelope must retain its terminal confirmation.
+            await backend.retain_host_call(
+                call_digest="call",
+                owner_nonce="owner",
+                attempt_key_digest="attempt",
+                payload=row.payload,
+                stop_authority_digest="authority",
+            )
+        async with open_sqlite_checkpointer(workspace) as backend:
+            (row,) = await backend.read_host_calls("owner")
+            assert row.confirmed
+            assert row.payload == b'{"execution":"original"}'
+
+    asyncio.run(scenario())

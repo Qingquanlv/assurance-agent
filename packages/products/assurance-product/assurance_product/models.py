@@ -642,13 +642,6 @@ class CoverageProgressV1(FrozenModel):
     decision: str
 
 
-class EffectStatusV1(FrozenModel):
-    effect_id: str
-    kind: str
-    state: str
-    receipt_digest: str | None
-
-
 class AdapterEvidenceRefV1(FrozenModel):
     activation_id: str
     activity_id: str
@@ -751,7 +744,6 @@ class StatusV1(FrozenModel):
     node_states: tuple[NodeStatusV1, ...]
     selected_test_families: tuple[str, ...]
     coverage_progress: CoverageProgressV1 | None
-    durable_effects: tuple[EffectStatusV1, ...]
     adapter_evidence: tuple[AdapterEvidenceRefV1, ...]
     execution_gate: ExecutionGateRefV1 | None
     quality_gate: QualityGateRefV1 | None

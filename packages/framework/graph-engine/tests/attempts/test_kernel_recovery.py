@@ -434,7 +434,6 @@ async def test_fence_is_checked_at_irreversible_boundaries(tmp_path: Path) -> No
             "fence:external_dispatch",
             "fence:durable_prepare",
             "fence:promotion",
-            "fence:effect_application",
             "fence:terminal_receipt",
             "fence:resource_release",
         ]
@@ -587,5 +586,90 @@ async def test_terminal_replay_releases_held_grant(tmp_path: Path) -> None:
         with pytest.raises(ResourceAuthorizationError, match="no active authorization"):
             await kernel.arbiter.assert_usable(key, fencing_token=context.fencing_token)
         assert executor.calls == 1
+    finally:
+        store.close()
+
+
+async def test_post_promotion_restart_uses_artifacts_without_executing_business_code(tmp_path: Path) -> None:
+    def cut(name: str) -> None:
+        if name == "after_promotion_before_receipt":
+            raise TransactionCrash(name)
+
+    kernel, key, resolved, validated, context, writer, workspace, project, store, journal = _build(
+        tmp_path, transaction_cut=cut
+    )
+    try:
+        with pytest.raises(TransactionCrash, match="after_promotion_before_receipt"):
+            await kernel.execute_or_recover(key, resolved, validated, context)
+        promoted = await journal.load(key)
+        assert promoted is not None and promoted.terminal is None
+        assert (project / "out.txt").read_bytes() == b"committed"
+
+        restarted = AssuranceAttemptKernel(
+            journal=journal, arbiter=kernel.arbiter, workspace=workspace, graph_revision=_revision()
+        )
+        replay = await restarted.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(replay, CommittedTaskResult)
+        assert replay.receipt.receipt_digest == promoted.promotion_receipt_digest
+        assert [artifact.path for artifact in replay.committed_artifacts] == ["out.txt"]
+        assert writer.calls == 1
+        assert workspace.promotions == 1
+        again = await restarted.execute_or_recover(key, resolved, validated, context)
+        assert again == replay
+        assert writer.calls == 1
+        assert workspace.promotions == 1
+    finally:
+        store.close()
+
+
+async def test_production_regenerates_after_file_promotion_without_graph_completion(tmp_path: Path) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from graph_engine.attempts.node_factory import AttemptNodeFactory
+
+    def cut(name):
+        if name == "after_promotion_before_receipt":
+            raise TransactionCrash(name)
+
+    kernel, key, resolved, validated, context, writer, workspace, project, store, journal = _build(
+        tmp_path, transaction_cut=cut
+    )
+    resolved = resolve_contract(
+        replace(resolved.contract, retry=AttemptRetryPolicy(max_attempts=3)), executor=writer
+    )
+    runtime = SimpleNamespace(
+        invocation_id=context.invocation_id,
+        public_entrypoint=context.public_entrypoint,
+        revision_id=_revision(),
+        fencing_token=context.fencing_token,
+        attempt_kernel=kernel,
+    )
+
+    def node_for(selected_kernel):
+        return AttemptNodeFactory(journal=journal, kernel=selected_kernel, regenerate=True).attempt(
+            resolved,
+            semantic_node_id="execution.run",
+            activation=lambda state: BusinessActivation.one_shot(),
+            select=lambda state: validated,
+            publish=lambda state, output, receipt: {"output": output},
+        )
+
+    try:
+        with pytest.raises(TransactionCrash):
+            await node_for(kernel)({}, runtime)
+        assert (project / "out.txt").read_bytes() == b"committed"
+        old = await journal.load(key)
+        assert old.promotion_receipt_digest is not None
+        # Represents scoped release after the previous execution is proven gone.
+        await kernel.arbiter.release(key, fencing_token=context.fencing_token)
+        writer.files = {"out.txt": b"regenerated"}
+        restarted = AssuranceAttemptKernel(
+            journal=journal, arbiter=kernel.arbiter, workspace=workspace, graph_revision=_revision()
+        )
+        runtime.attempt_kernel = restarted
+        await node_for(restarted)({}, runtime)
+        assert writer.calls == 2
+        assert (project / "out.txt").read_bytes() == b"regenerated"
+        assert (await journal.load(key)).promotion_receipt_digest == old.promotion_receipt_digest
     finally:
         store.close()

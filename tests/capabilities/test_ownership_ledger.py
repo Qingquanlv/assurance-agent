@@ -56,26 +56,26 @@ PERSONA_NEW_IDS = {
     "aa-archiver": "assurance.improvement.persona.archiver.v1",
 }
 
-EFFECT_NEW_IDS = {
-    "healing_allocation/v2": "assurance.healing.effect.allocation.v2",
-    "fixer_proposal_approved/v1": "assurance.healing.effect.proposal-approved.v1",
-    "heal_record_apply/v2": "assurance.healing.effect.heal-apply.v2",
-}
+DELETED_EFFECTS = frozenset({"healing_allocation/v2", "fixer_proposal_approved/v1", "heal_record_apply/v2"})
+DELETED_HOOKS = frozenset(
+    {
+        "commit_healing_allocation_ledger",
+        "register_healing_effects",
+        "reconcile_healing_allocation",
+        "reconcile_fixer_proposal_approved",
+        "reconcile_heal_record_apply",
+        "semantic_pins",
+    }
+)
 
 
 def _operation_live_pointer(legacy_id: str) -> str:
     return f"tests/capabilities/test_ownership_live.py::test_migrate_operation_is_live_handler[{legacy_id}]"
 
 
-EFFECT_VERIFICATION = "packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound"
-
 HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     "load_product_code_roots": ("assurance.healing", "assurance.healing.validator.test-tree.v1"),
     "candidate_document_digest": ("assurance.quality", "assurance.quality.candidate-document-digest"),
-    "commit_healing_allocation_ledger": (
-        "assurance.healing",
-        "assurance.healing.effect.allocation.v2",
-    ),
     "complete_issue_analyzer_outputs": (
         "assurance.quality",
         "assurance.quality.issue-analysis.finalize",
@@ -86,7 +86,6 @@ HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     ),
     "complete_signal_outputs": ("assurance.improvement", "assurance.improvement.retro.finalize"),
     "complete_candidate_outputs": ("assurance.improvement", "assurance.improvement.retro.finalize"),
-    "register_healing_effects": ("assurance.healing", "assurance.healing.effect.allocation.v2"),
     "project_healing_episode": ("assurance.healing", "assurance.healing.project-episode"),
     "assert_test_tree_unchanged_or_healing": (
         "assurance.healing",
@@ -105,15 +104,6 @@ HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
         "assurance.healing.policy.test-change-policy.v1",
     ),
     "token_json_bytes": ("assurance.healing", "assurance.healing.validator.override.v1"),
-    "reconcile_healing_allocation": (
-        "assurance.healing",
-        "assurance.healing.effect.allocation.v2",
-    ),
-    "reconcile_fixer_proposal_approved": (
-        "assurance.healing",
-        "assurance.healing.effect.proposal-approved.v1",
-    ),
-    "reconcile_heal_record_apply": ("assurance.healing", "assurance.healing.effect.heal-apply.v2"),
 }
 
 
@@ -304,20 +294,14 @@ def test_validator_effect_and_hook_rows_use_declared_ids() -> None:
         assert item.owner is None
         assert item.new_id is None
 
-    for effect_id, new_id in EFFECT_NEW_IDS.items():
-        item = by_id[("effect", effect_id)]
-        assert item.disposition == "migrate"
-        assert item.owner == "assurance.healing"
-        assert item.new_id == new_id
-        assert item.status == "verified"
-        assert item.verification == EFFECT_VERIFICATION
-
-    pins = by_id[("hook", "semantic_pins")]
-    assert pins.disposition == "delete_phase6"
-    assert pins.owner is None
-    assert pins.new_id is None
-    assert pins.status == "planned"
-    assert pins.verification is None
+    for kind, identifiers in (("effect", DELETED_EFFECTS), ("hook", DELETED_HOOKS)):
+        for legacy_id in identifiers:
+            item = by_id[(kind, legacy_id)]
+            assert item.disposition == "delete_phase6"
+            assert item.owner is None
+            assert item.new_id is None
+            assert item.status == "planned"
+            assert item.verification is None
 
     for hook_name, (owner, seam) in HOOK_PRIMARY_SEAMS.items():
         item = by_id[("hook", hook_name)]

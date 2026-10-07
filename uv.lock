@@ -253,6 +253,7 @@ dependencies = [
     { name = "graph-engine" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -273,6 +274,7 @@ requires-dist = [
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "langgraph", specifier = "==1.2.11" },
     { name = "langgraph-checkpoint-sqlite", specifier = "==3.1.1" },
+    { name = "typing-extensions", specifier = ">=4.14" },
 ]
 provides-extras = ["opencode"]
 

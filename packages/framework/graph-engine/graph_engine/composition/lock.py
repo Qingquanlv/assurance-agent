@@ -277,10 +277,9 @@ class RegistryDigests(FrozenModel):
     capabilities: str
     schemas: str
     resources: str
-    effects: str
     attempt_contracts: str
 
-    @field_validator("sources", "capabilities", "schemas", "resources", "effects", "attempt_contracts")
+    @field_validator("sources", "capabilities", "schemas", "resources", "attempt_contracts")
     @classmethod
     def _validate_digest(cls, value: str) -> str:
         return _sha256(value, "registry")
@@ -293,19 +292,11 @@ class RegistryProjections(FrozenModel):
     capabilities: FrozenJSONValue
     schemas: FrozenJSONValue
     resources: FrozenJSONValue
-    effects: FrozenJSONValue
     attempt_contracts: FrozenJSONValue
 
     @model_validator(mode="after")
     def _validate_projection_shapes(self) -> RegistryProjections:
-        for field_name in (
-            "sources",
-            "capabilities",
-            "schemas",
-            "resources",
-            "effects",
-            "attempt_contracts",
-        ):
+        for field_name in ("sources", "capabilities", "schemas", "resources", "attempt_contracts"):
             if not isinstance(getattr(self, field_name), tuple):
                 raise ValueError(f"{field_name} registry projection must be a list")
         return self
@@ -627,30 +618,11 @@ def compute_registry_projections(registries: RegistrySet) -> RegistryProjections
         }
         for resource_id, entry in registries.resources.entries.items()
     ]
-    effects: list[JSONValue] = [
-        {
-            "kind": kind,
-            "owner_id": entry.owner_id,
-            "intent_schema_id": entry.intent_schema_id,
-            "receipt_schema_id": entry.receipt_schema_id,
-            "apply_implementation": entry.apply_provenance.projection(),
-            "apply_implementation_digest": entry.apply_provenance.digest,
-            "reconcile_implementation": entry.reconcile_provenance.projection(),
-            "reconcile_implementation_digest": entry.reconcile_provenance.digest,
-            "policy": {
-                "max_attempts": entry.policy.max_attempts,
-                "timeout_seconds": entry.policy.timeout_seconds,
-                "backoff_seconds": entry.policy.backoff_seconds,
-            },
-        }
-        for kind, entry in registries.effects.entries.items()
-    ]
     return RegistryProjections(
         sources=sources,
         capabilities=capabilities,
         schemas=schemas,
         resources=resources,
-        effects=effects,
         attempt_contracts=[],
     )
 
@@ -666,10 +638,9 @@ def _validate_locked_contribution_projection_set(
     capabilities = _projection_entries(projections.capabilities, "capabilities")
     schemas = _projection_entries(projections.schemas, "schemas")
     resources = _projection_entries(projections.resources, "resources")
-    effects = _projection_entries(projections.effects, "effects")
     plugin_ids = {plugin.plugin_id for plugin in plugins}
     actual_owners: set[str] = set()
-    for group in (capabilities, schemas, resources, effects):
+    for group in (capabilities, schemas, resources):
         for entry in group:
             owner = entry.get("owner_id")
             if not isinstance(owner, str):
@@ -709,9 +680,6 @@ def _validate_locked_contribution_projection_set(
         actual_resources = [entry for entry in resources if entry.get("owner_id") == owner_id]
         if actual_resources != contribution.resource_registry_projection():
             raise ValueError("invocation lock resources disagree with contribution authority")
-        actual_effects = [entry for entry in effects if entry.get("owner_id") == owner_id]
-        if actual_effects != contribution.effect_registry_projection():
-            raise ValueError("invocation lock effects disagree with contribution authority")
     validate_contribution_projection_set(tuple(contributions))
 
 
@@ -881,7 +849,6 @@ def _descriptor_projection(descriptor: PluginDescriptor) -> JSONValue:
             "commit_validators": sorted(descriptor.commit_validators),
             "schemas": sorted(descriptor.schemas),
             "resources": sorted(descriptor.resources),
-            "effects": sorted(descriptor.effects),
             "bindings": sorted(descriptor.bindings),
             "attempt_contracts": [
                 {"contract_id": item.contract_id, "digest": item.digest}
@@ -951,7 +918,6 @@ def _registry_projection_map(projections: RegistryProjections) -> dict[str, JSON
         "capabilities": cast(JSONValue, thaw_json(projections.capabilities)),
         "schemas": cast(JSONValue, thaw_json(projections.schemas)),
         "resources": cast(JSONValue, thaw_json(projections.resources)),
-        "effects": cast(JSONValue, thaw_json(projections.effects)),
         "attempt_contracts": cast(JSONValue, thaw_json(projections.attempt_contracts)),
     }
 
@@ -962,7 +928,6 @@ def _registry_digest_map(registry_digests: RegistryDigests) -> dict[str, JSONVal
         "capabilities": registry_digests.capabilities,
         "schemas": registry_digests.schemas,
         "resources": registry_digests.resources,
-        "effects": registry_digests.effects,
         "attempt_contracts": registry_digests.attempt_contracts,
     }
 
@@ -976,7 +941,6 @@ def _registry_digests_from_projections(
         capabilities=canonical_digest(cast(JSONValue, thaw_json(projections.capabilities))),
         schemas=canonical_digest(cast(JSONValue, thaw_json(projections.schemas))),
         resources=canonical_digest(cast(JSONValue, thaw_json(projections.resources))),
-        effects=canonical_digest(cast(JSONValue, thaw_json(projections.effects))),
         attempt_contracts=canonical_digest(contracts),
     )
 

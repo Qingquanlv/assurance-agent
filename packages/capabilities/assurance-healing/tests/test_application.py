@@ -32,7 +32,6 @@ from assurance_healing.ops.apply_test_repair import (
 )
 from assurance_healing.ops.fix_proposal import finalize as fix_proposal_finalize
 from assurance_healing.operations.application import expected_repair_history, repair_history_path
-from assurance_healing.operations.keys import derive_approval_id
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.capabilities.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import BINDING, execute_task
@@ -43,7 +42,6 @@ SOURCE = "qa/tests/api/test_users.py"
 TARGET = "qa/tests/api/test_users.py"
 MAPPING = "qa/results/generated/mapping.json"
 PROPOSAL = "qa/results/healing/fix-proposal.json"
-APPROVAL = "qa/results/healing/approval.json"
 EXECUTION = "qa/results/execution/execute-result.json"
 CASE = "qa/cases/api/case.yaml"
 REVIEW = "qa/results/review/case-review.json"
@@ -152,35 +150,6 @@ def _execution(plan_digest: str = SHA, plan_ref: dict[str, str] | None = None) -
     }
 
 
-def _approval(proposal: dict[str, object]) -> dict[str, object]:
-    proposal_digest = canonical_digest(cast(JSONValue, proposal))
-    return {
-        "schema_version": "1",
-        "approval_id": derive_approval_id(
-            owner_id="assurance.healing",
-            candidate_digest="c" * 64,
-            baseline_digest="b" * 64,
-            policy_digest="d" * 64,
-            proposal_digest=proposal_digest,
-        ),
-        "change_id": CHANGE,
-        "owner_id": "assurance.healing",
-        "root_invocation_id": "inv-1",
-        "interrupt_task_id": "approval-1",
-        "source_gate_attempt_id": "inspect-1",
-        "source_tree_id": "tree-1",
-        "target_tree_id": "tree-2",
-        "proposal_digest": proposal_digest,
-        "fixer_authority_digest": SHA,
-        "candidate_digest": "c" * 64,
-        "baseline_digest": "b" * 64,
-        "policy_digest": "d" * 64,
-        "targets": ["api"],
-        "paths": [SOURCE],
-        "action": "approve_and_apply",
-    }
-
-
 def _stage_cycle(workspace: Path, relative: str, document: FrozenModel) -> dict[str, str]:
     path = workspace / relative
     if path.exists():
@@ -274,7 +243,6 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
     mapping_ref = _write(project, MAPPING, _json_bytes(_mapping()))
     proposal = _proposal()
     proposal_ref = _write(project, PROPOSAL, _json_bytes(proposal))
-    approval_ref = _write(project, APPROVAL, _json_bytes(_approval(proposal)))
     evidence_ref = _write(
         project,
         EXECUTION,
@@ -311,7 +279,6 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
         "execution_ref": execution_ref,
         "execution_receipt": _EXECUTION_RECEIPT,
         "proposal_ref": proposal_ref,
-        "approval_ref": approval_ref,
     }
     return payload, before
 
@@ -476,7 +443,7 @@ async def test_repair_finalizer_rejects_wrapped_input(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_finalize_proves_existing_test_bytes_changed(tmp_path: Path) -> None:
+async def test_finalize_proves_existing_test_bytes_changed_without_approval(tmp_path: Path) -> None:
     payload, _before = _fixture(tmp_path)
     stage = tmp_path / ".stage"
     after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
@@ -515,9 +482,7 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
         adapter_id="test.fake",
         adapter_version="1.0.0",
     )
-    proposal_input = {
-        key: value for key, value in payload.items() if key not in {"proposal_ref", "approval_ref"}
-    }
+    proposal_input = {key: value for key, value in payload.items() if key != "proposal_ref"}
     proposed = await execute_task(
         cast(TaskHandler, fix_proposal_finalize),
         cast(
@@ -533,7 +498,6 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
     )
     assert proposed.status == "succeeded", proposed.failure
     payload["proposal_ref"] = _write(tmp_path, PROPOSAL, proposal_bytes)
-    payload["approval_ref"] = _write(tmp_path, APPROVAL, _json_bytes(_approval(proposal)))
     stage = tmp_path / ".stage"
     after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
     _write(stage, SOURCE, after)
@@ -543,7 +507,7 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
 
 
 @pytest.mark.asyncio
-async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tmp_path: Path) -> None:
+async def test_repair_changes_only_the_proposed_file_in_a_two_file_generation(tmp_path: Path) -> None:
     payload, _ = _fixture(tmp_path)
     other_target = "qa/tests/api/test_other.py"
     other_source = other_target
@@ -622,11 +586,28 @@ async def test_finalize_generates_host_repair_history(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_prepare_rejects_a_proposal_outside_approval_scope(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "fault", ["outside_mapping", "ineligible", "needs_review", "critical", "other_change", "changed_digest"]
+)
+async def test_prepare_rejects_ineligible_or_unauthenticated_proposal(tmp_path: Path, fault: str) -> None:
     payload, _ = _fixture(tmp_path)
-    approval = _approval(_proposal())
-    approval["paths"] = ["qa/tests/api/test_other.py"]
-    payload["approval_ref"] = _write(tmp_path, APPROVAL, _json_bytes(approval))
+    proposal = _proposal()
+    items = cast(list[dict[str, object]], proposal["proposals"])
+    if fault == "outside_mapping":
+        items[0]["files_to_modify"] = ["qa/tests/api/test_other.py"]
+    elif fault == "ineligible":
+        items[0]["eligible"] = False
+    elif fault == "needs_review":
+        items[0]["needs_review"] = True
+    elif fault == "critical":
+        items[0]["risk_level"] = "critical"
+    elif fault == "other_change":
+        proposal["change_id"] = "CH-OTHER"
+    else:
+        proposal["summary"] = {"eligible_count": 2}
+    ref = _write(tmp_path, PROPOSAL, _json_bytes(proposal))
+    if fault != "changed_digest":
+        payload["proposal_ref"] = ref
     result = await execute_task(
         cast(TaskHandler, apply_test_repair_prepare),
         cast(JSONValue, payload),
@@ -634,10 +615,12 @@ async def test_prepare_rejects_a_proposal_outside_approval_scope(tmp_path: Path)
         binding_data=BINDING,
     )
     assert result.status == "failed"
+    assert result.failure is not None
+    assert result.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", ["no_change", "unapproved", "case", "product", "oracle"])
+@pytest.mark.parametrize("mutation", ["no_change", "outside_proposal", "case", "product", "oracle"])
 async def test_finalize_rejects_unproved_or_unsafe_patch(tmp_path: Path, mutation: str) -> None:
     payload, before = _fixture(tmp_path)
     stage = tmp_path / ".stage"
@@ -645,7 +628,7 @@ async def test_finalize_rejects_unproved_or_unsafe_patch(tmp_path: Path, mutatio
     after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
     if mutation == "no_change":
         after = before
-    elif mutation == "unapproved":
+    elif mutation == "outside_proposal":
         path = "qa/tests/api/test_admin.py"
     elif mutation == "case":
         path = CASE
@@ -658,25 +641,6 @@ async def test_finalize_rejects_unproved_or_unsafe_patch(tmp_path: Path, mutatio
     assert result.outcome.status == "failed"
     assert result.outcome.failure is not None
     assert result.outcome.failure.kind == "invalid_output"
-
-
-@pytest.mark.asyncio
-async def test_finalize_rejects_rejected_or_missing_approval(tmp_path: Path) -> None:
-    payload, _before = _fixture(tmp_path)
-    stage = tmp_path / ".stage"
-    _write(
-        stage,
-        SOURCE,
-        b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n",
-    )
-    payload["approval_ref"] = None
-    result = await _finalize(tmp_path, stage, payload, [SOURCE])
-    assert result.outcome.status == "failed"
-    rejected = tmp_path / APPROVAL
-    rejected.write_text('{"action":"reject"}\n', encoding="utf-8")
-    payload["approval_ref"] = _write(tmp_path, APPROVAL, rejected.read_bytes())
-    result = await _finalize(tmp_path, stage, payload, [SOURCE])
-    assert result.outcome.status == "failed"
 
 
 @pytest.mark.asyncio
@@ -727,7 +691,6 @@ def test_input_binds_reviewed_case_epoch() -> None:
                     },
                 },
                 "proposal_ref": {"path": PROPOSAL, "digest": SHA},
-                "approval_ref": None,
                 "execution_ref": {"path": EXECUTION, "digest": SHA},
                 "mapping_ref": {"path": MAPPING, "digest": SHA},
                 "source_refs": [{"path": SOURCE, "digest": SHA}],

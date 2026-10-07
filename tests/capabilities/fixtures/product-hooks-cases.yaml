@@ -13,11 +13,11 @@ hooks:
     input: {kind: issue_candidates}
     compare: [digest]
   - hook: commit_healing_allocation_ledger
-    owner: assurance.healing
-    new_id: assurance.healing.effect.allocation.v2
-    public: assurance_healing.effects.allocation.HealingAllocationEffect
-    input: {kind: allocation}
-    compare: [operation_id, first_new, replay]
+    owner: null
+    new_id: null
+    public: null
+    input: {kind: removed_protocol}
+    compare: []
   - hook: complete_issue_analyzer_outputs
     owner: assurance.quality
     new_id: assurance.quality.issue-analysis.finalize
@@ -43,11 +43,11 @@ hooks:
     input: {kind: retro_candidate}
     compare: [context_digest, source_id]
   - hook: register_healing_effects
-    owner: assurance.healing
-    new_id: assurance.healing.effect.allocation.v2
-    public: assurance_healing.plugin.HealingPlugin
-    input: {kind: effect_registry}
-    compare: [effect_kinds]
+    owner: null
+    new_id: null
+    public: null
+    input: {kind: removed_protocol}
+    compare: []
   - hook: project_healing_episode
     owner: assurance.healing
     new_id: assurance.healing.project-episode
@@ -85,23 +85,23 @@ hooks:
     input: {kind: override_token}
     compare: [change_id, action, token_digest]
   - hook: reconcile_healing_allocation
-    owner: assurance.healing
-    new_id: assurance.healing.effect.allocation.v2
-    public: assurance_healing.effects.allocation.HealingAllocationEffect
-    input: {kind: allocation}
-    compare: [status, operation_id]
+    owner: null
+    new_id: null
+    public: null
+    input: {kind: removed_protocol}
+    compare: []
   - hook: reconcile_fixer_proposal_approved
-    owner: assurance.healing
-    new_id: assurance.healing.effect.proposal-approved.v1
-    public: assurance_healing.effects.approval.ProposalApprovedEffect
-    input: {kind: approval}
-    compare: [status, approval_id]
+    owner: null
+    new_id: null
+    public: null
+    input: {kind: removed_protocol}
+    compare: []
   - hook: reconcile_heal_record_apply
-    owner: assurance.healing
-    new_id: assurance.healing.effect.heal-apply.v2
-    public: assurance_healing.effects.apply.HealApplyEffect
-    input: {kind: heal_apply}
-    compare: [status, record_key]
+    owner: null
+    new_id: null
+    public: null
+    input: {kind: removed_protocol}
+    compare: []
   - hook: semantic_pins
     owner: null
     new_id: null

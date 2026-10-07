@@ -94,7 +94,6 @@ def valid_status(**overrides: object) -> dict[str, object]:
         "node_states": (),
         "selected_test_families": ("api",),
         "coverage_progress": None,
-        "durable_effects": (),
         "adapter_evidence": (),
         "execution_gate": None,
         "quality_gate": None,

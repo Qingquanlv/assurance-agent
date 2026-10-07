@@ -39,7 +39,7 @@ def validate_json_schema(instance: object, schema_bytes: bytes) -> None:
             parse_constant=_reject_json_constant,
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        raise ValueError("intent schema is not valid JSON") from error
+        raise ValueError("schema is not valid JSON") from error
     match_json_schema(instance, schema)
 
 

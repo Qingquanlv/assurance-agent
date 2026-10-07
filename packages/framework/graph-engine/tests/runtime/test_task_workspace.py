@@ -128,8 +128,11 @@ def test_missing_seed_task_starts_an_empty_root(tmp_path: Path) -> None:
 def test_replaced_seed_write_root_fails_closed(tmp_path: Path) -> None:
     store, _project, _attempts = _store(tmp_path)
     rejected = store.begin(task_id="rejected", attempt=1, output_paths=("out.txt",))
-    shutil.rmtree(rejected.write_root)
+    retained = rejected.write_root.with_name("retained-original")
+    rejected.write_root.rename(retained)
     rejected.write_root.mkdir()
+    old_stat, new_stat = retained.stat(), rejected.write_root.stat()
+    assert (old_stat.st_dev, old_stat.st_ino) != (new_stat.st_dev, new_stat.st_ino)
     (rejected.write_root / "out.txt").write_bytes(b"swapped")
 
     with pytest.raises(TaskWorkspaceViolation, match="seed write-root identity"):

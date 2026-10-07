@@ -10,13 +10,9 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.composition import ProductFileSource, load_product_file
 from graph_engine.frozen_json import thaw_json
-from graph_engine.effects.state import EffectCallContext
 from graph_engine.plugin_api import (
     CandidateFile,
-    EffectApplyResult,
     PathWriteSet,
-    EffectIntent,
-    EffectReconcileResult,
     PluginContribution,
     PluginDescriptor,
     RegistryPorts,
@@ -40,7 +36,6 @@ from agent_runtime_contracts import (
 from tests.capabilities.agent_harness import AgentSkillHarness, FakeAgentAdapter
 from tests.capabilities.conformance import (
     PluginExpectation,
-    assert_effect_idempotent,
     assert_plugin_conforms,
     assert_validator_rejects,
     execute_task,
@@ -204,20 +199,6 @@ class _AcceptingValidator:
         return ValidationResult(accepted=True)
 
 
-class _IdempotentEffect:
-    def __init__(self) -> None:
-        self._receipts: dict[str, JSONValue] = {}
-
-    async def apply(self, intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult:
-        key = context.settlement_key
-        receipt = self._receipts.setdefault(key, {"kind": intent.kind, "key": key})
-        return EffectApplyResult.applied(receipt)
-
-    async def reconcile(self, intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult:
-        del intent
-        return EffectReconcileResult.applied(self._receipts[context.settlement_key])
-
-
 def test_plugin_conformance_accepts_toy_a() -> None:
     assert_plugin_conforms(
         ToyAPlugin(),
@@ -324,15 +305,6 @@ def test_assert_validator_rejects_requires_exact_reason() -> None:
         assert_validator_rejects(_RejectingValidator(), reason="other.reason")
     with pytest.raises(AssertionError):
         assert_validator_rejects(_AcceptingValidator(), reason="test.bad.reason")
-
-
-@pytest.mark.asyncio
-async def test_assert_effect_idempotent_requires_equal_receipts() -> None:
-    await assert_effect_idempotent(
-        _IdempotentEffect(),
-        EffectIntent(kind="test.capabilities.effect.v1", payload={"n": 1}),
-        "key-1",
-    )
 
 
 def test_minimal_product_fixture_is_closed_declarative_product() -> None:

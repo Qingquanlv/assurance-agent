@@ -19,7 +19,7 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.identifiers import validate_qualified_id
-from graph_engine.plugin_api import EffectIntent, FrozenModel, ResourceClaims, ResourceClaimTemplate
+from graph_engine.plugin_api import FrozenModel, ResourceClaims, ResourceClaimTemplate
 
 
 InputT = TypeVar("InputT", bound=BaseModel)
@@ -52,7 +52,6 @@ class TerminalReceiptRef(FrozenModel):
 
 class ExecutedAttemptResult(FrozenModel, Generic[OutputT]):
     output: OutputT
-    effects: tuple[EffectIntent, ...] = ()
     source_terminal_receipt: TerminalReceiptRef | None = None
 
 

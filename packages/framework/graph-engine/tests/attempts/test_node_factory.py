@@ -21,7 +21,6 @@ from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_at
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
     AttemptResolution,
-    CommittedEffectFailure,
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,
@@ -723,13 +722,10 @@ def test_factory_has_no_human_interrupt_surface() -> None:
     assert "human" not in AttemptNodeFactory.__dict__
 
 
-async def test_rejected_permanent_and_effect_failure_are_typed_and_never_terminal() -> None:
+async def test_rejected_and_permanent_failures_are_typed_and_never_terminal() -> None:
     cases = (
         RejectedTaskResult(reason="validator rejected"),
         PermanentTaskFailure(kind="internal", message="handler crashed"),
-        CommittedEffectFailure(
-            writes_promoted=True, promotion_receipt=RECEIPT, reason="effect permanently failed"
-        ),
     )
     for resolution in cases:
         kernel = ScriptedKernel(resolution)
@@ -753,10 +749,6 @@ async def test_rejected_permanent_and_effect_failure_are_typed_and_never_termina
             assert failure["resolution_kind"] == "permanent"
             assert failure["kind"] == "internal"
             assert failure["message"] == "handler crashed"
-        else:
-            assert failure["resolution_kind"] == "committed_effect_failure"
-            assert failure["writes_promoted"] is True
-            assert failure["promotion_receipt"] == RECEIPT
 
 
 async def test_pending_and_indeterminate_emit_system_interrupts_without_terminal(
@@ -1083,3 +1075,121 @@ async def test_mapping_select_is_validated_and_a_missing_field_fails_closed() ->
     assert failed["attempt_failure"]["kind"] == "invalid_input"
     assert failed["attempt_failure"]["writes_promoted"] is False
     assert bind_attempt_factory(None) is None
+
+
+@pytest.mark.asyncio
+async def test_production_regeneration_consumes_registered_budget_and_uses_fresh_keys() -> None:
+    journal = MemoryAttemptJournal()
+    kernel = ScriptedKernel()
+    contract = _resolved(max_attempts=3)
+    keys = []
+    for _ in range(3):
+        kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+        node = AttemptNodeFactory(journal=journal, kernel=kernel, regenerate=True).attempt(
+            contract,
+            semantic_node_id="execution.run",
+            activation=select_activation,
+            select=select_input,
+            publish=publish_output,
+        )
+        await node(_state(), _runtime(kernel))
+        keys.append(kernel.seen_key)
+    result = await node(_state(), _runtime(kernel))
+    assert result["attempt_failure"]["kind"] == "internal"
+    assert kernel.calls == 3
+    assert len(set(key.digest for key in keys)) == 3
+
+
+@pytest.mark.asyncio
+async def test_production_system_wait_preserves_registered_generation() -> None:
+    journal = MemoryAttemptJournal()
+    kernel = ScriptedKernel(PendingTaskResult(wakeup=SystemReference(reference_id="resource:busy")))
+    node = AttemptNodeFactory(journal=journal, kernel=kernel, regenerate=True).attempt(
+        _resolved(max_attempts=3),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+    with pytest.raises(GraphInterrupt):
+        await node(_state(), _runtime(kernel))
+    key = kernel.seen_key
+    with pytest.raises(GraphInterrupt):
+        await node(_state(), _runtime(kernel))
+    assert kernel.calls == 1
+    assert kernel.seen_key == key
+    entries = next(iter(journal._generations.values()))
+    assert len(entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_abandoned_system_interrupt_completes_old_marker_on_fresh_attempt() -> None:
+    journal = MemoryAttemptJournal()
+    kernel = ScriptedKernel(
+        IndeterminateTaskResult(reconciliation=SystemReference(reference_id="provider:unknown"))
+    )
+    contract = _resolved(max_attempts=3)
+    node = AttemptNodeFactory(journal=journal, kernel=kernel, regenerate=True).attempt(
+        contract,
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+    with pytest.raises(GraphInterrupt):
+        await node(_state(), _runtime(kernel))
+    old_key = kernel.seen_key
+    await journal.abandon_generations({old_key.digest})
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    result = await node(_state(), _runtime(kernel))
+    assert kernel.seen_key != old_key
+    markers = result[CHECKPOINT_MARKERS_STATE_KEY]
+    assert markers[0].attempt_key == old_key.digest
+    assert markers[0].kind == "system_interrupt_completed"
+    assert len(next(iter(journal._generations.values()))) == 2
+
+
+@pytest.mark.asyncio
+async def test_graph_resume_after_abandonment_uses_new_attempt_and_retires_interrupt() -> None:
+    from langgraph.graph import StateGraph, START, END
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+
+    journal = MemoryAttemptJournal()
+    kernel = ScriptedKernel(
+        IndeterminateTaskResult(reconciliation=SystemReference(reference_id="provider:unknown"))
+    )
+    node = AttemptNodeFactory(journal=journal, kernel=kernel, regenerate=True).attempt(
+        _resolved(max_attempts=3),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+    builder = StateGraph(dict)
+    builder.add_node("work", node)
+    builder.add_edge(START, "work")
+    builder.add_edge("work", END)
+    graph = builder.compile(checkpointer=MemorySaver())
+    config = {
+        "configurable": {
+            "thread_id": "inv-1",
+            "assurance_revision_id": REVISION,
+            "assurance_fencing_token": 4,
+            "assurance_entrypoint": "execute",
+        }
+    }
+    await graph.ainvoke(_state(), config)
+    old_key = kernel.seen_key
+    snapshot = await graph.aget_state(config)
+    assert len(snapshot.interrupts) == 1
+    await journal.abandon_generations({old_key.digest})
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    result = await graph.ainvoke(
+        Command(resume={"reconciliation": {"reference_id": "provider:unknown"}}), config
+    )
+    assert kernel.seen_key != old_key
+    assert result[CHECKPOINT_MARKERS_STATE_KEY][0].attempt_key == old_key.digest
+    finished = await graph.aget_state(config)
+    assert not finished.next
+    assert not finished.interrupts

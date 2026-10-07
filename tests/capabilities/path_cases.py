@@ -58,21 +58,21 @@ _INTAKE_LOCK = ("qa/.qa.yaml", "qa/cases", "qa/proposal.md", "qa/requirement.md"
 
 @dataclass
 class PathProceedHook:
-    """Spawn/effect fire only after a production validator or open helper accepts."""
+    """Spawn/publication runs only after a production validator or open helper accepts."""
 
     spawned: bool = False
-    effect_emitted: bool = False
+    publication_attempted: bool = False
 
     def on_production_accept(self) -> None:
         self.spawned = True
-        self.effect_emitted = True
+        self.publication_attempted = True
 
 
 @dataclass
 class PathObservation:
     rejected: bool
     spawned: bool
-    effect_emitted: bool
+    publication_attempted: bool
     workspace: Path
     outside: Path
     outside_before: frozenset[str]
@@ -194,7 +194,7 @@ async def exercise_path_case(wheel: str, case: str) -> PathObservation:
         return PathObservation(
             rejected=rejected,
             spawned=hook.spawned,
-            effect_emitted=hook.effect_emitted,
+            publication_attempted=hook.publication_attempted,
             workspace=workspace,
             outside=outside,
             outside_before=outside_before,
@@ -207,7 +207,7 @@ async def exercise_path_case(wheel: str, case: str) -> PathObservation:
     return PathObservation(
         rejected=rejected,
         spawned=hook.spawned,
-        effect_emitted=hook.effect_emitted,
+        publication_attempted=hook.publication_attempted,
         workspace=workspace,
         outside=outside,
         outside_before=outside_before,

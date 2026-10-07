@@ -140,7 +140,6 @@ class _ScriptedTaskHost:
             "classification": "failed",
             "coverage_state": "satisfied" if self._last_measured >= self._threshold else "repair_required",
             "decision": "pass",
-            "effect_refs": [],
             "evidence_refs": [],
             "fix_eligible": True,
             "human_review_required": False,
@@ -282,7 +281,6 @@ class _ScriptedTaskHost:
                         "decision": decision,
                         "lifecycle_state": lifecycle,
                         "approval_source": "automatic" if lifecycle == "approved" else "none",
-                        "effect_intents": [],
                         "write_authorization": [],
                     }
                 )
@@ -300,7 +298,6 @@ class _ScriptedTaskHost:
                         {
                             "change_id": change_id,
                             "lifecycle_state": "proposed",
-                            "effect_intents": [],
                             "write_authorization": [],
                         }
                     )
@@ -318,7 +315,6 @@ class _ScriptedTaskHost:
                         "change_id": change_id,
                         "lifecycle_state": lifecycle,
                         "approval_source": "human" if lifecycle == "approved" else "none",
-                        "effect_intents": [],
                         "write_authorization": [],
                     }
                 )

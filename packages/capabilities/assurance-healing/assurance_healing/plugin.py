@@ -5,8 +5,6 @@ from dataclasses import replace
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
     CommitValidator,
-    EffectPolicy,
-    EffectRegistration,
     PluginContribution,
     PluginDependency,
     PluginDescriptor,
@@ -18,24 +16,6 @@ from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 from assurance_healing.contracts.attempts import attempt_contract_refs
 from assurance_healing.ops import router
 
-from assurance_healing.effects.allocation import (
-    ALLOCATION_INTENT_SCHEMA,
-    ALLOCATION_KIND,
-    ALLOCATION_RECEIPT_SCHEMA,
-    HealingAllocationEffect,
-)
-from assurance_healing.effects.apply import (
-    HEAL_APPLY_INTENT_SCHEMA,
-    HEAL_APPLY_KIND,
-    HEAL_APPLY_RECEIPT_SCHEMA,
-    HealApplyEffect,
-)
-from assurance_healing.effects.approval import (
-    APPROVAL_INTENT_SCHEMA,
-    APPROVAL_KIND,
-    APPROVAL_RECEIPT_SCHEMA,
-    ProposalApprovedEffect,
-)
 from assurance_healing.operations import handlers as healing_task_handlers
 from assurance_healing.resource_loader import resource_bytes
 
@@ -55,73 +35,22 @@ HEALING_DEPENDENCIES: tuple[PluginDependency, ...] = (
     PluginDependency("assurance.execution", "==0.3.0"),
 )
 
-ALLOCATION_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=30.0, backoff_seconds=1.0)
-APPROVAL_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=30.0, backoff_seconds=1.0)
-HEAL_APPLY_POLICY = EffectPolicy(max_attempts=5, timeout_seconds=120.0, backoff_seconds=2.0)
 
 HEALING_RESOURCE_FILES: dict[str, str] = dict(router.resource_files())
 
 _SCHEMA_FILES: dict[str, str] = {
-    "assurance.healing.schema.allocation-intent.v2": "schemas/allocation-intent.v2.schema.json",
-    "assurance.healing.schema.allocation-receipt.v2": "schemas/allocation-receipt.v2.schema.json",
     "assurance.healing.schema.fix-proposal.v1": "schemas/fix-proposal.v1.schema.json",
-    "assurance.healing.schema.heal-apply-intent.v2": "schemas/heal-apply-intent.v2.schema.json",
-    "assurance.healing.schema.heal-apply-receipt.v2": "schemas/heal-apply-receipt.v2.schema.json",
     "assurance.healing.schema.healing-safety.v1": "schemas/healing-safety.v1.schema.json",
     "assurance.healing.schema.healing-status.v1": "schemas/healing-status.v1.schema.json",
-    "assurance.healing.schema.proposal-approved-intent.v1": (
-        "schemas/proposal-approved-intent.v1.schema.json"
-    ),
-    "assurance.healing.schema.proposal-approved-receipt.v1": (
-        "schemas/proposal-approved-receipt.v1.schema.json"
-    ),
 }
 
 _GENERATED_SCHEMAS: dict[str, str] = {
-    "assurance.healing.schema.allocation-intent.v2": "assurance_healing.contracts:HealingAllocationIntentV2",
-    "assurance.healing.schema.allocation-receipt.v2": (
-        "assurance_healing.contracts:HealingAllocationReceiptV2"
-    ),
     "assurance.healing.schema.fix-proposal.v1": "assurance_healing.contracts:FixProposal",
-    "assurance.healing.schema.heal-apply-intent.v2": "assurance_healing.contracts:HealApplyIntentV2",
-    "assurance.healing.schema.heal-apply-receipt.v2": "assurance_healing.contracts:HealApplyReceiptV2",
     "assurance.healing.schema.healing-safety.v1": "assurance_healing.contracts:SafetyCheck",
     "assurance.healing.schema.healing-status.v1": "assurance_healing.contracts:HealingStatusV1",
-    "assurance.healing.schema.proposal-approved-intent.v1": (
-        "assurance_healing.contracts:ProposalApprovedIntentV1"
-    ),
-    "assurance.healing.schema.proposal-approved-receipt.v1": (
-        "assurance_healing.contracts:ProposalApprovedReceiptV1"
-    ),
 }
 
 _VALIDATORS: dict[str, CommitValidator] = {}
-
-
-def _effect_registrations() -> tuple[EffectRegistration, ...]:
-    return (
-        EffectRegistration(
-            kind=ALLOCATION_KIND,
-            intent_schema_id=ALLOCATION_INTENT_SCHEMA,
-            receipt_schema_id=ALLOCATION_RECEIPT_SCHEMA,
-            handler=HealingAllocationEffect(),
-            policy=ALLOCATION_POLICY,
-        ),
-        EffectRegistration(
-            kind=HEAL_APPLY_KIND,
-            intent_schema_id=HEAL_APPLY_INTENT_SCHEMA,
-            receipt_schema_id=HEAL_APPLY_RECEIPT_SCHEMA,
-            handler=HealApplyEffect(),
-            policy=HEAL_APPLY_POLICY,
-        ),
-        EffectRegistration(
-            kind=APPROVAL_KIND,
-            intent_schema_id=APPROVAL_INTENT_SCHEMA,
-            receipt_schema_id=APPROVAL_RECEIPT_SCHEMA,
-            handler=ProposalApprovedEffect(),
-            policy=APPROVAL_POLICY,
-        ),
-    )
 
 
 _HANDLERS = healing_task_handlers()
@@ -140,7 +69,6 @@ class HealingPlugin(CapabilityPlugin):
         task_handlers=_HANDLERS,
         commit_validators=_VALIDATORS,
         dependencies=HEALING_DEPENDENCIES,
-        effects=_effect_registrations,
     )
 
     @classmethod

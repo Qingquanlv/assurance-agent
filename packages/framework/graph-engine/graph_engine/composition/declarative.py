@@ -702,7 +702,6 @@ def _plugin_values(
         commit_validators=(),
         schemas=tuple(schema.schema_id for schema in schemas),
         resources=tuple(resource.resource_id for resource in resources),
-        effects=(),
         bindings=tuple(binding.capability_id for binding in bindings),
     )
     contribution = PluginContribution(

@@ -317,7 +317,6 @@ def _product_lock_with_attempt_registry(registry: AttemptContractRegistry) -> Pr
         capabilities=lock.registry_projections.capabilities,
         schemas=lock.registry_projections.schemas,
         resources=lock.registry_projections.resources,
-        effects=lock.registry_projections.effects,
         attempt_contracts=registry.projection(),
     )
     digests = RegistryDigests(
@@ -325,7 +324,6 @@ def _product_lock_with_attempt_registry(registry: AttemptContractRegistry) -> Pr
         capabilities=lock.registry_digests.capabilities,
         schemas=lock.registry_digests.schemas,
         resources=lock.registry_digests.resources,
-        effects=lock.registry_digests.effects,
         attempt_contracts=registry.digest,
     )
     return ProductLock.create(

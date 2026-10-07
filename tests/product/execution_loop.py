@@ -396,7 +396,6 @@ class _ExecutionLoopHost:
             return TaskOutcome.succeeded(
                 {
                     "change_id": change_id,
-                    "effect_refs": [],
                     "kind": kind,
                     "rounds_budget": rounds_budget,
                     "rounds_used": rounds_used,
@@ -428,7 +427,6 @@ class _ExecutionLoopHost:
                         "auto_fix_allowed": False,
                         "change_id": change_id,
                         "decision": decision,
-                        "effect_intents": [],
                         "lifecycle_state": lifecycle,
                         "approval_source": "automatic" if lifecycle == "approved" else "none",
                         "write_authorization": [],
@@ -455,7 +453,6 @@ class _ExecutionLoopHost:
                 "classification": "test",
                 "codegen_readiness": "ready",
                 "decision": "pass",
-                "effect_refs": [],
                 "evidence_refs": [],
                 "fix_eligible": False,
                 "human_review_required": False,

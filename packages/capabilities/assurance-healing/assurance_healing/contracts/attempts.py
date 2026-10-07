@@ -17,11 +17,6 @@ def _agent_catalog() -> tuple[Mapping[str, Any], Mapping[str, tuple[str, ...]]]:
 
 AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES = _agent_catalog()
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
-HEALING_EFFECT_IDS: tuple[str, ...] = (
-    "assurance.healing.effect.allocation.v2",
-    "assurance.healing.effect.heal-apply.v2",
-    "assurance.healing.effect.proposal-approved.v1",
-)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
@@ -41,7 +36,6 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
-    "HEALING_EFFECT_IDS",
     "OUTPUT_ROUTE_TEMPLATES",
     "TASK_ATTEMPT_CONTRACTS",
     "attempt_contract_refs",

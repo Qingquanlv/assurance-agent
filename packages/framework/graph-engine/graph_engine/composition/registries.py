@@ -21,8 +21,6 @@ from graph_engine.composition.models import (
     CapabilityBindingEntry,
     CapabilityRegistry,
     CommitValidatorEntry,
-    EffectEntry,
-    EffectRegistry,
     ExecutableKind,
     RegistrySet,
     ResourceEntry,
@@ -50,7 +48,7 @@ from graph_engine.plugin_api import (
 
 
 class RegistryConflict(GraphEngineError):
-    """Raised when selected contributions cannot form the five closed registries."""
+    """Raised when selected contributions cannot form the four closed registries."""
 
 
 class RegistryConflictError(RegistryConflict):
@@ -71,7 +69,7 @@ def _build_registries(
     contributions: tuple[AuthenticatedContribution, ...],
     dependency_order: tuple[str, ...],
 ) -> RegistrySet:
-    """Build the five closed, canonical, immutable registry views."""
+    """Build the four closed, canonical, immutable registry views."""
 
     order = _validate_dependency_order(dependency_order)
     source_view, plugin_sources = _build_source_registry(sources, order)
@@ -80,15 +78,13 @@ def _build_registries(
     schema_view = _build_schema_registry(owned)
     resource_view = _build_resource_registry(owned)
     capability_view = _build_capability_registry(owned)
-    effect_view = _build_effect_registry(owned)
-    _validate_executable_registry_sets(owned, capability_view, effect_view)
+    _validate_executable_registry_sets(owned, capability_view)
     try:
         registries = RegistrySet(
             sources=source_view,
             capabilities=capability_view,
             schemas=schema_view,
             resources=resource_view,
-            effects=effect_view,
         )
     except (TypeError, ValueError) as error:
         raise RegistryConflict(str(error)) from error
@@ -208,7 +204,7 @@ def _validate_source_capabilities(contributions: tuple[_OwnedContribution, ...])
         contribution = owned.contribution
         if owned.source.snapshot.identity.kind != SourceKind.CONFIG_TREE:
             continue
-        if contribution.task_handlers or contribution.commit_validators or contribution.effects:
+        if contribution.task_handlers or contribution.commit_validators:
             raise RegistryConflict(f"config source cannot contribute executable capability: {owned.owner_id}")
 
 
@@ -290,34 +286,9 @@ def _build_capability_registry(
     )
 
 
-def _build_effect_registry(contributions: tuple[_OwnedContribution, ...]) -> EffectRegistry:
-    entries: dict[str, EffectEntry] = {}
-    for owned in contributions:
-        for registration in owned.values.effects:
-            entries[registration.kind] = EffectEntry(
-                kind=registration.kind,
-                owner_id=owned.owner_id,
-                intent_schema_id=registration.intent_schema_id,
-                receipt_schema_id=registration.receipt_schema_id,
-                handler=registration.handler,
-                policy=registration.policy,
-                apply_provenance=owned.authenticated.executable(
-                    ExecutableKind.EFFECT_APPLY,
-                    registration.kind,
-                ),
-                reconcile_provenance=owned.authenticated.executable(
-                    ExecutableKind.EFFECT_RECONCILE,
-                    registration.kind,
-                ),
-                authority=owned.authenticated.authority,
-            )
-    return EffectRegistry(entries)
-
-
 def _validate_executable_registry_sets(
     contributions: tuple[_OwnedContribution, ...],
     capabilities: CapabilityRegistry,
-    effects: EffectRegistry,
 ) -> None:
     expected = {
         (owned.owner_id, kind, registry_id)
@@ -330,9 +301,6 @@ def _validate_executable_registry_sets(
             actual.add((entry.owner_id, ExecutableKind.TASK_HANDLER, entry.capability_id))
         elif isinstance(entry, CommitValidatorEntry):
             actual.add((entry.owner_id, ExecutableKind.COMMIT_VALIDATOR, entry.capability_id))
-    for entry in effects.entries.values():
-        actual.add((entry.owner_id, ExecutableKind.EFFECT_APPLY, entry.kind))
-        actual.add((entry.owner_id, ExecutableKind.EFFECT_RECONCILE, entry.kind))
     if actual != expected:
         raise RegistryConflict("executable registry entries disagree with declared executable set")
 

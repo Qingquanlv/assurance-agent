@@ -7,7 +7,6 @@ from pydantic import BaseModel, ValidationError
 
 from graph_engine.attempts import (
     AttemptResolution,
-    CommittedEffectFailure,
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,
@@ -30,14 +29,13 @@ def _system_reference(*, reference_id: str = "wake-1") -> SystemReference:
     return SystemReference(reference_id=reference_id)
 
 
-def test_attempt_resolution_is_the_closed_six_variant_union() -> None:
+def test_attempt_resolution_is_the_closed_five_variant_union() -> None:
     assert set(get_args(AttemptResolution)) == {
         CommittedTaskResult,
         RejectedTaskResult,
         PermanentTaskFailure,
         PendingTaskResult,
         IndeterminateTaskResult,
-        CommittedEffectFailure,
     }
 
 
@@ -48,26 +46,6 @@ def test_committed_task_result_carries_typed_output_and_receipt() -> None:
     )
     assert result.output == RunOutput(status="ok")
     assert result.receipt == _receipt()
-
-
-def test_committed_effect_failure_requires_promoted_writes_and_receipt() -> None:
-    receipt = _receipt(receipt_id="promo-1")
-    result = CommittedEffectFailure(
-        writes_promoted=True,
-        promotion_receipt=receipt,
-        reason="effect permanently failed",
-    )
-    assert result.writes_promoted is True
-    assert result.promotion_receipt == receipt
-
-    with pytest.raises(ValidationError):
-        CommittedEffectFailure(
-            writes_promoted=False,
-            promotion_receipt=receipt,
-            reason="effect permanently failed",
-        )
-    with pytest.raises(ValidationError):
-        CommittedEffectFailure(writes_promoted=True, reason="effect permanently failed")
 
 
 def test_pending_and_indeterminate_require_system_reference_without_output() -> None:

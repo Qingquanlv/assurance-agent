@@ -80,14 +80,6 @@ class ImprovementApplyProof(BaseModel):
         return self
 
 
-class ApplyAttemptResult(BaseModel):
-    model_config = _FROZEN
-
-    applied: bool
-    effect_intents: tuple[object, ...] = ()
-    write_authorization: tuple[str, ...] = ()
-
-
 class MemoryApplyReceipt(BaseModel):
     model_config = _FROZEN
 
@@ -111,7 +103,6 @@ class MemoryEvalPublishedV1(BaseModel):
     model_config = _FROZEN
 
     memory_eval: MemoryEvalReceipt
-    effect_refs: tuple[dict[str, str], ...] = ()
     route: EvalApplyRoute
 
     @model_validator(mode="before")
@@ -125,7 +116,7 @@ class MemoryEvalPublishedV1(BaseModel):
 
 
 class ChangeExportPublishedV1(ChangeExportReceipt):
-    effect_refs: tuple[dict[str, str], ...] = ()
+    pass
 
 
 class MemoryRollbackReceipt(BaseModel):
@@ -138,7 +129,38 @@ class MemoryRollbackReceipt(BaseModel):
 
 class MemoryRollbackPublishedV1(MemoryRollbackReceipt):
     lifecycle_state: Literal["rolled_back"] = "rolled_back"
-    effect_refs: tuple[dict[str, str], ...] = ()
+
+
+class _DeliveryRecord(BaseModel):
+    """Business identity and supplied evidence committed as one Attempt artifact."""
+
+    model_config = _FROZEN
+
+    schema_version: Literal["1"] = "1"
+    improvement_id: NonEmptyStr
+    version: int = Field(ge=1)
+    target_digest: NonEmptyStr
+
+
+class MemoryEvalRecordV1(_DeliveryRecord):
+    target: NonEmptyStr
+    target_kind: Literal["memory_eval"] = "memory_eval"
+    receipt: MemoryEvalReceipt
+
+
+class MemoryApplyRecordV1(_DeliveryRecord):
+    target_kind: Literal["memory_apply"] = "memory_apply"
+    receipt: MemoryApplyReceipt
+
+
+class MemoryRollbackRecordV1(_DeliveryRecord):
+    target_kind: Literal["memory_rollback"] = "memory_rollback"
+    receipt: MemoryRollbackReceipt
+
+
+class ChangeExportRecordV1(_DeliveryRecord):
+    target_kind: Literal["change_export"] = "change_export"
+    receipt: ChangeExportReceipt
 
 
 class ImprovementOutboxEntry(BaseModel):

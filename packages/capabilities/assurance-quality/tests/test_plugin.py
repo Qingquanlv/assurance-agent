@@ -74,7 +74,6 @@ def test_quality_source_identity() -> None:
     assert "assurance.quality.report.finalize" in descriptor.task_handlers
     assert descriptor.commit_validators == ()
     assert descriptor.resources
-    assert descriptor.effects == ()
     assert descriptor.bindings == ()
 
 

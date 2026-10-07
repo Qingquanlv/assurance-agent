@@ -26,7 +26,7 @@ _OVERFLOWING_PATTERN = "a{999999999999999999999999999999999999}"
         (None, {"anyOf": [{"type": "string"}, {"type": "null"}]}),
     ),
 )
-def test_closed_runtime_schema_matches_installed_assurance_effect_keywords(
+def test_closed_runtime_schema_matches_supported_schema_keywords(
     instance: object,
     schema: object,
 ) -> None:
@@ -43,7 +43,7 @@ def test_closed_runtime_schema_matches_installed_assurance_effect_keywords(
         (1, {"anyOf": [{"type": "string"}, {"type": "null"}]}, "anyOf"),
     ),
 )
-def test_closed_runtime_schema_enforces_installed_assurance_effect_keywords(
+def test_closed_runtime_schema_enforces_supported_schema_keywords(
     instance: object,
     schema: object,
     message: str,

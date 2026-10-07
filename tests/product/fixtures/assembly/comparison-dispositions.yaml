@@ -112,7 +112,7 @@ cases:
         classification: required
         predicate: null
         governing_contract: spec §17.4 lock and runtime identity
-  - id: archive-durable-effect-replay
+  - id: delivery-artifact-commit-replay
     status: compared
     fields:
       - field: runtime_identity

@@ -91,6 +91,10 @@ EXPECTED_SUPERSEDED_FAULT_IDS = (
     "initial-tree-publication-cut",
     "initial-tree-durable-before-intent",
     "repeated-start-seed-drift",
+    "effect-before-intent",
+    "effect-after-intent",
+    "effect-receipt-publication",
+    "effect-reconcile-lost-ack",
     "export-file-write",
     "export-rename",
     "export-directory-fsync",
@@ -166,7 +170,7 @@ def test_original_task26_fault_rows_have_an_exact_closed_node_mapping() -> None:
         for fault_id in EXPECTED_ASSEMBLY_FAULT_IDS
         if conformance.ASSEMBLY_FAULT_EVIDENCE[fault_id].evidence_kind == "direct"
     )
-    assert len(coverage) == len(set(coverage)) == 57
+    assert len(coverage) == len(set(coverage)) == 53
     selected_nodes = {node_id for category in manifest.values() for node_id in category}
     assert set(coverage.values()) <= selected_nodes
     evidence = conformance.audit_gate_nodes(REPO_ROOT, tuple(dict.fromkeys(coverage.values())))
@@ -181,7 +185,7 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     direct = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "direct")
     superseded = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "superseded")
     gaps = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "gap")
-    assert len(direct) == 57
+    assert len(direct) == 53
     assert superseded == EXPECTED_SUPERSEDED_FAULT_IDS
     assert gaps == EXPECTED_GAP_FAULT_IDS
     assert all(
@@ -195,8 +199,8 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     assert state.release_complete is False
     assert state.superseded_fault_ids == EXPECTED_SUPERSEDED_FAULT_IDS
     assert state.gap_fault_ids == EXPECTED_GAP_FAULT_IDS
-    assert state.direct_count == 57
-    assert state.superseded_count == 14
+    assert state.direct_count == 53
+    assert state.superseded_count == 18
     assert state.gap_count == 2
     assert "blocked" in state.detail.lower()
 

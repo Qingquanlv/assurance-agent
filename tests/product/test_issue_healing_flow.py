@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
 
 from graph_engine.testing.graph_harness import committed
+from graph_engine.attempts.resolutions import RejectedTaskResult
 
-from assurance_execution.contracts.agent import RerunPrepareInputV1
 from tests.product.test_execute_tail_flow import (
     _RECEIPT,
     _SHA,
@@ -74,17 +73,14 @@ async def _applied_repair_reruns() -> None:
         )
     ]
     script["quality.report"] = [committed(_report_output("reported"), _RECEIPT)]
-    paused = await _invoke(script, budgets=_budgets(1))
-    finished = await paused.resume(
-        {
-            "action": "approve",
-            "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-        }
-    )
+    finished = await _invoke(script, budgets=_budgets(1))
     assert finished.outcome == "reported"
     apply = next(item for name, item in finished.captured if name == "healing.apply-test-repair")
     assert getattr(apply, "repair_round") == 1
     rerun = next(item for name, item in finished.captured if name == "execution.run")
+    # Match the model lifetime of the contract registry used by _invoke.
+    from tests.product.test_stategraph_entrypoints import RerunPrepareInputV1
+
     assert isinstance(rerun, RerunPrepareInputV1)
     assert rerun.apply_receipt == _RECEIPT
     assert rerun.applied_repair_ref == _ref("qa/results/healing/applied-repair.json", _SHA)
@@ -105,15 +101,10 @@ async def _proposal_does_not_rerun() -> None:
             artifacts=[{"path": "qa/results/healing/fix-proposal.json", "digest": _SHA}],
         )
     ]
-    paused = await _invoke(script, budgets=_budgets(1))
-    assert isinstance(paused.result, Mapping)
-    assert paused.result["__interrupt__"]
-    names = [name for name, _item in paused.captured]
+    script["healing.apply-test-repair"] = [RejectedTaskResult(reason="no committed test change")]
+    stopped = await _invoke(script, budgets=_budgets(1))
+    assert stopped.outcome == "blocked"
+    names = [name for name, _item in stopped.captured]
     assert "healing.fix-proposal" in names
-    assert "healing.apply-test-repair" not in names
-    assert "execution.run" not in names
-    rejected = await paused.resume({"action": "reject"})
-    assert rejected.outcome == "needs_human"
-    names = [name for name, _item in rejected.captured]
-    assert "healing.apply-test-repair" not in names
+    assert "healing.apply-test-repair" in names
     assert "execution.run" not in names

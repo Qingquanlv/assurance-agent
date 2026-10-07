@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from agent_runtime_contracts.ops import validate_model
 from graph_engine.canonical import JSONValue
-from graph_engine.plugin_api import EffectIntent, TaskOutcome
+from graph_engine.plugin_api import TaskOutcome
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -33,9 +33,5 @@ def as_json(payload: object) -> JSONValue:
     return cast(JSONValue, payload)
 
 
-def succeeded(
-    payload: dict[str, object],
-    *,
-    effects: tuple[EffectIntent, ...] = (),
-) -> TaskOutcome:
-    return TaskOutcome.succeeded(as_json(payload), effects=effects)
+def succeeded(payload: dict[str, object]) -> TaskOutcome:
+    return TaskOutcome.succeeded(as_json(payload))

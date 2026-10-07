@@ -196,3 +196,13 @@ def test_bootstrap_run_does_not_emit_stale_terminal_status_when_run_fails_before
     assert result.stdout == ""
     assert "new run failed before status write" in result.output
     assert "previous run failed" not in result.output
+
+
+def test_force_stop_options_are_visible(cli_runner) -> None:
+    from assurance_product.cli import app
+
+    for commands in (["operator", "stop", "--help"], ["bootstrap", "stop", "--help"]):
+        result = cli_runner.invoke(app, commands)
+        assert result.exit_code == 0
+        assert "--force" in result.output
+        assert "verified owned worker" in result.output

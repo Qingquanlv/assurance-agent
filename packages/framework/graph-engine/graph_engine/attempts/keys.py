@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -59,6 +60,42 @@ class AttemptKey(FrozenModel):
     digest: str = Field(pattern=_SHA256_PATTERN)
 
 
+class AttemptIdentity(FrozenModel):
+    """The shared activation identity in both live keys and retained generation scopes."""
+
+    invocation_id: str
+    graph_revision: str
+    public_entrypoint: str
+    semantic_node_id: str
+    business_activation: BusinessActivation
+    contract_id: str
+
+    @classmethod
+    def from_scope(cls, scope: Mapping[str, JSONValue]) -> AttemptIdentity:
+        # A generation scope also carries contract metadata, which is not key material.
+        return cls.model_validate({name: scope[name] for name in cls.model_fields})
+
+    def derive_key(self, input_payload: JSONValue, *, technical_attempt: int = 1) -> AttemptKey:
+        if isinstance(technical_attempt, bool) or not isinstance(technical_attempt, int):
+            raise TypeError("technical_attempt must be an integer")
+        if technical_attempt < 1:
+            raise ValueError("technical_attempt must be positive")
+        projection: JSONValue = {
+            "invocation_id": self.invocation_id,
+            "graph_revision": self.graph_revision,
+            "public_entrypoint": self.public_entrypoint,
+            "semantic_node_id": self.semantic_node_id,
+            "business_activation": {
+                "kind": self.business_activation.kind,
+                "value": self.business_activation.value,
+            },
+            "contract_id": self.contract_id,
+            "technical_attempt": technical_attempt,
+            "task_input_digest": canonical_digest(input_payload),
+        }
+        return AttemptKey(digest=canonical_digest(projection))
+
+
 def derive_attempt_key(
     *,
     invocation_id: str,
@@ -72,28 +109,18 @@ def derive_attempt_key(
 ) -> AttemptKey:
     if not isinstance(validated_input, BaseModel):
         raise TypeError("validated_input must be a Pydantic model")
-    if isinstance(technical_attempt, bool) or not isinstance(technical_attempt, int):
-        raise TypeError("technical_attempt must be an integer")
-    if technical_attempt < 1:
-        raise ValueError("technical_attempt must be positive")
-    input_payload: JSONValue = validated_input.model_dump(mode="json")
-    projection: JSONValue = {
-        "invocation_id": invocation_id,
-        "graph_revision": graph_revision,
-        "public_entrypoint": public_entrypoint,
-        "semantic_node_id": semantic_node_id,
-        "business_activation": {
-            "kind": business_activation.kind,
-            "value": business_activation.value,
-        },
-        "contract_id": contract_id,
-        "technical_attempt": technical_attempt,
-        "task_input_digest": canonical_digest(input_payload),
-    }
-    return AttemptKey(digest=canonical_digest(projection))
+    return AttemptIdentity(
+        invocation_id=invocation_id,
+        graph_revision=graph_revision,
+        public_entrypoint=public_entrypoint,
+        semantic_node_id=semantic_node_id,
+        business_activation=business_activation,
+        contract_id=contract_id,
+    ).derive_key(validated_input.model_dump(mode="json"), technical_attempt=technical_attempt)
 
 
 __all__ = [
+    "AttemptIdentity",
     "AttemptKey",
     "BusinessActivation",
     "derive_attempt_key",

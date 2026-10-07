@@ -114,8 +114,8 @@ def test_stop_opencode_does_not_signal_a_shared_handle(monkeypatch) -> None:
         del args, kwargs
         raise AssertionError("shared server was signaled")
 
-    monkeypatch.setattr("assurance_product.bootstrap.opencode.os.kill", fail_kill)
-    monkeypatch.setattr("assurance_product.bootstrap.opencode.os.killpg", fail_kill)
+    monkeypatch.setattr("assurance_product.worker_lifecycle.os.kill", fail_kill)
+    monkeypatch.setattr("assurance_product.worker_lifecycle.os.killpg", fail_kill)
     stop_opencode(OpenCodeHandleV1(endpoint="http://127.0.0.1:4096", ownership="shared"))
 
 
@@ -160,3 +160,14 @@ def test_create_run_root_session_rejects_a_prompted_or_child_session() -> None:
         assert "parent" in str(error)
     else:
         raise AssertionError("child root was accepted")
+
+
+def test_private_server_without_native_identity_is_not_signaled(monkeypatch) -> None:
+    import pytest
+    from assurance_product.bootstrap.opencode import OpenCodeLaunchError, stop_opencode
+
+    calls = []
+    monkeypatch.setattr("os.killpg", lambda *args: calls.append(args))
+    with pytest.raises(OpenCodeLaunchError, match="identity"):
+        stop_opencode(OpenCodeHandleV1(endpoint="http://127.0.0.1:4096", pid=1234))
+    assert calls == []

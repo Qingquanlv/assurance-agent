@@ -2,8 +2,7 @@
 
 ``after_coverage_advance`` pauses the parent after ``coverage-rework``.
 ``after_inspect_commit`` pauses the tail after ``quality``.
-``after_application_commit`` pauses the tail after ``repair`` (the approval
-inside that node is resumed first, so the cut is the applied commit).
+``after_application_commit`` pauses the tail after ``repair`` commits the applied repair.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from typing import Any, Literal, cast
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphInterrupt
-from langgraph.types import Command
 
 from assurance_product.graphs.full import build_full_flow
 from graph_engine.boot.boot import EngineGraphBuildContext
@@ -49,10 +47,6 @@ _CHECKPOINT = "goal-loop-checkpoints.sqlite"
 _EVENTS = "flow-events.jsonl"
 _CURSOR = "script-cursor.json"
 _STATE = "flow-state.json"
-_APPROVAL = {
-    "action": "approve",
-    "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,21 +257,12 @@ async def _drive(root: Path, *, cut: CrashPoint | None, resume: bool) -> None:
                 }
             )
         )
-        snapshot = None
-        while True:
-            try:
-                await compiled.ainvoke(pending, config=config)
-            except GraphInterrupt:
-                pass
-            snapshot = await compiled.aget_state(config)
-            interrupts = tuple(getattr(snapshot, "interrupts", ()) or ())
-            nxt = tuple(getattr(snapshot, "next", ()) or ())
-            if interrupts:
-                pending = Command(resume=_APPROVAL)
-                continue
-            if nxt and cut is not None and not resume:
-                break
-            break
+        try:
+            await compiled.ainvoke(pending, config=config)
+        except GraphInterrupt:
+            pass
+        snapshot = await compiled.aget_state(config)
+        assert not snapshot.interrupts, "automatic repair unexpectedly required a human decision"
         values = getattr(snapshot, "values", {}) if snapshot is not None else {}
         if not isinstance(values, Mapping):
             values = {}

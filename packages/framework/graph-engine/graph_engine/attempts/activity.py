@@ -19,7 +19,6 @@ from graph_engine.attempts.keys import AttemptKey
 from graph_engine.persistence.attempt_journal import AttemptJournalIntegrityError, AttemptJournalPort
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.evidence.events import (
-    EffectIntentCommitted,
     EventEnvelope,
     GraphStarted,
     InvocationStarted,
@@ -69,7 +68,7 @@ from graph_engine.evidence.models import (
 
 
 MAX_ACTIVITY_VALUE_BYTES = 16 * 1024
-_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending", "effect_pending"}
+_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending"}
 _RECOVERY_DECISIONS: dict[ReconcileStatus, RecoveryDecisionKind] = {
     "not_dispatched": "execute_same_attempt",
     "running": "adopt_same_attempt",
@@ -400,7 +399,6 @@ def _journal_transition_allowed(
 __all__ = [
     "AttemptWorkspaceLost",
     "BoundedCanonicalJson",
-    "EffectIntentCommitted",
     "EventEnvelope",
     "FoldCursor",
     "GraphStarted",

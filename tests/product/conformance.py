@@ -122,7 +122,7 @@ EXPECTED_25_CASE_IDS = (
     "healing-disallowed-business-stop",
     "report-generation-required-outputs",
     "issue-analysis-reconcile-path",
-    "archive-durable-effect-replay",
+    "delivery-artifact-commit-replay",
     "retro-collect-analyze-propose-reconcile",
     "improvement-review-evaluate-export-apply",
     "improvement-rollback",
@@ -319,10 +319,6 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_lost_sse_authenticates_with_get",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_idle_with_open_tools_is_not_terminal",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins",
-            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_mutation-assurance.improvement.effect.archive.v1]",
-            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_mutation-assurance.improvement.effect.archive.v1]",
-            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_receipt-assurance.improvement.effect.archive.v1]",
-            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[reconcile_error-assurance.improvement.effect.archive.v1]",
             "tests/product/test_report_flow.py::test_report_is_mandatory_on_success",
         ),
     }
@@ -485,18 +481,6 @@ _ASSEMBLY_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
         "opencode-cancel-result-race": (
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins"
         ),
-        "effect-before-intent": (
-            "packages/framework/graph-engine/tests/attempts/test_kernel_effect_recovery.py::test_crash_after_intent_applies_once_without_repeating_promotion[assurance.healing.effect.allocation.v2]"
-        ),
-        "effect-after-intent": (
-            "packages/framework/graph-engine/tests/attempts/test_kernel_effects.py::test_apply_reconcile_outcomes_for_every_kind[applied-assurance.improvement.effect.archive.v1]"
-        ),
-        "effect-receipt-publication": (
-            "packages/framework/graph-engine/tests/attempts/test_kernel_effect_recovery.py::test_crash_after_intent_applies_once_without_repeating_promotion[assurance.improvement.effect.archive.v1]"
-        ),
-        "effect-reconcile-lost-ack": (
-            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_receipt-assurance.improvement.effect.archive.v1]"
-        ),
     }
 )
 
@@ -523,6 +507,22 @@ _ASSEMBLY_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
         "repeated-start-seed-drift": (
             "WorkspaceSeed/tree identity was removed; repeated start now authenticates the process-local workspace binding.",
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_worker_rejects_substituted_project_root_before_handler_execution",
+        ),
+        "effect-before-intent": (
+            "Effect intents and settlement were removed; delivery records recover through ordinary Attempt commit.",
+            "packages/framework/graph-engine/tests/attempts/test_kernel_recovery.py::test_post_promotion_restart_uses_artifacts_without_executing_business_code",
+        ),
+        "effect-after-intent": (
+            "Effect intents and settlement were removed; delivery records recover through ordinary Attempt commit.",
+            "packages/framework/graph-engine/tests/attempts/test_kernel_recovery.py::test_post_promotion_restart_uses_artifacts_without_executing_business_code",
+        ),
+        "effect-receipt-publication": (
+            "Effect intents and settlement were removed; delivery records recover through ordinary Attempt commit.",
+            "packages/framework/graph-engine/tests/attempts/test_kernel_recovery.py::test_post_promotion_restart_uses_artifacts_without_executing_business_code",
+        ),
+        "effect-reconcile-lost-ack": (
+            "Effect intents and settlement were removed; delivery records recover through ordinary Attempt commit.",
+            "packages/framework/graph-engine/tests/attempts/test_kernel_recovery.py::test_post_promotion_restart_uses_artifacts_without_executing_business_code",
         ),
         "export-file-write": (
             "aa export / publish_achieved was removed; delivery stops at achieved.",
@@ -614,16 +614,18 @@ _FAULT_SUPPORT_NODE_IDS = frozenset(
     node_id for node_ids in _FAULT_SUPPORT_CATEGORIES.values() for node_id in node_ids
 )
 _TASK26_RUNNABLE_EVIDENCE_NODE_IDS = tuple(
-    node_id
-    for evidence in ASSEMBLY_FAULT_EVIDENCE.values()
-    for node_id in (
-        evidence.node_id
-        if evidence.evidence_kind == "direct"
-        else evidence.replacement_node_id
-        if evidence.evidence_kind == "superseded"
-        else None,
+    dict.fromkeys(
+        node_id
+        for evidence in ASSEMBLY_FAULT_EVIDENCE.values()
+        for node_id in (
+            evidence.node_id
+            if evidence.evidence_kind == "direct"
+            else evidence.replacement_node_id
+            if evidence.evidence_kind == "superseded"
+            else None,
+        )
+        if node_id is not None and node_id not in _FAULT_SUPPORT_NODE_IDS
     )
-    if node_id is not None and node_id not in _FAULT_SUPPORT_NODE_IDS
 )
 
 FAULT_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(

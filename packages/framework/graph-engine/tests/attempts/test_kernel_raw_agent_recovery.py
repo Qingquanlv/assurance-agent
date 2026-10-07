@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
-from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -31,11 +29,10 @@ from graph_engine.attempts.resolutions import (
     SystemReference,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.effects.state import MemoryEffectState
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
-from graph_engine.plugin_api import EffectApplyResult, EffectIntent, ResourceClaims, TaskWorkspaceBinding
+from graph_engine.plugin_api import ResourceClaims, TaskWorkspaceBinding
 from graph_engine.attempts.activity import BoundedCanonicalJson, bounded_canonical_json
 from graph_engine.attempts.workspace import (
     TaskWorkspaceProvider,
@@ -53,17 +50,6 @@ def _fencing_token(context: object) -> int:
     if isinstance(nested, int):
         return nested
     raise AttributeError("fencing_token")
-
-
-_HELPER_SPEC = importlib.util.spec_from_file_location(
-    "test_kernel_effects",
-    Path(__file__).with_name("test_kernel_effects.py"),
-)
-assert _HELPER_SPEC is not None and _HELPER_SPEC.loader is not None
-_HELPERS = importlib.util.module_from_spec(_HELPER_SPEC)
-_HELPER_SPEC.loader.exec_module(_HELPERS)
-RecordingEffectHandler = _HELPERS.RecordingEffectHandler
-build_effect_registries = _HELPERS.build_effect_registries
 
 
 class RawInput(BaseModel):
@@ -387,9 +373,6 @@ def _build(
     fault: str | None = None,
     journal: MemoryAttemptJournal | None = None,
     authorization_store: MemoryResourceAuthorizationStore | None = None,
-    effects: Any = None,
-    schemas: Any = None,
-    declared_effects: tuple[EffectIntent, ...] = (),
     fencing_token: int = 4,
 ):
     project = tmp_path / "project"
@@ -410,17 +393,12 @@ def _build(
         runtime=runtime,
         finalize=finalize,
     )
-    if declared_effects:
-        executor.effects = declared_effects
     resolved = executor.resolve()
     kernel = AssuranceAttemptKernel(
         journal=journal,
         arbiter=ResourceArbiter(authorization_store),
         workspace=workspace,
         graph_revision=_revision(),
-        effects=effects,
-        schemas=schemas,
-        effect_state=MemoryEffectState() if effects is not None else None,
     )
     validated = RawInput(change_id="chg-1")
     key = derive_attempt_key(
@@ -701,33 +679,5 @@ async def test_cancel_and_reconcile_are_idempotent_and_fenced(tmp_path: Path) ->
         assert again == result
         assert runtime.session_creates == 1
         assert runtime.prompt_admissions == 1
-    finally:
-        store.close()
-
-
-@pytest.mark.parametrize("kind", sorted(_HELPERS.REGISTERED_EFFECT_KINDS))
-async def test_raw_agent_exercises_existing_effect_kinds_without_repeat(tmp_path: Path, kind: str) -> None:
-    handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
-    effects, schemas = build_effect_registries(handler)
-    kernel, key, resolved, validated, context, _executor, runtime, workspace, project, store, _finalize = (
-        _build(
-            tmp_path,
-            effects=effects,
-            schemas=schemas,
-            declared_effects=(EffectIntent(kind=kind, payload={"n": 1}),),
-        )
-    )
-    try:
-        first = await kernel.execute_or_recover(key, resolved, validated, context)
-        assert isinstance(first, CommittedTaskResult)
-        replay = await kernel.execute_or_recover(key, resolved, validated, context)
-        assert isinstance(replay, CommittedTaskResult)
-        assert replay.receipt == first.receipt
-        assert runtime.session_creates == 1
-        assert runtime.prompt_admissions == 1
-        assert workspace.promotions == 1
-        assert handler.apply_keys
-        assert handler.reconcile_keys == ()
-        assert (project / "out.txt").read_bytes() == b"committed"
     finally:
         store.close()

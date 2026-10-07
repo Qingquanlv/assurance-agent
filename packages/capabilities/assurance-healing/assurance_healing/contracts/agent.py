@@ -62,7 +62,6 @@ class FixProposalInputV1(FrozenModel):
     candidate_digest: HexDigest
     policy_digest: HexDigest
     mapping_paths: tuple[str, ...]
-    require_approval: bool = True
     execution_evidence_digest: HexDigest
     issue_analysis_ref: EvidenceArtifactRefV1 | None = None
     issue_analysis_handoff_ref: EvidenceArtifactRefV1 | None = None

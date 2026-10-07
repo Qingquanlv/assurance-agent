@@ -8,21 +8,20 @@ same data the contribution realizes, so the two can never disagree.
 
 The kit lives in the framework and depends only on the engine's plugin API. It
 adds no auto-discovery: a wheel still names its handlers, validators, schemas,
-resources, and effects explicitly. It only removes the boilerplate that turned
+and resources explicitly. It only removes the boilerplate that turned
 those declarations into a ``PluginDescriptor`` and a ``PluginContribution``.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
 
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import (
     CommitValidator,
-    EffectRegistration,
     PluginContribution,
     PluginDependency,
     PluginDescriptor,
@@ -51,9 +50,7 @@ class CapabilitySpec:
     """Everything a capability wheel declares, in one place.
 
     ``task_handlers`` and ``commit_validators`` are stateless singletons and are
-    supplied as ready mappings. ``effects`` is a factory because each effect
-    handler binds a fresh in-memory store per contribution, so two compositions
-    resolved in one process never share effect state.
+    supplied as ready mappings.
     """
 
     plugin_id: str
@@ -66,10 +63,6 @@ class CapabilitySpec:
     task_handlers: Mapping[str, TaskHandler]
     commit_validators: Mapping[str, CommitValidator] = field(default_factory=dict)
     dependencies: tuple[PluginDependency, ...] = ()
-    effects: Callable[[], Sequence[EffectRegistration]] | None = None
-
-    def effect_registrations(self) -> tuple[EffectRegistration, ...]:
-        return () if self.effects is None else tuple(self.effects())
 
     def schema_contributions(self) -> tuple[SchemaContribution, ...]:
         return tuple(
@@ -103,7 +96,6 @@ class CapabilitySpec:
             dependencies=self.dependencies,
             schemas=tuple(sorted(self.schema_files)),
             resources=tuple(sorted(self.resource_files)),
-            effects=tuple(sorted(entry.kind for entry in self.effect_registrations())),
             bindings=(),
         )
 
@@ -115,7 +107,6 @@ class CapabilitySpec:
             commit_validators=dict(self.commit_validators),
             schemas=self.schema_contributions(),
             resources=self.resource_contributions(),
-            effects=self.effect_registrations(),
         )
 
 

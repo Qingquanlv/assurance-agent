@@ -23,14 +23,11 @@ from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
-from graph_engine.json_schema import assert_closed_json_schema
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.semantic_agent_ids import is_semantic_agent_contract_id
 from graph_engine.plugin_api import (
     AttemptContractRef,
     CommitValidator,
-    DurableEffectHandler,
-    EffectPolicy,
     FrozenModel,
     PluginDescriptor,
     PluginContribution,
@@ -305,16 +302,12 @@ class SourceEntry:
 class ExecutableKind(str, Enum):
     TASK_HANDLER = "task_handler"
     COMMIT_VALIDATOR = "commit_validator"
-    EFFECT_APPLY = "effect_apply"
-    EFFECT_RECONCILE = "effect_reconcile"
 
     @property
     def slot(self) -> str:
         return {
             ExecutableKind.TASK_HANDLER: "execute",
             ExecutableKind.COMMIT_VALIDATOR: "validate",
-            ExecutableKind.EFFECT_APPLY: "apply",
-            ExecutableKind.EFFECT_RECONCILE: "reconcile",
         }[self]
 
 
@@ -467,8 +460,6 @@ def _descriptor_executable_keys(descriptor: PluginDescriptor) -> tuple[Executabl
     keys = (
         *((ExecutableKind.TASK_HANDLER, entry_id) for entry_id in descriptor.task_handlers),
         *((ExecutableKind.COMMIT_VALIDATOR, entry_id) for entry_id in descriptor.commit_validators),
-        *((ExecutableKind.EFFECT_APPLY, entry_id) for entry_id in descriptor.effects),
-        *((ExecutableKind.EFFECT_RECONCILE, entry_id) for entry_id in descriptor.effects),
     )
     ordered = tuple(sorted(keys, key=lambda item: (item[1], item[0].value)))
     if len(ordered) != len(set(ordered)):
@@ -489,9 +480,6 @@ def _contribution_executable_objects(
             for entry_id, executable in contribution.commit_validators.items()
         },
     }
-    for registration in contribution.effects:
-        values[(ExecutableKind.EFFECT_APPLY, registration.kind)] = registration.handler
-        values[(ExecutableKind.EFFECT_RECONCILE, registration.kind)] = registration.handler
     return MappingProxyType(values)
 
 
@@ -951,52 +939,6 @@ class ResourceEntry:
         _validate_content_digest(content, self.sha256, "resource entry")
 
 
-@dataclass(frozen=True, slots=True)
-class EffectEntry:
-    kind: str
-    owner_id: str
-    intent_schema_id: str
-    receipt_schema_id: str
-    handler: DurableEffectHandler
-    policy: EffectPolicy
-    apply_provenance: ExecutableProvenance
-    reconcile_provenance: ExecutableProvenance
-    authority: ContributionAuthority = dataclass_field(compare=False, repr=False)
-
-    def __post_init__(self) -> None:
-        _validate_owned_registry_id(self.kind, self.owner_id, "effect")
-        _validate_registry_id(self.intent_schema_id, "effect intent schema id")
-        _validate_registry_id(self.receipt_schema_id, "effect receipt schema id")
-        if not callable(getattr(self.handler, "apply", None)) or not callable(
-            getattr(self.handler, "reconcile", None)
-        ):
-            raise TypeError("effect entry handler must provide apply and reconcile")
-        if not isinstance(self.policy, EffectPolicy):
-            raise TypeError("effect entry policy must be an EffectPolicy")
-        _validate_entry_provenance(
-            self.apply_provenance,
-            ExecutableKind.EFFECT_APPLY,
-            self.kind,
-            self.owner_id,
-        )
-        _validate_entry_authority(
-            self.authority,
-            self.handler,
-            self.apply_provenance,
-        )
-        _validate_entry_provenance(
-            self.reconcile_provenance,
-            ExecutableKind.EFFECT_RECONCILE,
-            self.kind,
-            self.owner_id,
-        )
-        _validate_entry_authority(
-            self.authority,
-            self.handler,
-            self.reconcile_provenance,
-        )
-
-
 def _validate_entry_authority(
     authority: ContributionAuthority,
     executable: object,
@@ -1222,23 +1164,6 @@ class ResourceRegistry:
 
 
 @dataclass(frozen=True, slots=True)
-class EffectRegistry:
-    entries: Mapping[str, EffectEntry]
-
-    def __post_init__(self) -> None:
-        entries = _immutable_mapping(self.entries)
-        for kind, entry in entries.items():
-            if not isinstance(entry, EffectEntry):
-                raise TypeError("effect registry accepts only EffectEntry values")
-            if kind != entry.kind:
-                raise ValueError(f"effect registry key disagrees with entry: {kind}")
-        object.__setattr__(self, "entries", entries)
-
-    def require(self, kind: str) -> EffectEntry:
-        return self.entries[kind]
-
-
-@dataclass(frozen=True, slots=True)
 class AttemptContractClaim:
     """One Feature-declared Attempt contract plus the owner/dependency closure used to resolve it."""
 
@@ -1304,7 +1229,6 @@ class RegistrySet:
     capabilities: CapabilityRegistry
     schemas: SchemaRegistry
     resources: ResourceRegistry
-    effects: EffectRegistry
 
     def __post_init__(self) -> None:
         expected_types = (
@@ -1312,7 +1236,6 @@ class RegistrySet:
             ("capabilities", self.capabilities, CapabilityRegistry),
             ("schemas", self.schemas, SchemaRegistry),
             ("resources", self.resources, ResourceRegistry),
-            ("effects", self.effects, EffectRegistry),
         )
         for name, registry, expected in expected_types:
             if not isinstance(registry, expected):
@@ -1322,7 +1245,6 @@ class RegistrySet:
             ("capability", self.capabilities.entries),
             ("schema", self.schemas.entries),
             ("resource", self.resources.entries),
-            ("effect", self.effects.entries),
         )
         ownership: dict[str, str] = {}
         for kind, entries in kinds:
@@ -1336,7 +1258,6 @@ class RegistrySet:
             *self.capabilities.entries.values(),
             *self.schemas.entries.values(),
             *self.resources.entries.values(),
-            *self.effects.entries.values(),
         )
         sources_by_owner: dict[str, list[SourceEntry]] = {}
         for source in self.sources.entries.values():
@@ -1359,14 +1280,12 @@ class RegistrySet:
             source_kind = plugin_sources[0].snapshot.identity.kind
             if source_kind == SourceKind.CONFIG_TREE and isinstance(
                 entry,
-                TaskHandlerEntry | CommitValidatorEntry | EffectEntry,
+                TaskHandlerEntry | CommitValidatorEntry,
             ):
                 raise ValueError(f"config source cannot own executable registry entry: {entry.owner_id}")
             provenances: tuple[ExecutableProvenance, ...]
             if isinstance(entry, TaskHandlerEntry | CommitValidatorEntry):
                 provenances = (entry.provenance,)
-            elif isinstance(entry, EffectEntry):
-                provenances = (entry.apply_provenance, entry.reconcile_provenance)
             else:
                 provenances = ()
             for provenance in provenances:
@@ -1383,20 +1302,6 @@ class RegistrySet:
             for resource_id in binding.resource_ids:
                 if resource_id not in self.resources.entries:
                     raise ValueError(f"binding resource is not registered: {resource_id}")
-        for effect in self.effects.entries.values():
-            for role, schema_id in (
-                ("intent", effect.intent_schema_id),
-                ("receipt", effect.receipt_schema_id),
-            ):
-                schema = self.schemas.entries.get(schema_id)
-                if schema is None:
-                    raise ValueError(f"effect {role} schema is not registered: {schema_id}")
-                try:
-                    assert_closed_json_schema(_schema_document_from_content(schema.content))
-                except ValueError as error:
-                    raise ValueError(
-                        f"effect {role} schema is outside the closed runtime subset: {schema_id}: {error}"
-                    ) from error
 
 
 class PluginRequirement(FrozenModel):
@@ -1659,14 +1564,6 @@ class FrozenComposition:
                 for entry in self.registries.capabilities.entries.values()
                 if isinstance(entry, CommitValidatorEntry)
             ),
-            *(
-                (entry.owner_id, entry.handler, entry.apply_provenance, entry.authority)
-                for entry in self.registries.effects.entries.values()
-            ),
-            *(
-                (entry.owner_id, entry.handler, entry.reconcile_provenance, entry.authority)
-                for entry in self.registries.effects.entries.values()
-            ),
         )
         expected_executables = {
             (descriptor.plugin_id, kind, registry_id)
@@ -1889,8 +1786,6 @@ __all__ = [
     "CapabilityEntry",
     "CapabilityRegistry",
     "CommitValidatorEntry",
-    "EffectEntry",
-    "EffectRegistry",
     "FrozenComposition",
     "PluginRequirement",
     "ProductManifest",

@@ -47,25 +47,17 @@ class IndeterminateTaskResult(FrozenModel):
     reconciliation: SystemReference
 
 
-class CommittedEffectFailure(FrozenModel):
-    writes_promoted: Literal[True]
-    promotion_receipt: ReceiptRef
-    reason: str = Field(min_length=1)
-
-
 AttemptResolution: TypeAlias = (
     CommittedTaskResult
     | RejectedTaskResult
     | PermanentTaskFailure
     | PendingTaskResult
     | IndeterminateTaskResult
-    | CommittedEffectFailure
 )
 
 
 __all__ = [
     "AttemptResolution",
-    "CommittedEffectFailure",
     "CommittedTaskResult",
     "IndeterminateTaskResult",
     "PendingTaskResult",

@@ -42,7 +42,6 @@ forbidden_modules =
     assurance_generation.plugin
     assurance_generation.operations
     assurance_generation.validators
-    assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
     assurance_generation.graphs
@@ -60,14 +59,12 @@ forbidden_modules =
     assurance_generation.plugin
     assurance_generation.operations
     assurance_generation.validators
-    assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
     assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
     assurance_execution.validators
-    assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
     assurance_execution.graphs
@@ -93,21 +90,18 @@ forbidden_modules =
     assurance_generation.plugin
     assurance_generation.operations
     assurance_generation.validators
-    assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
     assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
     assurance_execution.validators
-    assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
     assurance_execution.graphs
     assurance_healing.plugin
     assurance_healing.operations
     assurance_healing.validators
-    assurance_healing.effects
     assurance_healing.resource_loader
     assurance_healing.resources
     assurance_healing.graphs
@@ -125,28 +119,24 @@ forbidden_modules =
     assurance_generation.plugin
     assurance_generation.operations
     assurance_generation.validators
-    assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
     assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
     assurance_execution.validators
-    assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
     assurance_execution.graphs
     assurance_healing.plugin
     assurance_healing.operations
     assurance_healing.validators
-    assurance_healing.effects
     assurance_healing.resource_loader
     assurance_healing.resources
     assurance_healing.graphs
     assurance_quality.plugin
     assurance_quality.operations
     assurance_quality.validators
-    assurance_quality.effects
     assurance_quality.resource_loader
     assurance_quality.resources
     assurance_quality.graphs
@@ -259,7 +249,6 @@ forbidden_modules =
     assurance_intake.graphs
     assurance_intake.plugin
     assurance_intake.feature
-    assurance_intake.effects
 
 [importlinter:contract:intake-ops-below-graphs]
 name = Intake ops never import graphs, the plugin, or the feature bundle

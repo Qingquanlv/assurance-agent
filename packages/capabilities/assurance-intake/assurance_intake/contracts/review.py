@@ -243,7 +243,7 @@ class CaseReviewOutputV1(CaseReviewResultV1):
 
     public_outcome: PublicReviewOutcome  # pyright: ignore[reportIncompatibleVariableOverride, reportGeneralTypeIssues]
     artifacts: tuple[EvidenceArtifactRefV1, ...] = ()
-    reviewed_case: ReviewedCaseV1 | None = None
+    reviewed_case: ReviewedCaseV1
     history_ref: EvidenceArtifactRefV1 | None = None
 
 

@@ -17,6 +17,9 @@ CONTEXT = f"{RETRO_DIR}/context.json"
 CANDIDATES = f"{RETRO_DIR}/candidates.json"
 PROJECTION = f"{IMPROVEMENT_DIR}/projection.json"
 MEMORY_EVAL = f"{IMPROVEMENT_DIR}/memory-eval.json"
+MEMORY_APPLY = f"{IMPROVEMENT_DIR}/memory-apply.json"
+MEMORY_ROLLBACK = f"{IMPROVEMENT_DIR}/memory-rollback.json"
+CHANGE_EXPORT = f"{IMPROVEMENT_DIR}/change-export.json"
 
 SLICE_WRITES: tuple[NamedWrite, ...] = (
     NamedWrite("issue", ISSUE_SLICE),
@@ -30,6 +33,9 @@ CONTEXT_WRITE = NamedWrite("context", CONTEXT)
 CANDIDATES_WRITE = NamedWrite("candidates", CANDIDATES)
 PROJECTION_WRITE = NamedWrite("projection", PROJECTION)
 MEMORY_EVAL_WRITE = NamedWrite("memory-eval", MEMORY_EVAL)
+MEMORY_APPLY_WRITE = NamedWrite("memory-apply", MEMORY_APPLY)
+MEMORY_ROLLBACK_WRITE = NamedWrite("memory-rollback", MEMORY_ROLLBACK)
+CHANGE_EXPORT_WRITE = NamedWrite("change-export", CHANGE_EXPORT)
 
 SLICE_PATH = {
     "issue": ISSUE_SLICE,

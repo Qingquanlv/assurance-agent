@@ -27,11 +27,6 @@ _FIX_PROPOSAL_ID = "assurance.healing.agent.fix-proposal.v1"
 _APPLICATION_ID = "assurance.healing.agent.apply-test-repair.v1"
 _GRAPH_CONTRACT_IDS = (_APPLICATION_ID, _FIX_PROPOSAL_ID)
 _ADVANCE_ID = "assurance.healing.repair-round.advance"
-EFFECT_IDS = (
-    "assurance.healing.effect.allocation.v2",
-    "assurance.healing.effect.heal-apply.v2",
-    "assurance.healing.effect.proposal-approved.v1",
-)
 _PHASE_NODES = frozenset(
     {
         "prepare",
@@ -49,10 +44,6 @@ _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_healing" / "grap
 
 def healing_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
     return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
-
-
-def _effect_refs() -> list[dict[str, str]]:
-    return [{"kind": kind, "digest": _SHA} for kind in EFFECT_IDS]
 
 
 def failure_graph_input(**overrides: object) -> dict[str, object]:
@@ -220,13 +211,24 @@ async def test_repair_exports_run_independently_and_publish_typed_output() -> No
         bundle.repair_failure,
         input=failure_graph_input(),
         script={
-            "healing.fix-proposal": [committed(failure_agent_output(), receipt)],
+            "healing.fix-proposal": [
+                committed(
+                    failure_agent_output(),
+                    receipt,
+                    artifacts=[{"path": "qa/results/healing/fix-proposal.json", "digest": _SHA}],
+                )
+            ],
+            "healing.apply-test-repair": [committed(application_output(), receipt)],
         },
     )
-    assert failure.interrupt_envelope is not None
-    assert [call.semantic_node_id for call in failure.semantic_calls] == ["healing.fix-proposal"]
-    assert [call.contract_id for call in failure.semantic_calls] == [_FIX_PROPOSAL_ID]
-    assert failure.terminal is None
+    assert failure.interrupt_envelope is None
+    assert [call.semantic_node_id for call in failure.semantic_calls] == [
+        "healing.fix-proposal",
+        "healing.apply-test-repair",
+    ]
+    assert [call.contract_id for call in failure.semantic_calls] == [_FIX_PROPOSAL_ID, _APPLICATION_ID]
+    assert isinstance(failure.terminal, dict)
+    assert failure.terminal["status"] == "applied"
 
 
 def test_production_agent_validators_stay_empty() -> None:

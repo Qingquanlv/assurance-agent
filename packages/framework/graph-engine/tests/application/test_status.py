@@ -56,10 +56,10 @@ def test_system_interrupt_normalizes_to_blocked() -> None:
     status = normalize_graph_snapshot(
         GraphSnapshotEnvelope(
             next=("settle-effect",),
-            interrupts=(InterruptEnvelope(kind="system_wake", reason="effect_pending"),),
+            interrupts=(InterruptEnvelope(kind="system_wake", reason="resource_pending"),),
         )
     )
-    assert status == InvocationStatus(status="blocked", reason="effect_pending")
+    assert status == InvocationStatus(status="blocked", reason="resource_pending")
 
 
 def test_active_snapshot_without_interrupts_is_running() -> None:

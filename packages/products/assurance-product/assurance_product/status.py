@@ -80,7 +80,6 @@ def render_status_from_langgraph(
             "node_states": journal_nodes + active_nodes,
             "selected_test_families": _selected_test_families_from_snapshot(snapshot),
             "coverage_progress": _coverage_progress_from_snapshot(snapshot, project_root),
-            "durable_effects": (),
             "adapter_evidence": _journal_adapter_evidence(invocation_id, journal_events),
             "execution_gate": execution_gate,
             "quality_gate": quality_gate,

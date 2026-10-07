@@ -116,12 +116,6 @@ def test_goal_loop_repair_then_achieved() -> None:
         _reported(script)
         done = await _invoke(
             script,
-            resumes=(
-                {
-                    "action": "approve",
-                    "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-                },
-            ),
             budgets=_budgets(),
         )
         names = _names(done.captured)

@@ -1,4 +1,4 @@
-# Apply an approved existing-test repair
+# Apply a bounded existing-test repair
 
 Edit only the exact `allowed_test_paths` supplied in the authenticated input. These
 paths are existing generated test sources bound to the reviewed Case and closed
@@ -6,7 +6,7 @@ mapping.
 
 ## Required behavior
 
-- Apply only eligible items from the authenticated fix proposal and approval.
+- Apply only eligible items from the authenticated fix proposal.
 - Preserve every mapped test function or method and its Case identity.
 - Preserve assertions, expected values, `pytest.raises` contracts, and skip/xfail
   behavior. If the repair requires changing an oracle, do not edit the file.
@@ -20,6 +20,6 @@ refs. A proposal or summary alone never counts as an applied repair.
 
 ### Host-owned repair history
 
-Your outputs are only the approved changed test files. After verifying the
+Your outputs are only the eligible changed test files. After verifying the
 repair, the host finalize handler generates `repair.json` under its declared
 write claims, binding the actual changed bytes. History is not an Agent output.

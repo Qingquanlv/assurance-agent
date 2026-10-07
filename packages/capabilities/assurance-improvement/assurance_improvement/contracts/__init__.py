@@ -21,7 +21,6 @@ from assurance_improvement.contracts.declarations import (
     DeclarationProposalStatus,
 )
 from assurance_improvement.contracts.delivery import (
-    ApplyAttemptResult,
     ChangeExportReceipt,
     ImprovementApplyProof,
     ImprovementDeliveryDocument,
@@ -30,11 +29,6 @@ from assurance_improvement.contracts.delivery import (
     MemoryApplyReceipt,
     MemoryEvalReceipt,
     MemoryRollbackReceipt,
-)
-from assurance_improvement.contracts.effects import (
-    ArchiveApplyReceipt,
-    ImprovementEffectIntentV1,
-    ImprovementEffectReceiptV1,
 )
 from assurance_improvement.contracts.improvements import (
     ALLOWED_DELIVERIES,
@@ -100,11 +94,9 @@ __all__ = [
     "APPLY_HUMAN_ACTIONS",
     "AUTO_REVIEW_DECISIONS",
     "ALLOWED_DELIVERIES",
-    "ApplyAttemptResult",
     "DECLARATION_EVIDENCE_KIND_ORDER",
     "DECLARATION_PROPOSAL_DIR_REL",
     "DECLARATION_PROPOSAL_GLOB",
-    "ArchiveApplyReceipt",
     "AutoReviewFinding",
     "ChangeExportReceipt",
     "DataKnowledgeProposal",
@@ -127,8 +119,6 @@ __all__ = [
     "ImprovementCandidateDocumentV3",
     "ImprovementCandidateV3",
     "ImprovementDeliveryDocument",
-    "ImprovementEffectIntentV1",
-    "ImprovementEffectReceiptV1",
     "ImprovementKind",
     "ImprovementLedgerProjection",
     "ImprovementOutboxEntry",

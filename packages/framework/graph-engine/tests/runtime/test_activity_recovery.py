@@ -8,16 +8,13 @@ import pytest
 from bootstrap_fixtures import synthetic_invocation_started
 from ledger_activity_port import LedgerTaskActivityPort
 from graph_engine.attempts.activity import (
-    EffectIntentCommitted,
     GraphStarted,
     Ledger,
     NodeActivated,
-    ProjectionError,
     TaskActivityCancelRequested,
     TaskActivityPrepared,
     TaskAttemptStarted,
     TaskLeaseAcquired,
-    append_validated_batch,
     fold_events,
     recovery_decision_for_status,
 )
@@ -177,29 +174,6 @@ def test_open_after_recovery_defers_compiled_events(tmp_path: Path) -> None:
     assert after == before
     assert recovered.activations[-1].attempts[-1].status == "running"
     assert "task_attempt_started" not in after[after.index("task_activity_prepared") + 1 :]
-
-
-def test_checkpoints_and_effects_cannot_authorize_activity(tmp_path: Path) -> None:
-    ledger, _store, _activity_id = _prepare_activity(tmp_path, dispatched=True)
-    with pytest.raises((ProjectionError, ValueError, TypeError)):
-        append_validated_batch(
-            ledger,
-            (
-                EffectIntentCommitted(
-                    effect_id="effect-activity",
-                    activation_id=fold_events(ledger.read_all()).activations[-1].activation_id,
-                    attempt=1,
-                    index=0,
-                    effect_kind="test.empty.intent",
-                    payload={"create": True, "bind": True, "cancel": True, "terminal": True},
-                    idempotency_key="0" * 64,
-                ),
-            ),
-            expected_next_seq=ledger.read_all()[-1].seq + 1,
-        )
-    attempt = fold_events(ledger.read_all()).activations[-1].attempts[-1]
-    assert attempt.activity is not None
-    assert attempt.activity.state == "dispatch_started"
 
 
 def test_cancel_terminal_does_not_fall_through_to_running_adoption(tmp_path: Path) -> None:

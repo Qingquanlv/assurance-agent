@@ -5,8 +5,6 @@ from dataclasses import replace
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
     CommitValidator,
-    EffectPolicy,
-    EffectRegistration,
     PluginContribution,
     PluginDependency,
     PluginDescriptor,
@@ -18,24 +16,6 @@ from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 from assurance_improvement.contracts.attempts import attempt_contract_refs
 from assurance_improvement.ops import router
 
-from assurance_improvement.effects.archive import (
-    ARCHIVE_INTENT_SCHEMA,
-    ARCHIVE_KIND,
-    ARCHIVE_RECEIPT_SCHEMA,
-    ImprovementArchiveEffect,
-)
-from assurance_improvement.effects.delivery import (
-    DELIVERY_INTENT_SCHEMA,
-    DELIVERY_KIND,
-    DELIVERY_RECEIPT_SCHEMA,
-    ImprovementDeliveryEffect,
-)
-from assurance_improvement.effects.promotion import (
-    PROMOTION_INTENT_SCHEMA,
-    PROMOTION_KIND,
-    PROMOTION_RECEIPT_SCHEMA,
-    ImprovementPromotionEffect,
-)
 from assurance_improvement.operations import improvement_handlers
 from assurance_improvement.resource_loader import resource_bytes
 
@@ -57,9 +37,6 @@ IMPROVEMENT_DEPENDENCIES: tuple[PluginDependency, ...] = (
     PluginDependency("assurance.quality", "==0.3.0"),
 )
 
-DELIVERY_POLICY = EffectPolicy(max_attempts=5, timeout_seconds=120.0, backoff_seconds=2.0)
-PROMOTION_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=60.0, backoff_seconds=2.0)
-ARCHIVE_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=60.0, backoff_seconds=2.0)
 
 IMPROVEMENT_RESOURCE_FILES: dict[str, str] = dict(router.resource_files())
 
@@ -69,12 +46,6 @@ _SCHEMA_FILES: dict[str, str] = {
         "schemas/improvement-candidates.v3.schema.json"
     ),
     "assurance.improvement.schema.improvement-delivery.v1": "schemas/improvement-delivery.v1.schema.json",
-    "assurance.improvement.schema.improvement-effect-intent.v1": (
-        "schemas/improvement-effect-intent.v1.schema.json"
-    ),
-    "assurance.improvement.schema.improvement-effect-receipt.v1": (
-        "schemas/improvement-effect-receipt.v1.schema.json"
-    ),
     "assurance.improvement.schema.improvement-review.v1": "schemas/improvement-review.v1.schema.json",
     "assurance.improvement.schema.promotion.v1": "schemas/promotion.v1.schema.json",
     "assurance.improvement.schema.retro-context.v3": "schemas/retro-context.v3.schema.json",
@@ -91,12 +62,6 @@ _GENERATED_SCHEMAS: dict[str, str] = {
     "assurance.improvement.schema.improvement-delivery.v1": (
         "assurance_improvement.contracts:ImprovementDeliveryDocument"
     ),
-    "assurance.improvement.schema.improvement-effect-intent.v1": (
-        "assurance_improvement.contracts:ImprovementEffectIntentV1"
-    ),
-    "assurance.improvement.schema.improvement-effect-receipt.v1": (
-        "assurance_improvement.contracts:ImprovementEffectReceiptV1"
-    ),
     "assurance.improvement.schema.improvement-review.v1": (
         "assurance_improvement.contracts:ImprovementReviewSubject"
     ),
@@ -106,32 +71,6 @@ _GENERATED_SCHEMAS: dict[str, str] = {
 }
 
 _VALIDATORS: dict[str, CommitValidator] = {}
-
-
-def _effect_registrations() -> tuple[EffectRegistration, ...]:
-    return (
-        EffectRegistration(
-            kind=ARCHIVE_KIND,
-            intent_schema_id=ARCHIVE_INTENT_SCHEMA,
-            receipt_schema_id=ARCHIVE_RECEIPT_SCHEMA,
-            handler=ImprovementArchiveEffect(),
-            policy=ARCHIVE_POLICY,
-        ),
-        EffectRegistration(
-            kind=DELIVERY_KIND,
-            intent_schema_id=DELIVERY_INTENT_SCHEMA,
-            receipt_schema_id=DELIVERY_RECEIPT_SCHEMA,
-            handler=ImprovementDeliveryEffect(),
-            policy=DELIVERY_POLICY,
-        ),
-        EffectRegistration(
-            kind=PROMOTION_KIND,
-            intent_schema_id=PROMOTION_INTENT_SCHEMA,
-            receipt_schema_id=PROMOTION_RECEIPT_SCHEMA,
-            handler=ImprovementPromotionEffect(),
-            policy=PROMOTION_POLICY,
-        ),
-    )
 
 
 _HANDLERS = improvement_handlers()
@@ -150,7 +89,6 @@ class ImprovementPlugin(CapabilityPlugin):
         task_handlers=_HANDLERS,
         commit_validators=_VALIDATORS,
         dependencies=IMPROVEMENT_DEPENDENCIES,
-        effects=_effect_registrations,
     )
 
     @classmethod

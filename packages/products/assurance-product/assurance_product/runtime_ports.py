@@ -55,7 +55,6 @@ from assurance_product.product import product_graph_manifest, product_lock_from_
 from assurance_product.runtime_bindings import runtime_bindings_from_composition
 from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
 from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend, open_sqlite_checkpointer
-from assurance_product.sqlite_effect_state import SQLiteEffectState
 from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
 
 _logger = logging.getLogger(__name__)
@@ -203,7 +202,6 @@ class ProductRuntimePorts:
         revision_id: str,
         secret_resolver: AuthorizedSecretResolver,
         workspace_provider: TaskWorkspaceProvider,
-        effect_state: SQLiteEffectState,
         host: object,
         authorization: InvocationRuntimeAuthorization,
         reachable_contract_ids: tuple[str, ...],
@@ -220,7 +218,6 @@ class ProductRuntimePorts:
         self.revision_id = revision_id
         self.secret_resolver = secret_resolver
         self.workspace_provider = workspace_provider
-        self.effect_state = effect_state
         self.host = host
         self.authorization = authorization
         self.reachable_contract_ids = reachable_contract_ids
@@ -247,6 +244,14 @@ class ProductRuntimePorts:
         manifest = product_graph_manifest(typed_composition, product_lock)
         invocation_id = _invocation_id(invocation)
         auth = authorization if authorization is not None else empty_runtime_authorization()
+        from assurance_product.worker_lifecycle import current_owner
+        from assurance_product.retained_host import retain_stop_authority
+
+        owner = current_owner()
+        if owner is not None:
+            if owner.workspace != workspace.paths.project_root.resolve() or owner.invocation != invocation_id:
+                raise ValueError("runtime ports disagree with admitted foreground owner")
+            retain_stop_authority(owner, workspace, typed_composition, auth)
         reachable = tuple(reachable_contract_ids or ())
         async with open_sqlite_checkpointer(workspace) as backend:
             journal = SqliteAttemptJournal(backend)
@@ -283,7 +288,6 @@ class ProductRuntimePorts:
             receipts_root.parent.mkdir(parents=True, exist_ok=True)
             receipts = TerminalReceiptStore.open_or_create(receipts_root)
             secret_resolver = AuthorizedSecretResolver(auth)
-            effect_state = SQLiteEffectState(backend)
             loop = asyncio.get_running_loop()
 
             async def assert_live_fence() -> None:
@@ -310,14 +314,19 @@ class ProductRuntimePorts:
                     expected_handler_id=call.request.capability_id,
                 )
 
-            host = create_production_task_execution_host(
+            from assurance_product.worker_lifecycle import observe_child
+            from assurance_product.retained_host import RetainedHost
+
+            raw_host = create_production_task_execution_host(
                 authorization=auth,
                 handlers=typed_composition.registries.capabilities.task_handlers,
                 store=task_store,
                 receipts=receipts,
                 activity_factory=activity_factory,
                 invocation_root=workspace.paths.qa_root,
+                process_observer=observe_child,
             )
+            host = RetainedHost(raw_host, backend, journal)
             network = _preflight_selected_root(typed_composition, auth, reachable)
             expected_allow = any(".agent." in contract_id for contract_id in reachable)
             if network.allow_opencode != expected_allow:
@@ -330,9 +339,6 @@ class ProductRuntimePorts:
                 workspace=workspace_provider,
                 graph_revision=manifest.revision.revision_id,
                 validators=typed_composition.registries.capabilities.commit_validators,
-                effects=typed_composition.registries.effects,
-                schemas=typed_composition.registries.schemas,
-                effect_state=effect_state,
                 pause_requested=pause_requested,
                 runtime_evidence=ProjectedRuntimeEvidence(workspace, journal.read_records),
             )
@@ -347,7 +353,6 @@ class ProductRuntimePorts:
                 revision_id=manifest.revision.revision_id,
                 secret_resolver=secret_resolver,
                 workspace_provider=workspace_provider,
-                effect_state=effect_state,
                 host=host,
                 authorization=auth,
                 reachable_contract_ids=reachable,
@@ -466,7 +471,7 @@ class ProductRuntimePorts:
             ).items()
         }
         data_contracts = {contract_id: resolved.contract for contract_id, resolved in semantic.items()}
-        factory = bind_attempt_factory(self.kernel)
+        factory = bind_attempt_factory(self.kernel, regenerate=True)
         context = EngineGraphBuildContext(
             contracts=data_contracts,
             checkpointer=checkpointer,

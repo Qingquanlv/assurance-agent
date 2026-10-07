@@ -114,6 +114,7 @@ class OpenCodeHandleV1(FrozenModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     endpoint: str
     pid: int | None = None
+    process_identity: dict[str, Any] | None = None
     ownership: Literal["private", "shared"] = "private"
 
 

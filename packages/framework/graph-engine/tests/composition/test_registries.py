@@ -12,7 +12,6 @@ from graph_engine.composition import (
     CapabilityBindingEntry,
     CapabilityRegistry,
     CommitValidatorEntry,
-    EffectRegistry,
     ExecutableBindingMode,
     ExecutableKind,
     ExecutableModuleProvenance,
@@ -46,11 +45,6 @@ from graph_engine.composition.registries import (
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
     CandidateWriteSet,
-    EffectApplyResult,
-    EffectIntent,
-    EffectPolicy,
-    EffectReconcileResult,
-    EffectRegistration,
     PluginContribution,
     PluginContractError,
     PluginDescriptor,
@@ -106,18 +100,6 @@ class _Validator:
         _context: ValidationContext,
     ) -> ValidationResult:
         return ValidationResult(accepted=True)
-
-
-class _EffectHandler:
-    async def apply(self, _intent: EffectIntent, _idempotency_key: str) -> EffectApplyResult:
-        return EffectApplyResult.applied({"ok": True})
-
-    async def reconcile(
-        self,
-        _intent: EffectIntent,
-        _idempotency_key: str,
-    ) -> EffectReconcileResult:
-        return EffectReconcileResult.applied({"ok": True})
 
 
 def _source(plugin_id: str, *, kind: SourceKind = SourceKind.CONFIG_TREE) -> SourceSnapshot:
@@ -184,7 +166,7 @@ def _authenticated(
 ) -> AuthenticatedContribution:
     source_key = _source_key(snapshot)
     if source_key.role is SourceRole.CONFIG and (
-        contribution.task_handlers or contribution.commit_validators or contribution.effects
+        contribution.task_handlers or contribution.commit_validators
     ):
         raise RegistryConflict("config source cannot contribute executable")
     proofs = [
@@ -195,11 +177,6 @@ def _authenticated(
         *(
             _proof(snapshot, ExecutableKind.COMMIT_VALIDATOR, registry_id)
             for registry_id in contribution.commit_validators
-        ),
-        *(
-            _proof(snapshot, kind, registration.kind)
-            for registration in contribution.effects
-            for kind in (ExecutableKind.EFFECT_APPLY, ExecutableKind.EFFECT_RECONCILE)
         ),
     ]
     descriptor = PluginDescriptor(
@@ -212,7 +189,6 @@ def _authenticated(
         commit_validators=tuple(contribution.commit_validators),
         schemas=tuple(item.schema_id for item in contribution.schemas),
         resources=tuple(item.resource_id for item in contribution.resources),
-        effects=tuple(item.kind for item in contribution.effects),
         bindings=tuple(item.capability_id for item in contribution.bindings),
     )
     executable_objects = {
@@ -223,11 +199,6 @@ def _authenticated(
         **{
             (ExecutableKind.COMMIT_VALIDATOR, registry_id): executable
             for registry_id, executable in contribution.commit_validators.items()
-        },
-        **{
-            (kind, registration.kind): registration.handler
-            for registration in contribution.effects
-            for kind in (ExecutableKind.EFFECT_APPLY, ExecutableKind.EFFECT_RECONCILE)
         },
     }
     ordered_proofs = tuple(sorted(proofs, key=lambda item: (item.registry_id, item.kind.value)))
@@ -303,15 +274,6 @@ def _runtime_contribution(handler: _Handler | None = None) -> PluginContribution
             ),
         ),
         resources=(ResourceContribution("toy.runtime.prompt", "text/plain", b"hello"),),
-        effects=(
-            EffectRegistration(
-                kind="toy.runtime.audit",
-                intent_schema_id="toy.runtime.intent",
-                receipt_schema_id="toy.runtime.receipt",
-                handler=_EffectHandler(),
-                policy=EffectPolicy(max_attempts=2, timeout_seconds=3, backoff_seconds=0),
-            ),
-        ),
     )
 
 
@@ -337,7 +299,7 @@ def _binding_contribution(
     )
 
 
-def test_registry_builder_freezes_all_five_views() -> None:
+def test_registry_builder_freezes_all_views() -> None:
     registries = build_registries(
         sources=(_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
         contributions=(_runtime_contribution(),),
@@ -351,21 +313,19 @@ def test_registry_builder_freezes_all_five_views() -> None:
         "toy.runtime.receipt",
     )
     assert tuple(registries.resources.entries) == ("toy.runtime.prompt",)
-    assert tuple(registries.effects.entries) == ("toy.runtime.audit",)
 
     mappings = (
         registries.sources.entries,
         registries.capabilities.task_handlers,
         registries.schemas.entries,
         registries.resources.entries,
-        registries.effects.entries,
     )
     for mapping in mappings:
         with pytest.raises(TypeError):
             mapping["toy.other"] = object()  # type: ignore[index,assignment]
 
     with pytest.raises(FrozenInstanceError):
-        registries.effects = registries.effects  # type: ignore[misc]
+        registries.resources = registries.resources  # type: ignore[misc]
 
 
 def test_public_registry_views_reject_inconsistent_entry_mappings() -> None:
@@ -519,7 +479,6 @@ def test_registry_set_rejects_executable_owner_that_is_not_a_plugin_source() -> 
             ),
             schemas=SchemaRegistry({}),
             resources=ResourceRegistry({}),
-            effects=EffectRegistry({}),
         )
 
 
@@ -838,152 +797,6 @@ def test_registry_rejects_dangling_binding_resources() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("intent_schema_id", "receipt_schema_id", "message"),
-    [
-        ("toy.runtime.missing", "toy.runtime.receipt", "unknown effect intent schema"),
-        ("toy.runtime.intent", "toy.runtime.missing", "unknown effect receipt schema"),
-    ],
-)
-def test_registry_rejects_dangling_effect_schemas(
-    intent_schema_id: str,
-    receipt_schema_id: str,
-    message: str,
-) -> None:
-    contribution = PluginContribution(
-        schemas=(
-            SchemaContribution("toy.runtime.intent", "application/schema+json", b"{}"),
-            SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
-        ),
-        effects=(
-            EffectRegistration(
-                "toy.runtime.audit",
-                intent_schema_id,
-                receipt_schema_id,
-                _EffectHandler(),
-                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
-            ),
-        ),
-    )
-    with pytest.raises(RegistryConflict, match=message):
-        build_registries(
-            (_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
-            (contribution,),
-            ("toy.runtime",),
-        )
-
-
-def test_registry_rejects_unsupported_keyword_only_for_effect_schema() -> None:
-    contribution = PluginContribution(
-        schemas=(
-            SchemaContribution(
-                "toy.runtime.intent",
-                "application/schema+json",
-                b'{"type":"string","format":"email"}',
-            ),
-            SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
-            SchemaContribution(
-                "toy.runtime.product-schema",
-                "application/schema+json",
-                b'{"type":"string","format":"email"}',
-            ),
-        ),
-        effects=(
-            EffectRegistration(
-                "toy.runtime.audit",
-                "toy.runtime.intent",
-                "toy.runtime.receipt",
-                _EffectHandler(),
-                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
-            ),
-        ),
-    )
-
-    with pytest.raises(RegistryConflict, match="unsupported schema keyword: format"):
-        build_registries(
-            (_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
-            (contribution,),
-            ("toy.runtime",),
-        )
-
-
-@pytest.mark.parametrize(
-    "content",
-    (
-        b'{"$defs":null}',
-        b'{"$ref":null}',
-        b'{"additionalProperties":null}',
-        b'{"anyOf":null}',
-        b'{"enum":null}',
-        b'{"items":null}',
-        b'{"minItems":null}',
-        b'{"minLength":null}',
-        b'{"minimum":null}',
-        b'{"pattern":null}',
-        b'{"properties":null}',
-        b'{"required":null}',
-        b'{"title":null}',
-        b'{"type":null}',
-        b'{"type":["string"]}',
-    ),
-)
-def test_registry_rejects_malformed_effect_schema_keyword_values(content: bytes) -> None:
-    contribution = PluginContribution(
-        schemas=(
-            SchemaContribution("toy.runtime.intent", "application/schema+json", content),
-            SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
-        ),
-        effects=(
-            EffectRegistration(
-                "toy.runtime.audit",
-                "toy.runtime.intent",
-                "toy.runtime.receipt",
-                _EffectHandler(),
-                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
-            ),
-        ),
-    )
-
-    with pytest.raises(RegistryConflict, match="closed runtime subset"):
-        build_registries(
-            (_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
-            (contribution,),
-            ("toy.runtime",),
-        )
-
-
-def test_registry_wraps_overflowing_effect_schema_pattern() -> None:
-    contribution = PluginContribution(
-        schemas=(
-            SchemaContribution(
-                "toy.runtime.intent",
-                "application/schema+json",
-                b'{"pattern":"a{999999999999999999999999999999999999}"}',
-            ),
-            SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
-        ),
-        effects=(
-            EffectRegistration(
-                "toy.runtime.audit",
-                "toy.runtime.intent",
-                "toy.runtime.receipt",
-                _EffectHandler(),
-                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
-            ),
-        ),
-    )
-
-    with pytest.raises(
-        RegistryConflict,
-        match="closed runtime subset.*schema pattern must be a valid regular expression",
-    ):
-        build_registries(
-            (_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
-            (contribution,),
-            ("toy.runtime",),
-        )
-
-
 def test_schema_entries_require_schema_media_and_valid_json() -> None:
     for schema in (
         SchemaContribution("toy.runtime.schema", "application/json", b"{}"),
@@ -1047,7 +860,7 @@ def test_registry_requires_exact_selected_source_and_contribution_sets() -> None
         )
 
 
-def test_plugin_contribution_has_no_sixth_registry_kind() -> None:
+def test_plugin_contribution_rejects_lifecycle_registry() -> None:
     with pytest.raises(TypeError):
         PluginContribution(lifecycles=())  # type: ignore[call-arg]
     assert tuple(RegistrySet.__dataclass_fields__) == (
@@ -1055,11 +868,10 @@ def test_plugin_contribution_has_no_sixth_registry_kind() -> None:
         "capabilities",
         "schemas",
         "resources",
-        "effects",
     )
 
 
-def test_every_selected_plugin_retains_one_six_category_contribution_authority() -> None:
+def test_every_selected_plugin_retains_one_contribution_authority() -> None:
     contribution = PluginContribution(
         task_handlers={"toy.runtime.execute": _Handler()},
         commit_validators={"toy.runtime.validate": _Validator()},
@@ -1068,15 +880,6 @@ def test_every_selected_plugin_retains_one_six_category_contribution_authority()
             SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
         ),
         resources=(ResourceContribution("toy.runtime.prompt", "text/plain", b"prompt"),),
-        effects=(
-            EffectRegistration(
-                "toy.runtime.audit",
-                "toy.runtime.intent",
-                "toy.runtime.receipt",
-                _EffectHandler(),
-                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
-            ),
-        ),
         bindings=(
             CapabilityBindingContribution(
                 capability_id="toy.runtime.bound",
@@ -1148,7 +951,6 @@ def test_contribution_authority_rejects_missing_nonexecutable_registry_value(
             capabilities=registries.capabilities,
             schemas=SchemaRegistry({}),
             resources=registries.resources,
-            effects=registries.effects,
         )
     elif registry_kind == "resource":
         direct = registries.capabilities.entries["toy.runtime.execute"]
@@ -1164,7 +966,6 @@ def test_contribution_authority_rejects_missing_nonexecutable_registry_value(
             capabilities=forged_capabilities,
             schemas=registries.schemas,
             resources=ResourceRegistry({}),
-            effects=registries.effects,
         )
     else:
         direct = registries.capabilities.entries["toy.runtime.execute"]
@@ -1180,7 +981,6 @@ def test_contribution_authority_rejects_missing_nonexecutable_registry_value(
             capabilities=forged_capabilities,
             schemas=registries.schemas,
             resources=registries.resources,
-            effects=registries.effects,
         )
 
     with pytest.raises(ValueError, match="contribution authority"):

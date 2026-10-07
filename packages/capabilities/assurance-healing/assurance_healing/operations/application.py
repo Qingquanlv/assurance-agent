@@ -1,4 +1,4 @@
-"""Authenticate and verify an approved, existing-test implementation repair."""
+"""Authenticate and verify a bounded, existing-test implementation repair."""
 
 from __future__ import annotations
 
@@ -23,8 +23,6 @@ from assurance_healing.contracts.application import (
     TestRepairResultV1,
     VerifiedTestRepairV1,
 )
-from assurance_healing.contracts.effects import ProposalApprovedIntentV1
-from assurance_healing.operations.keys import derive_approval_id
 from assurance_intake.contracts import LoopRoundHistoryV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.domain.loop_history import build_loop_round_history
@@ -158,7 +156,7 @@ def _prove_implementation_only(before: bytes, after: bytes, symbols: set[str], p
         raise OutputError(f"repair removes or renames a mapped test identity: {path}")
 
 
-def approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
+def repair_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
     for ref in (
         *business.reviewed_case.preparation_refs,
         *business.reviewed_case.case_refs,
@@ -169,37 +167,19 @@ def approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, 
         *business.source_refs,
     ):
         _authenticate_ref(root, ref)
-    if business.approval_ref is None:
-        raise OutputError("repair application requires an authenticated approval")
-
     proposal = _load_ref(root, business.proposal_ref, FixProposalResultV1)
-    approval = _load_ref(root, business.approval_ref, ProposalApprovedIntentV1)
     execution = _load_ref(root, business.execution_ref, ExecutionEvidenceV1)
     mapping = _load_ref(root, business.mapping_ref, ClosedMappingV1)
-    if proposal.change_id != business.change_id or approval.change_id != business.change_id:
-        raise OutputError("proposal or approval belongs to another change")
-    if approval.proposal_digest != engine_digest(cast(JSONValue, proposal.model_dump(mode="json"))):
-        raise OutputError("approval does not authenticate the repair proposal")
-    expected_approval_id = derive_approval_id(
-        owner_id=approval.owner_id,
-        candidate_digest=approval.candidate_digest,
-        baseline_digest=approval.baseline_digest,
-        policy_digest=approval.policy_digest,
-        proposal_digest=approval.proposal_digest,
-    )
-    if approval.approval_id != expected_approval_id or approval.owner_id != "assurance.healing":
-        raise OutputError("approval identity is not authentic")
+    if proposal.change_id != business.change_id:
+        raise OutputError("proposal belongs to another change")
     eligible = tuple(
         item
         for item in proposal.proposals
         if item.eligible and not item.needs_review and item.risk_level != "critical"
     )
     proposed_sources = {path for item in eligible for path in item.files_to_modify}
-    proposed_layers = {item.target for item in eligible}
     if not proposed_sources:
         raise OutputError("proposal has no eligible existing-test repair")
-    if not proposed_sources <= set(approval.paths) or not proposed_layers <= set(approval.targets):
-        raise OutputError("approval scope does not cover the proposed repair")
 
     mapped_sources = _mapped_sources(business.change_id, mapping)
     if not proposed_sources <= set(mapped_sources):
@@ -220,10 +200,10 @@ def verify_application(
     result: TestRepairResultV1,
     context: _Workspace,
 ) -> VerifiedTestRepairV1:
-    sources = approved_sources(business, context.project_root)
+    sources = repair_sources(business, context.project_root)
     outputs = set(result.output_files)
     if outputs != set(sources):
-        raise OutputError("repair output set must exactly equal the approved candidate write set")
+        raise OutputError("repair output set must exactly equal the eligible proposal write set")
     staged = {
         relative
         for path in context.write_root.rglob("*")
@@ -254,7 +234,7 @@ def verify_application(
 
 
 __all__ = [
-    "approved_sources",
+    "repair_sources",
     "expected_repair_history",
     "repair_history_path",
     "verify_application",

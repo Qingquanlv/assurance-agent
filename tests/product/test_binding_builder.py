@@ -398,13 +398,11 @@ def test_generated_provider_contributes_exactly_32_semantic_bindings(tmp_path, o
     assert descriptor.plugin_version == "1.1.0"
     assert descriptor.task_handlers == ()
     assert descriptor.commit_validators == ()
-    assert descriptor.effects == ()
     assert descriptor.schemas == ()
     assert set(descriptor.bindings) == set(ALL_BINDING_IDS)
     assert len(descriptor.bindings) == 26
     assert contribution.task_handlers == {}
     assert contribution.commit_validators == {}
-    assert contribution.effects == ()
     assert contribution.schemas == ()
     assert {binding.capability_id for binding in contribution.bindings} == set(ALL_BINDING_IDS)
     assert len(contribution.bindings) == 26

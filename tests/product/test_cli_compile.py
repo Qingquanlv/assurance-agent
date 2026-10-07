@@ -4,7 +4,6 @@ import importlib.util
 import inspect
 import json
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -16,25 +15,6 @@ from tests.product.cli_support import (
 from tests.product.composition_harness import copy_config_tree
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
-
-_EFFECT_SCHEMA_KEYWORDS = {
-    "$defs",
-    "$ref",
-    "additionalProperties",
-    "anyOf",
-    "const",
-    "default",
-    "enum",
-    "items",
-    "minItems",
-    "minLength",
-    "minimum",
-    "pattern",
-    "properties",
-    "required",
-    "title",
-    "type",
-}
 
 
 def test_help_exposes_exact_command_tree(cli_runner):
@@ -48,6 +28,7 @@ def test_help_exposes_exact_command_tree(cli_runner):
         "start",
         "run",
         "status",
+        "stop",
         "resume",
         "lock",
         "retro",
@@ -178,23 +159,6 @@ def test_installed_assurance_contributions_accept_rich_product_schemas(opencode_
     assert schema.media_type == "application/schema+json"
 
 
-def test_installed_assurance_effect_schemas_use_the_audited_closed_keyword_set(
-    opencode_composition,
-):
-    composition = opencode_composition
-    schema_ids = {
-        schema_id
-        for effect in composition.registries.effects.entries.values()
-        for schema_id in (effect.intent_schema_id, effect.receipt_schema_id)
-    }
-    keywords: set[str] = set()
-    for schema_id in schema_ids:
-        document = json.loads(composition.registries.schemas.entries[schema_id].content)
-        _collect_schema_keywords(cast(dict[str, object] | bool, document), keywords)
-
-    assert keywords == _EFFECT_SCHEMA_KEYWORDS
-
-
 def test_compile_fails_closed_on_wrong_runtime(cli_runner, installed_sources):
     from assurance_product.cli import app
 
@@ -270,22 +234,3 @@ def test_aa_topology_override_is_rejected(cli_runner, installed_sources, tmp_pat
     result = cli_runner.invoke(app, ["compile", "--json", *args])
     assert result.exit_code == 40, result.output
     assert "topology" in result.output.lower() or "organization" in result.output.lower()
-
-
-def _collect_schema_keywords(schema: dict[str, object] | bool, keywords: set[str]) -> None:
-    if isinstance(schema, bool):
-        return
-    keywords.update(schema)
-    for map_keyword in ("$defs", "properties"):
-        nested_map = schema.get(map_keyword)
-        if isinstance(nested_map, dict):
-            for nested in nested_map.values():
-                _collect_schema_keywords(cast(dict[str, object] | bool, nested), keywords)
-    for single_keyword in ("additionalProperties", "items"):
-        nested = schema.get(single_keyword)
-        if isinstance(nested, dict | bool):
-            _collect_schema_keywords(nested, keywords)
-    alternatives = schema.get("anyOf")
-    if isinstance(alternatives, list):
-        for nested in alternatives:
-            _collect_schema_keywords(cast(dict[str, object] | bool, nested), keywords)

@@ -662,7 +662,6 @@ class DeterministicTaskExecutor:
             return failure
         return ExecutedAttemptResult(
             output=self._output_model.model_validate(outcome.output),
-            effects=tuple(outcome.effects),
         )
 
 

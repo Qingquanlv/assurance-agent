@@ -12,7 +12,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.handoff import PLAN, REWORK_CONTEXT
+from assurance_intake.handoff import PLAN
 from assurance_intake.ops.case_design import op as case_design
 from assurance_intake.ops.case_repair import op as case_repair
 from assurance_intake.ops.case_review import op as case_review
@@ -48,7 +48,7 @@ def build_case_graph(context: CapabilityBuildContext) -> BoundFlow:
         "case",
         input=CaseFlowInput,
         outcomes=("reviewed", "rejected", "exhausted", "failed"),
-        ledger_inputs=(PLAN, REWORK_CONTEXT),
+        ledger_inputs=(PLAN,),
     )
     shared = {"artifact_paths": "allowed_artifact_paths"}
     with flow.loop("review", budget="budgets.review_rounds", on_exhausted="exhausted") as review:

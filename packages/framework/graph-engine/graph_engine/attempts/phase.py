@@ -15,8 +15,6 @@ class AttemptPhase(str, Enum):
     ACTIVITY_COMPLETED = "activity_completed"
     PREPARED = "prepared"
     PROMOTED = "promoted"
-    EFFECTS_PENDING = "effects_pending"
-    EFFECTS_SETTLED = "effects_settled"
     TERMINATED = "terminated"
     RELEASED = "released"
 
@@ -55,10 +53,6 @@ def derive_attempt_phase(snapshot: AttemptSnapshot) -> AttemptPhase:
         raise AttemptPhaseIntegrityError("promotion receipt is only partially recorded")
 
     if all(promotion_present):
-        if snapshot.effects:
-            if any(effect.receipt_digest is None for effect in snapshot.effects):
-                return AttemptPhase.EFFECTS_PENDING
-            return AttemptPhase.EFFECTS_SETTLED
         return AttemptPhase.PROMOTED
 
     if snapshot.prepared_digest is not None:

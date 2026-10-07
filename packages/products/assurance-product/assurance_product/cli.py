@@ -34,6 +34,7 @@ from assurance_improvement.operations.knowledge_promote import (
 )
 from assurance_improvement.operations.retro_dashboard import build_retro_dashboard
 
+from assurance_product.worker_entrypoints import exclusive_cli
 from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
 from assurance_product.bootstrap.driver import resume_bootstrap, run_bootstrap, stop_bootstrap
@@ -100,6 +101,25 @@ def main() -> None:
 @click.group(context_settings={"help_option_names": ["--help"]})
 def app() -> None:
     """aa — authenticated Assurance graph product."""
+
+
+@app.command("stop")
+@click.option("--project-dir", required=True, type=click.Path(exists=True, file_okay=False))
+@click.option("--invocation-id", required=True)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Terminate the verified foreground owner and confirm owned activity termination.",
+)
+def stop_command(project_dir: str, invocation_id: str, force: bool) -> None:
+    """Stop a foreground execution in its actual workspace directory."""
+    result = AssuranceProductApplication().stop(
+        project_dir=Path(project_dir),
+        invocation_id=invocation_id,
+        force=force,
+    )
+    _emit({"invocation_id": invocation_id, "status": result})
+    raise SystemExit({"stopped": 0, "stopping": 20, "unconfirmed": 40}[result])
 
 
 @app.command("compile")
@@ -905,7 +925,10 @@ def operator_status(project_dir: str | None, run_id: str | None, as_json: bool) 
 @click.option("--project-dir", type=click.Path())
 @click.option("--run-id")
 @click.option("--json", "as_json", is_flag=True)
-def operator_stop(project_dir: str | None, run_id: str | None, as_json: bool) -> None:
+@click.option(
+    "--force", is_flag=True, help="Terminate the verified owned worker and confirm its activity stopped."
+)
+def operator_stop(project_dir: str | None, run_id: str | None, as_json: bool, force: bool) -> None:
     _require_options(
         {"project_dir": project_dir, "run_id": run_id, "json": as_json},
         ("project_dir", "run_id", "json"),
@@ -914,6 +937,7 @@ def operator_stop(project_dir: str | None, run_id: str | None, as_json: bool) ->
         payload = AssuranceOperator().stop(
             project_dir=Path(cast(str, project_dir)),
             run_id=cast(str, run_id),
+            force=force,
         )
     except OperatorError as error:
         _operator_fail(error)
@@ -1078,16 +1102,19 @@ def bootstrap_status(run_dir: str | None, as_json: bool) -> None:
 
 @bootstrap.command("stop")
 @click.option("--run-dir", type=click.Path())
-def bootstrap_stop(run_dir: str | None) -> None:
+@click.option(
+    "--force", is_flag=True, help="Terminate the verified owned worker and confirm its activity stopped."
+)
+def bootstrap_stop(run_dir: str | None, force: bool) -> None:
     _require_options({"run_dir": run_dir}, ("run_dir",))
     try:
         destination = Path(cast(str, run_dir))
         before = read_bootstrap_status(destination)
-        status = stop_bootstrap(destination)
+        status = stop_bootstrap(destination, force=force)
     except Exception as error:
         _fail(str(error), 40)
     _emit(status.model_dump(mode="json"))
-    raise SystemExit(0 if before.phase == "terminal" else 20)
+    raise SystemExit(0 if force or before.phase == "terminal" else 20)
 
 
 @bootstrap.command("resume")
@@ -1242,6 +1269,7 @@ def _engine_failures() -> Iterator[None]:
         raise CommandError(f"{type(error).__name__}: {error}") from error
 
 
+@exclusive_cli
 def _start_invocation(
     *,
     project_dir: Path,
@@ -1283,6 +1311,7 @@ def _start_invocation(
         )
 
 
+@exclusive_cli
 def _run_invocation(
     *,
     project_dir: Path,
@@ -1326,6 +1355,7 @@ def _run_invocation(
     return cast(SimpleRun, result), mapped
 
 
+@exclusive_cli
 def _resume_invocation(
     *,
     project_dir: Path,

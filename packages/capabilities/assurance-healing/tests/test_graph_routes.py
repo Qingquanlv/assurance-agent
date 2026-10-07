@@ -143,14 +143,23 @@ async def test_committed_fix_proposal_without_application_cannot_terminate_appli
         bundle.repair_failure,
         input=failure_graph_input(),
         script={
-            "healing.fix-proposal": [committed(output, ReceiptRef(receipt_id="r1", receipt_digest=_SHA))],
+            "healing.fix-proposal": [
+                committed(
+                    output,
+                    ReceiptRef(receipt_id="r1", receipt_digest=_SHA),
+                    artifacts=[{"path": "qa/results/healing/fix-proposal.json", "digest": _SHA}],
+                )
+            ],
             "healing.apply-test-repair": [RejectedTaskResult(reason="no committed test change")],
         },
     )
-    envelope = result.interrupt_envelope
-    assert envelope is not None
-    assert result.terminal is None
-    assert [call.semantic_node_id for call in result.semantic_calls] == ["healing.fix-proposal"]
+    assert result.interrupt_envelope is None
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == "failed"
+    assert [call.semantic_node_id for call in result.semantic_calls] == [
+        "healing.fix-proposal",
+        "healing.apply-test-repair",
+    ]
 
 
 def test_healing_contracts_keep_empty_validators() -> None:

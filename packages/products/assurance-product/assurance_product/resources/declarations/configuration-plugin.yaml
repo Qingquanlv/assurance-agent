@@ -13,7 +13,6 @@ contributes:
   bindings: []
   task_handlers: []
   commit_validators: []
-  effects: []
   workflow: null
 runtime_authority: forbidden
 secret_values: forbidden

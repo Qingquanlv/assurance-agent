@@ -237,6 +237,8 @@ async def test_fix_proposal_prepare_is_deterministic_and_provider_neutral(tmp_pa
     skill, business = left.instructions
     assert skill.media_type == "text/plain"
     assert business.media_type == "application/json"
+    assert isinstance(business.json_content, Mapping)
+    assert "require_approval" not in business.json_content
     encoded = left.canonical_bytes().decode("utf-8").lower()
     assert "sort_keys=true" in encoded
     assert "ensure_ascii=false" in encoded

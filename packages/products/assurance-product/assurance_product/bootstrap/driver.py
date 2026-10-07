@@ -15,7 +15,7 @@ from assurance_product.bootstrap.opencode import start_opencode_serve as _start_
 from assurance_product.bootstrap.opencode import stop_opencode as _stop_opencode
 from assurance_product.bootstrap.opencode import wait_http_ready
 from assurance_product.bootstrap.preflight import BootstrapPreflightError, preflight_bootstrap
-from assurance_product.bootstrap.resources import release_active_resource_authorizations
+from assurance_product.worker_entrypoints import exclusive_bootstrap, exclusive_resume
 from assurance_product.bootstrap.spec import load_run_spec
 from assurance_product.bootstrap.status import (
     derive_bootstrap_change_id,
@@ -25,7 +25,6 @@ from assurance_product.bootstrap.status import (
     write_bootstrap_status,
     write_effective_spec,
     write_run_manifest,
-    write_stop_request,
 )
 from assurance_product.opencode_agents import install_opencode_agents
 from assurance_product.sut_worktree import ensure_run_worktree
@@ -282,6 +281,7 @@ def _drive_application(
         time.sleep(1.0)
 
 
+@exclusive_bootstrap
 def run_bootstrap(
     *,
     project_dir: Path,
@@ -381,9 +381,6 @@ def run_bootstrap(
                 error=str(error),
             )
             raise
-        release_active_resource_authorizations(
-            project_dir / "qa" / ".runtime" / "langgraph" / "checkpoints.sqlite3"
-        )
         try:
             ready(spec.sut.readiness_url, timeout=_SUT_READY_TIMEOUT_SECONDS)
         except OpenCodeLaunchError as error:
@@ -545,16 +542,38 @@ def stop_bootstrap(
     run_dir: Path,
     *,
     stop_opencode: Callable[[OpenCodeHandleV1], None] | None = None,
+    force: bool = False,
 ) -> BootstrapStatusV1:
     # The worker owns cleanup after the graph reaches a durable pause boundary.
     del stop_opencode
     status = read_bootstrap_status(run_dir)
+    from assurance_product.worker_entrypoints import stop_run, run_workspace
+    from assurance_product.worker_lifecycle import stop_diagnostic
+
+    if force:
+        result = stop_run(run_dir, force=True)
+        if result != "stopped":
+            raise ValueError(
+                f"worker stop {result}; execution admission remains blocked: {stop_diagnostic(run_workspace(run_dir)[0])}"
+            )
+        return _persist(
+            run_dir,
+            phase="terminal",
+            change_id=status.change_id,
+            started_at=status.started_at,
+            ended_at=_iso_now(),
+            exit_code=20,
+            status={**status.status, "worker_stop": "confirmed"},
+            opencode=status.opencode,
+            error="owned execution stopped",
+        )
     if status.phase == "terminal":
         return status
-    write_stop_request(run_dir, change_id=status.change_id)
+    stop_run(run_dir, change_id=status.change_id)
     return read_bootstrap_status(run_dir)
 
 
+@exclusive_resume
 def resume_bootstrap(
     run_dir: Path,
     *,
@@ -590,7 +609,8 @@ def resume_bootstrap(
         pending = status.status.get("pending_interrupt")
         graph_status = status.status.get("status")
         acknowledged = (
-            action is None
+            status.status.get("worker_stop") == "confirmed"
+            or action is None
             and graph_status == "completed"
             or action is not None
             and graph_status == "interrupted"

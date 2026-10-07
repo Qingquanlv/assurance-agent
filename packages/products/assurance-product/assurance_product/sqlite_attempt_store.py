@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from graph_engine.attempts.events import AttemptEvent, AttemptSnapshot, fold_attempt_events
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.canonical import canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.persistence.attempt_journal import (
     ATTEMPT_JOURNAL_SCHEMA_VERSION,
     AttemptJournalIntegrityError,
@@ -36,6 +36,102 @@ class SqliteAttemptJournal:
         self._backend = backend
         self._conn = backend._conn
         self._lock = backend.store._lock
+
+    async def latest_generation(
+        self, scope: Mapping[str, JSONValue]
+    ) -> tuple[int, AttemptKey, bool, JSONValue] | None:
+        async with self._lock:
+            cursor = await self._conn.execute(
+                "SELECT ordinal, attempt_key_digest, abandoned, scope, input_payload FROM assurance_attempt_generations "
+                "WHERE scope_digest = ? ORDER BY ordinal DESC LIMIT 1",
+                (canonical_digest(dict(scope)),),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        if bytes(row[3]) != canonical_json_bytes(dict(scope)):
+            raise AttemptJournalIntegrityError("generation activation identity drifted")
+        from assurance_product.worker_lifecycle import current_owner, update_owner
+
+        owner = current_owner()
+        if owner is not None and not row[2]:
+            if scope.get("invocation_id") != owner.invocation:
+                raise AttemptJournalIntegrityError("generation Invocation differs from owner")
+            # Publish conservative evidence before the durable ownership update.
+            update_owner(owner, lambda record: record.setdefault("attempts", []).append(str(row[1])))
+            async with self._lock:
+                await self._conn.execute(
+                    "UPDATE assurance_attempt_generations SET owner_nonce = ? WHERE attempt_key_digest = ?",
+                    (owner.nonce, str(row[1])),
+                )
+                await self._conn.commit()
+        return int(row[0]), AttemptKey(digest=str(row[1])), bool(row[2]), json.loads(bytes(row[4]))
+
+    async def register_generation(
+        self,
+        scope: Mapping[str, JSONValue],
+        make_key: Callable[[int], AttemptKey],
+        *,
+        max_attempts: int,
+        validated_input: JSONValue = None,
+    ) -> tuple[int, AttemptKey] | None:
+        from assurance_product.worker_lifecycle import current_owner, assert_generation_ready, update_owner
+
+        owner = current_owner()
+        if owner is not None:
+            assert_generation_ready(owner)
+        digest = canonical_digest(dict(scope))
+        async with self._lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await self._conn.execute(
+                    "SELECT ordinal, scope FROM assurance_attempt_generations WHERE scope_digest = ? "
+                    "ORDER BY ordinal DESC LIMIT 1",
+                    (digest,),
+                )
+                row = await cursor.fetchone()
+                if row is not None and bytes(row[1]) != canonical_json_bytes(dict(scope)):
+                    raise AttemptJournalIntegrityError("generation activation identity drifted")
+                ordinal = 1 if row is None else int(row[0]) + 1
+                if row is None:
+                    cursor = await self._conn.execute(
+                        "SELECT payload FROM assurance_attempt_batches WHERE revision = 0 AND attempt_key_digest NOT IN (SELECT attempt_key_digest FROM assurance_attempt_generations)"
+                    )
+                    for (payload,) in await cursor.fetchall():
+                        events = json.loads(bytes(payload))["events"]
+                        if any(
+                            event.get("kind") == "attempt_opened"
+                            and event.get("invocation_id") == scope.get("invocation_id")
+                            and event.get("semantic_node_id") == scope.get("semantic_node_id")
+                            for event in events
+                        ):
+                            raise AttemptJournalIntegrityError(
+                                "legacy unfinished node has no authenticated generation budget; use a fresh isolated run"
+                            )
+                if ordinal > max_attempts:
+                    await self._conn.rollback()
+                    return None
+                key = make_key(ordinal)
+                if owner is not None:
+                    # A crash or rollback after this point is ambiguous, never proof of no work.
+                    update_owner(owner, lambda record: record.setdefault("attempts", []).append(key.digest))
+                await self._conn.execute(
+                    "INSERT INTO assurance_attempt_generations (scope_digest, ordinal, scope, attempt_key_digest, owner_nonce, input_payload) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        digest,
+                        ordinal,
+                        canonical_json_bytes(dict(scope)),
+                        key.digest,
+                        None if owner is None else owner.nonce,
+                        canonical_json_bytes(validated_input),
+                    ),
+                )
+                await self._conn.commit()
+                return ordinal, key
+            except BaseException:
+                await self._conn.rollback()
+                raise
 
     async def load(self, attempt_key: AttemptKey) -> AttemptSnapshot | None:
         records = await self._load_records(attempt_key.digest)

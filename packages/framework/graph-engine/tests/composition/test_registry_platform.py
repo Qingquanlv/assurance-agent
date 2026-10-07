@@ -20,7 +20,6 @@ from graph_engine.composition import (
     CapabilityRegistry,
     CommitValidatorEntry,
     ConfigTreePluginSource,
-    EffectRegistry,
     ExecutableBindingMode,
     ExecutableKind,
     ExecutableModuleProvenance,
@@ -49,7 +48,6 @@ from graph_engine.composition.dependencies import DependencyConflict
 from graph_engine.composition.lock import _locked_source, build_product_lock
 from graph_engine.composition.models import ContributionAuthority, ExecutableAuthority
 from graph_engine.composition.provenance import StandardLoader
-from graph_engine.composition.registries import RegistryConflict
 from graph_engine.composition.resolver import _capture_editable_engine_snapshot
 from graph_engine.composition.sources import _snapshot_installed_engine_distribution
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
@@ -57,11 +55,6 @@ from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
     CandidateWriteSet,
-    EffectApplyResult,
-    EffectIntent,
-    EffectPolicy,
-    EffectReconcileResult,
-    EffectRegistration,
     PluginContribution,
     PluginDependency,
     PluginDescriptor,
@@ -80,14 +73,6 @@ from graph_engine.plugin_api import (
 class _Handler:
     async def execute(self, _request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded({"ok": True})
-
-
-class _EffectHandler:
-    async def apply(self, _intent: EffectIntent, _key: str) -> EffectApplyResult:
-        return EffectApplyResult.applied({"ok": True})
-
-    async def reconcile(self, _intent: EffectIntent, _key: str) -> EffectReconcileResult:
-        return EffectReconcileResult.applied({"ok": True})
 
 
 class _Validator:
@@ -143,10 +128,6 @@ class _PluginProvider:
                 },
                 schemas=self._contribution.schemas,
                 resources=self._contribution.resources,
-                effects=tuple(
-                    replace(registration, handler=implementation.effect_handler)
-                    for registration in self._contribution.effects
-                ),
                 bindings=self._contribution.bindings,
             )
         return PluginContribution(
@@ -236,33 +217,7 @@ class _ImportedExecutableProvider(_PluginProvider):
             return PluginContribution(task_handlers={f"{plugin_id}.greet": implementation.handler})
         if self.executable_kind == "commit_validator":
             return PluginContribution(commit_validators={f"{plugin_id}.validate": implementation.validator})
-        return PluginContribution(
-            schemas=(
-                SchemaContribution(
-                    f"{plugin_id}.intent",
-                    "application/schema+json",
-                    b'{"type":"object"}',
-                ),
-                SchemaContribution(
-                    f"{plugin_id}.receipt",
-                    "application/schema+json",
-                    b'{"type":"object"}',
-                ),
-            ),
-            effects=(
-                EffectRegistration(
-                    kind=f"{plugin_id}.audit",
-                    intent_schema_id=f"{plugin_id}.intent",
-                    receipt_schema_id=f"{plugin_id}.receipt",
-                    handler=implementation.effect_handler,
-                    policy=EffectPolicy(
-                        max_attempts=1,
-                        timeout_seconds=1,
-                        backoff_seconds=0,
-                    ),
-                ),
-            ),
-        )
+        raise AssertionError(f"unknown executable kind: {self.executable_kind}")
 
 
 class _FreshInstanceProvider(_PluginProvider):
@@ -369,7 +324,7 @@ def _distribution(
     module_path = package / "__init__.py"
     module_path.write_text(
         "from graph_engine.plugin_api import (\n"
-        "    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+        "    TaskOutcome, ValidationResult,\n"
         ")\n"
         "class Handler:\n"
         "    async def execute(self, _request, _context):\n"
@@ -377,14 +332,8 @@ def _distribution(
         "class Validator:\n"
         "    def validate(self, _candidate, _context):\n"
         "        return ValidationResult(accepted=True)\n"
-        "class EffectHandler:\n"
-        "    async def apply(self, _intent, _key):\n"
-        "        return EffectApplyResult.applied({'ok': True})\n"
-        "    async def reconcile(self, _intent, _key):\n"
-        "        return EffectReconcileResult.applied({'ok': True})\n"
         "handler = Handler()\n"
         "validator = Validator()\n"
-        "effect_handler = EffectHandler()\n"
         "provider = object()\n",
         encoding="utf-8",
     )
@@ -870,7 +819,6 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
         ),
         schemas=composition.registries.schemas,
         resources=composition.registries.resources,
-        effects=composition.registries.effects,
     )
     forged_lock = build_product_lock(
         manifest=composition.manifest,
@@ -901,7 +849,7 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
         )
 
 
-@pytest.mark.parametrize("missing_kind", ("task_handler", "commit_validator", "effect"))
+@pytest.mark.parametrize("missing_kind", ("task_handler", "commit_validator"))
 def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -916,7 +864,6 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
         task_handlers=("toy.runtime.greet",),
         commit_validators=("toy.runtime.validate",),
         schemas=("toy.runtime.intent", "toy.runtime.receipt"),
-        effects=("toy.runtime.audit",),
     )
     contribution = PluginContribution(
         task_handlers={"toy.runtime.greet": _Handler()},
@@ -931,15 +878,6 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
                 "toy.runtime.receipt",
                 "application/schema+json",
                 b'{"type":"object"}',
-            ),
-        ),
-        effects=(
-            EffectRegistration(
-                kind="toy.runtime.audit",
-                intent_schema_id="toy.runtime.intent",
-                receipt_schema_id="toy.runtime.receipt",
-                handler=_EffectHandler(),
-                policy=EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
             ),
         ),
     )
@@ -960,7 +898,6 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
         ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
     )
     capabilities = composition.registries.capabilities
-    effects = composition.registries.effects
     if missing_kind == "task_handler":
         capabilities = CapabilityRegistry(
             entries={key: value for key, value in capabilities.entries.items() if key != "toy.runtime.greet"},
@@ -977,14 +914,11 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
             commit_validators={},
             bindings={},
         )
-    else:
-        effects = EffectRegistry(entries={})
     forged_registries = RegistrySet(
         sources=composition.registries.sources,
         capabilities=capabilities,
         schemas=composition.registries.schemas,
         resources=composition.registries.resources,
-        effects=effects,
     )
 
     with pytest.raises(ValueError, match="contribution authority"):
@@ -1404,7 +1338,7 @@ def test_contribution_quarantines_loaded_leaf_when_its_parent_is_absent(
 
 @pytest.mark.parametrize(
     "executable_kind",
-    ("task_handler", "commit_validator", "effect"),
+    ("task_handler", "commit_validator"),
 )
 def test_external_reexported_executable_is_rejected_and_corrected_retry_is_clean(
     tmp_path: Path,
@@ -1420,8 +1354,6 @@ def test_external_reexported_executable_is_rejected_and_corrected_retry_is_clean
         engine_api=ENGINE_API_VERSION,
         task_handlers=(f"{plugin_id}.greet",) if executable_kind == "task_handler" else (),
         commit_validators=((f"{plugin_id}.validate",) if executable_kind == "commit_validator" else ()),
-        schemas=((f"{plugin_id}.intent", f"{plugin_id}.receipt") if executable_kind == "effect" else ()),
-        effects=(f"{plugin_id}.audit",) if executable_kind == "effect" else (),
     )
     external_name = f"round5_external_{executable_kind}"
     selected_name = f"toy_runtime.round5_selected_{executable_kind}"
@@ -1435,7 +1367,7 @@ def test_external_reexported_executable_is_rejected_and_corrected_retry_is_clean
     assert product_source is not None
     implementation = (
         b"from graph_engine.plugin_api import (\n"
-        b"    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+        b"    TaskOutcome, ValidationResult,\n"
         b")\n"
         b"class Handler:\n"
         b"    async def execute(self, _request, _context):\n"
@@ -1443,14 +1375,8 @@ def test_external_reexported_executable_is_rejected_and_corrected_retry_is_clean
         b"class Validator:\n"
         b"    def validate(self, _candidate, _context):\n"
         b"        return ValidationResult(accepted=True)\n"
-        b"class EffectHandler:\n"
-        b"    async def apply(self, _intent, _key):\n"
-        b"        return EffectApplyResult.applied({'source': 'implementation'})\n"
-        b"    async def reconcile(self, _intent, _key):\n"
-        b"        return EffectReconcileResult.applied({'source': 'implementation'})\n"
         b"handler = Handler()\n"
         b"validator = Validator()\n"
-        b"effect_handler = EffectHandler()\n"
     )
     external_root = tmp_path / "external"
     external_root.mkdir()
@@ -1477,14 +1403,14 @@ def test_external_reexported_executable_is_rejected_and_corrected_retry_is_clean
 
 @pytest.mark.parametrize(
     "executable_kind",
-    ("task_handler", "commit_validator", "effect_apply", "effect_reconcile"),
+    ("task_handler", "commit_validator"),
 )
 def test_frozen_composition_rejects_same_module_executable_substitution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     executable_kind: str,
 ) -> None:
-    descriptor_kind = "effect" if executable_kind.startswith("effect_") else executable_kind
+    descriptor_kind = executable_kind
     plugin_id = "toy.runtime"
     descriptor = PluginDescriptor(
         schema_version="1",
@@ -1494,8 +1420,6 @@ def test_frozen_composition_rejects_same_module_executable_substitution(
         engine_api=ENGINE_API_VERSION,
         task_handlers=(f"{plugin_id}.greet",) if descriptor_kind == "task_handler" else (),
         commit_validators=(f"{plugin_id}.validate",) if descriptor_kind == "commit_validator" else (),
-        schemas=(f"{plugin_id}.intent", f"{plugin_id}.receipt") if descriptor_kind == "effect" else (),
-        effects=(f"{plugin_id}.audit",) if descriptor_kind == "effect" else (),
     )
     module_name = f"toy_runtime.same_module_{executable_kind}"
     provider = _ImportedExecutableProvider(descriptor, module_name, descriptor_kind)
@@ -1511,7 +1435,7 @@ def test_frozen_composition_rejects_same_module_executable_substitution(
         module_name.replace(".", "/") + ".py",
         (
             b"from graph_engine.plugin_api import (\n"
-            b"    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+            b"    TaskOutcome, ValidationResult,\n"
             b")\n"
             b"class Handler:\n"
             b"    async def execute(self, _request, _context):\n"
@@ -1525,22 +1449,10 @@ def test_frozen_composition_rejects_same_module_executable_substitution(
             b"class AlternateValidator:\n"
             b"    def validate(self, _candidate, _context):\n"
             b"        return ValidationResult(accepted=True)\n"
-            b"class EffectHandler:\n"
-            b"    async def apply(self, _intent, _key):\n"
-            b"        return EffectApplyResult.applied({'effect': 'original'})\n"
-            b"    async def reconcile(self, _intent, _key):\n"
-            b"        return EffectReconcileResult.applied({'effect': 'original'})\n"
-            b"class AlternateEffectHandler:\n"
-            b"    async def apply(self, _intent, _key):\n"
-            b"        return EffectApplyResult.applied({'effect': 'alternate'})\n"
-            b"    async def reconcile(self, _intent, _key):\n"
-            b"        return EffectReconcileResult.applied({'effect': 'alternate'})\n"
             b"handler = Handler()\n"
             b"alternate_handler = AlternateHandler()\n"
             b"validator = Validator()\n"
             b"alternate_validator = AlternateValidator()\n"
-            b"effect_handler = EffectHandler()\n"
-            b"alternate_effect_handler = AlternateEffectHandler()\n"
         ),
     )
     composition = platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins[plugin_id],)))
@@ -1558,27 +1470,6 @@ def test_frozen_composition_rejects_same_module_executable_substitution(
         with pytest.raises(ValueError, match="authority generation"):
             replace(entry, validator=implementation.alternate_validator)
         return
-    else:
-        effect = registries.effects.entries[f"{plugin_id}.audit"]
-        method_name = "apply" if executable_kind == "effect_apply" else "reconcile"
-        setattr(
-            effect.handler,
-            method_name,
-            getattr(implementation.alternate_effect_handler, method_name),
-        )
-
-    with pytest.raises(ValueError, match="provenance is not currently authenticated"):
-        FrozenComposition.freeze(
-            composition.manifest,
-            registries,
-            composition.lock,
-            descriptors=composition.descriptors,
-            configuration=composition.configuration,
-            contribution_authorities=composition.contribution_authorities,
-            providers=composition.providers,
-            product_provider=composition.product_provider,
-            declarative_sources=composition.declarative_sources,
-        )
 
 
 def test_dynamic_executable_descriptor_is_rejected_before_registry_build(
@@ -1630,8 +1521,6 @@ def test_dynamic_executable_descriptor_is_rejected_before_registry_build(
     (
         ("task_handler", "execute"),
         ("commit_validator", "validate"),
-        ("effect", "apply"),
-        ("effect", "reconcile"),
     ),
 )
 def test_stateful_attribute_dispatch_cannot_switch_an_authenticated_callable_at_runtime(
@@ -1649,8 +1538,6 @@ def test_stateful_attribute_dispatch_cannot_switch_an_authenticated_callable_at_
         engine_api=ENGINE_API_VERSION,
         task_handlers=(f"{plugin_id}.greet",) if executable_kind == "task_handler" else (),
         commit_validators=(f"{plugin_id}.validate",) if executable_kind == "commit_validator" else (),
-        schemas=(f"{plugin_id}.intent", f"{plugin_id}.receipt") if executable_kind == "effect" else (),
-        effects=(f"{plugin_id}.audit",) if executable_kind == "effect" else (),
     )
     external_name = f"round5_stateful_external_{slot}"
     module_name = f"toy_runtime.stateful_dispatch_{slot}"
@@ -1668,8 +1555,6 @@ def test_stateful_attribute_dispatch_cannot_switch_an_authenticated_callable_at_
         (
             b"async def execute(_request, _context):\n    return None\n"
             b"def validate(_candidate, _context):\n    return None\n"
-            b"async def apply(_intent, _key):\n    return None\n"
-            b"async def reconcile(_intent, _key):\n    return None\n"
         )
     )
     monkeypatch.syspath_prepend(str(external_root))
@@ -1679,7 +1564,7 @@ def test_stateful_attribute_dispatch_cannot_switch_an_authenticated_callable_at_
         (
             f"import {external_name} as external\n"
             "from graph_engine.plugin_api import (\n"
-            "    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+            "    TaskOutcome, ValidationResult,\n"
             ")\n"
             "class Handler:\n"
             "    armed = False\n"
@@ -1697,24 +1582,8 @@ def test_stateful_attribute_dispatch_cannot_switch_an_authenticated_callable_at_
             "        return object.__getattribute__(self, name)\n"
             "    def validate(self, _candidate, _context):\n"
             "        return ValidationResult(accepted=True)\n"
-            "class EffectHandler:\n"
-            "    armed = False\n"
-            "    armed_slot = ''\n"
-            "    def __getattribute__(self, name):\n"
-            "        if (\n"
-            "            name in {'apply', 'reconcile'}\n"
-            "            and object.__getattribute__(self, 'armed')\n"
-            "            and name == object.__getattribute__(self, 'armed_slot')\n"
-            "        ):\n"
-            "            return getattr(external, name)\n"
-            "        return object.__getattribute__(self, name)\n"
-            "    async def apply(self, _intent, _key):\n"
-            "        return EffectApplyResult.applied({'source': 'authenticated'})\n"
-            "    async def reconcile(self, _intent, _key):\n"
-            "        return EffectReconcileResult.applied({'source': 'authenticated'})\n"
             "handler = Handler()\n"
             "validator = Validator()\n"
-            "effect_handler = EffectHandler()\n"
         ).encode(),
     )
 
@@ -1726,9 +1595,6 @@ def test_stateful_attribute_dispatch_cannot_switch_an_authenticated_callable_at_
             executable = composition.registries.capabilities.task_handlers[f"{plugin_id}.greet"]
         elif executable_kind == "commit_validator":
             executable = composition.registries.capabilities.commit_validators[f"{plugin_id}.validate"]
-        else:
-            executable = composition.registries.effects.entries[f"{plugin_id}.audit"].handler
-            executable.armed_slot = slot
         executable.armed = True
         runtime_callable = getattr(executable, slot)
         assert runtime_callable.__globals__ is sys.modules[external_name].__dict__
@@ -1804,8 +1670,6 @@ def test_module_subclass_dispatch_cannot_switch_an_authenticated_callable_at_run
     (
         ("task_handler", "execute"),
         ("commit_validator", "validate"),
-        ("effect", "apply"),
-        ("effect", "reconcile"),
     ),
 )
 def test_descriptor_subclass_cannot_switch_an_authenticated_callable_at_runtime(
@@ -1824,8 +1688,6 @@ def test_descriptor_subclass_cannot_switch_an_authenticated_callable_at_runtime(
         engine_api=ENGINE_API_VERSION,
         task_handlers=(f"{plugin_id}.greet",) if executable_kind == "task_handler" else (),
         commit_validators=(f"{plugin_id}.validate",) if executable_kind == "commit_validator" else (),
-        schemas=(f"{plugin_id}.intent", f"{plugin_id}.receipt") if executable_kind == "effect" else (),
-        effects=(f"{plugin_id}.audit",) if executable_kind == "effect" else (),
     )
     external_name = f"round5_descriptor_external_{descriptor_kind}_{slot}"
     module_name = f"toy_runtime.descriptor_{descriptor_kind}_{slot}"
@@ -1842,7 +1704,6 @@ def test_descriptor_subclass_cannot_switch_an_authenticated_callable_at_runtime(
     (external_root / f"{external_name}.py").write_text(
         "async def execute(*_args):\n    return None\n"
         "def validate(*_args):\n    return None\n"
-        "async def apply(*_args):\n    return None\n"
         "async def reconcile(*_args):\n    return None\n",
         encoding="utf-8",
     )
@@ -1858,33 +1719,14 @@ def test_descriptor_subclass_cannot_switch_an_authenticated_callable_at_runtime(
             f"    def validate({first_parameter}_candidate, _context):\n"
             "        return ValidationResult(accepted=True)\n"
         ),
-        "apply": (
-            f"    async def apply({first_parameter}_intent, _key):\n"
-            "        return EffectApplyResult.applied({'source': 'authenticated'})\n"
-        ),
-        "reconcile": (
-            f"    async def reconcile({first_parameter}_intent, _key):\n"
-            "        return EffectReconcileResult.applied({'source': 'authenticated'})\n"
-        ),
     }[slot]
-    other_effect_method = (
-        "    async def reconcile(self, _intent, _key):\n"
-        "        return EffectReconcileResult.applied({'source': 'authenticated'})\n"
-        if slot == "apply"
-        else (
-            "    async def apply(self, _intent, _key):\n"
-            "        return EffectApplyResult.applied({'source': 'authenticated'})\n"
-            if slot == "reconcile"
-            else ""
-        )
-    )
     _add_distribution_file(
         platform._metadata_provider.distribution("toy-runtime"),
         module_name.replace(".", "/") + ".py",
         (
             f"import {external_name} as external\n"
             "from graph_engine.plugin_api import (\n"
-            "    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+            "    TaskOutcome, ValidationResult,\n"
             ")\n"
             f"class StatefulDescriptor({descriptor_base}):\n"
             "    armed = False\n"
@@ -1894,11 +1736,9 @@ def test_descriptor_subclass_cannot_switch_an_authenticated_callable_at_runtime(
             "class Executable:\n"
             "    @StatefulDescriptor\n"
             + selected_definition
-            + other_effect_method
             + f"descriptor = Executable.__dict__[{slot!r}]\n"
             "handler = Executable()\n"
             "validator = handler\n"
-            "effect_handler = handler\n"
         ).encode(),
     )
 
@@ -1912,8 +1752,6 @@ def test_descriptor_subclass_cannot_switch_an_authenticated_callable_at_runtime(
             executable = composition.registries.capabilities.task_handlers[f"{plugin_id}.greet"]
         elif executable_kind == "commit_validator":
             executable = composition.registries.capabilities.commit_validators[f"{plugin_id}.validate"]
-        else:
-            executable = composition.registries.effects.entries[f"{plugin_id}.audit"].handler
         runtime_callable = getattr(executable, slot)
         assert runtime_callable.__globals__ is sys.modules[external_name].__dict__
         raise AssertionError("descriptor subclass escaped authenticated callable membership")
@@ -2500,43 +2338,6 @@ def test_resolution_rejects_drifted_product_manifest(tmp_path: Path, monkeypatch
         platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
 
 
-def test_resolution_rejects_unknown_effect_schema_reference(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    contribution = PluginContribution(
-        effects=(
-            EffectRegistration(
-                kind="toy.runtime.audit",
-                intent_schema_id="toy.runtime.missing-intent",
-                receipt_schema_id="toy.runtime.missing-receipt",
-                handler=_EffectHandler(),
-                policy=EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
-            ),
-        )
-    )
-    descriptor = PluginDescriptor(
-        schema_version="1",
-        source=None,
-        plugin_id="toy.runtime",
-        plugin_version="1.0.0",
-        engine_api=ENGINE_API_VERSION,
-        task_handlers=(),
-        commit_validators=(),
-        effects=("toy.runtime.audit",),
-    )
-    provider = _PluginProvider("toy.runtime", contribution=contribution, descriptors=(descriptor,))
-    platform, plugins, product_source = _platform(
-        tmp_path,
-        monkeypatch,
-        product=_ProductProvider(_manifest()),
-        plugins={"toy.runtime": provider},
-    )
-    assert product_source is not None
-
-    with pytest.raises(RegistryConflict, match="unknown effect intent schema"):
-        platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
-
-
 def test_resolution_rejects_invalid_product_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2568,7 +2369,7 @@ def test_failed_resolution_has_no_runtime_write_surface(
     assert not runtime_root.exists()
 
 
-def test_registry_digests_cover_complete_registered_schema_resource_and_effect_values(
+def test_registry_digests_cover_registered_schema_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     schemas = (
@@ -2577,15 +2378,6 @@ def test_registry_digests_cover_complete_registered_schema_resource_and_effect_v
     )
     contribution = PluginContribution(
         schemas=schemas,
-        effects=(
-            EffectRegistration(
-                kind="toy.runtime.audit",
-                intent_schema_id="toy.runtime.intent",
-                receipt_schema_id="toy.runtime.receipt",
-                handler=_EffectHandler(),
-                policy=EffectPolicy(max_attempts=2, timeout_seconds=1.5, backoff_seconds=0.25),
-            ),
-        ),
     )
     descriptor = PluginDescriptor(
         schema_version="1",
@@ -2596,7 +2388,6 @@ def test_registry_digests_cover_complete_registered_schema_resource_and_effect_v
         task_handlers=(),
         commit_validators=(),
         schemas=("toy.runtime.intent", "toy.runtime.receipt"),
-        effects=("toy.runtime.audit",),
     )
     platform, plugins, product_source = _platform(
         tmp_path,
@@ -2615,36 +2406,13 @@ def test_registry_digests_cover_complete_registered_schema_resource_and_effect_v
     )
 
     assert composition.lock.registry_digests.schemas != "0" * 64
-    assert composition.lock.registry_digests.effects != "0" * 64
     schema_projection = cast(
         list[dict[str, object]], thaw_json(composition.lock.registry_projections.schemas)
-    )
-    effect_projection = cast(
-        list[dict[str, object]], thaw_json(composition.lock.registry_projections.effects)
     )
     assert {item["schema_id"] for item in schema_projection} == {
         "toy.runtime.intent",
         "toy.runtime.receipt",
     }
-    effect_entry = composition.registries.effects.entries["toy.runtime.audit"]
-    assert effect_projection == [
-        {
-            "apply_implementation": effect_entry.apply_provenance.projection(),
-            "apply_implementation_digest": effect_entry.apply_provenance.digest,
-            "intent_schema_id": "toy.runtime.intent",
-            "kind": "toy.runtime.audit",
-            "owner_id": "toy.runtime",
-            "policy": {
-                "backoff_seconds": 0.25,
-                "max_attempts": 2,
-                "timeout_seconds": 1.5,
-            },
-            "receipt_schema_id": "toy.runtime.receipt",
-            "reconcile_implementation": effect_entry.reconcile_provenance.projection(),
-            "reconcile_implementation_digest": effect_entry.reconcile_provenance.digest,
-        }
-    ]
-    assert cast(object, composition.registries.effects.entries["toy.runtime.audit"].handler) is not None
 
 
 def test_editable_engine_snapshot_includes_packaging_metadata(tmp_path: Path) -> None:

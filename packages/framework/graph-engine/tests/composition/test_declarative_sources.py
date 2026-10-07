@@ -172,7 +172,6 @@ def test_config_plugin_binds_data_to_selected_wheel_capability(tmp_path: Path) -
     assert binding.data == {"skill": "toy.flow.greeting-skill"}
     assert loaded.contribution.task_handlers == {}
     assert loaded.contribution.commit_validators == {}
-    assert loaded.contribution.effects == ()
 
 
 def test_config_plugin_binding_data_is_recursively_immutable(tmp_path: Path) -> None:

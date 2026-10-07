@@ -13,9 +13,6 @@ from graph_engine.attempts.events import (
     AttemptOpened,
     AttemptTerminated,
     CommitPrepared,
-    EffectApplied,
-    EffectIntentRecorded,
-    EffectReceiptRecorded,
     ResourcesAuthorized,
     ResourcesReleased,
     SystemInterruptCompletionCheckpointed,
@@ -57,13 +54,13 @@ def _opened(*, revision: int = 0) -> AttemptOpened:
     )
 
 
-def test_journal_port_exposes_cas_load_append_and_durability_without_workflow_api() -> None:
+def test_journal_port_exposes_attempt_persistence_and_generation_without_workflow_api() -> None:
     methods = {
         name
         for name, value in inspect.getmembers(AttemptJournalPort)
         if callable(value) and not name.startswith("_")
     }
-    assert methods == {"load", "append", "ensure_durable"}
+    assert methods == {"load", "append", "ensure_durable", "latest_generation", "register_generation"}
     assert "start_invocation" not in methods
     assert "transition" not in methods
     assert "advance_workflow" not in methods
@@ -79,9 +76,6 @@ def test_closed_event_set_covers_required_attempt_lifecycle() -> None:
         ActivityTerminalObserved.kind,
         CommitPrepared.kind,
         WorkspacePromoted.kind,
-        EffectIntentRecorded.kind,
-        EffectApplied.kind,
-        EffectReceiptRecorded.kind,
         SystemInterruptIssued.kind,
         SystemInterruptIssuanceAnchored.kind,
         SystemInterruptCompletionCheckpointed.kind,
@@ -97,9 +91,6 @@ def test_closed_event_set_covers_required_attempt_lifecycle() -> None:
         "activity_terminal_observed",
         "commit_prepared",
         "workspace_promoted",
-        "effect_intent_recorded",
-        "effect_applied",
-        "effect_receipt_recorded",
         "system_interrupt_issued",
         "system_interrupt_issuance_anchored",
         "system_interrupt_completion_checkpointed",
@@ -344,3 +335,32 @@ def test_decode_attempt_journal_record_rejects_unknown_schema() -> None:
             schema_version=ATTEMPT_JOURNAL_SCHEMA_VERSION,
             record_digest=_digest("tampered"),
         )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "kind": "effect_intent_recorded",
+            "effect_ordinal": 1,
+            "effect_kind": "example.delivery.v1",
+            "intent_digest": "a" * 64,
+            "payload": {},
+        },
+        {"kind": "effect_applied", "effect_ordinal": 1, "apply_digest": "a" * 64},
+        {"kind": "effect_receipt_recorded", "effect_ordinal": 1, "receipt_digest": "a" * 64},
+        {
+            "kind": "attempt_terminated",
+            "resolution_kind": "committed_effect_failure",
+            "output": None,
+            "receipt_id": "",
+            "receipt_digest": "",
+            "reason": "failed",
+            "failure_kind": "",
+            "message": "",
+        },
+    ],
+)
+def test_old_effect_history_is_rejected_instead_of_reinterpreted(payload: object) -> None:
+    with pytest.raises(AttemptJournalIntegrityError):
+        decode_attempt_event(payload)

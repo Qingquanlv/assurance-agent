@@ -62,11 +62,6 @@ TASK_IDS = (
     TASK_ROLLBACK_ID,
     TASK_SNAPSHOT_ID,
 )
-EFFECT_IDS = (
-    "assurance.improvement.effect.archive.v1",
-    "assurance.improvement.effect.delivery.v1",
-    "assurance.improvement.effect.promotion.v1",
-)
 _PHASE_NODES = frozenset(
     {
         "prepare",
@@ -274,7 +269,6 @@ def archive_agent_output() -> dict[str, object]:
         "archive_digest": _SHA,
         "lifecycle_state": None,
         "evidence_refs": [],
-        "effect_refs": [],
     }
 
 

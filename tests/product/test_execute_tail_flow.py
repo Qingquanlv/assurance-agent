@@ -510,14 +510,12 @@ async def _each_outcome() -> None:
             artifacts=[{"path": "qa/results/healing/fix-proposal.json", "digest": _SHA}],
         )
     ]
-    paused = await _invoke(review, budgets=_budgets(1))
-    assert isinstance(paused.result, Mapping)
-    interrupt_args = paused.result["__interrupt__"]
-    first = interrupt_args[0]
-    payload = first[0].value if isinstance(first, tuple) else getattr(first, "value", first)
-    assert payload["interrupt_id"] == "execute-tail.approval"
-    rejected = await paused.resume({"action": "reject"})
-    assert rejected.outcome == "needs_human"
+    review["healing.apply-test-repair"] = [
+        PermanentTaskFailure(kind="invalid_output", message="repair changes a reviewed oracle")
+    ]
+    stopped = await _invoke(review, budgets=_budgets(1))
+    assert stopped.outcome == "needs_human"
+    assert "execution.run" not in [name for name, _ in stopped.captured]
 
     diagnostic = _through_execute()
     diagnostic["quality.materialize-assessment-inputs"] = [_materialize()]
@@ -670,15 +668,7 @@ async def _repair_then_rerun(tmp_path: Path) -> None:
         )
     ]
     script["quality.report"] = [committed(_report_output("reported"), _RECEIPT)]
-    paused = await _invoke(script, budgets=_budgets(1))
-    assert isinstance(paused.result, Mapping)
-    assert paused.outcome != "reported"
-    finished = await paused.resume(
-        {
-            "action": "approve",
-            "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA},
-        }
-    )
+    finished = await _invoke(script, budgets=_budgets(1))
     assert finished.outcome == "reported"
     rerun_input = next(item for name, item in finished.captured if name == "execution.run")
     assert isinstance(rerun_input, RerunPrepareInputV1)
@@ -743,10 +733,7 @@ async def _normal_report_after_fix_eligible() -> None:
         )
     ]
     script["quality.report"] = [committed(_report_output("reported"), _RECEIPT)]
-    paused = await _invoke(script, budgets=_budgets(1))
-    done = await paused.resume(
-        {"action": "approve", "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA}}
-    )
+    done = await _invoke(script, budgets=_budgets(1))
     assert done.outcome == "reported"
     proposal = next(item for name, item in done.captured if name == "healing.fix-proposal")
     assert getattr(proposal, "coverage_epoch") == 0
@@ -837,13 +824,7 @@ async def _quality_repair_round_matches_the_execution_file() -> None:
         ),
     ]
     script["quality.report"] = [committed(_report_output("reported"), _RECEIPT)]
-    paused = await _invoke(script, budgets=_budgets(3))
-    resumed = await paused.resume(
-        {"action": "approve", "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA}}
-    )
-    done = await resumed.resume(
-        {"action": "approve", "approval_ref": {"path": "qa/results/healing/approval.json", "digest": _SHA}}
-    )
+    done = await _invoke(script, budgets=_budgets(3))
     bound = [
         _repair_round_of(item)
         for name, item in done.captured
