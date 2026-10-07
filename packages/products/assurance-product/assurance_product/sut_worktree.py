@@ -64,13 +64,13 @@ def _seed_worktree_runtime(source: Path, dest: Path) -> None:
         shutil.copytree(source_migrations, dest_migrations)
 
 
-def ensure_run_worktree(
+def resolve_run_worktree(
     project_dir: Path,
     change_id: str,
     *,
     home: Path | None = None,
 ) -> Path:
-    """Checkout a fresh linked worktree for this change, or reuse one already added."""
+    """Resolve the canonical run target without creating or seeding anything."""
     root = Path(project_dir)
     completed = _run_git(root, "rev-parse", "--show-toplevel")
     if completed.returncode != 0:
@@ -82,11 +82,26 @@ def ensure_run_worktree(
         return dest
     if source in dest.parents:
         raise ValueError(f"worktree destination must be outside the SUT checkout: {dest}")
-    if dest.exists():
-        return dest
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    added = _run_git(source, "worktree", "add", "-b", f"bench/{change_id}", str(dest))
-    if added.returncode != 0:
-        raise ValueError(f"SUT worktree add failed: {added.stderr.strip() or added.stdout.strip()}")
-    _seed_worktree_runtime(source, dest)
     return dest
+
+
+def ensure_run_worktree(
+    project_dir: Path,
+    change_id: str,
+    *,
+    home: Path | None = None,
+) -> Path:
+    """Reserve the canonical target before checkout creation and runtime seeding."""
+    from assurance_product.worker_lifecycle import reserve_preparation
+
+    dest = resolve_run_worktree(project_dir, change_id, home=home)
+    with reserve_preparation(dest):
+        if dest == Path(project_dir).resolve() or dest.exists():
+            return dest
+        source = _primary_checkout(_sut_git_root(Path(project_dir)))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        added = _run_git(source, "worktree", "add", "-b", f"bench/{change_id}", str(dest))
+        if added.returncode != 0:
+            raise ValueError(f"SUT worktree add failed: {added.stderr.strip() or added.stdout.strip()}")
+        _seed_worktree_runtime(source, dest)
+        return dest

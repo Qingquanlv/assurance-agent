@@ -107,7 +107,16 @@ case and execution subgraphs still use the plan produced earlier in the workflow
 
 Execution admission excludes other Workers in the same canonical workspace across
 application, CLI, bootstrap and operator start/run/resume paths. Independent
-workspaces can execute separately; status remains read-only. Soft stop requests
+workspaces can execute separately; status remains read-only. Canonical target
+reservation precedes worktree creation and runtime seeding, including direct and
+reuse-directory callers, and transfers to the lifetime lock without an admission
+gap. Each reservation is `target.parent/.aa-preparation-locks/target.name` on the
+target filesystem. The native basename lets that filesystem apply its own case
+and Unicode alias rules and preserves its maximum filename length. The
+`.aa-preparation-locks` namespace (and its casefold spelling variants) is reserved
+control infrastructure and cannot itself be an execution target. Creating a run
+requires permission to create that lock infrastructure.
+Soft stop requests
 pause at a durable boundary. Explicit force stop uses:
 
 ```sh
@@ -120,6 +129,20 @@ have ended, then releases only that execution's resource grants. Shared OpenCode
 services are never signaled. Confirmed stop exits 0; unconfirmed stop exits 40 and
 keeps replacement execution blocked. Cancellation acknowledgment alone is
 insufficient. Resume clears the stop request under the lifecycle guard.
+
+On Linux, stop requires native `pidfd_open` and `pidfd_send_signal`: handles are
+opened before creation-identity validation, and every signal, including child
+termination and escalation, uses those verified handles. Unsupported or denied
+pidfds keep admission closed; numeric PID/group signaling is not a fallback.
+Dedicated groups are frozen and rescanned with a bounded deadline before force
+termination; an unauthenticated remaining group or unconfirmed freeze fails
+closed. Group members remain frozen through TERM and KILL, so group force stop
+can require KILL. A naturally exited owner's existing lifetime-lock and external
+activity confirmation remains required. This is the existing owned process-group
+containment boundary, not supervision of processes that escaped that group.
+On macOS, repeated native creation checks remain, but the subsequent numeric
+signal has a residual PID-reuse race; macOS does not provide the Linux
+identity-bound signaling guarantee.
 
 Production resume continues completed graph checkpoints and regenerates unfinished
 work with a fresh Attempt and staging after confirmed stop and cleanup. Durable

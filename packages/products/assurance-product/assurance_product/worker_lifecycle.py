@@ -14,8 +14,10 @@ import fcntl
 import json
 import os
 import secrets
+import select
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -162,8 +164,97 @@ def current_owner() -> ExecutionOwner | None:
     return _current.get()
 
 
+@dataclass
+class PreparationReservation:
+    workspace: Path
+    fd: int
+    thread: int
+    task: object
+    pid: int
+
+    def release(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
+
+_preparation: contextvars.ContextVar[PreparationReservation | None] = contextvars.ContextVar(
+    "aa_preparation", default=None
+)
+
+
+@contextmanager
+def reserve_preparation(workspace: Path) -> Iterator[PreparationReservation]:
+    """Cross-entrypoint admission without creating anything inside the target."""
+    workspace = workspace.resolve()
+    current = _preparation.get()
+    if current is not None:
+        if (current.workspace, current.thread, current.task, current.pid) != (
+            workspace,
+            threading.get_ident(),
+            _task(),
+            os.getpid(),
+        ):
+            raise ExecutionConflict("nested preparation requires the exact current target")
+        yield current
+        return
+    # Use the target basename unchanged: the filesystem itself applies case and
+    # Unicode filename equivalence, including before the target becomes visible.
+    # Casefold is only a reserved-infrastructure policy, never a lock-key rule.
+    namespace = ".aa-preparation-locks"
+    if not workspace.name or any(part.casefold() == namespace for part in workspace.parts):
+        raise ExecutionConflict("workspace targets reserved preparation infrastructure")
+    root = workspace.parent / namespace
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if root.is_symlink() or not root.is_dir():
+            raise ExecutionConflict("preparation namespace must be a real directory")
+        fd = os.open(root / workspace.name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise ExecutionConflict("preparation reservation must be a regular file")
+    except OSError as error:
+        raise ExecutionConflict("workspace preparation reservation unavailable") from error
+    reservation = PreparationReservation(workspace, fd, threading.get_ident(), _task(), os.getpid())
+    token = None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ExecutionConflict("workspace preparation already has a live worker") from error
+        token = _preparation.set(reservation)
+        yield reservation
+    finally:
+        if token is not None:
+            _preparation.reset(token)
+        reservation.release()
+
+
 @contextmanager
 def acquire_execution(
+    workspace: Path,
+    invocation: str,
+    *,
+    run_dir: Path | None = None,
+    inherited_fd: int | None = None,
+    inherited_nonce: str | None = None,
+) -> Iterator[ExecutionOwner]:
+    with reserve_preparation(workspace) as reservation:
+        with _acquire_execution(
+            workspace,
+            invocation,
+            run_dir=run_dir,
+            inherited_fd=inherited_fd,
+            inherited_nonce=inherited_nonce,
+        ) as owner:
+            # The lifetime flock now excludes every writer. Background admission
+            # can authenticate its inherited lifetime FD without a preparation gap.
+            reservation.release()
+            yield owner
+
+
+@contextmanager
+def _acquire_execution(
     workspace: Path,
     invocation: str,
     *,
@@ -330,7 +421,189 @@ def _verified_exit(identity: object) -> bool:
     return False
 
 
+def _pidfd_exited(fd: int) -> bool:
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    events = poller.poll(0)
+    if any(mask & (select.POLLNVAL | select.POLLERR) for _, mask in events):
+        raise ExecutionConflict("native process handle status unavailable")
+    return any(mask & select.POLLIN for _, mask in events)
+
+
+def _pidfd_signal(fd: int, sig: signal.Signals) -> bool:
+    try:
+        getattr(signal, "pidfd_send_signal")(fd, sig)
+    except ProcessLookupError:
+        return False
+    except OSError as error:
+        raise ExecutionConflict("identity-bound process signal unavailable") from error
+    return True
+
+
+def _linux_group_members(group: int, *, terminating: bool = False) -> dict[int, dict[str, object]]:
+    """Reject incomplete snapshots; an omitted exiting parent could spawn a child."""
+    members = {}
+    try:
+        entries = list(Path("/proc").iterdir())
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            # Disappearance, including an unrelated process, makes this snapshot
+            # incomplete. Do not infer group membership from missing metadata.
+            stat = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            if int(stat[2]) != group:
+                continue
+            if stat[0] == "Z":
+                if not terminating:
+                    raise ExecutionConflict("exited group member prevents freeze confirmation")
+                continue
+            observed = process_identity(pid)
+            if observed is None or observed["pgid"] != group:
+                raise ExecutionConflict("process group changed during enumeration")
+            members[pid] = observed
+    except (OSError, ValueError, IndexError) as error:
+        raise ExecutionConflict("cannot verify owned process group") from error
+    return members
+
+
+def _linux_stopped(pid: int) -> bool:
+    try:
+        tasks = Path(f"/proc/{pid}/task")
+        entries = list(tasks.iterdir())
+        for entry in entries:
+            state = (entry / "stat").read_text().rsplit(")", 1)[1].split()[0]
+            if state not in {"T", "t"}:
+                return False
+        # A stopped leader alone is insufficient if another thread still runs.
+        # Confirm every thread stopped and reject a changing thread snapshot.
+        return bool(entries) and {entry.name for entry in entries} == {
+            entry.name for entry in tasks.iterdir()
+        }
+    except FileNotFoundError:
+        return False
+    except (OSError, IndexError) as error:
+        raise ExecutionConflict("cannot confirm process group freeze") from error
+
+
+def _terminate_linux(identity: dict[str, Any], timeout: float) -> bool:
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise ExecutionConflict("Linux stop requires native pidfd support")
+    pid = int(identity["pid"])
+    if pid == os.getpid():
+        raise ExecutionConflict("stop control cannot terminate itself")
+    group = identity.get("pgid") == pid
+    handles: dict[int, int] = {}
+    paused: set[int] = set()
+    freeze_deadline = time.monotonic() + max(timeout, 0.1)
+
+    def bind(expected: dict[str, Any]) -> int | None:
+        target = int(expected["pid"])
+        if target == os.getpid():
+            raise ExecutionConflict("stop control cannot terminate itself")
+        try:
+            fd = getattr(os, "pidfd_open")(target, 0)
+        except ProcessLookupError:
+            return None
+        except OSError as error:
+            raise ExecutionConflict("native process handle unavailable") from error
+        handles[target] = fd
+        observed = process_identity(target)
+        if observed is not None and observed != {
+            key: value for key, value in expected.items() if key != "call_digest"
+        }:
+            raise ExecutionConflict("worker creation identity differs; refusing signal")
+        if observed is None:
+            # An acquired handle must itself confirm exit; an absent/reused PID
+            # alone is not authority to signal or declare a process dead.
+            if not _pidfd_exited(fd):
+                raise ExecutionConflict("process handle exit is unconfirmed")
+            return None
+        return fd
+
+    def freeze(target: int, fd: int) -> None:
+        if _pidfd_exited(fd):
+            return
+        already_stopped = _linux_stopped(target)
+        if not _pidfd_signal(fd, signal.SIGSTOP):
+            return
+        if not already_stopped:
+            paused.add(target)
+        while not _pidfd_exited(fd):
+            if _linux_stopped(target):
+                return
+            if time.monotonic() >= freeze_deadline:
+                raise ExecutionConflict("owned process freeze is unconfirmed")
+            time.sleep(0.01)
+
+    try:
+        leader = bind(identity)
+        if leader is None:
+            # No signal is sent in this branch. Preserve the existing natural
+            # exit protocol, including host/boot and recorded group containment.
+            if _verified_exit(identity):
+                return True
+            raise ExecutionConflict("exited group leader cannot authenticate remaining members")
+        if group:
+            freeze(pid, leader)
+            while True:
+                if _pidfd_exited(leader):
+                    raise ExecutionConflict("group leader exited before quiescence confirmation")
+                members = _linux_group_members(pid)
+                added = False
+                for target, observed in members.items():
+                    if target not in handles:
+                        fd = bind(observed)
+                        if fd is not None:
+                            freeze(target, fd)
+                        added = True
+                    elif _pidfd_exited(handles[target]):
+                        # This snapshot contains a live process. A readable old
+                        # handle cannot authenticate a replacement at its PID.
+                        raise ExecutionConflict("owned process group member identity changed")
+                    elif not _linux_stopped(target):
+                        raise ExecutionConflict("owned group resumed during freeze")
+                if not added:
+                    # Every live member was confirmed stopped before this scan;
+                    # none can create another child during quiescence verification.
+                    break
+                if time.monotonic() >= freeze_deadline:
+                    raise ExecutionConflict("owned process group did not quiesce")
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            for fd in handles.values():
+                _pidfd_signal(fd, sig)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if all(_pidfd_exited(fd) for fd in handles.values()):
+                    return not group or not _linux_group_members(pid, terminating=True)
+                time.sleep(0.01)
+        return all(_pidfd_exited(fd) for fd in handles.values()) and (
+            not group or not _linux_group_members(pid, terminating=True)
+        )
+    finally:
+        # On ambiguity, undo only pauses introduced by this stop controller.
+        # Signaling the same handles cannot resume a replacement PID.
+        active_error = sys.exc_info()[0] is not None
+        resume_error = None
+        try:
+            for target in paused:
+                try:
+                    if not _pidfd_exited(handles[target]):
+                        _pidfd_signal(handles[target], signal.SIGCONT)
+                except ExecutionConflict as error:
+                    resume_error = error
+        finally:
+            for fd in handles.values():
+                os.close(fd)
+        if resume_error is not None and not active_error:
+            raise ExecutionConflict("owned process resume is unconfirmed") from resume_error
+
+
 def _terminate(identity: dict[str, Any], timeout: float) -> bool:
+    if sys.platform.startswith("linux"):
+        return _terminate_linux(identity, timeout)
+    # macOS retains a creation-check/signal TOCTOU; no native stable handle
+    # primitive is used on that platform.
     if _verified_exit(identity):
         return True
     pid = int(identity["pid"])
@@ -557,7 +830,7 @@ def exclusive_bootstrap(function: Callable[..., Any]) -> Callable[..., Any]:
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         from assurance_product.bootstrap.status import derive_bootstrap_change_id
         from assurance_product.bootstrap.driver import utc_stamp
-        from assurance_product.sut_worktree import ensure_run_worktree
+        from assurance_product.sut_worktree import ensure_run_worktree, resolve_run_worktree
 
         invocation = kwargs.get("change_id") or derive_bootstrap_change_id(
             stamp=utc_stamp(), nonce=secrets.token_hex(4)
@@ -566,10 +839,12 @@ def exclusive_bootstrap(function: Callable[..., Any]) -> Callable[..., Any]:
         workspace = kwargs.get("task_directory")
         if workspace is not None and not workspace.is_dir():
             raise ValueError("task directory does not exist")
-        if workspace is None:
-            workspace = ensure_run_worktree(kwargs["project_dir"], invocation)
-        with acquire_execution(workspace, invocation, run_dir=kwargs["runs_root"] / invocation):
-            return function(*args, **kwargs)
+        target = workspace or resolve_run_worktree(kwargs["project_dir"], invocation)
+        with reserve_preparation(target):
+            if workspace is None:
+                workspace = ensure_run_worktree(kwargs["project_dir"], invocation)
+            with acquire_execution(workspace, invocation, run_dir=kwargs["runs_root"] / invocation):
+                return function(*args, **kwargs)
 
     return wrapped
 
@@ -736,14 +1011,27 @@ def exclusive_cli(function: Callable[..., Any]) -> Callable[..., Any]:
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         from assurance_product.cli import _engine_failures, _project_for_run
 
+        from assurance_product.sut_worktree import resolve_run_worktree
+        from assurance_product.cli import CommandError, require_real_directory
+
         workspace = kwargs["project_dir"]
-        if function.__name__ != "_resume_invocation" and not kwargs.get("reuse_directory", False):
-            workspace = _project_for_run(workspace, kwargs["change_id"])
-            kwargs["project_dir"] = workspace
-            kwargs["reuse_directory"] = True
+        prepare = function.__name__ != "_resume_invocation" and not kwargs.get("reuse_directory", False)
         with _engine_failures():
-            with acquire_execution(workspace, kwargs["invocation_id"]):
-                return function(*args, **kwargs)
+            try:
+                target = (
+                    resolve_run_worktree(require_real_directory(workspace), kwargs["change_id"])
+                    if prepare
+                    else workspace
+                )
+            except ValueError as error:
+                raise CommandError(str(error)) from error
+            with reserve_preparation(target):
+                if prepare:
+                    workspace = _project_for_run(workspace, kwargs["change_id"])
+                    kwargs["project_dir"] = workspace
+                    kwargs["reuse_directory"] = True
+                with acquire_execution(workspace, kwargs["invocation_id"]):
+                    return function(*args, **kwargs)
 
     return wrapped
 
