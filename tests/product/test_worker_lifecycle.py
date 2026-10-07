@@ -11,6 +11,16 @@ import pytest
 from assurance_product import worker_lifecycle as lifecycle, worker_cleanup as cleanup
 
 
+@pytest.fixture(autouse=True)
+def current_lifecycle_modules(monkeypatch):
+    # installed_sources evicts collected modules when it installs extracted wheels.
+    # The coordinator and cleanup must share the same ownership exception identity.
+    from assurance_product import worker_lifecycle, worker_cleanup
+
+    monkeypatch.setitem(globals(), "lifecycle", worker_lifecycle)
+    monkeypatch.setitem(globals(), "cleanup", worker_cleanup)
+
+
 def worker(workspace: Path) -> subprocess.Popen[str]:
     code = """import signal, sys, time
 from pathlib import Path
