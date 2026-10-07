@@ -17,7 +17,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import ProductLock
 from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
-from assurance_product.worker_lifecycle import exclusive_application
+from assurance_product.worker_entrypoints import exclusive_application
 from assurance_product.binding_builder import build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.invocation_identity import (
@@ -561,7 +561,8 @@ class AssuranceProductApplication:
     def stop(self, *, project_dir: Path, invocation_id: str, force: bool = False, timeout: float = 2) -> str:
         """Stop the admitted foreground owner without running business recovery."""
         from assurance_product.retained_host import confirm_owned_calls
-        from assurance_product.worker_lifecycle import request_stop, cleanup_owned_resources
+        from assurance_product.worker_lifecycle import request_stop
+        from assurance_product.worker_cleanup import cleanup_owned_resources
 
         return request_stop(
             project_dir,
@@ -573,7 +574,7 @@ class AssuranceProductApplication:
         )
 
     def request_stop(self, run_dir: Path, *, change_id: str) -> None:
-        from assurance_product.worker_lifecycle import stop_run
+        from assurance_product.worker_entrypoints import stop_run
 
         stop_run(run_dir, change_id=change_id)
 

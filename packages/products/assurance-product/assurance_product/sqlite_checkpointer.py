@@ -648,6 +648,15 @@ class _JournalLinkedLease:
         return self._lease.current(invocation_id)
 
 
+@dataclass(frozen=True)
+class RetainedHostCall:
+    call_digest: str
+    attempt_key_digest: str
+    payload: bytes
+    confirmed: bool
+    stop_authority_digest: str | None
+
+
 @dataclass(slots=True)
 class AssuranceSqliteBackend:
     store: SqliteCheckpointStoreTransaction
@@ -682,6 +691,51 @@ class AssuranceSqliteBackend:
         cursor = await self._conn.execute("PRAGMA synchronous")
         row = await cursor.fetchone()
         return row is not None and int(row[0]) == 2
+
+    async def retain_host_call(
+        self,
+        *,
+        call_digest: str,
+        owner_nonce: str,
+        attempt_key_digest: str,
+        payload: bytes,
+        stop_authority_digest: str,
+    ) -> None:
+        """Commit dispatch evidence before the caller can invoke an external host."""
+        async with self.store._lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                await self._conn.execute(
+                    "INSERT INTO assurance_host_calls (call_digest, owner_nonce, attempt_key_digest, payload, stop_authority_digest) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(call_digest) DO NOTHING",
+                    (call_digest, owner_nonce, attempt_key_digest, payload, stop_authority_digest),
+                )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def confirm_host_call(self, call_digest: str) -> None:
+        async with self.store._lock:
+            try:
+                await self._conn.execute(
+                    "UPDATE assurance_host_calls SET confirmed = 1 WHERE call_digest = ?", (call_digest,)
+                )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def read_host_calls(self, owner_nonce: str) -> tuple[RetainedHostCall, ...]:
+        async with self.store._lock:
+            cursor = await self._conn.execute(
+                "SELECT call_digest, attempt_key_digest, payload, confirmed, stop_authority_digest FROM assurance_host_calls WHERE owner_nonce = ?",
+                (owner_nonce,),
+            )
+            return tuple(
+                RetainedHostCall(str(digest), str(key), bytes(payload), bool(confirmed), authority)
+                for digest, key, payload, confirmed, authority in await cursor.fetchall()
+            )
 
     async def remember_entrypoint(self, invocation_id: str, entrypoint: str) -> None:
         async with self.store._lock:

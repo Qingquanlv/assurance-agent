@@ -7,6 +7,8 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from graph_engine.attempts import node_factory
+from graph_engine.attempts.keys import AttemptIdentity, AttemptKey
+from graph_engine.canonical import JSONValue
 from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
 from graph_engine.flow import Flow
 from graph_engine.testing import committed
@@ -126,14 +128,13 @@ async def test_parallel_branch_gates_resume_apart_with_isolated_rounds() -> None
     )
     harness, context = open_harness(api_task, e2e_task)
     activations: list[str] = []
-    derive = node_factory.derive_attempt_key
+    derive = node_factory.AttemptIdentity.derive_key
 
-    def _record(**kwargs: object) -> object:
-        business = kwargs["business_activation"]
-        activations.append(str(getattr(business, "value")))
-        return derive(**kwargs)  # type: ignore[arg-type]
+    def _record(self: AttemptIdentity, input_payload: JSONValue, *, technical_attempt: int = 1) -> AttemptKey:
+        activations.append(self.business_activation.value)
+        return derive(self, input_payload, technical_attempt=technical_attempt)
 
-    node_factory.derive_attempt_key = _record  # type: ignore[assignment]
+    node_factory.AttemptIdentity.derive_key = _record
     try:
         graph = flow.compile(context)
         graph.checkpointer = MemorySaver()
@@ -174,7 +175,7 @@ async def test_parallel_branch_gates_resume_apart_with_isolated_rounds() -> None
         assert finished["flow_control"]["results"] == {"api": "passed", "e2e": "rejected"}
         assert len(activations) == 4
     finally:
-        node_factory.derive_attempt_key = derive
+        node_factory.AttemptIdentity.derive_key = derive
 
 
 async def test_a_system_interrupt_inside_a_subflow_step_resumes_to_the_commit() -> None:

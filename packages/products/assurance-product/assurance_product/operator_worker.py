@@ -12,7 +12,8 @@ def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
         raise SystemExit("usage: python -m assurance_product.operator_worker RUN_DIR")
-    from assurance_product.worker_lifecycle import admit_background, run_workspace
+    from assurance_product.worker_lifecycle import admit_background
+    from assurance_product.worker_entrypoints import run_workspace
 
     run_dir = Path(args[0])
     workspace, invocation = run_workspace(run_dir)

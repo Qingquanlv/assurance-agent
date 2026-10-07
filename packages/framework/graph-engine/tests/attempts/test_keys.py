@@ -139,3 +139,49 @@ def test_business_activation_constructors_and_rejections() -> None:
         BusinessActivation.for_trigger("Not Canonical")
     with pytest.raises((ValueError, ValidationError)):
         BusinessActivation.for_trigger("langgraph/task-id")
+
+
+@pytest.mark.parametrize(
+    "activation",
+    [
+        BusinessActivation.one_shot(),
+        BusinessActivation.for_round(2),
+        BusinessActivation.for_trigger("arrival-1"),
+    ],
+)
+@pytest.mark.parametrize("ordinal", [1, 2])
+def test_retained_generation_uses_the_same_key_as_live_execution(activation, ordinal):
+    from graph_engine.attempts.keys import AttemptIdentity
+
+    identity = AttemptIdentity(
+        invocation_id="inv-1",
+        graph_revision="a" * 64,
+        public_entrypoint="execute",
+        semantic_node_id="execution.run",
+        business_activation=activation,
+        contract_id="run.v1",
+    )
+    scope = {**identity.model_dump(mode="json"), "contract_digest": "b" * 64}
+    saved = AttemptIdentity.from_scope(scope)
+    data = RunInput(change_id="chg-1")
+    assert saved.derive_key(data.model_dump(mode="json"), technical_attempt=ordinal) == derive_attempt_key(
+        invocation_id=identity.invocation_id,
+        graph_revision=identity.graph_revision,
+        public_entrypoint=identity.public_entrypoint,
+        semantic_node_id=identity.semantic_node_id,
+        business_activation=activation,
+        contract_id=identity.contract_id,
+        validated_input=data,
+        technical_attempt=ordinal,
+    )
+    assert saved.derive_key(data.model_dump(mode="json"), technical_attempt=ordinal) != saved.derive_key(
+        {"change_id": "changed"},
+        technical_attempt=ordinal,
+    )
+
+
+def test_retained_scope_requires_complete_activation_identity():
+    from graph_engine.attempts.keys import AttemptIdentity
+
+    with pytest.raises(KeyError):
+        AttemptIdentity.from_scope({"invocation_id": "inv-1"})

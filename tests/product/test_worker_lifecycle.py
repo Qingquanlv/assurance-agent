@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from assurance_product import worker_lifecycle as lifecycle
+from assurance_product import worker_lifecycle as lifecycle, worker_cleanup as cleanup
 
 
 def worker(workspace: Path) -> subprocess.Popen[str]:
@@ -154,7 +154,7 @@ def test_delayed_old_stop_nonce_cannot_terminate_replacement(tmp_path: Path, mon
     import threading
     from contextlib import contextmanager
 
-    original = lifecycle._control
+    original = lifecycle.control_lock
     captured = threading.Event()
     release = threading.Event()
 
@@ -169,7 +169,7 @@ def test_delayed_old_stop_nonce_cannot_terminate_replacement(tmp_path: Path, mon
     old = worker(tmp_path)
     replacement = None
     result = []
-    monkeypatch.setattr(lifecycle, "_control", delayed_control)
+    monkeypatch.setattr(lifecycle, "control_lock", delayed_control)
     thread = threading.Thread(
         target=lambda: result.append(lifecycle.request_stop(tmp_path, force=True, timeout=0.1)),
         name="delayed-stop",
@@ -282,13 +282,13 @@ with acquire_execution(Path(sys.argv[1]), "run"):
                 connection.execute("CREATE TABLE assurance_host_calls (call_digest TEXT, owner_nonce TEXT)")
     record = json.loads((root / "owner.json").read_text())
     with pytest.raises(lifecycle.ExecutionConflict):
-        lifecycle.validated_stop_checkpoint(record)
+        cleanup.validated_stop_checkpoint(record)
     assert (
         lifecycle.request_stop(
             tmp_path,
             force=True,
             confirm_external=lambda owner: asyncio.run(confirm_owned_calls(owner)),
-            cleanup=lifecycle.cleanup_owned_resources,
+            cleanup=cleanup.cleanup_owned_resources,
         )
         == "unconfirmed"
     )
@@ -340,7 +340,7 @@ def test_stop_rejects_unsafe_database_before_sqlite_access(
             confirm_external=(lambda owner: asyncio.run(confirm_owned_calls(owner)))
             if phase == "confirmation"
             else (lambda owner: True),
-            cleanup=lifecycle.cleanup_owned_resources,
+            cleanup=cleanup.cleanup_owned_resources,
         )
         == "unconfirmed"
     )
@@ -356,7 +356,7 @@ def test_released_owner_cannot_reset_lost_generation_budget(tmp_path: Path) -> N
     from assurance_product import worker_lifecycle as lifecycle
 
     with lifecycle.acquire_execution(tmp_path, "run") as owner:
-        lifecycle.update_owner(owner, lambda record: record["attempts"].append("a" * 64))
+        lifecycle.update_owner(owner, lambda record: record.setdefault("attempts", []).append("a" * 64))
     with pytest.raises(lifecycle.ExecutionConflict, match="persistence is missing"):
         with lifecycle.acquire_execution(tmp_path, "run"):
             pytest.fail("released ownership lost its finite budget")
@@ -406,8 +406,7 @@ with acquire_execution(root, "run"):
         with sqlite3.connect(db):
             pass
     assert (
-        lifecycle.request_stop(tmp_path, force=True, cleanup=lifecycle.cleanup_owned_resources)
-        == "unconfirmed"
+        lifecycle.request_stop(tmp_path, force=True, cleanup=cleanup.cleanup_owned_resources) == "unconfirmed"
     )
     with pytest.raises(lifecycle.ExecutionConflict):
         with lifecycle.acquire_execution(tmp_path, "replacement"):

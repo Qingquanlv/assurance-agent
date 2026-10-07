@@ -7,41 +7,48 @@ import sys
 from pathlib import Path
 
 import pytest
+from assurance_product.worker_state import ProcessIdentity
 
-from assurance_product import worker_lifecycle as lifecycle
+from assurance_product import (
+    worker_lifecycle as lifecycle,
+    worker_process as processes,
+    worker_entrypoints as entries,
+)
 
 
 @pytest.fixture(autouse=True)
 def current_lifecycle_module(monkeypatch):
     # The session wheel fixture evicts modules imported during collection.
     # Exercise the same canonical lifecycle module as dynamic product imports.
-    from assurance_product import worker_lifecycle
+    from assurance_product import worker_lifecycle, worker_process, worker_entrypoints
 
     monkeypatch.setitem(globals(), "lifecycle", worker_lifecycle)
+    monkeypatch.setitem(globals(), "processes", worker_process)
+    monkeypatch.setitem(globals(), "entries", worker_entrypoints)
 
 
 def test_linux_stop_binds_handle_before_identity_check(monkeypatch):
     events = []
-    identity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    identity: ProcessIdentity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
+    monkeypatch.setattr(processes.sys, "platform", "linux")
     monkeypatch.setattr(os, "pidfd_open", lambda pid, flags=0: events.append("open") or 999, raising=False)
 
     def observe(pid):
         events.append("identity")
         return identity
 
-    monkeypatch.setattr(lifecycle, "process_identity", observe)
+    monkeypatch.setattr(processes, "process_identity", observe)
 
     def send(fd, sig, info=None, flags=0):
         events.append("send")
         raise ProcessLookupError()
 
     monkeypatch.setattr(signal, "pidfd_send_signal", send, raising=False)
-    monkeypatch.setattr(lifecycle, "_pidfd_exited", lambda fd: "send" in events)
+    monkeypatch.setattr(processes, "_pidfd_exited", lambda fd: "send" in events)
     monkeypatch.setattr(os, "close", lambda fd: events.append("close"))
     monkeypatch.setattr(os, "kill", lambda *args: pytest.fail("numeric signal"))
     monkeypatch.setattr(os, "killpg", lambda *args: pytest.fail("numeric group signal"))
-    assert lifecycle._terminate(identity, 0)
+    assert processes.terminate(identity, 0)
     assert events[0] == "open"
     assert events[-1] == "close"
 
@@ -51,7 +58,7 @@ def test_bootstrap_reserves_destination_before_worktree_mutation(tmp_path: Path,
 
     destination = tmp_path / "destination"
 
-    @lifecycle.exclusive_bootstrap
+    @entries.exclusive_bootstrap
     def execute(**kwargs):
         return "done"
 
@@ -100,7 +107,7 @@ def test_real_preparation_excludes_competing_entrypoints(tmp_path: Path, stage: 
     preparing_code = """import sys
 from pathlib import Path
 from assurance_product import sut_worktree
-from assurance_product.worker_lifecycle import exclusive_bootstrap
+from assurance_product.worker_entrypoints import exclusive_bootstrap
 source, stage = Path(sys.argv[1]), sys.argv[2]
 def barrier():
  print("paused", flush=True)
@@ -125,7 +132,8 @@ execute(project_dir=source, runs_root=source.parent / "runs", change_id="change"
 """
     competitor_code = """import sys
 from pathlib import Path
-from assurance_product.worker_lifecycle import exclusive_bootstrap, exclusive_cli, acquire_execution
+from assurance_product.worker_entrypoints import exclusive_bootstrap, exclusive_cli
+from assurance_product.worker_lifecycle import acquire_execution
 from assurance_product.cli import CommandError
 source, destination, entry = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 change = sys.argv[4] if len(sys.argv) > 4 else "change"
@@ -208,8 +216,8 @@ else:
 
 @pytest.mark.parametrize("failure", [PermissionError, OSError])
 def test_linux_pidfd_open_errors_never_signal_numeric_pid(monkeypatch, failure):
-    identity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    identity: ProcessIdentity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
+    monkeypatch.setattr(processes.sys, "platform", "linux")
 
     def denied(*args):
         raise failure("denied")
@@ -219,19 +227,19 @@ def test_linux_pidfd_open_errors_never_signal_numeric_pid(monkeypatch, failure):
     monkeypatch.setattr(os, "kill", lambda *args: pytest.fail("numeric signal"))
     monkeypatch.setattr(os, "killpg", lambda *args: pytest.fail("numeric group signal"))
     with pytest.raises(lifecycle.ExecutionConflict, match="handle unavailable"):
-        lifecycle._terminate(identity, 0)
+        processes.terminate(identity, 0)
 
 
 def test_linux_pidfd_identity_replacement_closes_handle_without_signaling(monkeypatch):
-    identity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
+    identity: ProcessIdentity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
     closed = []
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    monkeypatch.setattr(processes.sys, "platform", "linux")
     monkeypatch.setattr(os, "pidfd_open", lambda *args: 999, raising=False)
-    monkeypatch.setattr(lifecycle, "process_identity", lambda pid: dict(identity, created="replacement"))
+    monkeypatch.setattr(processes, "process_identity", lambda pid: dict(identity, created="replacement"))
     monkeypatch.setattr(signal, "pidfd_send_signal", lambda *args: pytest.fail("signal"), raising=False)
     monkeypatch.setattr(os, "close", closed.append)
     with pytest.raises(lifecycle.ExecutionConflict, match="creation identity differs"):
-        lifecycle._terminate(identity, 0)
+        processes.terminate(identity, 0)
     assert closed == [999]
 
 
@@ -254,11 +262,11 @@ time.sleep(60)
         assert select.select([process.stdout], [], [], 15)[0], "child startup timed out"
         child_pid = int(process.stdout.readline())
         child_fd = getattr(os, "pidfd_open")(child_pid, 0)
-        identity = lifecycle.process_identity(process.pid)
+        identity = processes.process_identity(process.pid)
         assert identity is not None
-        assert lifecycle._terminate(identity, 0.1)
+        assert processes.terminate(identity, 0.1)
         process.wait(timeout=5)
-        assert lifecycle.process_identity(child_pid) is None
+        assert processes.process_identity(child_pid) is None
     finally:
         if process.poll() is None:
             process.kill()
@@ -274,7 +282,13 @@ time.sleep(60)
 
 @pytest.mark.parametrize("ambiguous", [False, True])
 def test_linux_group_binds_and_freezes_new_children_or_fails_closed(monkeypatch, ambiguous):
-    leader = {"pid": 123456, "pgid": 123456, "created": "leader", "boot": "boot", "host": "host"}
+    leader: ProcessIdentity = {
+        "pid": 123456,
+        "pgid": 123456,
+        "created": "leader",
+        "boot": "boot",
+        "host": "host",
+    }
     child = dict(leader, pid=123457, created="child")
     newborn = dict(leader, pid=123458, created="newborn")
     identities = {row["pid"]: row for row in (leader, child, newborn)}
@@ -284,7 +298,7 @@ def test_linux_group_binds_and_freezes_new_children_or_fails_closed(monkeypatch,
     stopped = set()
     exited = set()
     scans = iter(({leader["pid"]: leader, child["pid"]: child}, identities, identities, {}))
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    monkeypatch.setattr(processes.sys, "platform", "linux")
 
     def open_handle(pid, flags):
         opened.append(pid)
@@ -296,16 +310,16 @@ def test_linux_group_binds_and_freezes_new_children_or_fails_closed(monkeypatch,
         assert pid in opened, "identity validated before handle binding"
         return identities[pid]
 
-    monkeypatch.setattr(lifecycle, "process_identity", observe)
-    monkeypatch.setattr(lifecycle, "_pidfd_exited", lambda fd: fd - 100 in exited)
-    monkeypatch.setattr(lifecycle, "_linux_stopped", lambda pid: pid in stopped)
+    monkeypatch.setattr(processes, "process_identity", observe)
+    monkeypatch.setattr(processes, "_pidfd_exited", lambda fd: fd - 100 in exited)
+    monkeypatch.setattr(processes, "_linux_stopped", lambda pid: pid in stopped)
 
     def members(group, **kwargs):
         if ambiguous and child["pid"] in stopped:
             raise lifecycle.ExecutionConflict("enumeration ambiguity")
         return next(scans)
 
-    monkeypatch.setattr(lifecycle, "_linux_group_members", members)
+    monkeypatch.setattr(processes, "_linux_group_members", members)
 
     def send(fd, sig, *args):
         pid = fd - 100
@@ -323,14 +337,14 @@ def test_linux_group_binds_and_freezes_new_children_or_fails_closed(monkeypatch,
     monkeypatch.setattr(os, "killpg", lambda *args: pytest.fail("numeric group signal"))
     if ambiguous:
         with pytest.raises(lifecycle.ExecutionConflict, match="enumeration ambiguity"):
-            lifecycle._terminate(leader, 0)
+            processes.terminate(leader, 0)
         assert not stopped
         assert not exited
     else:
         monkeypatch.setattr(
-            lifecycle.time, "sleep", lambda delay: pytest.fail("frozen group waited for TERM")
+            processes.time, "sleep", lambda delay: pytest.fail("frozen group waited for TERM")
         )
-        assert lifecycle._terminate(leader, 1)
+        assert processes.terminate(leader, 1)
         assert exited == set(identities)
         assert all(sig not in {signal.SIGTERM, signal.SIGCONT} for _, sig in sent)
         for pid in identities:
@@ -340,26 +354,32 @@ def test_linux_group_binds_and_freezes_new_children_or_fails_closed(monkeypatch,
 
 
 def test_linux_missing_group_leader_fails_closed(monkeypatch):
-    identity = {"pid": 123456, "pgid": 123456, "created": "old", "boot": "boot", "host": "host"}
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    identity: ProcessIdentity = {
+        "pid": 123456,
+        "pgid": 123456,
+        "created": "old",
+        "boot": "boot",
+        "host": "host",
+    }
+    monkeypatch.setattr(processes.sys, "platform", "linux")
 
     def missing(*args):
         raise ProcessLookupError()
 
     monkeypatch.setattr(os, "pidfd_open", missing, raising=False)
-    monkeypatch.setattr(lifecycle, "_verified_exit", lambda identity: False)
+    monkeypatch.setattr(processes, "verified_exit", lambda identity: False)
     monkeypatch.setattr(signal, "pidfd_send_signal", lambda *args: pytest.fail("signal"), raising=False)
     with pytest.raises(lifecycle.ExecutionConflict, match="exited group leader"):
-        lifecycle._terminate(identity, 0)
+        processes.terminate(identity, 0)
 
 
 @pytest.mark.parametrize("signal_error", [PermissionError, OSError])
 def test_linux_pidfd_signal_failure_closes_handle(monkeypatch, signal_error):
-    identity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
+    identity: ProcessIdentity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
     closed = []
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    monkeypatch.setattr(processes.sys, "platform", "linux")
     monkeypatch.setattr(os, "pidfd_open", lambda *args: 999, raising=False)
-    monkeypatch.setattr(lifecycle, "process_identity", lambda pid: identity)
+    monkeypatch.setattr(processes, "process_identity", lambda pid: identity)
 
     def denied(*args):
         raise signal_error("denied")
@@ -367,48 +387,60 @@ def test_linux_pidfd_signal_failure_closes_handle(monkeypatch, signal_error):
     monkeypatch.setattr(signal, "pidfd_send_signal", denied, raising=False)
     monkeypatch.setattr(os, "close", closed.append)
     with pytest.raises(lifecycle.ExecutionConflict, match="signal unavailable"):
-        lifecycle._terminate(identity, 0)
+        processes.terminate(identity, 0)
     assert closed == [999]
 
 
 def test_linux_pidfd_unavailable_fails_closed(monkeypatch):
-    identity = {"pid": 123456, "pgid": 1}
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    identity: ProcessIdentity = {"pid": 123456, "pgid": 1, "created": "old", "boot": "boot", "host": "host"}
+    monkeypatch.setattr(processes.sys, "platform", "linux")
     monkeypatch.delattr(os, "pidfd_open", raising=False)
     monkeypatch.setattr(os, "kill", lambda *args: pytest.fail("numeric signal"))
     monkeypatch.setattr(os, "killpg", lambda *args: pytest.fail("numeric group signal"))
     with pytest.raises(lifecycle.ExecutionConflict, match="requires native pidfd"):
-        lifecycle._terminate(identity, 0)
+        processes.terminate(identity, 0)
 
 
 def test_linux_unconfirmed_freeze_resumes_bound_handle_and_closes(monkeypatch):
-    identity = {"pid": 123456, "pgid": 123456, "created": "old", "boot": "boot", "host": "host"}
+    identity: ProcessIdentity = {
+        "pid": 123456,
+        "pgid": 123456,
+        "created": "old",
+        "boot": "boot",
+        "host": "host",
+    }
     sent = []
     closed = []
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    monkeypatch.setattr(processes.sys, "platform", "linux")
     monkeypatch.setattr(os, "pidfd_open", lambda *args: 999, raising=False)
-    monkeypatch.setattr(lifecycle, "process_identity", lambda pid: identity)
-    monkeypatch.setattr(lifecycle, "_pidfd_exited", lambda fd: False)
-    monkeypatch.setattr(lifecycle, "_linux_stopped", lambda pid: False)
+    monkeypatch.setattr(processes, "process_identity", lambda pid: identity)
+    monkeypatch.setattr(processes, "_pidfd_exited", lambda fd: False)
+    monkeypatch.setattr(processes, "_linux_stopped", lambda pid: False)
     monkeypatch.setattr(signal, "pidfd_send_signal", lambda fd, sig: sent.append((fd, sig)), raising=False)
     monkeypatch.setattr(os, "close", closed.append)
     with pytest.raises(lifecycle.ExecutionConflict, match="freeze is unconfirmed"):
-        lifecycle._terminate(identity, 0)
+        processes.terminate(identity, 0)
     assert sent == [(999, signal.SIGSTOP), (999, signal.SIGCONT)]
     assert closed == [999]
 
 
 def test_linux_missing_handle_uses_natural_exit_proof_without_signal(monkeypatch):
-    identity = {"pid": 123456, "pgid": 123456}
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    identity: ProcessIdentity = {
+        "pid": 123456,
+        "pgid": 123456,
+        "created": "old",
+        "boot": "boot",
+        "host": "host",
+    }
+    monkeypatch.setattr(processes.sys, "platform", "linux")
 
     def missing(*args):
         raise ProcessLookupError()
 
     monkeypatch.setattr(os, "pidfd_open", missing, raising=False)
-    monkeypatch.setattr(lifecycle, "_verified_exit", lambda identity: True)
+    monkeypatch.setattr(processes, "verified_exit", lambda identity: True)
     monkeypatch.setattr(signal, "pidfd_send_signal", lambda *args: pytest.fail("signal"), raising=False)
-    assert lifecycle._terminate(identity, 0)
+    assert processes.terminate(identity, 0)
 
 
 def test_fork_cannot_borrow_parent_preparation_reservation(tmp_path: Path):
@@ -437,18 +469,24 @@ def test_fork_cannot_borrow_parent_preparation_reservation(tmp_path: Path):
 
 
 def test_linux_rescan_reused_member_pid_cannot_reuse_exited_handle(monkeypatch):
-    leader = {"pid": 123456, "pgid": 123456, "created": "leader", "boot": "boot", "host": "host"}
+    leader: ProcessIdentity = {
+        "pid": 123456,
+        "pgid": 123456,
+        "created": "leader",
+        "boot": "boot",
+        "host": "host",
+    }
     child = dict(leader, pid=123457, created="child")
     identities = {leader["pid"]: leader, child["pid"]: child}
     stopped = set()
     exited = set()
     sent = []
     scans = 0
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    monkeypatch.setattr(processes.sys, "platform", "linux")
     monkeypatch.setattr(os, "pidfd_open", lambda pid, flags: pid + 100, raising=False)
-    monkeypatch.setattr(lifecycle, "process_identity", identities.__getitem__)
-    monkeypatch.setattr(lifecycle, "_pidfd_exited", lambda fd: fd - 100 in exited)
-    monkeypatch.setattr(lifecycle, "_linux_stopped", lambda pid: pid in stopped)
+    monkeypatch.setattr(processes, "process_identity", identities.__getitem__)
+    monkeypatch.setattr(processes, "_pidfd_exited", lambda fd: fd - 100 in exited)
+    monkeypatch.setattr(processes, "_linux_stopped", lambda pid: pid in stopped)
 
     def members(group, **kwargs):
         nonlocal scans
@@ -458,7 +496,7 @@ def test_linux_rescan_reused_member_pid_cannot_reuse_exited_handle(monkeypatch):
             return {leader["pid"]: leader, child["pid"]: dict(child, created="replacement")}
         return identities
 
-    monkeypatch.setattr(lifecycle, "_linux_group_members", members)
+    monkeypatch.setattr(processes, "_linux_group_members", members)
 
     def send(fd, sig):
         sent.append((fd, sig))
@@ -469,30 +507,36 @@ def test_linux_rescan_reused_member_pid_cannot_reuse_exited_handle(monkeypatch):
     closed = []
     monkeypatch.setattr(os, "close", closed.append)
     with pytest.raises(lifecycle.ExecutionConflict, match="member identity changed"):
-        lifecycle._terminate(leader, 0)
+        processes.terminate(leader, 0)
     assert all(sig not in {signal.SIGTERM, signal.SIGKILL} for _, sig in sent)
     assert (leader["pid"] + 100, signal.SIGCONT) in sent
     assert set(closed) == {pid + 100 for pid in identities}
 
 
 def test_linux_group_cannot_freeze_stop_controller_as_member(monkeypatch):
-    leader = {"pid": 123456, "pgid": 123456, "created": "leader", "boot": "boot", "host": "host"}
+    leader: ProcessIdentity = {
+        "pid": 123456,
+        "pgid": 123456,
+        "created": "leader",
+        "boot": "boot",
+        "host": "host",
+    }
     controller = dict(leader, pid=os.getpid(), created="controller")
     opened = []
     stopped = set()
     sent = []
-    monkeypatch.setattr(lifecycle.sys, "platform", "linux")
+    monkeypatch.setattr(processes.sys, "platform", "linux")
 
     def open_handle(pid, flags):
         opened.append(pid)
         return pid + 100
 
     monkeypatch.setattr(os, "pidfd_open", open_handle, raising=False)
-    monkeypatch.setattr(lifecycle, "process_identity", lambda pid: leader)
-    monkeypatch.setattr(lifecycle, "_pidfd_exited", lambda fd: False)
-    monkeypatch.setattr(lifecycle, "_linux_stopped", lambda pid: pid in stopped)
+    monkeypatch.setattr(processes, "process_identity", lambda pid: leader)
+    monkeypatch.setattr(processes, "_pidfd_exited", lambda fd: False)
+    monkeypatch.setattr(processes, "_linux_stopped", lambda pid: pid in stopped)
     monkeypatch.setattr(
-        lifecycle, "_linux_group_members", lambda group, **kwargs: {controller["pid"]: controller}
+        processes, "_linux_group_members", lambda group, **kwargs: {controller["pid"]: controller}
     )
 
     def send(fd, sig):
@@ -503,7 +547,7 @@ def test_linux_group_cannot_freeze_stop_controller_as_member(monkeypatch):
     monkeypatch.setattr(signal, "pidfd_send_signal", send, raising=False)
     monkeypatch.setattr(os, "close", lambda fd: None)
     with pytest.raises(lifecycle.ExecutionConflict, match="cannot terminate itself"):
-        lifecycle._terminate(leader, 0)
+        processes.terminate(leader, 0)
     assert opened == [leader["pid"]]
     assert sent == [(leader["pid"] + 100, signal.SIGSTOP), (leader["pid"] + 100, signal.SIGCONT)]
 
@@ -515,8 +559,8 @@ def test_linux_group_scan_ignores_unrelated_or_confirmed_dead_members(
     entry = tmp_path / "123457"
     entry.mkdir()
     (entry / "stat").write_text(f"123457 (test) {state} 1 {group} 0 0")
-    monkeypatch.setattr(lifecycle, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
-    assert lifecycle._linux_group_members(123456, terminating=terminating) == {}
+    monkeypatch.setattr(processes, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    assert processes._linux_group_members(123456, terminating=terminating) == {}
 
 
 @pytest.mark.parametrize("metadata", ["missing", "owned-zombie"])
@@ -525,9 +569,9 @@ def test_linux_group_scan_rejects_incomplete_or_unknown_dead_members(tmp_path: P
     entry.mkdir()
     if metadata == "owned-zombie":
         (entry / "stat").write_text("123457 (test) Z 1 123456 0 0")
-    monkeypatch.setattr(lifecycle, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    monkeypatch.setattr(processes, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
     with pytest.raises(lifecycle.ExecutionConflict):
-        lifecycle._linux_group_members(123456)
+        processes._linux_group_members(123456)
 
 
 @pytest.mark.parametrize("states,expected", [(("T", "T"), True), (("T", "R"), False)])
@@ -539,9 +583,9 @@ def test_linux_freeze_requires_every_thread_stopped(tmp_path: Path, monkeypatch,
         entry.mkdir()
         (entry / "stat").write_text(f"{tid} (test) {state} 1 123456 0 0")
     monkeypatch.setattr(
-        lifecycle, "Path", lambda value: tasks if value == "/proc/123456/task" else Path(value)
+        processes, "Path", lambda value: tasks if value == "/proc/123456/task" else Path(value)
     )
-    assert lifecycle._linux_stopped(123456) is expected
+    assert processes._linux_stopped(123456) is expected
 
 
 @pytest.mark.parametrize("name,alias", [("target", "TARGET"), ("caf\u00e9", "cafe\u0301")])
@@ -683,30 +727,36 @@ def test_linux_group_scan_retries_vanished_parent_and_finds_new_child(tmp_path, 
     (child / "stat").write_text("123458 (child) T 1 123456 0 0")
     scans = iter(([parent], [child]))
     monkeypatch.setattr(Path, "iterdir", lambda self: iter(next(scans)))
-    monkeypatch.setattr(lifecycle, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
-    identity = {"pid": 123458, "pgid": 123456}
-    monkeypatch.setattr(lifecycle, "process_identity", lambda pid: identity)
-    assert lifecycle._linux_group_members(123456) == {123458: identity}
+    monkeypatch.setattr(processes, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    identity: ProcessIdentity = {
+        "pid": 123458,
+        "pgid": 123456,
+        "created": "old",
+        "boot": "boot",
+        "host": "host",
+    }
+    monkeypatch.setattr(processes, "process_identity", lambda pid: identity)
+    assert processes._linux_group_members(123456) == {123458: identity}
 
 
 @pytest.mark.parametrize("error", [PermissionError(), ValueError()])
 def test_linux_group_scan_metadata_errors_fail_closed(tmp_path, monkeypatch, error):
     entry = tmp_path / "123457"
     entry.mkdir()
-    monkeypatch.setattr(lifecycle, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    monkeypatch.setattr(processes, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
 
     def read(self):
         raise error
 
     monkeypatch.setattr(Path, "read_text", read)
     with pytest.raises(lifecycle.ExecutionConflict, match="cannot verify"):
-        lifecycle._linux_group_members(123456)
+        processes._linux_group_members(123456)
 
 
 def test_linux_group_scan_first_stat_disappears_then_succeeds(tmp_path, monkeypatch):
     entry = tmp_path / "123457"
     entry.mkdir()
-    monkeypatch.setattr(lifecycle, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    monkeypatch.setattr(processes, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
     calls = []
 
     def read(self):
@@ -716,34 +766,46 @@ def test_linux_group_scan_first_stat_disappears_then_succeeds(tmp_path, monkeypa
         return "123457 (test) T 1 123456 0 0"
 
     monkeypatch.setattr(Path, "read_text", read)
-    identity = {"pid": 123457, "pgid": 123456}
-    monkeypatch.setattr(lifecycle, "process_identity", lambda pid: identity)
-    assert lifecycle._linux_group_members(123456) == {123457: identity}
+    identity: ProcessIdentity = {
+        "pid": 123457,
+        "pgid": 123456,
+        "created": "old",
+        "boot": "boot",
+        "host": "host",
+    }
+    monkeypatch.setattr(processes, "process_identity", lambda pid: identity)
+    assert processes._linux_group_members(123456) == {123457: identity}
     assert len(calls) == 2
 
 
 def test_linux_group_scan_perpetual_churn_is_bounded(tmp_path, monkeypatch):
     (tmp_path / "123457").mkdir()
-    monkeypatch.setattr(lifecycle, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    monkeypatch.setattr(processes, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
     ticks = iter((0.0, 0.05, 0.1))
-    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(processes.time, "monotonic", lambda: next(ticks))
     with pytest.raises(lifecycle.ExecutionConflict, match="freeze deadline"):
-        lifecycle._linux_group_members(123456)
+        processes._linux_group_members(123456)
 
 
 def test_linux_group_scan_missing_proc_root_fails_closed(tmp_path, monkeypatch):
-    monkeypatch.setattr(lifecycle, "Path", lambda value: tmp_path / "missing")
+    monkeypatch.setattr(processes, "Path", lambda value: tmp_path / "missing")
     with pytest.raises(lifecycle.ExecutionConflict, match="cannot verify"):
-        lifecycle._linux_group_members(123456)
+        processes._linux_group_members(123456)
 
 
 def test_linux_ordinary_process_retains_term_then_kill(monkeypatch):
-    identity = {"pid": 123456, "pgid": 1, "created": "worker", "boot": "boot", "host": "host"}
+    identity: ProcessIdentity = {
+        "pid": 123456,
+        "pgid": 1,
+        "created": "worker",
+        "boot": "boot",
+        "host": "host",
+    }
     sent = []
     monkeypatch.setattr(os, "pidfd_open", lambda pid, flags: 999, raising=False)
     monkeypatch.setattr(signal, "pidfd_send_signal", lambda fd, sig: sent.append(sig), raising=False)
-    monkeypatch.setattr(lifecycle, "process_identity", lambda pid: identity)
-    monkeypatch.setattr(lifecycle, "_pidfd_exited", lambda fd: signal.SIGKILL in sent)
+    monkeypatch.setattr(processes, "process_identity", lambda pid: identity)
+    monkeypatch.setattr(processes, "_pidfd_exited", lambda fd: signal.SIGKILL in sent)
     monkeypatch.setattr(os, "close", lambda fd: None)
-    assert lifecycle._terminate_linux(identity, 0)
+    assert processes._terminate_linux(identity, 0)
     assert sent == [signal.SIGTERM, signal.SIGKILL]

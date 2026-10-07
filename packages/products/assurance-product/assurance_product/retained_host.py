@@ -6,6 +6,8 @@ Cancellation reconstructs the original envelope; prepare/finalize are not run.
 
 from __future__ import annotations
 
+from assurance_product.worker_state import WorkerRecord
+
 import asyncio
 import json
 from typing import Any, cast
@@ -19,10 +21,12 @@ from graph_engine.plugin_api import DirectoryIdentity
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
 from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend
-from assurance_product.worker_lifecycle import ExecutionConflict, current_owner, update_owner
+from assurance_product.worker_lifecycle import ExecutionConflict, ExecutionOwner, current_owner, update_owner
 
 
-def retain_stop_authority(owner: Any, workspace: Any, composition: Any, authorization: Any) -> None:
+def retain_stop_authority(
+    owner: ExecutionOwner, workspace: Any, composition: Any, authorization: Any
+) -> None:
     """Retain installed source selectors and secret locators on the admitted owner."""
     from dataclasses import asdict
     from graph_engine.frozen_json import thaw_json
@@ -53,7 +57,7 @@ def retain_stop_authority(owner: Any, workspace: Any, composition: Any, authoriz
     }
     authority = json.loads(json.dumps(authority))
 
-    def retain(record: dict[str, Any]) -> None:
+    def retain(record: WorkerRecord) -> None:
         prior = record.get("stop_authority")
         if prior is not None and prior != authority:
             raise ExecutionConflict("nested execution cancellation authority differs")
@@ -89,27 +93,16 @@ class RetainedHost:
             raise ExecutionConflict("retained host call disagrees with authenticated Attempt ownership")
         payload = call.model_dump(mode="json")
         digest = canonical_digest(cast(JSONValue, payload))
-        async with self._backend.store._lock:
-            await self._backend._conn.execute("BEGIN IMMEDIATE")
-            try:
-                await self._backend._conn.execute(
-                    "INSERT INTO assurance_host_calls (call_digest, owner_nonce, attempt_key_digest, payload, stop_authority_digest) VALUES (?, ?, ?, ?, ?) "
-                    "ON CONFLICT(call_digest) DO NOTHING",
-                    (
-                        digest,
-                        owner.nonce,
-                        call.identity.attempt_key_digest,
-                        canonical_json_bytes(cast(JSONValue, payload)),
-                        owner.stop_authority_digest,
-                    ),
-                )
-                await self._backend._conn.commit()
-            except BaseException:
-                await self._backend._conn.rollback()
-                raise
+        await self._backend.retain_host_call(
+            call_digest=digest,
+            owner_nonce=owner.nonce,
+            attempt_key_digest=call.identity.attempt_key_digest,
+            payload=canonical_json_bytes(cast(JSONValue, payload)),
+            stop_authority_digest=owner.stop_authority_digest,
+        )
         if call.identity.phase == "runtime":
 
-            def registered(record: dict[str, Any]) -> None:
+            def registered(record: WorkerRecord) -> None:
                 if digest not in record["calls"]:
                     record["calls"].append(digest)
 
@@ -122,11 +115,7 @@ class RetainedHost:
             outcome.failure is not None and outcome.failure.kind == "external_effect"
         )
         if confirmed:
-            async with self._backend.store._lock:
-                await self._backend._conn.execute(
-                    "UPDATE assurance_host_calls SET confirmed = 1 WHERE call_digest = ?", (digest,)
-                )
-                await self._backend._conn.commit()
+            await self._backend.confirm_host_call(digest)
             if call.identity.phase == "runtime":
                 update_owner(
                     owner,
@@ -135,7 +124,7 @@ class RetainedHost:
         return result
 
 
-async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
+async def confirm_owned_calls(owner: WorkerRecord) -> bool:
     """After verified local exit, cancel only this owner's retained activity calls."""
     from pathlib import Path
     from assurance_product.bootstrap.status import read_run_manifest
@@ -146,22 +135,13 @@ async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
     from assurance_product.runtime_ports import ProductRuntimePorts
     from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
 
-    from assurance_product.worker_lifecycle import validated_stop_checkpoint
+    from assurance_product.worker_cleanup import validated_stop_checkpoint, has_retained_calls
 
     db = validated_stop_checkpoint(owner)
     if db is None:
         return True
-    import sqlite3
-
-    connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    try:
-        saved = connection.execute(
-            "SELECT 1 FROM assurance_host_calls WHERE owner_nonce = ? LIMIT 1", (owner["nonce"],)
-        ).fetchone()
-        if saved is None:
-            return not owner["calls"]
-    finally:
-        connection.close()
+    if not has_retained_calls(db, owner):
+        return not owner["calls"]
     authority = owner.get("stop_authority")
     if authority is not None:
         from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization, SecretSourceBinding
@@ -213,19 +193,16 @@ async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
         workspace, composition, owner["invocation"], authorization=authorization
     ) as ports:
         backend = ports.backend
-        async with backend.store._lock:
-            cursor = await backend._conn.execute(
-                "SELECT call_digest, attempt_key_digest, payload, confirmed, stop_authority_digest FROM assurance_host_calls WHERE owner_nonce = ?",
-                (owner["nonce"],),
-            )
-            rows = await cursor.fetchall()
-        saved = {str(row[0]) for row in rows}
+        rows = await backend.read_host_calls(owner["nonce"])
+        saved = {row.call_digest for row in rows}
         if not set(owner["calls"]).issubset(saved):
             raise ExecutionConflict("legacy in-flight activity has no retained authenticated envelope")
         lease = await backend.lease.acquire(owner["invocation"], owner_id="stop-" + owner["nonce"])
         try:
             arbiter = ResourceArbiter(SqliteResourceAuthorizationStore(backend))
-            for digest, saved_key, payload, confirmed, authority_digest in rows:
+            for row in rows:
+                digest, saved_key, payload = row.call_digest, row.attempt_key_digest, row.payload
+                confirmed, authority_digest = row.confirmed, row.stop_authority_digest
                 if authority_digest is not None and (
                     authority is None or canonical_digest(authority) != authority_digest
                 ):
@@ -261,7 +238,7 @@ async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
                 # advancing the fence; they are never returned as business results.
                 receipts = ports.host.read_terminal_receipts(identity)  # type: ignore[attr-defined]
                 if any(receipt.outcome.status in {"succeeded", "stopped"} for receipt in receipts):
-                    await _confirm(backend, str(digest))
+                    await backend.confirm_host_call(digest)
                     continue
                 if snapshot.terminal is not None or snapshot.released:
                     return False
@@ -309,15 +286,7 @@ async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
                 result = await ports.host.cancel(cancel)  # type: ignore[attr-defined]
                 if result.cancel_result is None or result.cancel_result.status != "terminal":
                     return False
-                await _confirm(backend, str(digest))
+                await backend.confirm_host_call(digest)
             return True
         finally:
             await backend.lease.release(lease)
-
-
-async def _confirm(backend: AssuranceSqliteBackend, digest: str) -> None:
-    async with backend.store._lock:
-        await backend._conn.execute(
-            "UPDATE assurance_host_calls SET confirmed = 1 WHERE call_digest = ?", (digest,)
-        )
-        await backend._conn.commit()

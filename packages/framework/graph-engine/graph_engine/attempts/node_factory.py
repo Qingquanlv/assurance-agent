@@ -16,7 +16,7 @@ from graph_engine.attempts.events import (
     AttemptSnapshot,
     SystemInterruptIssued,
 )
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.keys import AttemptKey, BusinessActivation, AttemptIdentity
 from graph_engine.attempts.resolutions import (
     CommittedTaskResult,
     IndeterminateTaskResult,
@@ -115,13 +115,16 @@ class AttemptNodeFactory:
             raise TypeError("attempt kernel is required")
         completions: list[tuple[AttemptKey, ActiveSystemInterrupt]] = []
         seed_from: AttemptKey | None = None
+        identity = AttemptIdentity(
+            invocation_id=invocation_id,
+            graph_revision=revision,
+            public_entrypoint=entrypoint,
+            semantic_node_id=semantic_node_id,
+            business_activation=business,
+            contract_id=task.contract_id,
+        )
         scope: dict[str, JSONValue] = {
-            "invocation_id": invocation_id,
-            "graph_revision": revision,
-            "public_entrypoint": entrypoint,
-            "semantic_node_id": semantic_node_id,
-            "business_activation": business.model_dump(mode="json"),
-            "contract_id": task.contract_id,
+            **identity.model_dump(mode="json"),
             "contract_digest": canonical_digest(task.canonical_projection()),
         }
         latest = await self._journal.latest_generation(scope) if self._regenerate else None
@@ -136,16 +139,7 @@ class AttemptNodeFactory:
         for local_attempt in range(1, task.retry.max_attempts + 1):
 
             def make_key(ordinal: int) -> AttemptKey:
-                return derive_attempt_key(
-                    invocation_id=invocation_id,
-                    graph_revision=revision,
-                    public_entrypoint=entrypoint,
-                    semantic_node_id=semantic_node_id,
-                    business_activation=business,
-                    contract_id=task.contract_id,
-                    validated_input=validated,
-                    technical_attempt=ordinal,
-                )
+                return identity.derive_key(validated.model_dump(mode="json"), technical_attempt=ordinal)
 
             if waiting is not None:
                 technical_attempt, key, _, saved_input = waiting

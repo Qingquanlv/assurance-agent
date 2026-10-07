@@ -15,7 +15,7 @@ from assurance_product.bootstrap.opencode import start_opencode_serve as _start_
 from assurance_product.bootstrap.opencode import stop_opencode as _stop_opencode
 from assurance_product.bootstrap.opencode import wait_http_ready
 from assurance_product.bootstrap.preflight import BootstrapPreflightError, preflight_bootstrap
-from assurance_product.worker_lifecycle import exclusive_bootstrap, exclusive_resume
+from assurance_product.worker_entrypoints import exclusive_bootstrap, exclusive_resume
 from assurance_product.bootstrap.spec import load_run_spec
 from assurance_product.bootstrap.status import (
     derive_bootstrap_change_id,
@@ -547,7 +547,8 @@ def stop_bootstrap(
     # The worker owns cleanup after the graph reaches a durable pause boundary.
     del stop_opencode
     status = read_bootstrap_status(run_dir)
-    from assurance_product.worker_lifecycle import stop_run, stop_diagnostic, run_workspace
+    from assurance_product.worker_entrypoints import stop_run, run_workspace
+    from assurance_product.worker_lifecycle import stop_diagnostic
 
     if force:
         result = stop_run(run_dir, force=True)

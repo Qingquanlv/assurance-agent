@@ -73,14 +73,13 @@ def check_flow(flow: Flow, stack: tuple[int, ...] = ()) -> None:
             _check_gate(node.gate)
     links = _links(flow)
     _check_reachable(flow, node_names, links)
-    writes = {node.name: _direct_writes(node, stack + (id(flow),)) for node in flow.nodes}
     for node in flow.nodes:
         if isinstance(node, StepNode):
-            _check_bindings(flow, node, links, writes)
+            _check_bindings(flow, node, links)
         elif isinstance(node, ParallelNode):
-            _check_parallel(flow, node, links, writes, stack)
+            _check_parallel(flow, node, stack)
         elif isinstance(node, SubflowNode):
-            _check_subflow(flow, node, links, writes, stack)
+            _check_subflow(flow, node, links, stack)
     _check_public_receipts(flow)
     _check_controls(flow)
 
@@ -207,9 +206,8 @@ def _check_bindings(
     flow: Flow,
     step: StepNode,
     links: Mapping[str, tuple[str, ...]],
-    writes: Mapping[str, set[str]],
 ) -> None:
-    available = _available(flow, step.name, links, writes)
+    available = _available(flow, step.name)
     view = view_op(step.op)
     sources = dict(step.inputs)
     for binding in view.bindings:
@@ -250,13 +248,11 @@ def _check_ledger_sources(
 def _check_parallel(
     flow: Flow,
     node: ParallelNode,
-    links: Mapping[str, tuple[str, ...]],
-    writes: Mapping[str, set[str]],
     stack: tuple[int, ...],
 ) -> None:
     if node.select is not None:
         _check_select(flow, node)
-    available = _available(flow, node.name, links, writes)
+    available = _available(flow, node.name)
     groups: list[tuple[str, set[str]]] = []
     nested = stack + (id(flow),)
     for key, branch in node.branches.items():
@@ -308,15 +304,14 @@ def _check_subflow(
     flow: Flow,
     node: SubflowNode,
     links: Mapping[str, tuple[str, ...]],
-    writes: Mapping[str, set[str]],
     stack: tuple[int, ...],
 ) -> None:
     child = declared_flow(node.child)
     if child is not None:
         check_flow(child, stack + (id(flow),))
         expected = set(child.outcomes)
-        _check_child_inputs(flow, node, child.input, links, _available(flow, node.name, links, writes))
-        available = _available(flow, node.name, links, writes)
+        _check_child_inputs(flow, node, child.input, links, _available(flow, node.name))
+        available = _available(flow, node.name)
         for ledger_key in child.ledger_input_keys:
             if ledger_key not in available:
                 raise FlowCheckError(f"ledger key {ledger_key} is not available at {node.name}")
@@ -652,8 +647,6 @@ def _reaches(start: str, goal: str, links: Mapping[str, tuple[str, ...]]) -> boo
 def _available(
     flow: Flow,
     node_name: str,
-    links: Mapping[str, tuple[str, ...]],
-    writes: Mapping[str, set[str]],
 ) -> set[str]:
     return guaranteed(flow).get(node_name, set())
 

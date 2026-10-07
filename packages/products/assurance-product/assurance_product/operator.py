@@ -49,7 +49,8 @@ def _nonce() -> str:
 
 def launch_worker(*, run_dir: Path, change_id: str, environ: Mapping[str, str]) -> None:
     import sys
-    from assurance_product.worker_lifecycle import acquire_execution, launch_reserved, run_workspace
+    from assurance_product.worker_lifecycle import acquire_execution, launch_reserved
+    from assurance_product.worker_entrypoints import run_workspace
 
     workspace, invocation = run_workspace(run_dir)
     if invocation != change_id:
@@ -486,7 +487,8 @@ class AssuranceOperator:
         environ: Mapping[str, str] | None,
     ) -> None:
         try:
-            from assurance_product.worker_lifecycle import acquire_execution, run_workspace
+            from assurance_product.worker_lifecycle import acquire_execution
+            from assurance_product.worker_entrypoints import run_workspace
 
             workspace, invocation = run_workspace(run_dir)
             with acquire_execution(workspace, invocation, run_dir=run_dir):

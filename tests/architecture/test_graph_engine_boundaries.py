@@ -309,7 +309,17 @@ def test_product_may_import_lower_public_surfaces(repo_root: Path) -> None:
         PRODUCT_LOWER_PUBLIC_SURFACES
         | {"assurance_product"}
         | set(sys.stdlib_module_names)
-        | {"click", "langchain_core", "langgraph", "packaging", "pydantic", "pydantic_core", "yaml"}
+        # Pydantic requires the TypedDict backport for persisted records on Python 3.11.
+        | {
+            "click",
+            "langchain_core",
+            "langgraph",
+            "packaging",
+            "pydantic",
+            "pydantic_core",
+            "typing_extensions",
+            "yaml",
+        }
     )
 
 

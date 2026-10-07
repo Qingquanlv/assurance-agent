@@ -34,7 +34,7 @@ from assurance_improvement.operations.knowledge_promote import (
 )
 from assurance_improvement.operations.retro_dashboard import build_retro_dashboard
 
-from assurance_product.worker_lifecycle import exclusive_cli
+from assurance_product.worker_entrypoints import exclusive_cli
 from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
 from assurance_product.bootstrap.driver import resume_bootstrap, run_bootstrap, stop_bootstrap

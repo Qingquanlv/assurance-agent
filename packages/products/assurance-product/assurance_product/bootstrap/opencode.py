@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from assurance_product.worker_state import WorkerRecord
+
 import base64
 import shutil
 import socket
@@ -143,7 +145,8 @@ def start_opencode_serve(
     authorization = _basic_opencode_authorization(token) if token else None
     command = [binary, "serve", "--hostname", "127.0.0.1", "--port", str(port)]
     launcher = spawn or subprocess.Popen
-    from assurance_product.worker_lifecycle import current_owner, process_identity, update_owner
+    from assurance_product.worker_lifecycle import current_owner, update_owner
+    from assurance_product.worker_process import process_identity
 
     owner = current_owner()
     if owner is not None:
@@ -163,7 +166,7 @@ def start_opencode_serve(
         if identity is None:
             raise OpenCodeLaunchError("private server process identity unavailable")
 
-        def registered(record: dict[str, Any]) -> None:
+        def registered(record: WorkerRecord) -> None:
             record.setdefault("servers", []).append(identity)
             record["launching_service"] = False
 
@@ -173,7 +176,9 @@ def start_opencode_serve(
         waiter(f"{endpoint}/global/health", _READY_TIMEOUT_SECONDS)
     except OpenCodeLaunchError:
         waiter(f"{endpoint}/", _READY_TIMEOUT_SECONDS)
-    return OpenCodeHandleV1(endpoint=endpoint, pid=int(process.pid), process_identity=identity)
+    return OpenCodeHandleV1(
+        endpoint=endpoint, pid=int(process.pid), process_identity=None if identity is None else dict(identity)
+    )
 
 
 def attach_shared_opencode(
@@ -227,12 +232,13 @@ def create_run_root_session(
 def stop_opencode(handle: OpenCodeHandleV1) -> None:
     if handle.ownership == "shared" or handle.pid is None:
         return
-    from assurance_product.worker_lifecycle import ExecutionConflict, _terminate
+    from assurance_product.worker_lifecycle import ExecutionConflict
+    from assurance_product.worker_process import terminate
 
     if handle.process_identity is None or handle.process_identity.get("pid") != handle.pid:
         raise OpenCodeLaunchError("private server has no verifiable process identity")
     try:
-        if not _terminate(handle.process_identity, _STOP_WAIT_SECONDS):
+        if not terminate(handle.process_identity, _STOP_WAIT_SECONDS):
             raise OpenCodeLaunchError("private server exit remains unconfirmed")
     except (ExecutionConflict, OSError) as error:
         raise OpenCodeLaunchError(str(error)) from error

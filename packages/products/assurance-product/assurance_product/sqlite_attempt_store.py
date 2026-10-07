@@ -58,7 +58,7 @@ class SqliteAttemptJournal:
             if scope.get("invocation_id") != owner.invocation:
                 raise AttemptJournalIntegrityError("generation Invocation differs from owner")
             # Publish conservative evidence before the durable ownership update.
-            update_owner(owner, lambda record: record["attempts"].append(str(row[1])))
+            update_owner(owner, lambda record: record.setdefault("attempts", []).append(str(row[1])))
             async with self._lock:
                 await self._conn.execute(
                     "UPDATE assurance_attempt_generations SET owner_nonce = ? WHERE attempt_key_digest = ?",
@@ -114,7 +114,7 @@ class SqliteAttemptJournal:
                 key = make_key(ordinal)
                 if owner is not None:
                     # A crash or rollback after this point is ambiguous, never proof of no work.
-                    update_owner(owner, lambda record: record["attempts"].append(key.digest))
+                    update_owner(owner, lambda record: record.setdefault("attempts", []).append(key.digest))
                 await self._conn.execute(
                     "INSERT INTO assurance_attempt_generations (scope_digest, ordinal, scope, attempt_key_digest, owner_nonce, input_payload) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
