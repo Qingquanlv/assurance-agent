@@ -74,6 +74,22 @@ records retain the improvement id, version, target identity, and receipt.
 Runs created with the former Effect protocol must finish on their original
 wheels or restart with the rebuilt product; old Effect journals are not migrated.
 
+
+Attempt execution separates progression from domain transactions. The kernel is
+an entrypoint that composes a runtime and per-call handlers. The runtime chooses
+explicit actions from the journal-derived phase and completed local prerequisites;
+it returns waiting or unknown results without polling. The handlers own resource
+authorization, activity dispatch or reconciliation, workspace validation and
+promotion, and terminal/release proofs. Each handler controls its own journal
+writes and durability barriers. Phase is not another persisted checkpoint.
+
+This applies Pi Durable's separation of task progression and handler-controlled
+commits within the existing Python engine; it does not install Pi Durable.
+Technical retries remain in the node factory, business repair remains in Flow,
+and production restart keeps the single-worker regeneration rules below. The
+lower-level same-Attempt recovery API retains its existing journal and proof checks.
+See the [Attempt runtime design](docs/superpowers/specs/2026-10-07-attempt-runtime-separation-design.md).
+
 `aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`,
 `aa bindings build`, `aa lock show`, and `aa retro show` operate on an installed
 product plus an explicit binding wheel and project configuration tree.

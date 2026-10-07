@@ -201,6 +201,8 @@ Attempt Runtime 继续保留 journal 的 CAS、身份校验、fencing token 和�
 
 ## 普通顺序执行
 
+范围补充（2026-10-07）：本节简化的是中断后的恢复策略和图调度，不取消 Attempt 内部的职责解耦。原 Spike 要求的“状态推进与领域处理分离”继续有效，详见 [Attempt Runtime 补充设计](2026-10-07-attempt-runtime-separation-design.md)。内部执行器可以选择当前 Attempt 的下一步动作；它不增加图调度器，也不改变以下重新生成和等待规则。
+
 Driver 按当前节点的执行结果处理，不依靠 Phase 是否变化或 journal revision 是否增长来反复调度 handler。
 
 图的节点选择与路由仍由现有 Flow／LangGraph 负责，不增加第二个图调度器。
