@@ -558,6 +558,20 @@ class AssuranceProductApplication:
             invocation=rendered,
         )
 
+    def stop(self, *, project_dir: Path, invocation_id: str, force: bool = False, timeout: float = 2) -> str:
+        """Stop the admitted foreground owner without running business recovery."""
+        from assurance_product.retained_host import confirm_owned_calls
+        from assurance_product.worker_lifecycle import request_stop, cleanup_owned_resources
+
+        return request_stop(
+            project_dir,
+            force=force,
+            timeout=timeout,
+            expected_invocation=invocation_id,
+            confirm_external=lambda owner: asyncio.run(confirm_owned_calls(owner)),
+            cleanup=cleanup_owned_resources,
+        )
+
     def request_stop(self, run_dir: Path, *, change_id: str) -> None:
         from assurance_product.worker_lifecycle import stop_run
 

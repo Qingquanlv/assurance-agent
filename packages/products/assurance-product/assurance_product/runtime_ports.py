@@ -244,6 +244,14 @@ class ProductRuntimePorts:
         manifest = product_graph_manifest(typed_composition, product_lock)
         invocation_id = _invocation_id(invocation)
         auth = authorization if authorization is not None else empty_runtime_authorization()
+        from assurance_product.worker_lifecycle import current_owner
+        from assurance_product.retained_host import retain_stop_authority
+
+        owner = current_owner()
+        if owner is not None:
+            if owner.workspace != workspace.paths.project_root.resolve() or owner.invocation != invocation_id:
+                raise ValueError("runtime ports disagree with admitted foreground owner")
+            retain_stop_authority(owner, workspace, typed_composition, auth)
         reachable = tuple(reachable_contract_ids or ())
         async with open_sqlite_checkpointer(workspace) as backend:
             journal = SqliteAttemptJournal(backend)

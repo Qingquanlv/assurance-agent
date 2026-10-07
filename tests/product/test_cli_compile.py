@@ -28,6 +28,7 @@ def test_help_exposes_exact_command_tree(cli_runner):
         "start",
         "run",
         "status",
+        "stop",
         "resume",
         "lock",
         "retro",

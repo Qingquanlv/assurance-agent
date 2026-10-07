@@ -150,6 +150,7 @@ class ExecutionOwner:
     fd: int
     thread: int
     task: object
+    stop_authority_digest: str | None = None
 
 
 _current: contextvars.ContextVar[ExecutionOwner | None] = contextvars.ContextVar(

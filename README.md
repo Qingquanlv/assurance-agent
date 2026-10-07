@@ -276,3 +276,11 @@ exercise real pytest collection, the production execution subgraph and Kernel,
 root checkpoint resume, and routing into Quality without replaying the tests.
 Those tests use the host interpreter; isolated SUT dependency provisioning and
 live OpenCode acceptance are separate checks.
+
+Foreground execution can be stopped from another terminal using its actual workspace directory and Invocation ID:
+
+```sh
+uv run aa stop --project-dir /absolute/path/to/run-workspace --invocation-id inv-123 --force
+```
+
+The command verifies the local owner's process identity, confirms termination of its retained external activity, and releases only its owned resources before replacement is admitted. An acknowledged or unknown cancellation reports `unconfirmed` (exit 20); retry the same stop command after terminal proof becomes available. Omit `--force` to wait for local exit without sending a signal. The Python control API is `AssuranceProductApplication.stop(project_dir=..., invocation_id=..., force=True)`.

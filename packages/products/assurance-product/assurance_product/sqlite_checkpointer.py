@@ -144,7 +144,8 @@ CREATE TABLE IF NOT EXISTS assurance_host_calls (
     owner_nonce TEXT NOT NULL,
     attempt_key_digest TEXT NOT NULL,
     payload BLOB NOT NULL,
-    confirmed INTEGER NOT NULL DEFAULT 0
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    stop_authority_digest TEXT
 );
 CREATE TABLE IF NOT EXISTS assurance_attempt_durable (
     attempt_key_digest TEXT PRIMARY KEY,
@@ -847,6 +848,10 @@ async def _configure_connection(conn: Any) -> None:
 
 async def _setup_assurance_tables(conn: Any) -> None:
     await conn.executescript(_ASSURANCE_SCHEMA)
+    cursor = await conn.execute("PRAGMA table_info(assurance_host_calls)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "stop_authority_digest" not in columns:
+        await conn.execute("ALTER TABLE assurance_host_calls ADD COLUMN stop_authority_digest TEXT")
     await conn.commit()
 
 

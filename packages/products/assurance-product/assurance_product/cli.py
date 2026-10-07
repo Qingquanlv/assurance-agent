@@ -103,6 +103,25 @@ def app() -> None:
     """aa — authenticated Assurance graph product."""
 
 
+@app.command("stop")
+@click.option("--project-dir", required=True, type=click.Path(exists=True, file_okay=False))
+@click.option("--invocation-id", required=True)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Terminate the verified foreground owner and confirm owned activity termination.",
+)
+def stop_command(project_dir: str, invocation_id: str, force: bool) -> None:
+    """Stop a foreground execution in its actual workspace directory."""
+    result = AssuranceProductApplication().stop(
+        project_dir=Path(project_dir),
+        invocation_id=invocation_id,
+        force=force,
+    )
+    _emit({"invocation_id": invocation_id, "status": result})
+    raise SystemExit(0 if result == "stopped" else 20)
+
+
 @app.command("compile")
 @click.option("--product")
 @click.option("--binding-dist")

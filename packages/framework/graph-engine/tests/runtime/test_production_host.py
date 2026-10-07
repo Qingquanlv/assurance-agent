@@ -273,35 +273,70 @@ def test_production_host_rejects_windows(monkeypatch: pytest.MonkeyPatch) -> Non
         _ProcessSupervisor.for_platform()
 
 
-def test_runtime_envelope_is_durable_before_dispatch(production_host_fixture, tmp_path) -> None:
+@pytest.mark.parametrize("has_authority", [True, False])
+def test_runtime_envelope_is_durable_before_dispatch(
+    production_host_fixture, tmp_path, has_authority
+) -> None:
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
     from assurance_product.retained_host import RetainedHost
-    from assurance_product.worker_lifecycle import acquire_execution, control_root
+    from assurance_product.worker_lifecycle import (
+        acquire_execution,
+        control_root,
+        update_owner,
+        ExecutionConflict,
+    )
     import json
 
     fixture = production_host_fixture
     project = tmp_path / "project"
     workspace = ChangeWorkspace.prepare(Path(project).resolve(), "run")
+    authority = {"fixture": "authorized-stop-only-runtime"}
+    authority_digest = canonical_digest(authority)
+    dispatched = False
 
     async def scenario():
+        nonlocal dispatched
         async with open_sqlite_checkpointer(workspace) as backend:
 
             class CrashingHost:
                 async def execute(self, call):
-                    cursor = await backend._conn.execute("SELECT payload FROM assurance_host_calls")
+                    nonlocal dispatched
+                    dispatched = True
+                    cursor = await backend._conn.execute(
+                        "SELECT payload, stop_authority_digest FROM assurance_host_calls"
+                    )
                     row = await cursor.fetchone()
                     assert row is not None
                     assert json.loads(bytes(row[0])) == call.model_dump(mode="json")
+                    assert row[1] == authority_digest
+                    record = json.loads(
+                        (control_root(workspace.paths.project_root) / "owner.json").read_text()
+                    )
+                    assert record["stop_authority"] == authority
+                    assert record["calls"]
                     raise RuntimeError("dispatch crash")
 
             host = RetainedHost(CrashingHost(), backend, fixture.attempt_journal)
-            with pytest.raises(RuntimeError, match="dispatch crash"):
-                await host.execute(fixture.call)
+            if has_authority:
+                with pytest.raises(RuntimeError, match="dispatch crash"):
+                    await host.execute(fixture.call)
+            else:
+                with pytest.raises(ExecutionConflict, match="requires retained cancellation authority"):
+                    await host.execute(fixture.call)
+                cursor = await backend._conn.execute("SELECT call_digest FROM assurance_host_calls")
+                assert await cursor.fetchall() == []
 
-    with acquire_execution(workspace.paths.project_root, "inv-1"):
+    with acquire_execution(workspace.paths.project_root, "inv-1") as owner:
+        if has_authority:
+            # Unit fixture supplies the prerequisite that production runtime
+            # ports construct from authenticated installed sources.
+            update_owner(owner, lambda record: record.update(stop_authority=authority))
+            owner.stop_authority_digest = authority_digest
         asyncio.run(scenario())
-    assert json.loads((control_root(workspace.paths.project_root) / "owner.json").read_text())["calls"]
+    assert dispatched is has_authority
+    calls = json.loads((control_root(workspace.paths.project_root) / "owner.json").read_text())["calls"]
+    assert bool(calls) is has_authority
 
 
 @pytest.mark.parametrize("status, expected", [("acknowledged", False), ("terminal", True)])

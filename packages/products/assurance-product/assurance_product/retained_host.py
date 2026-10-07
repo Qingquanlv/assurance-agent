@@ -22,6 +22,47 @@ from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend
 from assurance_product.worker_lifecycle import ExecutionConflict, current_owner, update_owner
 
 
+def retain_stop_authority(owner: Any, workspace: Any, composition: Any, authorization: Any) -> None:
+    """Retain installed source selectors and secret locators on the admitted owner."""
+    from dataclasses import asdict
+    from graph_engine.frozen_json import thaw_json
+    from assurance_product.product import product_graph_revision, product_lock_from_composition
+
+    deployment = [
+        item
+        for item in composition.lock.plugins
+        if item.source.identity.get("entrypoint_name") == "deployment"
+    ]
+    config = [item for item in composition.lock.plugins if item.source.kind == "config_tree"]
+    if len(deployment) != 1 or len(config) != 1:
+        raise ExecutionConflict(
+            "foreground stop requires one authenticated deployment and configuration source"
+        )
+    source = thaw_json(deployment[0].source.identity)
+    lock = product_lock_from_composition(composition)
+    authority = {
+        "change_id": workspace.change_id,
+        "product": "assurance-opencode",
+        "binding_dist": source["distribution"],
+        "binding_entrypoint": source["entrypoint_name"],
+        "binding_declaration": source["declaration_path"],
+        "config_tree": str(config[0].source.identity["root"]),
+        "authorization": asdict(authorization),
+        "product_lock_digest": lock.digest,
+        "graph_revision": product_graph_revision(composition, lock).revision_id,
+    }
+    authority = json.loads(json.dumps(authority))
+
+    def retain(record: dict[str, Any]) -> None:
+        prior = record.get("stop_authority")
+        if prior is not None and prior != authority:
+            raise ExecutionConflict("nested execution cancellation authority differs")
+        record["stop_authority"] = authority
+
+    update_owner(owner, retain)
+    owner.stop_authority_digest = canonical_digest(authority)
+
+
 class RetainedHost:
     def __init__(self, inner: Any, backend: AssuranceSqliteBackend, journal: AttemptJournalPort) -> None:
         self._inner = inner
@@ -35,6 +76,8 @@ class RetainedHost:
         owner = current_owner()
         if owner is None or owner.invocation != call.identity.invocation_id:
             raise ExecutionConflict("production dispatch requires the current Invocation owner")
+        if owner.stop_authority_digest is None:
+            raise ExecutionConflict("production dispatch requires retained cancellation authority")
         snapshot = await self._journal.load(AttemptKey(digest=call.identity.attempt_key_digest))
         if (
             snapshot is None
@@ -50,13 +93,14 @@ class RetainedHost:
             await self._backend._conn.execute("BEGIN IMMEDIATE")
             try:
                 await self._backend._conn.execute(
-                    "INSERT INTO assurance_host_calls (call_digest, owner_nonce, attempt_key_digest, payload) VALUES (?, ?, ?, ?) "
+                    "INSERT INTO assurance_host_calls (call_digest, owner_nonce, attempt_key_digest, payload, stop_authority_digest) VALUES (?, ?, ?, ?, ?) "
                     "ON CONFLICT(call_digest) DO NOTHING",
                     (
                         digest,
                         owner.nonce,
                         call.identity.attempt_key_digest,
                         canonical_json_bytes(cast(JSONValue, payload)),
+                        owner.stop_authority_digest,
                     ),
                 )
                 await self._backend._conn.commit()
@@ -107,18 +151,8 @@ async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
     db = validated_stop_checkpoint(owner)
     if db is None:
         return True
-    run_value = owner.get("run_dir")
-    if run_value is None:
-        return not owner["calls"]
-    run_dir = Path(run_value)
-    manifest = read_run_manifest(run_dir)
-    if manifest.get("invocation_id") != owner["invocation"] or Path(
-        str(manifest["project_dir"])
-    ).resolve() != Path(owner["workspace"]):
-        raise ExecutionConflict("stop manifest disagrees with recorded worker owner")
     import sqlite3
 
-    validated_stop_checkpoint(owner)
     connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         saved = connection.execute(
@@ -128,23 +162,60 @@ async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
             return not owner["calls"]
     finally:
         connection.close()
-    workspace = ChangeWorkspace.open(Path(owner["workspace"]), owner["invocation"])
-    composition, _ = _resolve_and_audit(
-        product=str(manifest["product"]),
-        binding_dist=str(manifest["binding_dist"]),
-        binding_entrypoint="deployment",
-        binding_declaration=str(manifest["binding_declaration"]),
-        config_tree=str(manifest["config_tree"]),
-    )
-    spec = load_run_spec(run_dir / "run-spec.effective.yaml")
-    authorization = _authorize_secrets(composition, (_secret_arg(spec),))
+    authority = owner.get("stop_authority")
+    if authority is not None:
+        from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization, SecretSourceBinding
+        from assurance_product.product import product_graph_revision, product_lock_from_composition
+
+        composition, _ = _resolve_and_audit(
+            product=authority["product"],
+            binding_dist=authority["binding_dist"],
+            binding_entrypoint=authority["binding_entrypoint"],
+            binding_declaration=authority["binding_declaration"],
+            config_tree=authority["config_tree"],
+        )
+        raw = authority["authorization"]
+        authorization = InvocationRuntimeAuthorization(
+            schema_version=raw["schema_version"],
+            secret_sources=tuple(SecretSourceBinding(**item) for item in raw["secret_sources"]),
+            digest=raw["digest"],
+        )
+        lock = product_lock_from_composition(composition)
+        if (
+            lock.digest != authority["product_lock_digest"]
+            or product_graph_revision(composition, lock).revision_id != authority["graph_revision"]
+        ):
+            raise ExecutionConflict("foreground cancellation runtime identity drifted")
+        workspace = ChangeWorkspace.open(Path(owner["workspace"]), authority["change_id"])
+    else:
+        run_value = owner.get("run_dir")
+        if run_value is None:
+            return not owner["calls"]
+        run_dir = Path(run_value)
+        manifest = read_run_manifest(run_dir)
+        if manifest.get("invocation_id") != owner["invocation"] or Path(
+            str(manifest["project_dir"])
+        ).resolve() != Path(owner["workspace"]):
+            raise ExecutionConflict("stop manifest disagrees with recorded worker owner")
+        workspace = ChangeWorkspace.open(
+            Path(owner["workspace"]), str(manifest.get("change_id") or owner["invocation"])
+        )
+        composition, _ = _resolve_and_audit(
+            product=str(manifest["product"]),
+            binding_dist=str(manifest["binding_dist"]),
+            binding_entrypoint="deployment",
+            binding_declaration=str(manifest["binding_declaration"]),
+            config_tree=str(manifest["config_tree"]),
+        )
+        spec = load_run_spec(run_dir / "run-spec.effective.yaml")
+        authorization = _authorize_secrets(composition, (_secret_arg(spec),))
     async with ProductRuntimePorts.open(
         workspace, composition, owner["invocation"], authorization=authorization
     ) as ports:
         backend = ports.backend
         async with backend.store._lock:
             cursor = await backend._conn.execute(
-                "SELECT call_digest, attempt_key_digest, payload, confirmed FROM assurance_host_calls WHERE owner_nonce = ?",
+                "SELECT call_digest, attempt_key_digest, payload, confirmed, stop_authority_digest FROM assurance_host_calls WHERE owner_nonce = ?",
                 (owner["nonce"],),
             )
             rows = await cursor.fetchall()
@@ -154,7 +225,11 @@ async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
         lease = await backend.lease.acquire(owner["invocation"], owner_id="stop-" + owner["nonce"])
         try:
             arbiter = ResourceArbiter(SqliteResourceAuthorizationStore(backend))
-            for digest, saved_key, payload, confirmed in rows:
+            for digest, saved_key, payload, confirmed, authority_digest in rows:
+                if authority_digest is not None and (
+                    authority is None or canonical_digest(authority) != authority_digest
+                ):
+                    raise ExecutionConflict("retained cancellation authority drifted")
                 raw = json.loads(bytes(payload))
                 if canonical_digest(raw) != digest:
                     raise ExecutionConflict("retained call digest drifted")
@@ -168,6 +243,7 @@ async def confirm_owned_calls(owner: dict[str, Any]) -> bool:
                     != DirectoryIdentity.capture(Path(owner["workspace"]))
                     or identity.graph_revision != ports.revision_id
                     or identity.product_lock_digest != ports.product_lock_digest
+                    or not set(call.authorized_secret_handles).issubset(authorization.authorized_handles)
                 ):
                     raise ExecutionConflict("retained call pinned runtime identity drifted")
                 key = AttemptKey(digest=identity.attempt_key_digest)
