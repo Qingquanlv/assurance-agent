@@ -415,3 +415,18 @@ forbidden_modules =
 ignore_imports =
     assurance_product.sqlite_checkpointer -> langgraph
 allow_indirect_imports = True
+
+[importlinter:contract:attempt-runtime-domain-boundary]
+name = Attempt runtime routes through its protocol without domain operations
+type = forbidden
+source_modules =
+    graph_engine.attempts.runtime
+forbidden_modules =
+    graph_engine.attempts.handlers
+    graph_engine.attempts.commit
+    graph_engine.attempts.workspace
+    graph_engine.attempts.resource_arbiter
+    graph_engine.persistence
+    graph_engine.plugin_api
+# Snapshot/resolution models may indirectly import shared domain value types.
+allow_indirect_imports = True
