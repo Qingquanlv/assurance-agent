@@ -44,7 +44,7 @@ class AttemptCheckpointObserver:
             if issued.issuance_anchored:
                 continue
             updated = replace(issued, issuance_checkpoint_id=notice.anchor.checkpoint_id)
-            await self._replace_interrupt(snapshot, issued, updated, notice.anchor.fencing_token)
+            await self._replace_interrupt(snapshot, issued, updated, notice.delivery_fencing_token)
 
     async def _anchor_completion(
         self,
@@ -69,7 +69,7 @@ class AttemptCheckpointObserver:
                     continue
                 updated = replace(issued, completion_checkpoint_id=notice.anchor.checkpoint_id)
                 snapshot = await self._replace_interrupt(
-                    snapshot, issued, updated, notice.anchor.fencing_token
+                    snapshot, issued, updated, notice.delivery_fencing_token
                 )
 
     async def _replace_interrupt(

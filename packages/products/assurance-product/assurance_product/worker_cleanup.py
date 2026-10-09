@@ -156,12 +156,18 @@ def assert_no_legacy_attempts(workspace: Path) -> None:
 
         connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         try:
-            exists = connection.execute(
-                "SELECT name FROM sqlite_master WHERE name = 'assurance_attempt_batches'"
-            ).fetchone()
-            if exists and connection.execute("SELECT 1 FROM assurance_attempt_batches LIMIT 1").fetchone():
-                raise ExecutionConflict(
-                    "legacy execution has no verifiable owner; unsupported resume, use a fresh isolated run"
-                )
+            for table in (
+                "assurance_attempt_batches",
+                "assurance_attempt_checkpoints",
+                "assurance_attempt_generations",
+                "assurance_host_calls",
+            ):
+                exists = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+                ).fetchone()
+                if exists and connection.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                    raise ExecutionConflict(
+                        "earlier execution has no verifiable owner; unsupported resume, use a fresh isolated run"
+                    )
         finally:
             connection.close()

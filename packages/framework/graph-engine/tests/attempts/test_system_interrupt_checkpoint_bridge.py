@@ -244,7 +244,9 @@ async def test_issuance_observer_proves_exposure_and_leaves_generation_active() 
         ordinal=0,
         envelope_digest=digest,
     )
-    notice = CheckpointAnchorNotice(anchor=_anchor(), markers=(marker,), source="pending_write")
+    notice = CheckpointAnchorNotice(
+        anchor=_anchor(), markers=(marker,), source="pending_write", delivery_fencing_token=4
+    )
     await observer.on_anchored(notice)
     snapshot = await journal.load(key)
     assert snapshot is not None
@@ -272,6 +274,7 @@ async def test_issuance_observer_is_idempotent_on_duplicate_delivery() -> None:
             ),
         ),
         source="pending_write",
+        delivery_fencing_token=4,
     )
     await observer.on_anchored(notice)
     first = await journal.load(key)
@@ -320,6 +323,7 @@ async def test_completion_observer_retires_only_matching_generations() -> None:
                 ),
             ),
             source="checkpoint",
+            delivery_fencing_token=4,
         )
     )
     snapshot = await journal.load(key)
@@ -349,6 +353,7 @@ async def test_pending_write_completion_markers_never_retire() -> None:
                 ),
             ),
             source="pending_write",
+            delivery_fencing_token=4,
         )
     )
     snapshot = await journal.load(key)
@@ -377,6 +382,7 @@ async def test_mismatched_digest_or_generation_is_rejected() -> None:
                     ),
                 ),
                 source="pending_write",
+                delivery_fencing_token=4,
             )
         )
     with pytest.raises(ValueError):
@@ -393,6 +399,7 @@ async def test_mismatched_digest_or_generation_is_rejected() -> None:
                     ),
                 ),
                 source="pending_write",
+                delivery_fencing_token=4,
             )
         )
 
@@ -402,7 +409,9 @@ async def test_human_interrupt_without_attempt_marker_is_ignored() -> None:
     key = _attempt_key()
     await _seed_issued(journal, key=key)
     observer = AttemptCheckpointObserver(journal)
-    await observer.on_anchored(CheckpointAnchorNotice(anchor=_anchor(), markers=(), source="checkpoint"))
+    await observer.on_anchored(
+        CheckpointAnchorNotice(anchor=_anchor(), markers=(), source="checkpoint", delivery_fencing_token=4)
+    )
     snapshot = await journal.load(key)
     assert snapshot is not None
     assert snapshot.active_interrupt is not None
@@ -636,6 +645,7 @@ async def test_arecover_redelivers_completion_observer_and_does_not_retire_unrel
                 ),
             ),
             source="pending_write",
+            delivery_fencing_token=4,
         )
     )
     crashing, store, checkpoint_journal, observer = await _crashing_saver(
@@ -783,6 +793,7 @@ async def test_later_reentry_after_completion_does_not_replay_stale_ordinal(
                 ),
             ),
             source="pending_write",
+            delivery_fencing_token=4,
         )
     )
     journal.mark_kernel_now_committed(_attempt_key())
@@ -795,6 +806,7 @@ async def test_later_reentry_after_completion_does_not_replay_stale_ordinal(
                 CheckpointBridgeMarker.model_validate(item) for item in update[CHECKPOINT_MARKERS_STATE_KEY]
             ),
             source="checkpoint",
+            delivery_fencing_token=4,
         )
     )
     kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))

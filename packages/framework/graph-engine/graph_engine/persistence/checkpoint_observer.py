@@ -20,6 +20,8 @@ class CheckpointAnchorNotice:
     anchor: CheckpointAnchor
     markers: tuple[CheckpointBridgeMarker, ...]
     source: NoticeSource
+    # Delivery is authorized by the current caller; the anchor retains its original fence.
+    delivery_fencing_token: int
 
 
 class CheckpointAnchorObserverPort(Protocol):
