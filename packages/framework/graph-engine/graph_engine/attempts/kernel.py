@@ -18,7 +18,7 @@ from graph_engine.attempts.resolutions import (
 from graph_engine.attempts.resource_arbiter import ResourceArbiterPort
 from graph_engine.attempts.runtime import AttemptRuntime
 from graph_engine.attempts.runtime_evidence import RuntimeEvidenceSource
-from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.plugin_api import (
     CommitValidator,
     WorkspaceProvider,
@@ -36,7 +36,7 @@ class AssuranceAttemptKernel:
     def __init__(
         self,
         *,
-        journal: AttemptJournalPort,
+        checkpoints: AttemptCheckpointStore,
         arbiter: ResourceArbiterPort,
         workspace: WorkspaceProvider,
         graph_revision: str,
@@ -45,7 +45,7 @@ class AssuranceAttemptKernel:
         pause_requested: Callable[[], bool] | None = None,
         runtime_evidence: RuntimeEvidenceSource | None = None,
     ) -> None:
-        self.journal = journal
+        self.checkpoints = checkpoints
         self.arbiter = arbiter
         self.workspace = workspace
         self.graph_revision = graph_revision
@@ -71,7 +71,7 @@ class AssuranceAttemptKernel:
         else:
             cut = transaction_cut
         handlers = AttemptHandlers(
-            journal=self.journal,
+            checkpoints=self.checkpoints,
             arbiter=self.arbiter,
             workspace=self.workspace,
             graph_revision=self.graph_revision,

@@ -14,7 +14,7 @@ from graph_engine.attempts.keys import BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import CommittedTaskResult
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 
 
@@ -124,9 +124,9 @@ async def _repeat_delivery(
     project.mkdir()
     store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
     revision = "b" * 64
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     kernel = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=journal,
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision=revision,

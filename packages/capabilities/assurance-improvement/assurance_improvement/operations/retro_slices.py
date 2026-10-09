@@ -32,7 +32,7 @@ from assurance_improvement.contracts.retro import (
     TaskFailureSignal,
     WorkflowEvidenceEntry,
     WorkflowEvidenceSlice,
-    WorkflowRuntimeEvidenceV1,
+    WorkflowRuntimeEvidenceV2,
 )
 from assurance_improvement.contracts.improvements import ImprovementSourceRefs
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
@@ -395,7 +395,7 @@ def build_retro_slices(
         data = _read_ref(project_root, ref)
         if ref.path.endswith("/workflow-evidence.json"):
             try:
-                runtime = WorkflowRuntimeEvidenceV1.model_validate(_json(data, ref.path))
+                runtime = WorkflowRuntimeEvidenceV2.model_validate(_json(data, ref.path))
             except (ValidationError, RetroSlicesInputError):
                 workflow_reasons.append("runtime_evidence_corrupt")
                 continue

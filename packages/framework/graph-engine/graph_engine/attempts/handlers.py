@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, assert_never, cast
+from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
 from graph_engine.artifacts import refs_from_write_set
-from graph_engine.attempts.commit import AttemptTransactions, CommitHandler, _CommitRejected, _PromotedCommit
+from graph_engine.attempts.commit import AttemptTransactions, CommitHandler, _CommitRejected
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
 from graph_engine.attempts.contracts import (
     ExecutedAttemptResult,
@@ -14,14 +14,7 @@ from graph_engine.attempts.contracts import (
     TerminalReceiptRef,
 )
 from graph_engine.attempts.errors import AttemptIdentityDrift, AttemptIntegrityError
-from graph_engine.attempts.events import (
-    ActivityPrepared,
-    AttemptOpened,
-    AttemptSnapshot,
-    AttemptTerminated,
-    ResourcesAuthorized,
-    ResourcesReleased,
-)
+from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resolutions import (
     AttemptResolution,
@@ -34,10 +27,10 @@ from graph_engine.attempts.resolutions import (
     SystemReference,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiterPort, ResourceAuthorization
-from graph_engine.attempts.runtime import AttemptAction, ContinueAttempt, HandlerResult, ReturnResolution
+from graph_engine.attempts.runtime import DurableProgress, HandlerResult, PhaseHandler, ReturnResolution
 from graph_engine.attempts.runtime_evidence import RUNTIME_EVIDENCE, RuntimeEvidenceSource
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import ResourceAuthorizationError
 from graph_engine.plugin_api import (
     CommitValidator,
@@ -63,17 +56,17 @@ def _bound_runtime_evidence(
 
 
 class AuthorizationActivityHandler(AttemptTransactions):
-    """Own identity adoption, authorization, workspace scope and activity dispatch."""
+    """Restore authorization/workspace without deriving a second scheduler."""
 
     def __init__(
         self,
-        journal: AttemptJournalPort,
+        checkpoints: AttemptCheckpointStore,
         arbiter: ResourceArbiterPort,
         workspace: WorkspaceProvider,
         graph_revision: str,
         runtime_evidence: RuntimeEvidenceSource | None,
     ) -> None:
-        super().__init__(journal, arbiter)
+        super().__init__(checkpoints, arbiter)
         self.workspace = workspace
         self.graph_revision = graph_revision
         self.runtime_evidence = runtime_evidence
@@ -84,42 +77,35 @@ class AuthorizationActivityHandler(AttemptTransactions):
         contract: ResolvedAttemptContract[Any, Any],
         validated_input: BaseModel,
         context: AttemptExecutionContext,
-    ) -> AttemptSnapshot:
-        snapshot = await self.journal.load(attempt_key)
+    ) -> AttemptCheckpoint:
+        snapshot = await self.checkpoints.load(attempt_key)
         identity = _identity(contract, validated_input, self.graph_revision, context)
         if snapshot is None:
-            return await self.journal.append(
-                attempt_key,
-                (
-                    AttemptOpened(
-                        contract_digest=identity["contract_digest"],
-                        input_digest=identity["input_digest"],
-                        graph_revision=identity["graph_revision"],
-                        invocation_id=context.invocation_id,
-                        public_entrypoint=context.public_entrypoint,
-                        semantic_node_id=context.semantic_node_id,
-                    ),
+            return await self.checkpoints.commit(
+                AttemptCheckpoint(
+                    attempt_key=attempt_key,
+                    revision=0,
+                    fencing_token=context.fencing_token,
+                    phase=AttemptPhase.AUTHORIZE,
+                    contract_digest=identity["contract_digest"],
+                    input_digest=identity["input_digest"],
+                    graph_revision=identity["graph_revision"],
+                    invocation_id=context.invocation_id,
+                    public_entrypoint=context.public_entrypoint,
+                    semantic_node_id=context.semantic_node_id,
                 ),
                 expected_revision=0,
                 fencing_token=context.fencing_token,
             )
         _assert_identity(snapshot, identity)
-        if snapshot.terminal is not None or snapshot.released:
-            if snapshot.authorization_id is not None:
-                try:
-                    await self.arbiter.adopt(attempt_key, fencing_token=context.fencing_token)
-                except ResourceAuthorizationError:
-                    pass
-            return snapshot
         if snapshot.authorization_id is not None:
-            await self.arbiter.adopt(attempt_key, fencing_token=context.fencing_token)
-            if context.fencing_token > snapshot.fencing_token:
-                snapshot = await self.journal.append(
-                    attempt_key,
-                    (ResourcesAuthorized(authorization_id=snapshot.authorization_id),),
-                    expected_revision=snapshot.revision,
-                    fencing_token=context.fencing_token,
-                )
+            try:
+                await self.arbiter.adopt(attempt_key, fencing_token=context.fencing_token)
+            except ResourceAuthorizationError:
+                if snapshot.terminal is None:
+                    raise
+        if context.fencing_token != snapshot.fencing_token:
+            snapshot = await self._save(snapshot, context)
         return snapshot
 
     async def authorize(
@@ -128,70 +114,21 @@ class AuthorizationActivityHandler(AttemptTransactions):
         claims: ResourceClaims,
         validated_input: BaseModel,
         context: AttemptExecutionContext,
-        snapshot: AttemptSnapshot,
-    ) -> tuple[ResourceAuthorization | PendingTaskResult, AttemptSnapshot, AttemptExecutionContext]:
+        snapshot: AttemptCheckpoint,
+    ) -> tuple[ResourceAuthorization | PendingTaskResult, AttemptCheckpoint, AttemptExecutionContext]:
         if snapshot.authorization_id is not None:
             granted = await self.arbiter.adopt(attempt_key, fencing_token=context.fencing_token)
         else:
             granted = await self.arbiter.acquire(
-                attempt_key,
-                claims,
-                fencing_token=context.fencing_token,
-                validated_input=validated_input,
+                attempt_key, claims, fencing_token=context.fencing_token, validated_input=validated_input
             )
         if isinstance(granted, PendingTaskResult):
             return granted, snapshot, context
         if snapshot.authorization_id is None:
-            snapshot = await self.journal.append(
-                attempt_key,
-                (ResourcesAuthorized(authorization_id=granted.authorization_id),),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
+            snapshot = await self._save(
+                snapshot, context, phase=AttemptPhase.EXECUTE, authorization_id=granted.authorization_id
             )
-        context = context.model_copy(update={"authorization_id": granted.authorization_id})
-        return granted, snapshot, context
-
-    async def activity(
-        self,
-        attempt_key: AttemptKey,
-        contract: ResolvedAttemptContract[Any, Any],
-        validated_input: BaseModel,
-        scope: AuthorizedAttemptScope,
-        snapshot: AttemptSnapshot,
-        cut: Callable[[str], None],
-        action: AttemptAction,
-    ) -> tuple[object, AttemptSnapshot]:
-        context = scope.execution
-        activity_id = snapshot.activity_id or attempt_key.digest
-        if action is AttemptAction.ADOPT_RESULT:
-            if snapshot.activity_state != "terminal_observed" or snapshot.activity_outcome is None:
-                raise AttemptIntegrityError("result adoption requires an observed non-null outcome")
-            return _executed_from_snapshot(contract, snapshot), snapshot
-        if action is AttemptAction.RECONCILE:
-            if snapshot.activity_state not in {"prepared", "dispatch_started", "bound"}:
-                raise AttemptIntegrityError("activity reconciliation requires an in-flight activity")
-            await self._assert_fence(attempt_key, context, "external_dispatch", cut)
-            reconcile = getattr(contract.executor, "reconcile", None)
-            if reconcile is None:
-                return (
-                    PermanentTaskFailure(kind="internal", message="in-flight activity cannot be adopted"),
-                    snapshot,
-                )
-            output = await reconcile(validated_input, scope, snapshot)
-            snapshot = await self._reload(attempt_key, snapshot)
-            return output, snapshot
-        if action is not AttemptAction.DISPATCH:
-            raise AttemptIntegrityError(f"unsupported activity action: {action.value}")
-        snapshot = await self.journal.append(
-            attempt_key,
-            (ActivityPrepared(activity_id=activity_id),),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
-        await self._assert_fence(attempt_key, context, "external_dispatch", cut)
-        output = await contract.executor.execute(validated_input, scope)
-        snapshot = await self._reload(attempt_key, snapshot)
-        return output, snapshot
+        return granted, snapshot, context.model_copy(update={"authorization_id": granted.authorization_id})
 
     async def begin_workspace(
         self,
@@ -222,54 +159,45 @@ class TerminalHandler(AttemptTransactions):
 
     def __init__(
         self,
-        journal: AttemptJournalPort,
+        checkpoints: AttemptCheckpointStore,
         arbiter: ResourceArbiterPort,
         workspace: WorkspaceProvider,
     ) -> None:
-        super().__init__(journal, arbiter)
+        super().__init__(checkpoints, arbiter)
         self.workspace = workspace
 
     async def _terminate(
         self,
         attempt_key: AttemptKey,
         context: AttemptExecutionContext,
-        snapshot: AttemptSnapshot,
+        snapshot: AttemptCheckpoint,
         authorization: ResourceAuthorization,
-        terminal: AttemptTerminated,
+        terminal: AttemptResult,
         cut: Callable[[str], None],
-    ) -> AttemptSnapshot:
+    ) -> AttemptCheckpoint:
         if snapshot.terminal is None:
             await self._assert_fence(attempt_key, context, "terminal_receipt", cut)
-            snapshot = await self.journal.append(
-                attempt_key,
-                (terminal,),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
-            )
-            await self.journal.ensure_durable(attempt_key)
+            snapshot = await self._save(snapshot, context, phase=AttemptPhase.RELEASE, terminal=terminal)
+            await self.checkpoints.ensure_durable(attempt_key)
             cut("terminal_durable")
-        return await self._complete_terminal_release(
-            attempt_key,
-            context,
-            snapshot,
-            cut,
-            authorization_id=authorization.authorization_id,
-        )
+        return snapshot
 
     async def _complete_terminal_release(
         self,
         attempt_key: AttemptKey,
         context: AttemptExecutionContext,
-        snapshot: AttemptSnapshot,
+        snapshot: AttemptCheckpoint,
         cut: Callable[[str], None],
         *,
         authorization_id: str | None = None,
-    ) -> AttemptSnapshot:
+    ) -> AttemptCheckpoint:
         grant_id = authorization_id or snapshot.authorization_id
         active = await self.arbiter.is_active(attempt_key)
         if snapshot.released and active:
             raise AttemptIntegrityError("release proof contradicts an active grant")
         if snapshot.released:
+            if snapshot.phase is AttemptPhase.RELEASE:
+                return await self._save(snapshot, context, phase=AttemptPhase.DONE)
             return snapshot
         if active:
             await self._assert_fence(attempt_key, context, "resource_release", cut)
@@ -279,13 +207,8 @@ class TerminalHandler(AttemptTransactions):
             raise AttemptIntegrityError("release proof")
         if grant_id is None:
             raise AttemptIntegrityError("release proof requires the authorization id")
-        snapshot = await self.journal.append(
-            attempt_key,
-            (ResourcesReleased(authorization_id=grant_id),),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
-        await self.journal.ensure_durable(attempt_key)
+        snapshot = await self._save(snapshot, context, phase=AttemptPhase.DONE, released=True)
+        await self.checkpoints.ensure_durable(attempt_key)
         cut("release_proof")
         return snapshot
 
@@ -295,7 +218,7 @@ class TerminalHandler(AttemptTransactions):
         contract: ResolvedAttemptContract[Any, Any],
         validated_input: BaseModel,
         context: AttemptExecutionContext,
-        snapshot: AttemptSnapshot,
+        snapshot: AttemptCheckpoint,
         cut: Callable[[str], None],
     ) -> AttemptResolution:
         snapshot = await self._complete_terminal_release(attempt_key, context, snapshot, cut)
@@ -314,54 +237,14 @@ class TerminalHandler(AttemptTransactions):
             return resolution.model_copy(update={"committed_artifacts": refs_from_write_set(sealed)})
         return resolution
 
-    async def publish(
-        self,
-        attempt_key: AttemptKey,
-        contract: ResolvedAttemptContract[Any, Any],
-        context: AttemptExecutionContext,
-        authorization: ResourceAuthorization,
-        result: _CommitRejected | _PromotedCommit,
-        trace: list[str],
-        cut: Callable[[str], None],
-    ) -> AttemptResolution:
-        if isinstance(result, _CommitRejected):
-            await self._terminate(
-                attempt_key,
-                context,
-                result.snapshot,
-                authorization,
-                _terminal_for_resolution(result.resolution, result.terminal_output),
-                cut,
-            )
-            return result.resolution
-        snapshot = await self._terminate(
-            attempt_key,
-            context,
-            result.snapshot,
-            authorization,
-            AttemptTerminated(
-                resolution_kind="committed",
-                output=result.output,
-                receipt_id=result.receipt.identity_digest,
-                receipt_digest=result.receipt.receipt_digest,
-            ),
-            cut,
-        )
-        trace.extend(["record_terminal", "release_resources", "record_release_proof"])
-        assert snapshot.terminal is not None
-        resolution = _resolution_from_terminal(snapshot.terminal, contract)
-        if isinstance(resolution, CommittedTaskResult):
-            return resolution.model_copy(update={"committed_artifacts": result.artifacts})
-        return resolution
-
 
 class AttemptHandlers:
-    """Invocation-local domain inputs/results and delegation to transaction owners."""
+    """Persisted phase handlers; all process-local prerequisites are restored on entry."""
 
     def __init__(
         self,
         *,
-        journal: AttemptJournalPort,
+        checkpoints: AttemptCheckpointStore,
         arbiter: ResourceArbiterPort,
         workspace: WorkspaceProvider,
         graph_revision: str,
@@ -375,11 +258,12 @@ class AttemptHandlers:
         trace: list[str],
         cut: Callable[[str], None],
     ) -> None:
+        self.checkpoints = checkpoints
         self.activity = AuthorizationActivityHandler(
-            journal, arbiter, workspace, graph_revision, runtime_evidence
+            checkpoints, arbiter, workspace, graph_revision, runtime_evidence
         )
-        self.commit = CommitHandler(journal, arbiter, workspace, validators)
-        self.terminal = TerminalHandler(journal, arbiter, workspace)
+        self.commit = CommitHandler(checkpoints, arbiter, workspace, validators)
+        self.terminal = TerminalHandler(checkpoints, arbiter, workspace)
         self.pause_requested = pause_requested
         self.attempt_key = attempt_key
         self.contract = contract
@@ -387,120 +271,203 @@ class AttemptHandlers:
         self.context = context
         self.trace = trace
         self.cut = cut
-        self.claims: ResourceClaims | None = None
-        self.authorization: ResourceAuthorization | None = None
         self.scope: AuthorizedAttemptScope | None = None
-        self.step: object = None
-        self.commit_result: _CommitRejected | _PromotedCommit | None = None
+        self.phases: Mapping[AttemptPhase, PhaseHandler] = {
+            AttemptPhase.AUTHORIZE: self.authorize,
+            AttemptPhase.EXECUTE: self.execute,
+            AttemptPhase.RECONCILE: self.reconcile,
+            AttemptPhase.COMMIT: self.commit_output,
+            AttemptPhase.TERMINATE: self.terminate,
+            AttemptPhase.RELEASE: self.release,
+            AttemptPhase.DONE: self.done,
+        }
 
-    async def handle(self, action: AttemptAction, snapshot: AttemptSnapshot | None) -> HandlerResult:
-        if action is AttemptAction.OPEN:
-            opened = await self.activity.adopt_or_create(
-                self.attempt_key,
-                self.contract,
-                self.validated_input,
-                self.context,
+    async def open_or_restore(self) -> AttemptCheckpoint:
+        checkpoint = await self.activity.adopt_or_create(
+            self.attempt_key, self.contract, self.validated_input, self.context
+        )
+        self.trace.append("adopt_or_create")
+        return checkpoint
+
+    async def _scope(
+        self, checkpoint: AttemptCheckpoint
+    ) -> tuple[AttemptCheckpoint, AuthorizedAttemptScope | PermanentTaskFailure | PendingTaskResult]:
+        if self.scope is not None:
+            return checkpoint, self.scope
+        claims = _resolved_claims(self.contract, self.validated_input)
+        if self.context.authorization_id != checkpoint.authorization_id:
+            granted, checkpoint, self.context = await self.activity.authorize(
+                self.attempt_key, claims, self.validated_input, self.context, checkpoint
             )
-            self.trace.append("adopt_or_create")
-            return ContinueAttempt(opened)
-        assert snapshot is not None
-        match action:
-            case AttemptAction.REPLAY_TERMINAL:
-                return ReturnResolution(
-                    await self.terminal.replay(
-                        self.attempt_key,
-                        self.contract,
-                        self.validated_input,
-                        self.context,
-                        snapshot,
-                        self.cut,
-                    )
-                )
-            case AttemptAction.AUTHORIZE:
-                if (
-                    snapshot.activity_state is None
-                    and self.pause_requested is not None
-                    and self.pause_requested()
-                ):
-                    return ReturnResolution(
-                        PendingTaskResult(wakeup=SystemReference(reference_id="operator_stop"))
-                    )
-                self.claims = _resolved_claims(self.contract, self.validated_input)
-                authorization, snapshot, self.context = await self.activity.authorize(
-                    self.attempt_key,
-                    self.claims,
-                    self.validated_input,
-                    self.context,
-                    snapshot,
-                )
-                self.trace.append("authorize_resources")
-                if isinstance(authorization, PendingTaskResult):
-                    return ReturnResolution(authorization)
-                self.authorization = authorization
-                return ContinueAttempt(snapshot)
-            case AttemptAction.BEGIN_WORKSPACE:
-                assert self.claims is not None
-                scope = await self.activity.begin_workspace(
-                    self.attempt_key,
-                    self.contract,
-                    self.context,
-                    self.claims,
-                    self.trace,
-                )
-                if isinstance(scope, PermanentTaskFailure):
-                    self.commit_result = _CommitRejected(snapshot, scope)
-                    return ContinueAttempt(snapshot, terminate=True)
-                self.scope = scope
-                return ContinueAttempt(snapshot)
-            case AttemptAction.DISPATCH | AttemptAction.RECONCILE | AttemptAction.ADOPT_RESULT:
-                assert self.scope is not None
-                self.step, snapshot = await self.activity.activity(
-                    self.attempt_key,
-                    self.contract,
-                    self.validated_input,
-                    self.scope,
-                    snapshot,
-                    self.cut,
-                    action,
-                )
-                if isinstance(self.step, (RejectedTaskResult, PermanentTaskFailure)):
-                    self.commit_result = _CommitRejected(snapshot, self.step)
-                    return ContinueAttempt(snapshot, terminate=True)
-                if _is_resolution(self.step):
-                    return ReturnResolution(cast(AttemptResolution, self.step))
-                return ContinueAttempt(snapshot)
-            case AttemptAction.COMMIT:
-                assert self.claims is not None and self.scope is not None
-                self.commit_result = await self.commit.commit_or_recover(
-                    attempt_key=self.attempt_key,
-                    contract=self.contract,
-                    validated_input=self.validated_input,
-                    context=self.context,
-                    claims=self.claims,
-                    binding=self.scope.workspace,
-                    step=self.step,
-                    snapshot=snapshot,
-                    trace=self.trace,
-                    cut=self.cut,
-                )
-                return ContinueAttempt(
-                    self.commit_result.snapshot, terminate=isinstance(self.commit_result, _CommitRejected)
-                )
-            case AttemptAction.TERMINATE:
-                assert self.authorization is not None and self.commit_result is not None
-                return ReturnResolution(
-                    await self.terminal.publish(
-                        self.attempt_key,
-                        self.contract,
-                        self.context,
-                        self.authorization,
-                        self.commit_result,
-                        self.trace,
-                        self.cut,
-                    )
-                )
-            case _:
-                assert_never(action)
+            self.trace.append("authorize_resources")
+            if isinstance(granted, PendingTaskResult):
+                return checkpoint, granted
+        scope = await self.activity.begin_workspace(
+            self.attempt_key, self.contract, self.context, claims, self.trace
+        )
+        if isinstance(scope, AuthorizedAttemptScope):
+            self.scope = scope
+        return checkpoint, scope
+
+    async def authorize(self, checkpoint: AttemptCheckpoint) -> HandlerResult:
+        if self.pause_requested is not None and self.pause_requested():
+            return ReturnResolution(PendingTaskResult(wakeup=SystemReference(reference_id="operator_stop")))
+        granted, checkpoint, self.context = await self.activity.authorize(
+            self.attempt_key,
+            _resolved_claims(self.contract, self.validated_input),
+            self.validated_input,
+            self.context,
+            checkpoint,
+        )
+        if isinstance(granted, PendingTaskResult):
+            return ReturnResolution(granted)
+        self.trace.append("authorize_resources")
+        return DurableProgress()
+
+    async def execute(self, checkpoint: AttemptCheckpoint) -> HandlerResult:
+        checkpoint, scope = await self._scope(checkpoint)
+        if not isinstance(scope, AuthorizedAttemptScope):
+            return await self._observe(checkpoint, scope)
+        # Persist recovery entry BEFORE invoking external business work. Continue this invocation directly.
+        checkpoint = await self.activity._save(
+            checkpoint,
+            self.context,
+            phase=AttemptPhase.RECONCILE,
+            activity_id=self.attempt_key.digest,
+            activity_state="prepared",
+        )
+        await self.activity._assert_fence(self.attempt_key, self.context, "external_dispatch", self.cut)
+        step = await self.contract.executor.execute(self.validated_input, scope)
+        checkpoint = await self.activity._reload(self.attempt_key, checkpoint)
+        return await self._observe(checkpoint, step)
+
+    async def reconcile(self, checkpoint: AttemptCheckpoint) -> HandlerResult:
+        checkpoint, scope = await self._scope(checkpoint)
+        if not isinstance(scope, AuthorizedAttemptScope):
+            return await self._observe(checkpoint, scope)
+        await self.activity._assert_fence(self.attempt_key, self.context, "external_dispatch", self.cut)
+        reconcile = getattr(self.contract.executor, "reconcile", None)
+        if reconcile is None:
+            step = PermanentTaskFailure(kind="internal", message="in-flight activity cannot be adopted")
+        else:
+            step = await reconcile(self.validated_input, scope, checkpoint)
+        checkpoint = await self.activity._reload(self.attempt_key, checkpoint)
+        return await self._observe(checkpoint, step)
+
+    async def _fail(
+        self,
+        checkpoint: AttemptCheckpoint,
+        failure: RejectedTaskResult | PermanentTaskFailure,
+        output: JSONValue = None,
+    ) -> HandlerResult:
+        await self.activity._assert_fence(self.attempt_key, self.context, "terminal_receipt", self.cut)
+        await self.activity._save(
+            checkpoint,
+            self.context,
+            phase=AttemptPhase.TERMINATE,
+            pending_result=_terminal_for_resolution(failure, output),
+        )
+        return DurableProgress()
+
+    async def _observe(self, checkpoint: AttemptCheckpoint, step: object) -> HandlerResult:
+        if isinstance(step, (RejectedTaskResult, PermanentTaskFailure)):
+            return await self._fail(checkpoint, step)
+        if _is_resolution(step):
+            return ReturnResolution(cast(AttemptResolution, step))
+        if not isinstance(step, ExecutedAttemptResult):
+            return await self._fail(
+                checkpoint,
+                PermanentTaskFailure(
+                    kind="invalid_output", message="executor did not return ExecutedAttemptResult"
+                ),
+            )
+        self.trace.append("execute")
+        try:
+            output = self.contract.contract.output_model.model_validate(
+                step.output.model_dump(mode="json") if isinstance(step.output, BaseModel) else step.output,
+                context=self.contract.validation_context,
+            ).model_dump(mode="json")
+            digest = canonical_digest(output)
+        except ValidationError as error:
+            return await self._fail(
+                checkpoint, PermanentTaskFailure(kind="invalid_output", message=str(error))
+            )
+        except (KeyError, ValueError) as error:
+            return await self._fail(
+                checkpoint, PermanentTaskFailure(kind="configuration", message=str(error))
+            )
+        receipt = step.source_terminal_receipt
+        await self.activity._save(
+            checkpoint,
+            self.context,
+            phase=AttemptPhase.COMMIT,
+            activity_state="terminal_observed",
+            activity_outcome=output,
+            activity_outcome_digest=digest,
+            source_identity_digest=receipt.identity_digest if receipt else None,
+            source_receipt_digest=receipt.receipt_digest if receipt else None,
+        )
+        self.trace.append("validate_output")
+        self.cut("after_observed_result")
+        self.cut("after_finalize_before_seal")
+        return DurableProgress()
+
+    async def commit_output(self, checkpoint: AttemptCheckpoint) -> HandlerResult:
+        checkpoint, scope = await self._scope(checkpoint)
+        if not isinstance(scope, AuthorizedAttemptScope):
+            return await self._observe(checkpoint, scope)
+        result = await self.commit.commit_or_recover(
+            attempt_key=self.attempt_key,
+            contract=self.contract,
+            validated_input=self.validated_input,
+            context=self.context,
+            claims=_resolved_claims(self.contract, self.validated_input),
+            binding=scope.workspace,
+            step=_executed_from_snapshot(self.contract, checkpoint),
+            snapshot=checkpoint,
+            trace=self.trace,
+            cut=self.cut,
+        )
+        if isinstance(result, _CommitRejected):
+            return await self._fail(result.snapshot, result.resolution, result.terminal_output)
+        await self.activity._save(
+            result.snapshot,
+            self.context,
+            phase=AttemptPhase.TERMINATE,
+            pending_result=AttemptResult(
+                resolution_kind="committed",
+                output=result.output,
+                receipt_id=result.receipt.identity_digest,
+                receipt_digest=result.receipt.receipt_digest,
+            ),
+        )
+        return DurableProgress()
+
+    async def terminate(self, checkpoint: AttemptCheckpoint) -> HandlerResult:
+        assert checkpoint.pending_result is not None
+        # Recovery may enter here without any process-local authorization handle.
+        if checkpoint.authorization_id is None:
+            raise AttemptIntegrityError("terminal publication requires authorization")
+        granted = await self.activity.arbiter.adopt(
+            self.attempt_key, fencing_token=self.context.fencing_token
+        )
+        await self.terminal._terminate(
+            self.attempt_key, self.context, checkpoint, granted, checkpoint.pending_result, self.cut
+        )
+        self.trace.append("record_terminal")
+        return DurableProgress()
+
+    async def release(self, checkpoint: AttemptCheckpoint) -> HandlerResult:
+        await self.terminal._complete_terminal_release(self.attempt_key, self.context, checkpoint, self.cut)
+        self.trace.extend(["release_resources", "record_release_proof"])
+        return DurableProgress()
+
+    async def done(self, checkpoint: AttemptCheckpoint) -> HandlerResult:
+        return ReturnResolution(
+            await self.terminal.replay(
+                self.attempt_key, self.contract, self.validated_input, self.context, checkpoint, self.cut
+            )
+        )
 
 
 _RESOLUTION_TYPES = (
@@ -531,7 +498,7 @@ def _identity(
     }
 
 
-def _assert_identity(snapshot: AttemptSnapshot, identity: Mapping[str, str]) -> None:
+def _assert_identity(snapshot: AttemptCheckpoint, identity: Mapping[str, str]) -> None:
     if snapshot.input_digest != identity["input_digest"]:
         raise AttemptIdentityDrift("input digest drifted")
     if snapshot.contract_digest != identity["contract_digest"]:
@@ -542,7 +509,7 @@ def _assert_identity(snapshot: AttemptSnapshot, identity: Mapping[str, str]) -> 
 
 def _executed_from_snapshot(
     contract: ResolvedAttemptContract[Any, Any],
-    snapshot: AttemptSnapshot,
+    snapshot: AttemptCheckpoint,
 ) -> ExecutedAttemptResult[Any] | PermanentTaskFailure:
     try:
         output = contract.contract.output_model.model_validate(
@@ -586,10 +553,10 @@ _FAILURE_KINDS = {
 def _terminal_for_resolution(
     resolution: RejectedTaskResult | PermanentTaskFailure,
     output: JSONValue = None,
-) -> AttemptTerminated:
+) -> AttemptResult:
     if isinstance(resolution, RejectedTaskResult):
-        return AttemptTerminated(resolution_kind="rejected", output=output, reason=resolution.reason)
-    return AttemptTerminated(
+        return AttemptResult(resolution_kind="rejected", output=output, reason=resolution.reason)
+    return AttemptResult(
         resolution_kind="retryable" if resolution.retryable else "permanent",
         output=output,
         failure_kind=resolution.kind,
@@ -598,7 +565,7 @@ def _terminal_for_resolution(
 
 
 def _resolution_from_terminal(
-    terminal: AttemptTerminated,
+    terminal: AttemptResult,
     contract: ResolvedAttemptContract[Any, Any],
 ) -> AttemptResolution:
     if terminal.resolution_kind == "committed":
@@ -616,7 +583,7 @@ def _resolution_from_terminal(
 
 
 def _committed_from_terminal(
-    terminal: AttemptTerminated,
+    terminal: AttemptResult,
     contract: ResolvedAttemptContract[Any, Any],
 ) -> CommittedTaskResult[Any]:
     output = contract.contract.output_model.model_validate(

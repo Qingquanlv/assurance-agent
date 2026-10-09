@@ -428,5 +428,8 @@ forbidden_modules =
     graph_engine.attempts.resource_arbiter
     graph_engine.persistence
     graph_engine.plugin_api
-# Snapshot/resolution models may indirectly import shared domain value types.
+# The dispatcher reloads full checkpoints through the storage protocol only.
+ignore_imports =
+    graph_engine.attempts.runtime -> graph_engine.persistence.attempt_checkpoint
+# Checkpoint/resolution models may indirectly import shared domain value types.
 allow_indirect_imports = True

@@ -1,5 +1,9 @@
 # Attempt Kernel Internal Refactor Implementation Plan
 
+> Historical implementation plan: Attempt event/journal and action-runtime steps
+> are superseded by the [Attempt checkpoint migration](2026-10-09-attempt-checkpoints.md).
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `AssuranceAttemptKernel.execute_or_recover` read as one linear Attempt transaction while preserving public protocols, durable bytes, recovery decisions, and external side-effect counts.

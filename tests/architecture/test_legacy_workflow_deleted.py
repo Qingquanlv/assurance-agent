@@ -56,12 +56,12 @@ CLI_FORBIDDEN_NAMES = frozenset(
 )
 PERMANENT_MODULES = (
     "graph_engine.attempts.activity",
-    "graph_engine.attempts.host_receipts",
+    "graph_engine.attempts.execution_host.host_receipts",
     "graph_engine.attempts.kernel",
-    "graph_engine.attempts.production_host",
+    "graph_engine.attempts.execution_host.production_host",
     "graph_engine.attempts.secret_sources",
     "graph_engine.attempts.workspace",
-    "graph_engine.persistence.attempt_journal",
+    "graph_engine.persistence.attempt_checkpoint",
     "assurance_product.application",
     "assurance_product.cli",
     "assurance_product.runtime_ports",

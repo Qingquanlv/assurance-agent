@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from graph_engine.artifacts import ArtifactRef, coerce_artifact_ref
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
@@ -26,7 +27,7 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.checkpoint_store import MemoryCheckpointStore
 from graph_engine.persistence.journal import CheckpointAnchorState, InvocationStarted
 from graph_engine.testing.recording_build_context import (
@@ -136,7 +137,8 @@ def _scripted_artifacts(output: object) -> tuple[ArtifactRef, ...]:
 
 
 class ScriptedAttempt:
-    def __init__(self) -> None:
+    def __init__(self, checkpoints: MemoryAttemptCheckpointStore | None = None) -> None:
+        self.checkpoints = checkpoints or MemoryAttemptCheckpointStore()
         self._queues: dict[str, list[AttemptResolution]] = {}
         self.semantic_calls: list[SemanticAttemptCall] = []
         self.validator_calls: list[str] = []
@@ -155,7 +157,6 @@ class ScriptedAttempt:
         validated_input: object,
         context: object,
     ) -> AttemptResolution:
-        del attempt_key
         semantic_node_id = str(getattr(context, "semantic_node_id"))
         task = _task_contract(contract)
         if isinstance(validated_input, BaseModel):
@@ -174,15 +175,35 @@ class ScriptedAttempt:
         if not queue:
             raise AssertionError(f"no scripted resolution for {semantic_node_id!r}")
         resolution = queue.pop(0)
+        if (
+            isinstance(resolution, (PendingTaskResult, IndeterminateTaskResult))
+            and await self.checkpoints.load(attempt_key) is None
+        ):
+            await self.checkpoints.commit(
+                AttemptCheckpoint(
+                    attempt_key=attempt_key,
+                    revision=0,
+                    fencing_token=getattr(context, "fencing_token"),
+                    phase=AttemptPhase.AUTHORIZE,
+                    contract_digest=canonical_digest(task.canonical_projection()),
+                    input_digest=canonical_digest(digest_payload),
+                    graph_revision="0" * 64,
+                    invocation_id=getattr(context, "invocation_id"),
+                    public_entrypoint=getattr(context, "public_entrypoint"),
+                    semantic_node_id=semantic_node_id,
+                ),
+                expected_revision=0,
+                fencing_token=getattr(context, "fencing_token"),
+            )
         self.promotion_decisions.append(_promotion_decision(resolution))
         return resolution
 
 
 class GraphHarness:
     def __init__(self) -> None:
-        self._kernel = ScriptedAttempt()
-        self._journal = MemoryAttemptJournal()
-        self._factory = AttemptNodeFactory(journal=self._journal, kernel=self._kernel)
+        self._checkpoints = MemoryAttemptCheckpointStore()
+        self._kernel = ScriptedAttempt(self._checkpoints)
+        self._factory = AttemptNodeFactory(checkpoints=self._checkpoints, kernel=self._kernel)
         self._recorder = _TraceRecorder()
         self._context: RecordingCapabilityBuildContext | None = None
         self._prepared_checkpointer: AnchoredCheckpointer | None = None

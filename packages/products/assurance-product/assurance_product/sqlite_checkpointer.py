@@ -120,15 +120,6 @@ CREATE TABLE IF NOT EXISTS assurance_entrypoints (
     invocation_id TEXT PRIMARY KEY,
     entrypoint TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS assurance_attempt_batches (
-    attempt_key_digest TEXT NOT NULL,
-    revision INTEGER NOT NULL,
-    schema_version TEXT NOT NULL,
-    fencing_token INTEGER NOT NULL,
-    record_digest TEXT NOT NULL,
-    payload BLOB NOT NULL,
-    PRIMARY KEY (attempt_key_digest, revision)
-);
 CREATE TABLE IF NOT EXISTS assurance_attempt_generations (
     scope_digest TEXT NOT NULL,
     ordinal INTEGER NOT NULL,
@@ -138,6 +129,14 @@ CREATE TABLE IF NOT EXISTS assurance_attempt_generations (
     owner_nonce TEXT,
     input_payload BLOB NOT NULL,
     PRIMARY KEY (scope_digest, ordinal)
+);
+CREATE TABLE IF NOT EXISTS assurance_attempt_checkpoints (
+    attempt_key_digest TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    schema_version TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    record_digest TEXT NOT NULL,
+    payload BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS assurance_host_calls (
     call_digest TEXT PRIMARY KEY,

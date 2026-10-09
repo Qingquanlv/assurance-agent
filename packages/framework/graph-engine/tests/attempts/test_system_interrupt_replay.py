@@ -1,4 +1,6 @@
 from __future__ import annotations
+from tests.attempt_checkpoints import checkpoint
+from graph_engine.attempts.checkpoint import ActiveSystemInterrupt
 
 from types import SimpleNamespace
 from typing import Any
@@ -15,17 +17,17 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.events import AttemptOpened, SystemInterruptIssued
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.canonical import canonical_digest
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
     CommittedTaskResult,
     PendingTaskResult,
+    IndeterminateTaskResult,
     ReceiptRef,
     SystemReference,
 )
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.plugin_api import ResourceClaims
 from graph_engine.stategraph.checkpoint_bridge import MAX_ACTIVE_GENERATIONS
 from langgraph.checkpoint.memory import InMemorySaver
@@ -57,18 +59,27 @@ class ScriptedKernel:
     async def execute_or_recover(
         self, attempt_key: AttemptKey, contract: object, validated_input: object, context: object
     ) -> object:
-        del contract, validated_input, context
         self.seen_key = attempt_key
         self.calls += 1
         if not self.resolutions:
             raise AssertionError("scripted kernel has no queued resolution")
-        return self.resolutions.pop(0)
+        resolution = self.resolutions.pop(0)
+        if isinstance(resolution, (PendingTaskResult, IndeterminateTaskResult)):
+            store = self.checkpoints
+            if await store.load(attempt_key) is None:
+                await store.commit(
+                    checkpoint(attempt_key, fencing_token=context.fencing_token, graph_revision=REVISION),
+                    expected_revision=0,
+                    fencing_token=context.fencing_token,
+                )
+        return resolution
 
 
-class ScriptedJournal(MemoryAttemptJournal):
+class ScriptedCheckpoints(MemoryAttemptCheckpointStore):
     def __init__(self, kernel: ScriptedKernel) -> None:
         super().__init__()
         self.kernel = kernel
+        kernel.checkpoints = self
 
     def mark_kernel_now_committed(self, attempt_key: AttemptKey) -> None:
         del attempt_key
@@ -179,9 +190,10 @@ async def test_resume_replays_issued_interrupt_before_kernel_reentry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
+    journal = ScriptedCheckpoints(kernel)
     trace: list[str] = []
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -212,9 +224,10 @@ async def test_crash_after_resume_before_node_checkpoint_replays_same_ordinal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
+    journal = ScriptedCheckpoints(kernel)
     trace: list[str] = []
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -252,9 +265,10 @@ async def test_multiple_pending_generations_replay_every_ordinal_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
+    journal = ScriptedCheckpoints(kernel)
     trace: list[str] = []
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -302,9 +316,10 @@ async def test_technical_retry_reuses_key_and_replays_issued_ordinals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
+    journal = ScriptedCheckpoints(kernel)
     trace: list[str] = []
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -332,9 +347,10 @@ async def test_replay_cannot_skip_issued_interrupt_when_external_state_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
+    journal = ScriptedCheckpoints(kernel)
     trace: list[str] = []
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -363,8 +379,9 @@ async def test_active_generation_bound_is_enforced_before_another_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=[])
+    journal = ScriptedCheckpoints(kernel)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=[])
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -374,22 +391,12 @@ async def test_active_generation_bound_is_enforced_before_another_interrupt(
     )
     key = _attempt_key()
     digest = canonical_digest({"bound": "envelope"})
-    await journal.append(
-        key,
-        (
-            AttemptOpened(
-                contract_digest=canonical_digest({"c": 1}),
-                input_digest=canonical_digest({"i": 1}),
-                graph_revision=REVISION,
-                invocation_id="inv-1",
-                public_entrypoint="execute",
-                semantic_node_id="execution.run",
-            ),
-            *[
-                SystemInterruptIssued(generation=index, ordinal=index - 1, envelope_digest=digest)
-                for index in range(1, MAX_ACTIVE_GENERATIONS + 1)
-            ],
-        ),
+    retained = tuple(
+        ActiveSystemInterrupt(generation=index, ordinal=index - 1, envelope_digest=digest)
+        for index in range(1, MAX_ACTIVE_GENERATIONS + 1)
+    )
+    await journal.commit(
+        checkpoint(key, active_interrupt=retained[-1], active_interrupts=retained),
         expected_revision=0,
         fencing_token=4,
     )
@@ -404,8 +411,9 @@ async def test_active_generation_bound_is_enforced_before_another_interrupt(
 
 async def test_compiled_resume_replays_before_next_superstep() -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=[])
+    journal = ScriptedCheckpoints(kernel)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=[])
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",

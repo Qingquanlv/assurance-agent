@@ -72,7 +72,7 @@ def test_empty_snapshot_without_interrupts_is_completed() -> None:
     assert status == InvocationStatus(status="completed")
 
 
-def test_status_normalization_does_not_accept_attempt_journal() -> None:
+def test_status_normalization_does_not_accept_attempt_checkpoints() -> None:
     pending = PendingTaskResult(wakeup=SystemReference(reference_id="wake-1"))
     with pytest.raises(TypeError):
         normalize_graph_snapshot(pending)

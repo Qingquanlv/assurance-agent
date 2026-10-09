@@ -115,3 +115,11 @@ bash scripts/graph_engine_smoke_test.sh
 The smoke test archives committed `HEAD`, builds all three Phase 1 wheels
 offline, inspects their contents and dependencies, and exercises isolated
 engine-only, toy-A, and toy-B environments.
+
+Attempt execution stores full `AttemptCheckpoint` records and dispatches their
+persisted `AttemptPhase` handler entry. The store enforces CAS revisions and
+fencing; handlers own dispatch, output, promotion, terminal and release barriers.
+Recovery reconstructs transient authorization/workspace handles without changing
+the saved phase. The LangGraph checkpoint-anchor journal remains independent.
+Old nonempty Attempt journal databases require their original version to stop
+existing runs and a fresh isolated run on rebuilt wheels; they are not migrated.

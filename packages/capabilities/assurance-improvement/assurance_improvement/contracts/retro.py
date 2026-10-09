@@ -301,15 +301,15 @@ WorkflowEvidenceEntry = Annotated[
 ]
 
 
-class WorkflowRuntimeEvidenceV1(BaseModel):
-    """Redacted projection of one invocation's Kernel attempt journal, not a transcript."""
+class WorkflowRuntimeEvidenceV2(BaseModel):
+    """Redacted projection of one invocation's Kernel Attempt checkpoints, not a transcript."""
 
     model_config = _FROZEN
 
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
     change_id: NonEmptyStr
     invocation_id: NonEmptyStr
-    journal_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    checkpoint_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     entries: tuple[TaskFailureEvidenceEntry, ...] = ()
     integrity: RetroIntegrity
 

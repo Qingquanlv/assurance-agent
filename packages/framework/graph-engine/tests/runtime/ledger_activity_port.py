@@ -10,7 +10,7 @@ from graph_engine.attempts.activity import (
     TaskActivityReferenceInvalid,
     bounded_canonical_json,
 )
-from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity
+from graph_engine.attempts.execution_host.host_protocol import TaskActivityRpcIdentity
 from graph_engine.canonical import JSONValue
 from graph_engine.errors import GraphEngineError
 from graph_engine.evidence.events import (

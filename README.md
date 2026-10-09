@@ -75,20 +75,44 @@ Runs created with the former Effect protocol must finish on their original
 wheels or restart with the rebuilt product; old Effect journals are not migrated.
 
 
-Attempt execution separates progression from domain transactions. The kernel is
-an entrypoint that composes a runtime and per-call handlers. The runtime chooses
-explicit actions from the journal-derived phase and completed local prerequisites;
-it returns waiting or unknown results without polling. The handlers own resource
-authorization, activity dispatch or reconciliation, workspace validation and
-promotion, and terminal/release proofs. Each handler controls its own journal
-writes and durability barriers. Phase is not another persisted checkpoint.
+Attempt execution uses complete persisted checkpoints. The kernel composes a
+runtime and phase handlers; the runtime directly dispatches the saved handler
+entry (`authorize`, `execute`, `reconcile`, `commit`, `terminate`, `release`, or
+`done`). Handlers commit full records with compare-and-set revisions and fenced
+ownership. Waiting returns immediately; durable progress reloads the checkpoint,
+and a handler that neither saves progress nor returns a resolution fails closed.
+Local workspace and authorization handles are reconstructed on recovery.
 
-This applies Pi Durable's separation of task progression and handler-controlled
-commits within the existing Python engine; it does not install Pi Durable.
-Technical retries remain in the node factory, business repair remains in Flow,
-and production restart keeps the single-worker regeneration rules below. The
-lower-level same-Attempt recovery API retains its existing journal and proof checks.
-See the [Attempt runtime design](docs/superpowers/specs/2026-10-07-attempt-runtime-separation-design.md).
+Handlers save recovery state before external dispatch, output and receipt proofs
+together before commit, preparation before promotion, terminal proof before
+release, and release proof before completion. Same-phase writes can advance the
+revision. Every distinct Attempt's final record remains available, including
+failed Attempts followed by successful retries. This applies Pi Durable's phase
+and handler-owned commit pattern within the existing Python engine, without a Pi
+dependency. Technical retries remain in the node factory and business repair in
+Flow. LangGraph anchors and resource authorizations remain separate stores.
+See the [Attempt checkpoint design](docs/superpowers/specs/2026-10-09-attempt-checkpoints-design.md).
+
+Attempt subprocess execution lives in
+[`graph_engine/attempts/execution_host/`](packages/framework/graph-engine/graph_engine/attempts/execution_host/):
+
+- `production_host.py` starts the worker, manages timeouts and cancellation, and
+  checks that descendants and workspace writers have stopped.
+- `production_worker.py` is the subprocess entry point. It loads the installed
+  business handler, executes the request, and returns the result.
+- `host_protocol.py` defines request/result envelopes and authenticated transport.
+- `host_receipts.py` installs and verifies durable completion receipts.
+
+LangGraph, the Attempt runtime, and the host run in the AA main process. The host
+starts a worker only for a business call. Product runtime ports assemble this
+host, and retained-call cleanup uses it to cancel the same Attempt's activity.
+Invocation admission and stopping the AA worker remain product responsibilities.
+
+Nonempty databases written by the former Attempt journal format cannot execute
+under these wheels. Their bytes are preserved. Stop existing runs using their
+original version before upgrading, then use a fresh isolated run with rebuilt
+wheels. Existing read-only historical status artifacts remain available; this
+upgrade does not replay old Attempt events.
 
 `aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`,
 `aa bindings build`, `aa lock show`, and `aa retro show` operate on an installed
@@ -167,8 +191,8 @@ generation registration occurs before dispatch; a registration-only crash consum
 an attempt. The finite budget includes the first generation and survives restarts
 and technical-feedback input changes. Ordinary system/resource waits retain their
 Attempt and original input; human waits retain graph checkpoint behavior. Neither
-allocates another generation while waiting. Generation/phase journals record
-counters and dispatch evidence separately from graph checkpoints.
+allocates another generation while waiting. Generation registration and Attempt checkpoints retain
+counters and dispatch evidence separately from LangGraph checkpoints.
 
 Legacy ambiguous ownership or budget records, lost registered persistence, missing
 authenticated call envelopes and unverifiable process identities refuse execution
@@ -187,7 +211,8 @@ the review histories, inspection and report. Test verdicts come from execution;
 inspection `analyzed` only means classification finished. Inspection must bind the
 same execution digest, change and batch. Report-only evidence is incomplete.
 
-Full diagnostic flows snapshot redacted Kernel journal evidence before Retro at
+Full diagnostic flows snapshot redacted Kernel checkpoint evidence (schema V2,
+`checkpoint_digest`) before Retro at
 `qa/results/workflow/<invocation-id-digest>/pre-retro/<snapshot-sha256>/workflow-evidence.json` and bind
 its exact digest to Retro. Non-Retro `aa run` and `aa resume` also export a post-run
 projection to

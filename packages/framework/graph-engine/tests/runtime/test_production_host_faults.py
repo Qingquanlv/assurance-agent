@@ -1,4 +1,8 @@
 from __future__ import annotations
+from dataclasses import replace
+from tests.attempt_checkpoints import checkpoint
+from graph_engine.attempts.checkpoint import AttemptPhase
+from graph_engine.canonical import canonical_digest
 
 import asyncio
 import os
@@ -13,9 +17,8 @@ from pathlib import Path
 import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
-from graph_engine.attempts import production_host
-from graph_engine.attempts import production_worker
-from graph_engine.canonical import canonical_digest
+from graph_engine.attempts.execution_host import production_host
+from graph_engine.attempts.execution_host import production_worker
 from graph_engine.plugin_api import (
     InvocationMetadata,
     ResourceClaims,
@@ -27,8 +30,8 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceBinding,
 )
-from graph_engine.attempts.activity import journal_backed_activity_factory
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.activity import checkpoint_backed_activity_factory
+from graph_engine.attempts.execution_host.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
@@ -38,7 +41,7 @@ from graph_engine.attempts.host_protocol import (
     TaskHostTerminalReceipt,
     current_bound_identity,
 )
-from graph_engine.attempts.production_host import (
+from graph_engine.attempts.execution_host.production_host import (
     ProductionHostError,
     create_production_task_execution_host,
 )
@@ -51,15 +54,14 @@ from graph_engine.attempts.activity import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.attempts.host_receipts import (
+from graph_engine.attempts.execution_host.host_receipts import (
     TerminalReceiptError,
     TerminalReceiptStore,
     prove_call_quiescent,
 )
 from graph_engine.attempts.activity import Ledger
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.events import ActivityPrepared, AttemptOpened, ResourcesAuthorized
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 
@@ -149,7 +151,7 @@ def _begin_workspace(store: TaskWorkspaceStore) -> TaskWorkspaceBinding:
 
 
 _OWNER_LOOP: asyncio.AbstractEventLoop | None = None
-_JOURNALS: dict[str, tuple[MemoryAttemptJournal, AttemptKey]] = {}
+_JOURNALS: dict[str, tuple[MemoryAttemptCheckpointStore, AttemptKey]] = {}
 
 
 def _owner_loop() -> asyncio.AbstractEventLoop:
@@ -358,8 +360,8 @@ def _sealed_host(
         async def _assert_live_fence() -> None:
             return None
 
-        factory = journal_backed_activity_factory(
-            journal=journal,
+        factory = checkpoint_backed_activity_factory(
+            checkpoints=journal,
             attempt_key=attempt_key,
             owner_loop=_owner_loop(),
             assert_live_fence=_assert_live_fence,
@@ -375,14 +377,15 @@ def _sealed_host(
     )
 
 
-def _prepare_activity_journal(tmp_path: Path) -> tuple[MemoryAttemptJournal, AttemptKey]:
-    journal = MemoryAttemptJournal()
+def _prepare_activity_journal(tmp_path: Path) -> tuple[MemoryAttemptCheckpointStore, AttemptKey]:
+    journal = MemoryAttemptCheckpointStore()
     attempt_key = AttemptKey(digest="a" * 64)
     asyncio.run_coroutine_threadsafe(
-        journal.append(
-            attempt_key,
-            (
-                AttemptOpened(
+        journal.commit(
+            replace(
+                checkpoint(
+                    attempt_key,
+                    fencing_token=1,
                     contract_digest="d" * 64,
                     input_digest="e" * 64,
                     graph_revision="c" * 64,
@@ -390,8 +393,11 @@ def _prepare_activity_journal(tmp_path: Path) -> tuple[MemoryAttemptJournal, Att
                     public_entrypoint="main",
                     semantic_node_id="run",
                 ),
-                ResourcesAuthorized(authorization_id="b" * 64),
-                ActivityPrepared(activity_id="activity-1"),
+                fencing_token=1,
+                authorization_id="b" * 64,
+                phase=AttemptPhase.RECONCILE,
+                activity_id="activity-1",
+                activity_state="prepared",
             ),
             expected_revision=0,
             fencing_token=1,
@@ -783,7 +789,7 @@ def test_production_host_cancel_runs_through_worker(tmp_path: Path) -> None:
 
 
 def test_production_host_parent_alive_pipe_is_wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from graph_engine.attempts import production_host as module
+    from graph_engine.attempts.execution_host import production_host as module
 
     captured: dict[str, int] = {}
 
@@ -1209,7 +1215,7 @@ def test_successful_handler_cannot_leave_a_detached_descendant_or_install_a_rece
 
 
 def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from graph_engine.attempts import production_host as module
+    from graph_engine.attempts.execution_host import production_host as module
 
     monkeypatch.setattr(module, "_CALL_TIMEOUT_SECONDS", 0.2)
     store = _task_workspace_store(tmp_path)
@@ -1246,7 +1252,7 @@ def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch
 def test_production_host_honors_call_timeout_longer_than_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from graph_engine.attempts import production_host as module
+    from graph_engine.attempts.execution_host import production_host as module
 
     monkeypatch.setattr(module, "_CALL_TIMEOUT_SECONDS", 0.2)
     store = _task_workspace_store(tmp_path)
@@ -1483,7 +1489,7 @@ def test_worker_attestation_rejects_source_drift_after_spawn_before_dispatch(
         store=store,
         handler_import_roots={"test.echo.run": roots},
     )
-    import graph_engine.attempts.production_worker as production_worker_impl
+    import graph_engine.attempts.execution_host.production_worker as production_worker_impl
 
     worker_source = Path(production_worker_impl.__file__).resolve()
     original_source = worker_source.read_bytes()
@@ -1606,8 +1612,9 @@ def test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely(
     assert activity.state == "dispatch_started"
     assert activity.dispatch_fingerprint == {"endpoint": "https://provider.invalid"}
     journal, attempt_key = _JOURNALS[str(tmp_path)]
-    kinds = [event.kind for record in journal.records(attempt_key) for event in record.events]
-    assert kinds.count("activity_dispatch_started") == 1
+    saved = asyncio.run(journal.load(attempt_key))
+    assert saved is not None and saved.activity_dispatch_fingerprint_digest
+    revision = saved.revision
 
     monkeypatch.setattr(production_host, "_host_fault_cut", lambda _fault_id: None)
     reconcile = _reconcile_call(
@@ -1621,8 +1628,7 @@ def test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely(
     assert len(workers) == 2
     assert all(worker.popen.poll() is not None for worker in workers)
     assert host.read_terminal_receipts(call.identity) == ()
-    replayed = [event.kind for record in journal.records(attempt_key) for event in record.events]
-    assert replayed.count("activity_dispatch_started") == 1
+    assert asyncio.run(journal.load(attempt_key)).revision == revision
 
 
 def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
@@ -1679,9 +1685,9 @@ def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
     assert activity.state == "bound"
     assert activity.reference == {"session_id": "session-1"}
     journal, attempt_key = _JOURNALS[str(tmp_path)]
-    kinds = [event.kind for record in journal.records(attempt_key) for event in record.events]
-    assert kinds.count("activity_dispatch_started") == 1
-    assert kinds.count("activity_bound") == 1
+    saved = asyncio.run(journal.load(attempt_key))
+    assert saved is not None and saved.activity_dispatch_fingerprint_digest
+    revision = saved.revision
 
     monkeypatch.setattr(production_host, "_host_fault_cut", lambda _fault_id: None)
     reconcile = _reconcile_call(
@@ -1693,9 +1699,7 @@ def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
     assert result.reconcile_result is not None
     assert result.reconcile_result.status == "running"
     assert result.reconcile_result.reference == {"session_id": "session-1"}
-    replayed_kinds = [event.kind for record in journal.records(attempt_key) for event in record.events]
-    assert replayed_kinds.count("activity_dispatch_started") == 1
-    assert replayed_kinds.count("activity_bound") == 1
+    assert asyncio.run(journal.load(attempt_key)).revision == revision
 
 
 def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None:

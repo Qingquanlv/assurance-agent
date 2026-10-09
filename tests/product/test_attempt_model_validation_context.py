@@ -26,7 +26,7 @@ from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import ResourceClaims
 
@@ -191,7 +191,7 @@ def _scenario(tmp_path: Path) -> _Scenario:
     )
     return _Scenario(
         kernel=AssuranceAttemptKernel(
-            journal=MemoryAttemptJournal(),
+            checkpoints=MemoryAttemptCheckpointStore(),
             arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
             workspace=TaskWorkspaceProvider(store),
             graph_revision=_revision(),
@@ -255,7 +255,7 @@ def test_generation_output_commit_uses_locked_capability_context(tmp_path: Path)
         fencing_token=1,
     )
     kernel = AssuranceAttemptKernel(
-        journal=MemoryAttemptJournal(),
+        checkpoints=MemoryAttemptCheckpointStore(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision=_revision(),

@@ -15,23 +15,12 @@ from tests.product.test_achieved_terminal import (
 )
 
 
-def _opened(semantic_node_id: str, *, invocation_id: str = "inv-terminal-full-001"):
-    from graph_engine.attempts.events import AttemptOpened
-
-    return AttemptOpened(
-        contract_digest="c" * 64,
-        input_digest="d" * 64,
-        graph_revision="e" * 64,
-        invocation_id=invocation_id,
-        public_entrypoint="full",
-        semantic_node_id=semantic_node_id,
-    )
+from graph_engine.attempts.checkpoint import AttemptResult
+from tests.attempt_checkpoints import completed_checkpoint
 
 
 def _committed():
-    from graph_engine.attempts.events import AttemptTerminated
-
-    return AttemptTerminated(
+    return AttemptResult(
         resolution_kind="committed",
         output={"status": "completed"},
         receipt_id="receipt-committed",
@@ -40,12 +29,16 @@ def _committed():
 
 
 def _permanent_failure():
-    from graph_engine.attempts.events import AttemptTerminated
+    return AttemptResult(resolution_kind="permanent", failure_kind="invalid_output", message="bad output")
 
-    return AttemptTerminated(
-        resolution_kind="permanent",
-        failure_kind="invalid_output",
-        message="bad output",
+
+def _completed(node: str, *, invocation_id: str = "inv-terminal-full-001", terminal=None, **data):
+    return completed_checkpoint(
+        terminal=terminal or _committed(),
+        invocation_id=invocation_id,
+        semantic_node_id=node,
+        public_entrypoint="full",
+        **data,
     )
 
 
@@ -67,17 +60,12 @@ def test_terminal_status_projects_only_committed_attempts_as_completed_steps(tmp
                 "selected_test_families": ["api"],
             },
         ),
-        journal_events=(
-            _opened("quality.report", invocation_id="inv-other"),
-            _committed(),
-            _opened("intake.intake"),
-            _committed(),
-            _opened("quality.report"),
-            _committed(),
-            _opened("intake.intake"),
-            _committed(),
-            _opened("quality.inspect"),
-            _permanent_failure(),
+        attempt_checkpoints=(
+            _completed("quality.report", invocation_id="inv-other"),
+            _completed("intake.intake"),
+            _completed("quality.report"),
+            _completed("intake.intake"),
+            _completed("quality.inspect", terminal=_permanent_failure()),
         ),
         project_root=tmp_path,
     )
@@ -133,7 +121,6 @@ def test_terminal_status_rejects_quality_coverage_without_round_progress(tmp_pat
 
 
 def test_status_projects_the_bound_opencode_session_as_adapter_evidence(tmp_path: Path) -> None:
-    from graph_engine.attempts.events import ActivityBound, WorkspacePromoted
 
     from assurance_product.status import render_status_from_langgraph
 
@@ -151,26 +138,20 @@ def test_status_projects_the_bound_opencode_session_as_adapter_evidence(tmp_path
         change_id=CHANGE_ID,
         status="running",
         snapshot=SimpleNamespace(next=("execute",), interrupts=(), values={}),
-        journal_events=(
-            _opened("intake.explore", invocation_id="inv-other"),
-            ActivityBound(
+        attempt_checkpoints=(
+            _completed(
+                "intake.explore",
+                invocation_id="inv-other",
                 activity_id="activity-other",
-                reference={**reference, "session_id": "ses_other"},
-                reference_digest=canonical_digest({**reference, "session_id": "ses_other"}),
+                activity_reference={**reference, "session_id": "ses_other"},
+                activity_reference_digest=canonical_digest({**reference, "session_id": "ses_other"}),
             ),
-            _committed(),
-            _opened("intake.intake"),
-            ActivityBound(
+            _completed(
+                "intake.intake",
                 activity_id="activity-terminal-001",
-                reference=reference,
-                reference_digest=reference_digest,
+                activity_reference=reference,
+                activity_reference_digest=reference_digest,
             ),
-            WorkspacePromoted(
-                receipt_id="promotion-not-an-agent-session",
-                receipt_digest="c" * 64,
-                staged_digest="d" * 64,
-            ),
-            _committed(),
         ),
         project_root=tmp_path,
     )

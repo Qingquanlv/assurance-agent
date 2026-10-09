@@ -12,7 +12,7 @@ from pathlib import Path
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.evidence.events import TaskActivityTerminalObserved
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     TaskHostCallIdentity,
     TaskHostTerminalReceipt,

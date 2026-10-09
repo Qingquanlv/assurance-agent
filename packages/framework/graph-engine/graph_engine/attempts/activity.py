@@ -4,19 +4,18 @@ import asyncio
 import concurrent.futures
 import json
 from collections.abc import Awaitable, Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import TaskActivitySnapshot, TaskOutcome, TaskWorkspaceIdentity
-from graph_engine.attempts.events import (
-    ActivityBound as JournalActivityBound,
-    ActivityDispatchStarted as JournalActivityDispatchStarted,
-    AttemptSnapshot,
-)
+from graph_engine.attempts.checkpoint import AttemptCheckpoint
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.persistence.attempt_journal import AttemptJournalIntegrityError, AttemptJournalPort
+from graph_engine.persistence.attempt_checkpoint import (
+    AttemptCheckpointIntegrityError,
+    AttemptCheckpointStore,
+)
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.evidence.events import (
     EventEnvelope,
@@ -40,7 +39,7 @@ from graph_engine.evidence.events import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     TaskActivityRpcIdentity,
     TaskHostCancelCall,
@@ -133,11 +132,11 @@ def bounded_canonical_json(value: JSONValue, *, limit: int) -> BoundedCanonicalJ
     return BoundedCanonicalJson(value=decoded, digest=canonical_digest(decoded))
 
 
-class JournalBackedTaskActivityPort:
-    """Synchronous worker-facing port that commits activity mutations to one Attempt journal."""
+class CheckpointBackedTaskActivityPort:
+    """Synchronous worker-facing port that commits activity mutations to one Attempt checkpoint."""
 
     __slots__ = (
-        "_journal",
+        "_checkpoints",
         "_attempt_key",
         "_identity",
         "_workspace_identity",
@@ -152,7 +151,7 @@ class JournalBackedTaskActivityPort:
     def __init__(
         self,
         *,
-        journal: AttemptJournalPort,
+        checkpoints: AttemptCheckpointStore,
         attempt_key: AttemptKey,
         identity: TaskActivityRpcIdentity,
         workspace_identity: TaskWorkspaceIdentity,
@@ -168,8 +167,8 @@ class JournalBackedTaskActivityPort:
         if identity.wire_schema_version != TASK_HOST_WIRE_SCHEMA_VERSION:
             raise TaskActivityConflict("activity rpc identity version is not current")
         if remaining_deadline <= 0:
-            raise TaskActivityIndeterminate("activity journal deadline elapsed")
-        self._journal = journal
+            raise TaskActivityIndeterminate("activity checkpoint deadline elapsed")
+        self._checkpoints = checkpoints
         self._attempt_key = attempt_key
         self._identity = identity
         self._workspace_identity = workspace_identity
@@ -193,92 +192,94 @@ class JournalBackedTaskActivityPort:
 
     def mark_dispatch_started(self, fingerprint: JSONValue) -> TaskActivitySnapshot:
         canonical = bounded_canonical_json(fingerprint, limit=MAX_ACTIVITY_VALUE_BYTES)
-        return self._submit(
-            self._mutate(
-                JournalActivityDispatchStarted(
-                    activity_id=self.activity_id,
-                    dispatch_fingerprint=canonical.value,
-                    dispatch_fingerprint_digest=canonical.digest,
-                )
-            )
-        )
+        return self._submit(self._mutate("dispatch_started", canonical))
 
     def bind(self, reference: JSONValue) -> TaskActivitySnapshot:
         canonical = bounded_canonical_json(reference, limit=MAX_ACTIVITY_VALUE_BYTES)
-        return self._submit(
-            self._mutate(
-                JournalActivityBound(
-                    activity_id=self.activity_id,
-                    reference=canonical.value,
-                    reference_digest=canonical.digest,
-                )
-            )
-        )
+        return self._submit(self._mutate("bound", canonical))
 
     def _submit(self, coroutine: Coroutine[object, object, TaskActivitySnapshot]) -> TaskActivitySnapshot:
         future = asyncio.run_coroutine_threadsafe(coroutine, self._owner_loop)
         try:
             return future.result(timeout=self._remaining_deadline)
         except TimeoutError as error:
-            raise TaskActivityIndeterminate("activity journal commit timed out") from error
+            raise TaskActivityIndeterminate("activity checkpoint commit timed out") from error
         except concurrent.futures.CancelledError as error:
-            raise TaskActivityIndeterminate("activity journal commit was cancelled") from error
+            raise TaskActivityIndeterminate("activity checkpoint commit was cancelled") from error
 
     async def _load_snapshot(self) -> TaskActivitySnapshot:
         await self._assert_live_fence()
-        snapshot = await self._journal.load(self._attempt_key)
+        snapshot = await self._checkpoints.load(self._attempt_key)
         self._authenticate_snapshot(snapshot)
         assert snapshot is not None
         return self._to_task_snapshot(snapshot)
 
-    async def _mutate(
-        self,
-        event: JournalActivityDispatchStarted | JournalActivityBound,
-    ) -> TaskActivitySnapshot:
+    async def _mutate(self, state: str, value: BoundedCanonicalJson) -> TaskActivitySnapshot:
         await self._assert_live_fence()
-        snapshot = await self._journal.load(self._attempt_key)
+        snapshot = await self._checkpoints.load(self._attempt_key)
         self._authenticate_snapshot(snapshot)
         assert snapshot is not None
-        matched = _journal_payload_match(snapshot, event)
+        dispatch = state == "dispatch_started"
+
+        def match(current: AttemptCheckpoint) -> bool | None:
+            digest = (
+                current.activity_dispatch_fingerprint_digest
+                if dispatch
+                else current.activity_reference_digest
+            )
+            return None if digest is None else digest == value.digest
+
+        def conflict() -> GraphEngineError:
+            return (
+                TaskActivityConflict("dispatch fingerprint drifted from the durable activity")
+                if dispatch
+                else TaskActivityReferenceInvalid("activity reference changed after bind")
+            )
+
+        matched = match(snapshot)
         if matched is True:
             return self._to_task_snapshot(snapshot)
         if matched is False:
-            raise (
-                TaskActivityConflict("dispatch fingerprint drifted from the durable activity")
-                if isinstance(event, JournalActivityDispatchStarted)
-                else TaskActivityReferenceInvalid("activity reference changed after bind")
-            )
-        if not _journal_transition_allowed(snapshot, event):
+            raise conflict()
+        if snapshot.activity_state != ("prepared" if dispatch else "dispatch_started"):
             raise TaskActivityConflict("activity cannot apply the requested transition")
+        candidate = (
+            replace(
+                snapshot,
+                activity_state="dispatch_started",
+                activity_dispatch_fingerprint=value.value,
+                activity_dispatch_fingerprint_digest=value.digest,
+            )
+            if dispatch
+            else replace(
+                snapshot,
+                activity_state="bound",
+                activity_reference=value.value,
+                activity_reference_digest=value.digest,
+            )
+        )
         try:
-            updated = await self._journal.append(
-                self._attempt_key,
-                (event,),
-                expected_revision=snapshot.revision,
-                fencing_token=self._identity.fencing_token,
+            updated = await self._checkpoints.commit(
+                candidate, expected_revision=snapshot.revision, fencing_token=self._identity.fencing_token
             )
         except StaleFencingToken:
             raise
-        except AttemptJournalIntegrityError as error:
-            latest = await self._journal.load(self._attempt_key)
+        except AttemptCheckpointIntegrityError as error:
+            latest = await self._checkpoints.load(self._attempt_key)
             self._authenticate_snapshot(latest)
             assert latest is not None
-            matched = _journal_payload_match(latest, event)
+            matched = match(latest)
             if matched is True:
-                await self._journal.ensure_durable(self._attempt_key)
+                await self._checkpoints.ensure_durable(self._attempt_key)
                 return self._to_task_snapshot(latest)
             if matched is False:
-                raise (
-                    TaskActivityConflict("dispatch fingerprint drifted from the durable activity")
-                    if isinstance(event, JournalActivityDispatchStarted)
-                    else TaskActivityReferenceInvalid("activity reference changed after bind")
-                ) from error
+                raise conflict() from error
             raise TaskActivityConflict("activity identity or CAS position changed") from error
-        await self._journal.ensure_durable(self._attempt_key)
+        await self._checkpoints.ensure_durable(self._attempt_key)
         await self._assert_live_fence()
         return self._to_task_snapshot(updated)
 
-    def _authenticate_snapshot(self, snapshot: AttemptSnapshot | None) -> None:
+    def _authenticate_snapshot(self, snapshot: AttemptCheckpoint | None) -> None:
         if snapshot is None:
             raise TaskActivityConflict("activity identity does not match the live attempt")
         identity = self._identity
@@ -319,7 +320,7 @@ class JournalBackedTaskActivityPort:
         if snapshot.activity_state not in {"prepared", "dispatch_started", "bound"}:
             raise TaskActivityConflict("activity identity does not match the live attempt")
 
-    def _to_task_snapshot(self, snapshot: AttemptSnapshot) -> TaskActivitySnapshot:
+    def _to_task_snapshot(self, snapshot: AttemptCheckpoint) -> TaskActivitySnapshot:
         state = snapshot.activity_state
         if state is None:
             raise TaskActivityConflict("activity identity does not match the live attempt")
@@ -343,23 +344,23 @@ class JournalBackedTaskActivityPort:
         return TaskActivitySnapshot.model_validate(payload)
 
 
-def journal_backed_activity_factory(
+def checkpoint_backed_activity_factory(
     *,
-    journal: AttemptJournalPort,
+    checkpoints: AttemptCheckpointStore,
     attempt_key: AttemptKey,
     owner_loop: asyncio.AbstractEventLoop,
     assert_live_fence: Callable[[], Awaitable[None]],
 ) -> Callable[
     [TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall],
-    JournalBackedTaskActivityPort,
+    CheckpointBackedTaskActivityPort,
 ]:
     def factory(
         call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
         *,
         remaining_deadline: float,
-    ) -> JournalBackedTaskActivityPort:
-        return JournalBackedTaskActivityPort(
-            journal=journal,
+    ) -> CheckpointBackedTaskActivityPort:
+        return CheckpointBackedTaskActivityPort(
+            checkpoints=checkpoints,
             attempt_key=attempt_key,
             identity=call.activity_rpc,
             workspace_identity=call.attempt_root.workspace_identity,
@@ -374,28 +375,6 @@ def journal_backed_activity_factory(
     return factory  # type: ignore[return-value]
 
 
-def _journal_payload_match(
-    snapshot: AttemptSnapshot,
-    event: JournalActivityDispatchStarted | JournalActivityBound,
-) -> bool | None:
-    if isinstance(event, JournalActivityDispatchStarted):
-        if snapshot.activity_dispatch_fingerprint_digest is None:
-            return None
-        return snapshot.activity_dispatch_fingerprint_digest == event.dispatch_fingerprint_digest
-    if snapshot.activity_reference_digest is None:
-        return None
-    return snapshot.activity_reference_digest == event.reference_digest
-
-
-def _journal_transition_allowed(
-    snapshot: AttemptSnapshot,
-    event: JournalActivityDispatchStarted | JournalActivityBound,
-) -> bool:
-    if isinstance(event, JournalActivityDispatchStarted):
-        return snapshot.activity_state == "prepared" and snapshot.activity_dispatch_fingerprint_digest is None
-    return snapshot.activity_state == "dispatch_started" and snapshot.activity_reference_digest is None
-
-
 __all__ = [
     "AttemptWorkspaceLost",
     "BoundedCanonicalJson",
@@ -408,7 +387,7 @@ __all__ = [
     "LedgerConflictError",
     "LedgerError",
     "LedgerPublicationIndeterminate",
-    "JournalBackedTaskActivityPort",
+    "CheckpointBackedTaskActivityPort",
     "MAX_ACTIVITY_VALUE_BYTES",
     "NodeActivated",
     "PlannedTask",
@@ -441,7 +420,7 @@ __all__ = [
     "attempt_activity_is_terminal",
     "bounded_canonical_json",
     "fold_events",
-    "journal_backed_activity_factory",
+    "checkpoint_backed_activity_factory",
     "recovery_decision_for_status",
     "write_checkpoint",
 ]

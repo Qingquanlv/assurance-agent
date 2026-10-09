@@ -21,7 +21,7 @@ from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.boot.boot import EngineGraphBuildContext
 from graph_engine.flow import BoundFlow
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.testing import committed
 from graph_engine.testing.graph_harness import ScriptedAttempt
@@ -156,9 +156,9 @@ async def run_generation_boundary(root: Path, coverage_epoch: int = 0):
     task = TASK_ATTEMPT_CONTRACTS["publish-cycle"]
     executor = DeterministicTaskExecutor(task.handler_id, PublishGenerationCycleHandler(), task.output_model)
     resolved = resolve_contract(task, executor=executor)
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     kernel = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=journal,
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(TaskWorkspaceStore(project, root / "attempts", root / "receipts")),
         graph_revision="b" * 64,
@@ -179,7 +179,7 @@ async def run_generation_boundary(root: Path, coverage_epoch: int = 0):
         resolved_contracts={task.contract_id: resolved},
         checkpointer=None,
         approved_source_roots=(),
-        attempt_factory=AttemptNodeFactory(journal=journal, kernel=BoundaryKernel()),
+        attempt_factory=AttemptNodeFactory(checkpoints=journal, kernel=BoundaryKernel()),
     )
     generation = build_generation_graphs(context.for_capability("assurance.generation")).generation
     assert isinstance(generation, BoundFlow)

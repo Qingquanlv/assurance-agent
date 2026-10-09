@@ -84,7 +84,7 @@ def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
     monkeypatch.setattr(ProductRuntimePorts, "open", classmethod(_count("sqlite")))
     monkeypatch.setattr(AuthorizedSecretResolver, "resolve", _count("secret"))
     monkeypatch.setattr(
-        "graph_engine.attempts.production_host.create_production_task_execution_host",
+        "graph_engine.attempts.execution_host.production_host.create_production_task_execution_host",
         _count("host"),
     )
     monkeypatch.setattr(LocalInvocationRunnerLease, "acquire", _count("lease"))

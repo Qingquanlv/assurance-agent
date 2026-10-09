@@ -24,7 +24,7 @@ def test_foreground_dead_owner_reconstructs_authenticated_cancel(
     from click.testing import CliRunner
     from assurance_product.product import prepare_change_workspace
     from assurance_product.worker_lifecycle import acquire_execution, control_root, ExecutionConflict
-    from graph_engine.attempts.host_protocol import TaskHostCallResult
+    from graph_engine.attempts.execution_host.host_protocol import TaskHostCallResult
     from graph_engine.plugin_api import TaskOutcome, TaskActivityCancelResult
     from agent_runtime_fixture.contracts import frozen_run_request
 

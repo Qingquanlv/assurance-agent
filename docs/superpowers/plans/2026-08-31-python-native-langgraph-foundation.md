@@ -1,5 +1,9 @@
 # Python-native LangGraph Foundation Implementation Plan
 
+> Historical implementation plan: Attempt event/journal and action-runtime steps
+> are superseded by the [Attempt checkpoint migration](2026-10-09-attempt-checkpoints.md).
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Establish the pinned LangGraph dependency boundary, authenticated graph revision/manifest model, owner-scoped graph factory loading, journal-anchored checkpoint persistence, runner lease/fencing, and engine-neutral Boot/Application contracts required by every later graph.

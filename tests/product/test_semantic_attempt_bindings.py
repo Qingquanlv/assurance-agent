@@ -298,7 +298,7 @@ class _RecordingTaskHost:
         self.calls: list[object] = []
 
     async def execute(self, call: object) -> object:
-        from graph_engine.attempts.host_protocol import TaskHostCallResult
+        from graph_engine.attempts.execution_host.host_protocol import TaskHostCallResult
         from graph_engine.plugin_api import TaskOutcome
 
         self.calls.append(call)
@@ -537,7 +537,7 @@ def test_bound_case_design_runs_phases_through_installed_host(
         AuthorizedAttemptScope,
         ExecutedAttemptResult,
     )
-    from graph_engine.attempts.host_protocol import TaskHostCallResult, TaskHostExecuteCall
+    from graph_engine.attempts.execution_host.host_protocol import TaskHostCallResult, TaskHostExecuteCall
     from graph_engine.attempts.workspace import TaskWorkspaceStore
     from graph_engine.plugin_api import TaskOutcome
 

@@ -392,7 +392,7 @@ _ASSEMBLY_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/framework/graph-engine/tests/persistence/test_journal_contract.py::test_identical_journal_records_are_idempotent_and_divergent_identity_fails_closed"
         ),
         "bootstrap-after-append": (
-            "packages/framework/graph-engine/tests/persistence/test_attempt_journal.py::test_identical_append_replay_is_idempotent"
+            "packages/framework/graph-engine/tests/persistence/test_attempt_checkpoint.py::test_no_argument_memory_store_enforces_stored_fence_and_same_phase_progress"
         ),
         "bootstrap-before-directory-fsync": (
             "packages/framework/graph-engine/tests/attempts/test_kernel_recovery.py::test_crash_windows_replay_same_receipt_without_repeating_mutation[before_durable_prepare]"
@@ -413,7 +413,7 @@ _ASSEMBLY_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/capabilities/assurance-generation/tests/test_graph_join_any.py::test_join_predecessors_are_the_two_plan_advance_sites"
         ),
         "projection-token-schema-mismatch": (
-            "packages/framework/graph-engine/tests/persistence/test_attempt_journal.py::test_corrupt_record_digest_is_rejected"
+            "packages/framework/graph-engine/tests/persistence/test_attempt_checkpoint.py::test_canonical_codec_rejects_unknown_fields_digest_drift_and_noncanonical_bytes"
         ),
         "projection-noncanonical-pointer": (
             "packages/framework/graph-engine/tests/stategraph/test_routing.py::test_select_exclusive_route_rejects_empty_otherwise"

@@ -1,4 +1,6 @@
 from __future__ import annotations
+from dataclasses import replace
+from graph_engine.attempts.checkpoint import AttemptPhase
 
 from pathlib import Path
 
@@ -19,7 +21,6 @@ from agent_runtime_opencode.security import reject_canaries_in_payload, scan_for
 from agent_runtime_opencode.session.binding import reject_isolated_root_discovery
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy
-from graph_engine.attempts.events import ActivityBound
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import (
@@ -29,7 +30,7 @@ from graph_engine.attempts.resolutions import (
     SystemReference,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import ResourceClaims, TaskWorkspaceBinding
@@ -169,11 +170,14 @@ class LiveFinalize:
         return RawOutput(status=bundle.agent_result.status)
 
 
+_PROVIDER_ADMISSIONS: set[str] = set()
+
+
 class LiveRawRuntime:
     def __init__(
         self,
         workspace: _RecordingWorkspace,
-        journal: MemoryAttemptJournal,
+        journal: MemoryAttemptCheckpointStore,
         *,
         order: list[str],
         cut: str | None = None,
@@ -204,7 +208,6 @@ class LiveRawRuntime:
             "message_id": _MESSAGE,
             "prompt_digest": prepared.prompt_digest,
             "result_digest": result_digest,
-            "terminal_status": "running" if session_id and self.prompt_admissions == 0 else "admitted",
         }
         encoded = bounded_canonical_json(payload, limit=16 * 1024)
         return encoded
@@ -218,14 +221,17 @@ class LiveRawRuntime:
         assert snapshot is not None
         if getattr(snapshot, "activity_reference", None) == encoded.value:
             return
-        await self.journal.append(
-            self.key,
-            (
-                ActivityBound(
-                    activity_id=snapshot.activity_id or self.key.digest,
-                    reference=encoded.value,
-                    reference_digest=encoded.digest,
-                ),
+        await self.journal.commit(
+            replace(
+                (await self.journal.load(self.key)),
+                fencing_token=_fencing_token(context),
+                activity_id=snapshot.activity_id or self.key.digest,
+                activity_reference=encoded.value,
+                activity_reference_digest=encoded.digest,
+                phase=AttemptPhase.RECONCILE,
+                activity_state="bound",
+                activity_dispatch_fingerprint={"fixture": "dispatch"},
+                activity_dispatch_fingerprint_digest=canonical_digest({"fixture": "dispatch"}),
             ),
             expected_revision=snapshot.revision,
             fencing_token=_fencing_token(context),
@@ -265,6 +271,8 @@ class LiveRawRuntime:
         if self.cut == "after_session_create_before_prompt_ack":
             raise TransactionCrash(self.cut)
         self.prompt_admissions += 1
+        assert self.workspace.binding is not None
+        _PROVIDER_ADMISSIONS.add(str(self.workspace.binding.project_root))
         await self._persist_bind(prepared, _SESSION, context)
         if self.cut == "after_prompt_ack":
             raise TransactionCrash(self.cut)
@@ -297,7 +305,8 @@ class LiveRawRuntime:
             or reference.get("model") != _MODEL
         ):
             return IndeterminateTaskResult(reconciliation=SystemReference(reference_id="identity-drift"))
-        if reference.get("terminal_status") == "running":
+        assert self.workspace.binding is not None
+        if str(self.workspace.binding.project_root) not in _PROVIDER_ADMISSIONS:
             return IndeterminateTaskResult(
                 reconciliation=SystemReference(reference_id="unprovable-admission")
             )
@@ -371,7 +380,7 @@ def _build(
     *,
     cut: str | None = None,
     fault: str | None = None,
-    journal: MemoryAttemptJournal | None = None,
+    journal: MemoryAttemptCheckpointStore | None = None,
     authorization_store: MemoryResourceAuthorizationStore | None = None,
     fencing_token: int = 4,
 ):
@@ -379,7 +388,7 @@ def _build(
     project.mkdir(exist_ok=True)
     store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
     workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
-    journal = journal if journal is not None else MemoryAttemptJournal()
+    journal = journal if journal is not None else MemoryAttemptCheckpointStore()
     authorization_store = (
         authorization_store if authorization_store is not None else MemoryResourceAuthorizationStore()
     )
@@ -395,7 +404,7 @@ def _build(
     )
     resolved = executor.resolve()
     kernel = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=journal,
         arbiter=ResourceArbiter(authorization_store),
         workspace=workspace,
         graph_revision=_revision(),
@@ -467,7 +476,7 @@ async def test_raw_crash_windows_adopt_recorded_session_without_second_prompt(
             )
         runtime.cut = None
         recovered = await kernel.execute_or_recover(key, resolved, validated, context, transaction_cut=None)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await kernel.checkpoints.load(key)
         assert snapshot is not None
         reference = snapshot.activity_reference
         assert isinstance(reference, dict)
@@ -482,7 +491,7 @@ async def test_raw_crash_windows_adopt_recorded_session_without_second_prompt(
             assert runtime.reconciles == 1
             assert workspace.promotions == 0
             assert snapshot.terminal is None
-            assert reference["terminal_status"] == "running"
+            assert runtime.prompt_admissions == 0
             assert not (project / "out.txt").exists()
             assert finalize.calls == 0
             replay = await kernel.execute_or_recover(key, resolved, validated, context)
@@ -518,7 +527,7 @@ async def test_raw_crash_windows_adopt_recorded_session_without_second_prompt(
 
 
 async def test_fresh_executor_adopts_journaled_session_and_never_redispatches(tmp_path: Path) -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     authorization = MemoryResourceAuthorizationStore()
     first = _build(tmp_path, cut="after_prompt_ack", journal=journal, authorization_store=authorization)
     kernel, key, resolved, validated, context, _executor, runtime, _workspace, _project, store, _finalize = (
@@ -613,7 +622,7 @@ async def test_security_failures_fail_before_promote(tmp_path: Path, fault: str)
         if fault != "result_file_disagreement":
             assert runtime.prompt_admissions <= 1
         if fault == "secret_leakage":
-            snapshot = await kernel.journal.load(key)
+            snapshot = await kernel.checkpoints.load(key)
             assert snapshot is not None
             encoded = str(snapshot.activity_reference) + str(snapshot.terminal)
             assert _SECRET not in encoded
@@ -629,7 +638,7 @@ async def test_persisted_recovery_facts_exclude_secrets_and_transcripts(tmp_path
     try:
         result = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(result, CommittedTaskResult)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await kernel.checkpoints.load(key)
         assert snapshot is not None
         reference = snapshot.activity_reference
         assert isinstance(reference, dict)
@@ -663,7 +672,7 @@ async def test_cancel_and_reconcile_are_idempotent_and_fenced(tmp_path: Path) ->
     try:
         with pytest.raises(TransactionCrash, match="after_prompt_ack"):
             await kernel.execute_or_recover(key, resolved, validated, context)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await kernel.checkpoints.load(key)
         assert snapshot is not None
         runtime.cut = None
         prepared = RawPrepared(change_id="chg-1", prompt_digest="a" * 64)

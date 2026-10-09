@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 import yaml
 
-from graph_engine.attempts.events import AttemptOpened, AttemptTerminated
+from graph_engine.attempts.checkpoint import AttemptResult
+from tests.attempt_checkpoints import completed_checkpoint
 from assurance_product.configuration import capability_leafs_from_knowledge
 
 from tests.product.conformance import PREPARE_IDS
@@ -177,24 +178,18 @@ def test_status_projection_round_trips_full_benchmark_steps(tmp_path: Path) -> N
     runner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(runner)
     events = tuple(
-        event
-        for semantic_node_id in FULL_WORKFLOW_REQUIRED_STEPS
-        for event in (
-            AttemptOpened(
-                contract_digest="a" * 64,
-                input_digest="b" * 64,
-                graph_revision="c" * 64,
-                invocation_id="inv-status-round-trip",
-                public_entrypoint="full",
-                semantic_node_id=semantic_node_id,
-            ),
-            AttemptTerminated(
+        completed_checkpoint(
+            terminal=AttemptResult(
                 resolution_kind="committed",
                 output={"status": "completed"},
-                receipt_id=f"receipt-{semantic_node_id}",
+                receipt_id=f"receipt-{node}",
                 receipt_digest="d" * 64,
             ),
+            invocation_id="inv-status-round-trip",
+            public_entrypoint="full",
+            semantic_node_id=node,
         )
+        for node in FULL_WORKFLOW_REQUIRED_STEPS
     )
     status = render_status_from_langgraph(
         invocation_id="inv-status-round-trip",
@@ -211,7 +206,7 @@ def test_status_projection_round_trips_full_benchmark_steps(tmp_path: Path) -> N
                 "selected_test_families": ["api"],
             },
         ),
-        journal_events=events,
+        attempt_checkpoints=events,
         project_root=tmp_path,
     )
 

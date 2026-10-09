@@ -80,7 +80,9 @@ def verified_exit(identity: object) -> bool:
         if local is None or identity.get("host") != local["host"] or identity.get("boot") != local["boot"]:
             raise ExecutionConflict("worker host or boot identity differs")
         if identity.get("pgid") == identity["pid"]:
-            from graph_engine.attempts.production_host import _collect_process_group_descendants
+            from graph_engine.attempts.execution_host.production_host import (
+                _collect_process_group_descendants,
+            )
 
             return all(
                 process_identity(int(pid)) is None

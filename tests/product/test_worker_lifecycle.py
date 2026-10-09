@@ -211,7 +211,7 @@ def test_abnormal_registered_library_execution_stays_blocked(tmp_path: Path) -> 
     from assurance_product import worker_lifecycle as lifecycle
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-    from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+    from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from graph_engine.attempts.keys import AttemptKey
 
     workspace = lifecycle.control_root(tmp_path)
@@ -219,7 +219,7 @@ def test_abnormal_registered_library_execution_stays_blocked(tmp_path: Path) -> 
     async def register():
         opened = ChangeWorkspace.prepare(tmp_path.resolve(), "run")
         async with open_sqlite_checkpointer(opened) as backend:
-            await SqliteAttemptJournal(backend).register_generation(
+            await SqliteAttemptCheckpointStore(backend).register_generation(
                 {"invocation_id": "run"}, lambda ordinal: AttemptKey(digest="a" * 64), max_attempts=3
             )
 
@@ -248,7 +248,7 @@ from pathlib import Path
 from assurance_product.worker_lifecycle import acquire_execution
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
 from graph_engine.attempts.keys import AttemptKey
 async def register(root):
  async with open_sqlite_checkpointer(ChangeWorkspace.prepare(root, "run")) as backend:
@@ -259,7 +259,7 @@ async def register(root):
     print("ready", flush=True)
     os._exit(17)
    backend._conn.commit = crash_commit
-  await SqliteAttemptJournal(backend).register_generation({"invocation_id":"run"}, lambda ordinal: AttemptKey(digest="a"*64), max_attempts=3)
+  await SqliteAttemptCheckpointStore(backend).register_generation({"invocation_id":"run"}, lambda ordinal: AttemptKey(digest="a"*64), max_attempts=3)
 with acquire_execution(Path(sys.argv[1]), "run"):
  asyncio.run(register(Path(sys.argv[1])))
  print("ready", flush=True)
@@ -382,12 +382,12 @@ from pathlib import Path
 from assurance_product.worker_lifecycle import acquire_execution
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
 from graph_engine.attempts.keys import AttemptKey
 root = Path(sys.argv[1])
 async def generation(adopt):
  async with open_sqlite_checkpointer(ChangeWorkspace.prepare(root, "run")) as backend:
-  journal = SqliteAttemptJournal(backend)
+  journal = SqliteAttemptCheckpointStore(backend)
   if not adopt:
    await journal.register_generation({"invocation_id":"run"}, lambda ordinal: AttemptKey(digest="a"*64), max_attempts=3)
   else:

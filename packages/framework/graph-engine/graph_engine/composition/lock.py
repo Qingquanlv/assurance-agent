@@ -319,7 +319,7 @@ class ExecutionHostLock(FrozenModel):
 
 
 def pinned_execution_host_lock() -> ExecutionHostLock:
-    attempts_dir = Path(__file__).resolve().parent.parent / "attempts"
+    host_dir = Path(__file__).resolve().parent.parent / "attempts" / "execution_host"
     source_files = []
     for relative_path in (
         "production_host.py",
@@ -327,10 +327,10 @@ def pinned_execution_host_lock() -> ExecutionHostLock:
         "host_protocol.py",
         "host_receipts.py",
     ):
-        path = attempts_dir / relative_path
+        path = host_dir / relative_path
         source_files.append(
             {
-                "path": f"graph_engine/attempts/{relative_path}",
+                "path": f"graph_engine/attempts/execution_host/{relative_path}",
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
         )

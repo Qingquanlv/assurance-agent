@@ -1,5 +1,9 @@
 # Python-native LangGraph Migration Program Implementation Plan
 
+> Historical implementation plan: Attempt event/journal and action-runtime steps
+> are superseded by the [Attempt checkpoint migration](2026-10-09-attempt-checkpoints.md).
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace YAML-authored Assurance Workflow topology and the custom Workflow Runtime with authenticated, Feature-owned Python `StateGraph` factories, make strict locally validated Raw Agent execution permanent for all 33 Agent contracts, and preserve reliable commit/recovery, the 14 public entrypoints, and revision-pinned CLI resume.

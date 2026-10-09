@@ -10,15 +10,15 @@ import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from typing import cast
 
-from graph_engine.attempts.events import AttemptOpened, AttemptTerminated
+from graph_engine.attempts.checkpoint import AttemptCheckpoint
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
-from graph_engine.persistence.attempt_journal import AttemptJournalRecord
+from graph_engine.persistence.attempt_checkpoint import encode_attempt_checkpoint, decode_attempt_checkpoint
 from graph_engine.errors import GraphEngineError
 
 from assurance_improvement.contracts.retro import (
     RetroIntegrity,
     TaskFailureEvidenceEntry,
-    WorkflowRuntimeEvidenceV1,
+    WorkflowRuntimeEvidenceV2,
 )
 from assurance_intake.contracts import EvidenceArtifactRefV1
 from assurance_product.change_workspace import ChangeWorkspace
@@ -26,7 +26,7 @@ from assurance_product.change_workspace import ChangeWorkspace
 
 async def export_runtime_evidence(
     workspace: ChangeWorkspace,
-    read_records: Callable[[], Awaitable[tuple[AttemptJournalRecord, ...]]],
+    read_records: Callable[[], Awaitable[tuple[AttemptCheckpoint, ...]]],
     *,
     invocation_id: str,
 ) -> None:
@@ -50,11 +50,11 @@ async def export_runtime_evidence(
 
 async def snapshot_runtime_evidence(
     workspace: ChangeWorkspace,
-    read_records: Callable[[], Awaitable[tuple[AttemptJournalRecord, ...]]],
+    read_records: Callable[[], Awaitable[tuple[AttemptCheckpoint, ...]]],
     *,
     invocation_id: str,
 ) -> EvidenceArtifactRefV1:
-    """Bind the current journal before Retro; keep the later diagnostic export separate."""
+    """Bind the current checkpoints before Retro; keep the later diagnostic export separate."""
     document = project_runtime_evidence(
         await read_records(), change_id=workspace.change_id, invocation_id=invocation_id
     )
@@ -62,72 +62,46 @@ async def snapshot_runtime_evidence(
 
 
 def project_runtime_evidence(
-    records: Sequence[AttemptJournalRecord],
+    records: Sequence[AttemptCheckpoint],
     *,
     change_id: str,
     invocation_id: str,
-) -> WorkflowRuntimeEvidenceV1:
-    """Retain every failed terminal, including retries on an already opened attempt.
-
-    Journal revisions order events within an attempt; fencing tokens order runner
-    leases. Neither is a timestamp. Recovery is unknown unless a later commit of
-    the same node/input is proven by one of these orderings.
-    """
-    by_key: dict[str, list[AttemptJournalRecord]] = {}
-    for record in records:
-        if record.record_digest != record.canonical_digest():
-            raise ValueError("runtime journal digest mismatch")
-        by_key.setdefault(record.attempt_key_digest, []).append(record)
-    terminals: list[tuple[AttemptOpened, AttemptJournalRecord, int, AttemptTerminated]] = []
-    selected: list[AttemptJournalRecord] = []
-    incomplete = False
-    for key_records in by_key.values():
-        ordered = sorted(key_records, key=lambda record: record.revision)
-        if [record.revision for record in ordered] != list(range(len(ordered))):
-            raise ValueError("runtime journal revision gap")
-        opened: AttemptOpened | None = None
-        for record in ordered:
-            for index, event in enumerate(record.events):
-                if isinstance(event, AttemptOpened):
-                    if opened is not None and opened != event:
-                        raise ValueError("runtime journal attempt identity changed")
-                    opened = event
-                if isinstance(event, AttemptTerminated):
-                    if opened is None:
-                        raise ValueError("runtime journal terminal without identity")
-                    if opened.invocation_id == invocation_id:
-                        terminals.append((opened, record, index, event))
-            if opened is not None and opened.invocation_id == invocation_id:
-                selected.append(record)
-        if opened is not None and opened.invocation_id == invocation_id:
-            incomplete |= not any(
-                isinstance(event, AttemptTerminated) for record in ordered for event in record.events
-            )
-
+) -> WorkflowRuntimeEvidenceV2:
+    """Retain every Attempt and compare immutable terminal lease/revision metadata."""
+    selected = [record for record in records if record.invocation_id == invocation_id]
+    if len({record.attempt_key.digest for record in records}) != len(records):
+        raise ValueError("duplicate Attempt checkpoint")
+    # Revalidate full records, including mutable nested JSON, before publishing evidence.
+    selected = [decode_attempt_checkpoint(encode_attempt_checkpoint(record)) for record in selected]
     entries: list[TaskFailureEvidenceEntry] = []
-    for opened, record, index, terminal in terminals:
-        if terminal.resolution_kind == "committed":
+    for record in selected:
+        terminal = record.terminal
+        if terminal is None or terminal.resolution_kind == "committed":
             continue
         later_commit = any(
-            other.resolution_kind == "committed"
-            and (identity.semantic_node_id, identity.input_digest)
-            == (opened.semantic_node_id, opened.input_digest)
+            later.terminal is not None
+            and later.terminal.resolution_kind == "committed"
+            and (later.semantic_node_id, later.input_digest) == (record.semantic_node_id, record.input_digest)
+            and later.terminal_fencing_token is not None
+            and record.terminal_fencing_token is not None
             and (
-                later.fencing_token > record.fencing_token
+                later.terminal_fencing_token > record.terminal_fencing_token
                 or (
-                    later.attempt_key_digest == record.attempt_key_digest
-                    and (later.revision, offset) > (record.revision, index)
+                    later.attempt_key == record.attempt_key
+                    and later.terminal_revision is not None
+                    and record.terminal_revision is not None
+                    and later.terminal_revision > record.terminal_revision
                 )
             )
-            for identity, later, offset, other in terminals
+            for later in selected
         )
         entries.append(
             TaskFailureEvidenceEntry(
-                evidence_id=f"attempt-failure-{canonical_digest([record.record_digest, index])}",
+                evidence_id=f"attempt-failure-{canonical_digest([record.attempt_key.digest, record.terminal_revision])}",
                 change_id=change_id,
-                task_id=opened.semantic_node_id,
-                attempt_id=record.attempt_key_digest,
-                node_id=opened.semantic_node_id,
+                task_id=record.semantic_node_id,
+                attempt_id=record.attempt_key.digest,
+                node_id=record.semantic_node_id,
                 error_kind=terminal.failure_kind or terminal.resolution_kind,
                 message_fingerprint=hashlib.sha256(
                     (terminal.message or terminal.reason).encode()
@@ -135,13 +109,16 @@ def project_runtime_evidence(
                 recovered=True if later_commit else None,
             )
         )
+    incomplete = any(record.terminal is None or not record.released for record in selected)
     reasons = ("runtime_attempts_incomplete",) if incomplete else ()
     if not selected:
         reasons = ("runtime_invocation_evidence_absent",)
-    return WorkflowRuntimeEvidenceV1(
+    return WorkflowRuntimeEvidenceV2(
         change_id=change_id,
         invocation_id=invocation_id,
-        journal_digest=canonical_digest(cast(JSONValue, sorted(record.record_digest for record in selected))),
+        checkpoint_digest=canonical_digest(
+            cast(JSONValue, sorted(canonical_digest(record.canonical_projection()) for record in selected))
+        ),
         entries=tuple(sorted(entries, key=lambda entry: entry.evidence_id)),
         integrity=RetroIntegrity(status="incomplete" if reasons else "complete", reasons=reasons),
     )
@@ -149,11 +126,11 @@ def project_runtime_evidence(
 
 def publish_runtime_evidence(
     workspace: ChangeWorkspace,
-    document: WorkflowRuntimeEvidenceV1,
+    document: WorkflowRuntimeEvidenceV2,
     *,
     stage: str = "post-run",
 ) -> EvidenceArtifactRefV1:
-    """Export a runtime projection, never the journal, prompts or credentials.
+    """Export a runtime projection, never raw checkpoints, prompts or credentials.
 
     Consumers must explicitly include its exact byte digest in Retro source_refs.
     Pre-Retro snapshots are immutable and content-addressed so replay cannot
@@ -200,16 +177,16 @@ def publish_runtime_evidence(
 
 
 class ProjectedRuntimeEvidence:
-    """Host side of the kernel port. Returns the organized document, not journal rows.
+    """Host side of the kernel port. Returns the organized document, not storage rows.
 
-    The reading attempt is still open, so its records are dropped before projection.
-    Post-run export does not use this port and still sees every terminated attempt.
+    The reading attempt is still open, so its checkpoint is dropped before projection.
+    Post-run export does not use this port and still sees every Attempt.
     """
 
     def __init__(
         self,
         workspace: ChangeWorkspace,
-        read_records: Callable[[], Awaitable[tuple[AttemptJournalRecord, ...]]],
+        read_records: Callable[[], Awaitable[tuple[AttemptCheckpoint, ...]]],
     ) -> None:
         self._workspace = workspace
         self._read_records = read_records
@@ -222,7 +199,7 @@ class ProjectedRuntimeEvidence:
     ) -> JSONValue:
         records = await self._read_records()
         filtered = tuple(
-            record for record in records if record.attempt_key_digest != exclude_attempt_key_digest
+            record for record in records if record.attempt_key.digest != exclude_attempt_key_digest
         )
         document = project_runtime_evidence(
             filtered,

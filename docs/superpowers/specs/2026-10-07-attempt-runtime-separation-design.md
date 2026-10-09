@@ -1,5 +1,9 @@
 # Attempt Runtime / domain handler separation
 
+> Historical design: the Attempt event/journal and action-runtime descriptions
+> are superseded by [persisted Attempt checkpoints](2026-10-09-attempt-checkpoints-design.md).
+
+
 ## Authority and scope
 
 The user explicitly requested completion of the missing Pi Durable-inspired Attempt refactor. The original Spike required separating state progression from Assurance operations. Later decisions remove Effects, prohibit concurrent workers, and regenerate abandoned production nodes; those decisions do not cancel internal separation. This supplement reconciles both requirements.

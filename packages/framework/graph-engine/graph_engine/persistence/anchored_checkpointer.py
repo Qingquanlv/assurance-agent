@@ -282,7 +282,12 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
         )
         await self._journal.append_checkpoint_anchor(anchor, fencing_token=fencing_token)
         await self._store.mark_journal_anchored(outbox_id)
-        notice = CheckpointAnchorNotice(anchor=anchor, markers=tuple(markers), source=source)  # type: ignore[arg-type]
+        notice = CheckpointAnchorNotice(
+            anchor=anchor,
+            markers=tuple(markers),
+            source=source,  # type: ignore[arg-type]
+            delivery_fencing_token=fencing_token,
+        )
         for observer in self._observers:
             await observer.on_anchored(notice)
         await self._store.mark_observers_delivered(outbox_id)
@@ -325,6 +330,7 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
                 anchor=existing,
                 markers=self._markers_for_record(current),
                 source="pending_write" if current.kind == "pending_write" else "checkpoint",
+                delivery_fencing_token=self._identity.fencing_token,
             )
             for observer in self._observers:
                 await observer.on_anchored(notice)

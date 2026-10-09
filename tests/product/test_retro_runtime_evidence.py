@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from graph_engine.attempts.events import AttemptOpened, AttemptTerminated
+from graph_engine.attempts.checkpoint import AttemptResult
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.persistence.attempt_journal import AttemptJournalRecord
-from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV1
+from tests.attempt_checkpoints import checkpoint, completed_checkpoint
+from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV2
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.retro_evidence import (
     ProjectedRuntimeEvidence,
@@ -22,32 +22,28 @@ from assurance_product.retro_evidence import (
 
 
 def _records(invocation: str = "inv-full", *, commit_fence: int = 2):
-    opened = AttemptOpened(
-        contract_digest="b" * 64,
-        input_digest="c" * 64,
-        graph_revision="d" * 64,
-        invocation_id=invocation,
-        public_entrypoint="full",
-        semantic_node_id="api.codegen-review",
-    )
     terminals = [
-        AttemptTerminated(
+        AttemptResult(
             resolution_kind="retryable", failure_kind="invalid_output", message="secret-diagnostic"
         ),
-        AttemptTerminated(
+        AttemptResult(
             resolution_kind="retryable", failure_kind="invalid_output", message="secret-diagnostic"
         ),
-        AttemptTerminated(resolution_kind="committed"),
+        AttemptResult(
+            resolution_kind="committed", receipt_id="receipt", receipt_digest="a" * 64, output={"ok": True}
+        ),
     ]
     return tuple(
-        AttemptJournalRecord.build(
-            revision=revision,
-            attempt_key=AttemptKey(digest=key * 64),
-            fencing_token=commit_fence if index == 2 else 1,
-            events=(event,),
+        completed_checkpoint(
+            AttemptKey(digest=key * 64),
+            terminal=terminal,
+            invocation_id=invocation,
+            public_entrypoint="full",
+            semantic_node_id="api.codegen-review",
+            fencing_token=9,
+            terminal_fencing_token=commit_fence if index == 2 else 1,
         )
         for index, (key, terminal) in enumerate(zip(("a", "e", "f"), terminals))
-        for revision, event in enumerate((opened, terminal))
     )
 
 
@@ -74,15 +70,30 @@ def test_runtime_projection_does_not_invent_recovery_or_cross_invocation_evidenc
     assert all(entry.recovered is None for entry in unordered.entries)
 
 
-@pytest.mark.parametrize("corruption", ["digest", "revision"])
-def test_corrupt_journal_is_not_a_complete_empty_snapshot(corruption: str) -> None:
+def test_corrupt_checkpoint_payload_is_not_a_complete_empty_snapshot() -> None:
     records = _records()
-    if corruption == "digest":
-        records = (replace(records[0], record_digest="f" * 64), *records[1:])
-    else:
-        records = records[1:]
-    with pytest.raises(ValueError, match="journal"):
+    assert isinstance(records[-1].activity_outcome, dict)
+    records[-1].activity_outcome["ok"] = False
+    with pytest.raises(ValueError, match="checkpoint"):
         project_runtime_evidence(records, change_id="CH-A", invocation_id="inv-full")
+
+
+def test_recovery_never_crosses_input_or_node_identity() -> None:
+    failed, second, success = _records()
+    for changed in (replace(success, input_digest="8" * 64), replace(success, semantic_node_id="other-node")):
+        snapshot = project_runtime_evidence(
+            (failed, second, changed), change_id="CH-A", invocation_id="inv-full"
+        )
+        assert all(entry.recovered is None for entry in snapshot.entries)
+
+
+def test_original_terminal_fence_orders_recovery_after_later_owner_adoption() -> None:
+    records = _records()
+    adopted = tuple(
+        replace(record, fencing_token=20 if index < 2 else 10) for index, record in enumerate(records)
+    )
+    snapshot = project_runtime_evidence(adopted, change_id="CH-A", invocation_id="inv-full")
+    assert all(entry.recovered is True for entry in snapshot.entries)
 
 
 def test_published_runtime_evidence_is_explicit_hash_bound_and_repeatable(tmp_path: Path) -> None:
@@ -118,7 +129,7 @@ def test_pre_retro_snapshot_is_immutable_across_replay(tmp_path: Path) -> None:
     original = publish_runtime_evidence(workspace, snapshot, stage="pre-retro")
     original_bytes = (tmp_path / original.path).read_bytes()
 
-    changed = snapshot.model_copy(update={"journal_digest": "f" * 64})
+    changed = snapshot.model_copy(update={"checkpoint_digest": "f" * 64})
     replay = publish_runtime_evidence(workspace, changed, stage="pre-retro")
 
     assert replay.path != original.path
@@ -158,7 +169,7 @@ def test_product_execution_exports_runtime_evidence_except_retro(
 ) -> None:
     from assurance_product import application as module
     from assurance_product.application import AssuranceProductApplication
-    from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV1
+    from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV2
     from assurance_product import retro_evidence
 
     workspace = ChangeWorkspace.prepare(tmp_path, "CH-A")
@@ -169,7 +180,7 @@ def test_product_execution_exports_runtime_evidence_except_retro(
     async def execute(**_kwargs):
         return SimpleNamespace(status="failed")
 
-    ports = SimpleNamespace(attempt_journal=SimpleNamespace(read_records=read_records))
+    ports = SimpleNamespace(attempt_checkpoints=SimpleNamespace(read_checkpoints=read_records))
 
     @asynccontextmanager
     async def open_ports(*_args, **_kwargs):
@@ -209,42 +220,26 @@ def test_product_execution_exports_runtime_evidence_except_retro(
             assert "secret-diagnostic" not in caplog.text
     else:
         assert len(snapshots) == 1
-        snapshot = WorkflowRuntimeEvidenceV1.model_validate_json(snapshots[0].read_bytes())
+        snapshot = WorkflowRuntimeEvidenceV2.model_validate_json(snapshots[0].read_bytes())
         assert len(snapshot.entries) == 2
 
 
 def test_the_port_drops_the_open_reader_and_keeps_this_invocation() -> None:
     records = _records()
-    reader = AttemptJournalRecord.build(
-        revision=0,
-        attempt_key=AttemptKey(digest="9" * 64),
+    reader = checkpoint(
+        AttemptKey(digest="9" * 64),
+        revision=1,
         fencing_token=1,
-        events=(
-            AttemptOpened(
-                contract_digest="b" * 64,
-                input_digest="c" * 64,
-                graph_revision="d" * 64,
-                invocation_id="inv-full",
-                public_entrypoint="full",
-                semantic_node_id="improvement.retro-runtime-snapshot",
-            ),
-        ),
+        invocation_id="inv-full",
+        semantic_node_id="improvement.retro-runtime-snapshot",
     )
-    other = AttemptJournalRecord.build(
-        revision=0,
-        attempt_key=AttemptKey(digest="8" * 64),
-        fencing_token=1,
-        events=(
-            AttemptOpened(
-                contract_digest="b" * 64,
-                input_digest="c" * 64,
-                graph_revision="d" * 64,
-                invocation_id="other-invocation",
-                public_entrypoint="full",
-                semantic_node_id="api.codegen-review",
-            ),
-            AttemptTerminated(resolution_kind="committed"),
-        ),
+    assert records[-1].terminal is not None
+    assert records[-1].terminal is not None
+    other = completed_checkpoint(
+        AttemptKey(digest="8" * 64),
+        terminal=records[-1].terminal,
+        invocation_id="other-invocation",
+        semantic_node_id="api.codegen-review",
     )
 
     async def read_records():
@@ -256,7 +251,7 @@ def test_the_port_drops_the_open_reader_and_keeps_this_invocation() -> None:
     assert excluded == expected.model_dump(mode="json")
     assert expected.integrity.status == "complete"
     included = asyncio.run(port.project(invocation_id="inv-full", exclude_attempt_key_digest="0" * 64))
-    assert WorkflowRuntimeEvidenceV1.model_validate(included).integrity.status == "incomplete"
+    assert WorkflowRuntimeEvidenceV2.model_validate(included).integrity.status == "incomplete"
 
 
 def test_pre_retro_publish_bytes_match_the_snapshot_task_encoding(tmp_path: Path) -> None:

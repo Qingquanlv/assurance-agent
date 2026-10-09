@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -11,11 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
-from graph_engine.attempts.events import (
-    ActiveSystemInterrupt,
-    AttemptSnapshot,
-    SystemInterruptIssued,
-)
+from graph_engine.attempts.checkpoint import ActiveSystemInterrupt, AttemptCheckpoint
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, AttemptIdentity
 from graph_engine.attempts.resolutions import (
     CommittedTaskResult,
@@ -25,7 +22,7 @@ from graph_engine.attempts.resolutions import (
     RejectedTaskResult,
 )
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.stategraph.publish import call_publish
 from graph_engine.stategraph.checkpoint_bridge import (
     CHECKPOINT_MARKERS_STATE_KEY,
@@ -49,13 +46,13 @@ class AttemptNodeFactory:
     def __init__(
         self,
         *,
-        journal: AttemptJournalPort,
+        checkpoints: AttemptCheckpointStore,
         kernel: object | None = None,
         trace: list[str] | None = None,
         regenerate: bool = False,
     ) -> None:
         self._regenerate = regenerate
-        self._journal = journal
+        self._checkpoints = checkpoints
         self._kernel = kernel
         self.trace = [] if trace is None else trace
 
@@ -127,10 +124,10 @@ class AttemptNodeFactory:
             **identity.model_dump(mode="json"),
             "contract_digest": canonical_digest(task.canonical_projection()),
         }
-        latest = await self._journal.latest_generation(scope) if self._regenerate else None
+        latest = await self._checkpoints.latest_generation(scope) if self._regenerate else None
         waiting = None
         if latest is not None:
-            previous = await self._journal.load(latest[1])
+            previous = await self._checkpoints.load(latest[1])
             if previous is not None and _active_issued(previous):
                 if latest[2]:
                     completions.extend((latest[1], item) for item in _active_issued(previous))
@@ -149,7 +146,7 @@ class AttemptNodeFactory:
                     raise ValueError("waiting generation input identity drifted")
                 waiting = None
             elif self._regenerate:
-                registered = await self._journal.register_generation(
+                registered = await self._checkpoints.register_generation(
                     scope,
                     make_key,
                     max_attempts=task.retry.max_attempts,
@@ -168,7 +165,7 @@ class AttemptNodeFactory:
             else:
                 technical_attempt = local_attempt
                 key = make_key(technical_attempt)
-            snapshot = await self._journal.load(key)
+            snapshot = await self._checkpoints.load(key)
             issued = _active_issued(snapshot)
             for item in issued:
                 self.trace.append(f"interrupt:generation={item.generation}:ordinal={item.ordinal}")
@@ -235,16 +232,34 @@ class AttemptNodeFactory:
                 "reference_id": reference_id,
             }
         )
-        event = SystemInterruptIssued(
-            generation=generation,
-            ordinal=ordinal,
-            envelope_digest=envelope_digest,
+        snapshot = await self._checkpoints.load(key)
+        if snapshot is None:
+            raise ValueError("interrupt requires a persisted Attempt")
+        retained = snapshot.active_interrupts
+        if len(tuple(item for item in retained if not item.retired)) >= MAX_ACTIVE_GENERATIONS:
+            raise ValueError("checkpoint marker batch exceeds the active-generation bound")
+        generation = max((item.generation for item in retained), default=0) + 1
+        ordinal = max((item.ordinal for item in retained), default=-1) + 1
+        envelope_digest = canonical_digest(
+            {
+                "attempt_key": key.digest,
+                "generation": generation,
+                "interrupt_kind": kind,
+                "ordinal": ordinal,
+                "reference_id": reference_id,
+            }
         )
-        snapshot = await self._journal.load(key)
-        await self._journal.append(
-            key,
-            (event,),
-            expected_revision=0 if snapshot is None else snapshot.revision,
+        current = ActiveSystemInterrupt(
+            generation=generation, ordinal=ordinal, envelope_digest=envelope_digest
+        )
+        await self._checkpoints.commit(
+            replace(
+                snapshot,
+                fencing_token=context.fencing_token,
+                active_interrupt=current,
+                active_interrupts=(*retained, current),
+            ),
+            expected_revision=snapshot.revision,
             fencing_token=context.fencing_token,
         )
         payload = _interrupt_payload(
@@ -360,7 +375,7 @@ def _validated_selection(raw: object, contract: TaskAttemptContract[Any, Any]) -
     return contract.input_model.model_validate(raw)
 
 
-def _active_issued(snapshot: AttemptSnapshot | None) -> tuple[ActiveSystemInterrupt, ...]:
+def _active_issued(snapshot: AttemptCheckpoint | None) -> tuple[ActiveSystemInterrupt, ...]:
     if snapshot is None:
         return ()
     active = tuple(item for item in snapshot.active_interrupts if not item.retired)

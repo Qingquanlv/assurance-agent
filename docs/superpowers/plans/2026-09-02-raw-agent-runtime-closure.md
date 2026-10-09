@@ -1,5 +1,9 @@
 # Raw Agent Runtime Closure Implementation Plan
 
+> Historical implementation plan: Attempt event/journal and action-runtime steps
+> are superseded by the [Attempt checkpoint migration](2026-10-09-attempt-checkpoints.md).
+
+
 > **Status:** implemented historical plan; amended 2026-09-04.
 >
 > **Scope rule:** this plan closes the existing OpenCode/Attempt seam. It does not create a second artifact pipeline, deployment platform, or Workflow layer.

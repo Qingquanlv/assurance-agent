@@ -1,4 +1,8 @@
 from __future__ import annotations
+from dataclasses import replace
+from tests.attempt_checkpoints import checkpoint
+from graph_engine.attempts.checkpoint import AttemptPhase
+from graph_engine.canonical import canonical_digest
 
 import asyncio
 import inspect
@@ -8,12 +12,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from graph_engine.attempts import production_worker
-from graph_engine.attempts.activity import JournalBackedTaskActivityPort, TaskActivityConflict
-from graph_engine.attempts.events import ActivityPrepared, AttemptOpened, ResourcesAuthorized
+from graph_engine.attempts.execution_host import production_worker
+from graph_engine.attempts.activity import CheckpointBackedTaskActivityPort, TaskActivityConflict
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.canonical import canonical_digest, canonical_json_bytes
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.canonical import canonical_json_bytes
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import (
     DirectoryIdentity,
@@ -30,7 +33,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskExecutionHost,
@@ -456,8 +459,8 @@ def test_activity_port_protocol_exposes_snapshot_dispatch_and_bind() -> None:
 
 
 def test_runtime_exports_frozen_host_protocol_not_phase2_execute() -> None:
-    from graph_engine.attempts import host_protocol as runtime
-    from graph_engine.attempts.host_protocol import TaskExecutionHost as FrozenHost
+    from graph_engine.attempts.execution_host import host_protocol as runtime
+    from graph_engine.attempts.execution_host.host_protocol import TaskExecutionHost as FrozenHost
 
     assert runtime.TaskExecutionHost is FrozenHost
     parameters = tuple(inspect.signature(runtime.TaskExecutionHost.execute).parameters)
@@ -480,15 +483,16 @@ def _mutation_port(
     *,
     fencing_token: int = 1,
     identity_overrides: dict[str, object] | None = None,
-) -> JournalBackedTaskActivityPort:
-    journal = MemoryAttemptJournal()
+) -> CheckpointBackedTaskActivityPort:
+    journal = MemoryAttemptCheckpointStore()
     attempt_key = AttemptKey(digest="a" * 64)
     live = _bound()
     asyncio.run_coroutine_threadsafe(
-        journal.append(
-            attempt_key,
-            (
-                AttemptOpened(
+        journal.commit(
+            replace(
+                checkpoint(
+                    attempt_key,
+                    fencing_token=fencing_token,
                     contract_digest="d" * 64,
                     input_digest="e" * 64,
                     graph_revision="c" * 64,
@@ -496,8 +500,11 @@ def _mutation_port(
                     public_entrypoint="main",
                     semantic_node_id="run",
                 ),
-                ResourcesAuthorized(authorization_id="b" * 64),
-                ActivityPrepared(activity_id="activity-1"),
+                fencing_token=fencing_token,
+                authorization_id="b" * 64,
+                phase=AttemptPhase.RECONCILE,
+                activity_id="activity-1",
+                activity_state="prepared",
             ),
             expected_revision=0,
             fencing_token=fencing_token,
@@ -520,8 +527,8 @@ def _mutation_port(
         activity_id="activity-1",
         **fields,  # type: ignore[arg-type]
     )
-    return JournalBackedTaskActivityPort(
-        journal=journal,
+    return CheckpointBackedTaskActivityPort(
+        checkpoints=journal,
         attempt_key=attempt_key,
         identity=identity,
         workspace_identity=_workspace_identity(),

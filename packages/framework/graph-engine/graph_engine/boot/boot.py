@@ -484,8 +484,8 @@ def bind_attempt_factory(kernel: object | None, *, regenerate: bool = False) -> 
     if kernel is None:
         return None
     if isinstance(kernel, AssuranceAttemptKernel):
-        return AttemptNodeFactory(journal=kernel.journal, kernel=kernel, regenerate=regenerate)
-    raise BootValidationError("attempt kernel must expose its journal")
+        return AttemptNodeFactory(checkpoints=kernel.checkpoints, kernel=kernel, regenerate=regenerate)
+    raise BootValidationError("attempt kernel must expose its checkpoints")
 
 
 def _read_approved_source(path: Path, approved_source_roots: tuple[Path, ...]) -> bytes:

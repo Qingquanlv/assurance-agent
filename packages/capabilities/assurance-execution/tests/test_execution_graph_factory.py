@@ -42,7 +42,7 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import (
     PreparedWorkspaceRef,
@@ -557,7 +557,7 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
         replace(TASK_ATTEMPT_CONTRACTS["run"], resources=writable),
         executor=writer,
     )
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     cuts = ["after_promotion_before_receipt"]
 
     def transaction_cut(name: str) -> None:
@@ -566,13 +566,13 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
             raise RuntimeError("crash after promotion")
 
     kernel = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=journal,
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=workspace,
         graph_revision=_revision(),
         transaction_cut=transaction_cut,
     )
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel)
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel)
     context = RecordingCapabilityBuildContext(
         owner_id="assurance.execution",
         contracts={

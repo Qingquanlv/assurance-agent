@@ -30,7 +30,7 @@ from graph_engine.plugin_api import (
 )
 from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.contracts import TerminalReceiptRef
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     AttemptRootDescriptor,
     HostOperation,
@@ -52,7 +52,7 @@ from graph_engine.attempts.host_protocol import (
     scan_for_secret_leaks,
     write_all_bytes,
 )
-from graph_engine.attempts.host_receipts import (
+from graph_engine.attempts.execution_host.host_receipts import (
     TerminalReceiptError,
     TerminalReceiptStore,
     prove_call_quiescent,
@@ -955,7 +955,7 @@ class _ProcessSupervisor:
             read_fd, write_fd = _open_owned_pipe(owned_fds)
             response_r, response_w = _open_owned_pipe(owned_fds)
             cancel_r, cancel_w = _open_owned_pipe(owned_fds)
-            command = [sys.executable, "-m", "graph_engine.attempts.production_worker"]
+            command = [sys.executable, "-m", "graph_engine.attempts.execution_host.production_worker"]
             env = {
                 "PYTHONUNBUFFERED": "1",
                 "GRAPH_ENGINE_WORKER_CALL_DIGEST": call_digest,
