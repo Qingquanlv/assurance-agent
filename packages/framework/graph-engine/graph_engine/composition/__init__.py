@@ -2,11 +2,7 @@ from graph_engine.composition.declarative import (
     ConfigTreePluginSource,
     DeclarativePlugin,
     DeclarativePluginRejected,
-    DeclarativeProduct,
-    DeclarativeProductRejected,
-    ProductFileSource,
     load_config_tree,
-    load_product_file,
 )
 from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
 from graph_engine.composition.lock import (
@@ -82,8 +78,6 @@ __all__ = [
     "DeclaredTreePolicy",
     "DeclarativePlugin",
     "DeclarativePluginRejected",
-    "DeclarativeProduct",
-    "DeclarativeProductRejected",
     "EditableWheelPluginSource",
     "EditableWheelProductSource",
     "ExecutableBindingMode",
@@ -102,7 +96,6 @@ __all__ = [
     "PluginRequirement",
     "ProductLock",
     "ProductManifest",
-    "ProductFileSource",
     "ProductSource",
     "RegistryPlatform",
     "RegistryConflict",
@@ -132,7 +125,6 @@ __all__ = [
     "recapture_declared_files",
     "load_snapshotted_entrypoint",
     "load_config_tree",
-    "load_product_file",
     "resolve_dependency_order",
     "snapshot_wheel_source",
 ]

@@ -175,7 +175,6 @@ class LockedProduct(FrozenModel):
         if self.source.kind not in {
             SourceKind.WHEEL_PRODUCT,
             SourceKind.EDITABLE_PRODUCT,
-            SourceKind.PRODUCT_FILE,
         }:
             raise ValueError("locked product source identity has the wrong source kind")
         identity = cast(dict[str, object], thaw_json(self.source.identity))
@@ -185,10 +184,7 @@ class LockedProduct(FrozenModel):
             raise ValueError("locked product disagrees with its source identity")
         if source_version is not None and source_version != self.product_version:
             raise ValueError("locked product disagrees with its source identity")
-        if self.source.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.EDITABLE_PRODUCT}:
-            _validate_provider_source_identity(parsed_manifest.source, identity, "product")
-        elif parsed_manifest.source is not None:
-            raise ValueError("locked declarative product cannot claim a wheel source")
+        _validate_provider_source_identity(parsed_manifest.source, identity, "product")
         return self
 
 
@@ -796,7 +792,6 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
     if identity.kind in {
         SourceKind.EDITABLE_PRODUCT,
         SourceKind.EDITABLE_PLUGIN,
-        SourceKind.PRODUCT_FILE,
         SourceKind.CONFIG_TREE,
     } or (identity.kind == SourceKind.ENGINE and identity.engine_installation == "editable"):
         projection["root"] = str(identity.root)

@@ -190,6 +190,7 @@ def _authenticated(
         schemas=tuple(item.schema_id for item in contribution.schemas),
         resources=tuple(item.resource_id for item in contribution.resources),
         bindings=tuple(item.capability_id for item in contribution.bindings),
+        attempt_contracts=contribution.attempt_contracts,
     )
     executable_objects = {
         **{
@@ -680,7 +681,7 @@ def test_registry_rejects_ids_not_owned_by_the_contributing_plugin() -> None:
         )
 
 
-def test_unlisted_agent_binding_id_requires_owner_prefix() -> None:
+def test_agent_binding_requires_selected_contract_declaration() -> None:
     contribution = PluginContribution(
         bindings=(
             CapabilityBindingContribution(
@@ -690,7 +691,7 @@ def test_unlisted_agent_binding_id_requires_owner_prefix() -> None:
             ),
         )
     )
-    with pytest.raises(RegistryConflict, match="binding id is not owned by"):
+    with pytest.raises(RegistryConflict, match="unknown binding contract"):
         build_registries(
             (
                 _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
@@ -701,7 +702,7 @@ def test_unlisted_agent_binding_id_requires_owner_prefix() -> None:
         )
 
 
-def test_unlisted_equal_contract_binding_id_requires_owner_prefix() -> None:
+def test_equal_contract_binding_id_requires_selected_contract_declaration() -> None:
     runtime = _authenticated(
         _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
         _runtime_contribution(),
@@ -725,7 +726,7 @@ def test_unlisted_equal_contract_binding_id_requires_owner_prefix() -> None:
             ),
         )
     )
-    with pytest.raises(ContributionValueError, match="binding id is not owned by"):
+    with pytest.raises(ContributionValueError, match="unknown binding contract"):
         validate_contribution_values(
             (
                 (runtime.owner_id, runtime.descriptor, runtime.contribution),
@@ -739,6 +740,7 @@ def test_semantic_agent_contract_binding_may_be_registered_by_product() -> None:
         (
             _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
             _source("assurance.product.agent"),
+            _source("assurance.intake", kind=SourceKind.WHEEL_PLUGIN),
         ),
         (
             _runtime_contribution(),
@@ -751,8 +753,11 @@ def test_semantic_agent_contract_binding_may_be_registered_by_product() -> None:
                     ),
                 )
             ),
+            PluginContribution(
+                attempt_contracts=({"contract_id": "assurance.intake.agent.intake.v1", "digest": "a" * 64},)
+            ),
         ),
-        ("toy.runtime", "assurance.product.agent"),
+        ("toy.runtime", "assurance.product.agent", "assurance.intake"),
     )
     assert "assurance.intake.agent.intake.v1" in resolved.capabilities.bindings
 
@@ -1001,12 +1006,16 @@ def test_binding_registry_entry_propagates_contract_id() -> None:
         sources=(
             _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
             _source("toy.product"),
+            _source("toy.feature", kind=SourceKind.WHEEL_PLUGIN),
         ),
         contributions=(
             _runtime_contribution(),
             PluginContribution(bindings=(binding,)),
+            PluginContribution(
+                attempt_contracts=({"contract_id": "toy.feature.agent.worker.v1", "digest": "a" * 64},)
+            ),
         ),
-        dependency_order=("toy.runtime", "toy.product"),
+        dependency_order=("toy.runtime", "toy.product", "toy.feature"),
     ).capabilities
     assert resolved.bindings[binding.capability_id].contract_id == "toy.feature.agent.worker.v1"
 
@@ -1020,12 +1029,15 @@ def test_binding_contract_id_is_included_in_contribution_and_registry_projection
     runtime = _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN)
     product = _source("toy.product")
     registries = build_registries(
-        sources=(runtime, product),
+        sources=(runtime, product, _source("toy.feature", kind=SourceKind.WHEEL_PLUGIN)),
         contributions=(
             _runtime_contribution(),
             PluginContribution(bindings=(binding,)),
+            PluginContribution(
+                attempt_contracts=({"contract_id": "toy.feature.agent.worker.v1", "digest": "a" * 64},)
+            ),
         ),
-        dependency_order=("toy.runtime", "toy.product"),
+        dependency_order=("toy.runtime", "toy.product", "toy.feature"),
     )
     authenticated = _authenticated(product, PluginContribution(bindings=(binding,)))
     expected = {

@@ -5,11 +5,12 @@ import importlib
 import json
 from importlib.resources import files
 from pathlib import Path
-from typing import get_args
+from dataclasses import fields
 
 import pytest
 
-from graph_engine.attempts.resources.activity import RuntimeEvent
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint
+from graph_engine.persistence.journal import CheckpointAnchor, InvocationStarted
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
@@ -69,11 +70,6 @@ def _schema_field_names(schema: object) -> set[str]:
         for item in schema:
             names.update(_schema_field_names(item))
     return names
-
-
-def _event_types() -> tuple[type[object], ...]:
-    event_union = get_args(RuntimeEvent)[0]
-    return get_args(event_union)
 
 
 def _forbidden_layout_hits(root: Path) -> set[str]:
@@ -149,7 +145,7 @@ def test_deleted_modules_are_not_importable(module_name: str) -> None:
         importlib.import_module(module_name)
 
 
-def test_status_and_event_schemas_expose_no_tree_ids() -> None:
+def test_status_and_checkpoint_models_expose_no_tree_ids() -> None:
     from assurance_product.models import StatusV1
 
     status_fields = set(StatusV1.model_fields)
@@ -158,9 +154,9 @@ def test_status_and_event_schemas_expose_no_tree_ids() -> None:
     schema = json.loads(files("assurance_product").joinpath("resources/schemas/status-v1.json").read_bytes())
     assert _schema_field_names(schema).isdisjoint(_TREE_ID_FIELD_NAMES)
 
-    for event_type in _event_types():
-        fields = set(getattr(event_type, "model_fields"))
-        assert fields.isdisjoint(_TREE_ID_FIELD_NAMES), event_type
+    for model in (AttemptCheckpoint, CheckpointAnchor, InvocationStarted):
+        names = {field.name for field in fields(model)}
+        assert names.isdisjoint(_TREE_ID_FIELD_NAMES), model
 
 
 def test_toy_invocation_creates_no_whole_tree_layout(

@@ -26,13 +26,51 @@ from graph_engine.canonical import JSONValue
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.plugin_api import (
     CommitValidator,
+    PathWriteSet,
+    ValidationResult,
     PromotionReceipt,
     ResourceClaims,
     TaskWorkspaceBinding,
     ValidationContext,
     WorkspaceProvider,
-    run_validators,
 )
+
+
+def run_validators(
+    validator_ids: tuple[str, ...],
+    registry: Mapping[str, CommitValidator],
+    write_set: PathWriteSet,
+    context: ValidationContext,
+) -> RejectedTaskResult | PermanentTaskFailure | None:
+    """Run contract validators in declared order. An empty tuple is an explicit no-op."""
+
+    if validator_ids == ():
+        return None
+    for validator_id in validator_ids:
+        try:
+            validator = registry[validator_id]
+        except KeyError:
+            return PermanentTaskFailure(
+                kind="configuration",
+                message=f"validator {validator_id} is not registered",
+            )
+        try:
+            result = validator.validate(write_set, context)
+        except Exception as error:
+            return PermanentTaskFailure(
+                kind="internal",
+                message=f"validator {validator_id} failed: {error}",
+            )
+        if not isinstance(result, ValidationResult):
+            return PermanentTaskFailure(
+                kind="internal",
+                message=(
+                    f"validator {validator_id} returned {type(result).__name__}, expected ValidationResult"
+                ),
+            )
+        if not result.accepted:
+            return RejectedTaskResult(reason=result.reason or validator_id)
+    return None
 
 
 @dataclass(frozen=True, slots=True)

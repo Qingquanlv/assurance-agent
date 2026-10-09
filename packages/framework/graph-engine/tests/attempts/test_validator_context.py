@@ -6,13 +6,13 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from graph_engine.attempts import PermanentTaskFailure, RejectedTaskResult
+from graph_engine.attempts.orchestration.commit import run_validators
 from graph_engine.plugin_api import (
     ResourceClaims,
     SealedFile,
     SealedWriteSet,
     ValidationContext,
     ValidationResult,
-    run_validators,
 )
 
 

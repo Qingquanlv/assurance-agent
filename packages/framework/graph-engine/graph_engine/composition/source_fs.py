@@ -43,12 +43,11 @@ class DeclaredTreePolicy:
             SourceKind.CONFIG_TREE,
             SourceKind.EDITABLE_PRODUCT,
             SourceKind.EDITABLE_PLUGIN,
-            SourceKind.PRODUCT_FILE,
         }
 
     @property
     def reject_executable_files(self) -> bool:
-        return self.kind in {SourceKind.CONFIG_TREE, SourceKind.PRODUCT_FILE}
+        return self.kind == SourceKind.CONFIG_TREE
 
     @classmethod
     def config_tree(cls) -> DeclaredTreePolicy:
@@ -61,10 +60,6 @@ class DeclaredTreePolicy:
     @classmethod
     def editable_product(cls) -> DeclaredTreePolicy:
         return cls(kind=SourceKind.EDITABLE_PRODUCT)
-
-    @classmethod
-    def product_file(cls) -> DeclaredTreePolicy:
-        return cls(kind=SourceKind.PRODUCT_FILE)
 
 
 @dataclass(frozen=True, slots=True)

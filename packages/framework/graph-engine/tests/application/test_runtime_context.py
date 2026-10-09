@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from graph_engine.plugin_api import WorkspaceProvider
+
 from graph_engine.application.runtime_context import (
     AssuranceRuntimeContext,
     AttemptKernelPort,
     SecretResolverPort,
-    WorkspaceProviderPort,
 )
 from graph_engine.canonical import canonical_json_bytes
 
@@ -14,7 +15,7 @@ from graph_engine.canonical import canonical_json_bytes
 def test_runtime_context_is_not_graph_state_or_json_serializable(
     kernel: AttemptKernelPort,
     secrets: SecretResolverPort,
-    workspaces: WorkspaceProviderPort,
+    workspaces: WorkspaceProvider,
 ) -> None:
     context = AssuranceRuntimeContext(
         revision_id="a" * 64,
@@ -31,7 +32,7 @@ def test_runtime_context_is_not_graph_state_or_json_serializable(
 def test_checkpoint_projection_is_data_only_and_excludes_service_refs(
     kernel: AttemptKernelPort,
     secrets: SecretResolverPort,
-    workspaces: WorkspaceProviderPort,
+    workspaces: WorkspaceProvider,
 ) -> None:
     context = AssuranceRuntimeContext(
         revision_id="a" * 64,
@@ -60,5 +61,5 @@ def secrets() -> SecretResolverPort:
 
 
 @pytest.fixture
-def workspaces() -> WorkspaceProviderPort:
+def workspaces() -> WorkspaceProvider:
     return object()

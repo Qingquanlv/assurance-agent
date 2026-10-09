@@ -1,4 +1,3 @@
-from graph_engine.stategraph.attempt_graph import AttemptGraph
 from graph_engine.stategraph.ledger import (
     AttemptLedgerState,
     fill_artifact_ledger,
@@ -25,7 +24,6 @@ __all__ = [
     "MAX_ACTIVE_GENERATIONS",
     "omit_checkpoint_bridge_fields",
     "replace_checkpoint_marker_batch",
-    "AttemptGraph",
     "AttemptLedgerState",
     "bind_produced_artifacts",
     "fill_artifact_ledger",

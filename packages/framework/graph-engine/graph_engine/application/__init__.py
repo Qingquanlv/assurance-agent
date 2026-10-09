@@ -12,7 +12,6 @@ from graph_engine.application.runtime_context import (
     AssuranceRuntimeContext,
     AttemptKernelPort,
     SecretResolverPort,
-    WorkspaceProviderPort,
 )
 from graph_engine.application.status import (
     GraphSnapshotEnvelope,
@@ -42,7 +41,6 @@ __all__ = [
     "SecretResolverPort",
     "StartedInvocation",
     "TerminalEnvelope",
-    "WorkspaceProviderPort",
     "normalize_graph_snapshot",
     "normalize_runtime_error",
     "normalize_terminal_envelope",

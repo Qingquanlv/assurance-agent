@@ -27,7 +27,6 @@ from graph_engine.composition.models import (
     SourceRole,
     TaskHandlerEntry,
 )
-from graph_engine.composition.semantic_agent_ids import is_semantic_agent_contract_id
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
@@ -70,6 +69,7 @@ def validate_contribution_values(
     tasks: dict[str, TaskHandler] = {}
     bindings: dict[str, CapabilityBindingContribution] = {}
     all_ids: dict[str, str] = {}
+    contract_ids: set[str] = set()
     validated: list[ValidatedContribution] = []
 
     def reserve(entry_id: str, kind: str) -> None:
@@ -88,6 +88,12 @@ def validate_contribution_values(
             validate_contribution(descriptor, contribution)
         except (TypeError, ValueError) as error:
             raise ContributionValueError(str(error)) from error
+
+        for contract in contribution.attempt_contracts:
+            _owned_id(contract.contract_id, owner_id, "attempt contract")
+            if contract.contract_id in contract_ids:
+                raise ContributionValueError(f"duplicate attempt contract id: {contract.contract_id}")
+            contract_ids.add(contract.contract_id)
 
         selected_tasks: list[tuple[str, TaskHandler]] = []
         selected_validators: list[tuple[str, CommitValidator]] = []
@@ -139,9 +145,7 @@ def validate_contribution_values(
         for binding in contribution.bindings:
             if not isinstance(binding, CapabilityBindingContribution):
                 raise ContributionValueError(f"plugin {owner_id} contributed an invalid binding entry")
-            if binding.capability_id.startswith(f"{owner_id}.") or is_semantic_agent_contract_id(
-                binding.capability_id
-            ):
+            if binding.capability_id == binding.contract_id:
                 _qualified_id(binding.capability_id, "binding id")
             else:
                 _owned_id(binding.capability_id, owner_id, "binding")
@@ -166,9 +170,17 @@ def validate_contribution_values(
             )
         )
 
+    for contract_id in contract_ids:
+        kind = all_ids.get(contract_id)
+        if kind is not None and not (kind == "binding" and bindings[contract_id].contract_id == contract_id):
+            raise ContributionValueError(
+                f"cross-kind registry id: {contract_id} is both attempt contract and {kind}"
+            )
     _reject_alias_cycles(bindings)
     for item in validated:
         for binding in item.bindings:
+            if binding.contract_id is not None and binding.contract_id not in contract_ids:
+                raise ContributionValueError(f"unknown binding contract: {binding.contract_id}")
             if binding.target_capability_id not in tasks:
                 raise ContributionValueError(
                     f"unknown target capability for binding {binding.capability_id}: "
@@ -297,9 +309,12 @@ class ContributionProjection(FrozenModel):
             *((item.capability_id, "binding") for item in self.bindings),
             *((item.contract_id, "attempt contract") for item in self.attempt_contracts),
         )
+        contract_bindings = {
+            binding.capability_id for binding in self.bindings if binding.capability_id == binding.contract_id
+        }
         seen: dict[str, str] = {}
         for entry_id, kind in category_ids:
-            if kind == "binding" and is_semantic_agent_contract_id(entry_id):
+            if kind == "binding" and entry_id in contract_bindings:
                 _qualified_id(entry_id, "binding id")
             else:
                 _owned_id(entry_id, self.owner_id, kind)
@@ -613,7 +628,14 @@ def validate_contribution_projection_set(
         raise ValueError("contribution projection owners must be unique")
     task_ids = {item.capability_id for projection in projections for item in projection.task_handlers}
     resource_ids = {item.resource_id for projection in projections for item in projection.resources}
-    all_ids: dict[str, str] = {}
+    contract_ids = {item.contract_id for projection in projections for item in projection.attempt_contracts}
+    contract_bindings = {
+        binding.capability_id
+        for projection in projections
+        for binding in projection.bindings
+        if binding.capability_id == binding.contract_id
+    }
+    all_ids: dict[str, set[str]] = {}
     for projection in projections:
         categories = (
             *((item.capability_id, "task handler") for item in projection.task_handlers),
@@ -624,14 +646,19 @@ def validate_contribution_projection_set(
             *((item.contract_id, "attempt contract") for item in projection.attempt_contracts),
         )
         for entry_id, kind in categories:
-            previous = all_ids.get(entry_id)
-            if previous is not None and not (
-                is_semantic_agent_contract_id(entry_id)
-                and {previous, kind} == {"attempt contract", "binding"}
+            previous = all_ids.get(entry_id, set())
+            if previous and not (
+                kind not in previous
+                and entry_id in contract_bindings
+                and previous | {kind} == {"attempt contract", "binding"}
             ):
-                raise ValueError(f"cross-kind contribution id: {entry_id} is both {previous} and {kind}")
-            all_ids[entry_id] = kind if previous is None else previous
+                raise ValueError(
+                    f"cross-kind contribution id: {entry_id} is both {sorted(previous)} and {kind}"
+                )
+            all_ids[entry_id] = previous | {kind}
         for binding in projection.bindings:
+            if binding.contract_id is not None and binding.contract_id not in contract_ids:
+                raise ValueError(f"unknown binding contract: {binding.contract_id}")
             if binding.target_capability_id not in task_ids:
                 raise ValueError(
                     f"unknown target capability for binding {binding.capability_id}: "

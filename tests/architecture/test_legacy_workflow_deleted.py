@@ -23,6 +23,7 @@ FORBIDDEN_CONVERSION_NAMES = frozenset(
 DELETED_AUTHORITY_PATHS = (
     Path("packages/framework/graph-engine/graph_engine/graph"),
     Path("packages/framework/graph-engine/graph_engine/runtime"),
+    Path("packages/framework/graph-engine/graph_engine/evidence"),
     Path("packages/framework/graph-engine/graph_engine/composition/workflow_assembler.py"),
 )
 PRODUCTION_ROOTS = (
@@ -30,15 +31,6 @@ PRODUCTION_ROOTS = (
     Path("packages/products/assurance-product/assurance_product"),
     Path("packages/capabilities"),
     Path("packages/adapters"),
-)
-EVIDENCE_ALLOWLIST = frozenset(
-    {
-        "packages/framework/graph-engine/graph_engine/evidence/events.py",
-        "packages/framework/graph-engine/graph_engine/evidence/ledger.py",
-        "packages/framework/graph-engine/graph_engine/evidence/models.py",
-        "packages/framework/graph-engine/graph_engine/evidence/checkpoint.py",
-        "packages/framework/graph-engine/graph_engine/evidence/seed.py",
-    }
 )
 TOKEN_EVENT_NAMES = frozenset({"TokenOffered", "TokenConsumed"})
 TOKEN_KIND_LITERALS = frozenset({"token_offered", "token_consumed", "node_activated"})
@@ -113,8 +105,6 @@ def test_live_event_models_have_no_workflow_token_authority() -> None:
             if "__pycache__" in path.parts or "tests" in path.parts:
                 continue
             relative = path.relative_to(root).as_posix()
-            if relative in EVIDENCE_ALLOWLIST:
-                continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef) and node.name in TOKEN_EVENT_NAMES:

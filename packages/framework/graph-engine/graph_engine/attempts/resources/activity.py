@@ -17,28 +17,6 @@ from graph_engine.persistence.attempt_checkpoint import (
     AttemptCheckpointStore,
 )
 from graph_engine.persistence.runner_lease import StaleFencingToken
-from graph_engine.evidence.events import (
-    EventEnvelope,
-    GraphStarted,
-    InvocationStarted,
-    NodeActivated,
-    RuntimeEvent,
-    TaskActivityBound,
-    TaskActivityCancelRequested,
-    TaskActivityDispatchStarted,
-    TaskActivityPrepared,
-    TaskActivityTerminalObserved,
-    TaskAttemptFailed,
-    TaskAttemptStarted,
-    TaskAttemptStopped,
-    TaskAttemptSucceeded,
-    TaskCommitPrepared,
-    TaskLeaseAcquired,
-    TaskLeaseAdopted,
-    TaskPromotionCompleted,
-    TokenConsumed,
-    TokenOffered,
-)
 from graph_engine.attempts.execution_host.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     TaskActivityRpcIdentity,
@@ -47,38 +25,9 @@ from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostReconcileCall,
 )
 from graph_engine.composition.lock import pinned_execution_host_lock
-from graph_engine.evidence.ledger import (
-    Ledger,
-    LedgerConflictError,
-    LedgerError,
-    LedgerPublicationIndeterminate,
-    append_validated_batch,
-)
-from graph_engine.evidence.checkpoint import write_checkpoint
-from graph_engine.evidence.models import (
-    FoldCursor,
-    InvocationProjection,
-    PlannedTask,
-    ProjectionError,
-    ReconcileStatus,
-    RecoveryDecisionKind,
-    fold_events,
-)
 
 
 MAX_ACTIVITY_VALUE_BYTES = 16 * 1024
-_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending"}
-_RECOVERY_DECISIONS: dict[ReconcileStatus, RecoveryDecisionKind] = {
-    "not_dispatched": "execute_same_attempt",
-    "running": "adopt_same_attempt",
-    "terminal": "promote_same_attempt",
-    "absent": "finalize_failure_then_retry_policy",
-    "indeterminate": "block",
-}
-
-
-def recovery_decision_for_status(status: ReconcileStatus) -> RecoveryDecisionKind:
-    return _RECOVERY_DECISIONS[status]
 
 
 def attempt_activity_in_flight(state: str | None) -> bool:
@@ -378,49 +327,15 @@ def checkpoint_backed_activity_factory(
 __all__ = [
     "AttemptWorkspaceLost",
     "BoundedCanonicalJson",
-    "EventEnvelope",
-    "FoldCursor",
-    "GraphStarted",
-    "InvocationProjection",
-    "InvocationStarted",
-    "Ledger",
-    "LedgerConflictError",
-    "LedgerError",
-    "LedgerPublicationIndeterminate",
     "CheckpointBackedTaskActivityPort",
     "MAX_ACTIVITY_VALUE_BYTES",
-    "NodeActivated",
-    "PlannedTask",
-    "ProjectionError",
-    "ReconcileStatus",
-    "RecoveryDecisionKind",
-    "RuntimeEvent",
-    "TaskActivityBound",
-    "TaskActivityCancelRequested",
     "TaskActivityConflict",
-    "TaskActivityDispatchStarted",
     "TaskActivityIndeterminate",
-    "TaskActivityPrepared",
     "TaskActivityProtocolViolation",
     "TaskActivityRecoveryUnsupported",
     "TaskActivityReferenceInvalid",
-    "TaskActivityTerminalObserved",
-    "TaskAttemptFailed",
-    "TaskAttemptStarted",
-    "TaskAttemptStopped",
-    "TaskAttemptSucceeded",
-    "TaskCommitPrepared",
-    "TaskLeaseAcquired",
-    "TaskLeaseAdopted",
-    "TaskPromotionCompleted",
-    "TokenConsumed",
-    "TokenOffered",
-    "append_validated_batch",
     "attempt_activity_in_flight",
     "attempt_activity_is_terminal",
     "bounded_canonical_json",
-    "fold_events",
     "checkpoint_backed_activity_factory",
-    "recovery_decision_for_status",
-    "write_checkpoint",
 ]

@@ -65,7 +65,6 @@ from graph_engine.attempts.execution_host.host_protocol import (
     current_bound_identity,
 )
 from graph_engine.attempts.execution_host.host_receipts import TerminalReceiptStore, prove_call_quiescent
-from graph_engine.attempts.resources.activity import Ledger
 from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
 from tests.agent_runtime.conformance import (
@@ -416,12 +415,10 @@ class ConfinedTestHost:
         *,
         secrets: Mapping[str, bytes],
         binding_data: object,
-        ledger: Ledger | None = None,
     ) -> None:
         self._handlers: Mapping[str, TaskHandler] = {}
         self._store: TaskWorkspaceStore | None = None
         self._receipts: TerminalReceiptStore | None = None
-        self._ledger = ledger
         self._activity_snapshot: TaskActivitySnapshot | None = None
         self._secrets = dict(secrets)
         self._binding_data = binding_data
@@ -434,9 +431,6 @@ class ConfinedTestHost:
         self.host_calls: list[str] = []
         self._project_root: Path | None = None
         self._write_root: Path | None = None
-
-    def bind_ledger(self, ledger: Ledger) -> None:
-        self._ledger = ledger
 
     def bind_invocation_runtime(
         self,
@@ -589,7 +583,6 @@ class ConfinedTestHost:
 class _Scenario:
     composition: FrozenComposition
     host: ConfinedTestHost
-    ledger: Ledger
     store: TaskWorkspaceStore
     receipts: TerminalReceiptStore
     provider: Any
@@ -742,9 +735,6 @@ class _AdapterHarness:
             state="prepared",
         )
 
-    def _event_kinds(self, ledger: Ledger) -> tuple[str, ...]:
-        return tuple(item.event.kind for item in ledger.read_all())
-
     def _activity(self, scenario: _Scenario) -> TaskActivitySnapshot | None:
         return scenario.activity
 
@@ -782,8 +772,6 @@ class _AdapterHarness:
             provider.project_scope = str(project_root.resolve())
         store = TaskWorkspaceStore(project_root, attempts_root, receipts_root)
         receipts = TerminalReceiptStore.open_or_create(invocation_root / "receipts")
-        ledger = Ledger(invocation_root / "ledger")
-        host.bind_ledger(ledger)
         host.bind_invocation_runtime(
             handlers={self.capability_id: handler},
             store=store,
@@ -810,7 +798,6 @@ class _AdapterHarness:
         scenario = _Scenario(
             composition=composition,
             host=host,
-            ledger=ledger,
             store=store,
             receipts=receipts,
             provider=provider,
@@ -950,7 +937,6 @@ class _AdapterHarness:
         host_reconcile = None if scenario.host.last_reconcile is None else scenario.host.last_reconcile.status
         return CutResult(
             cut=cut,
-            event_kinds=self._event_kinds(scenario.ledger),
             activity_state=None if activity is None else activity.state,
             reconcile_status=reconcile_status or host_reconcile,  # type: ignore[arg-type]
             cancel_status=cancel_status or host_cancel,
@@ -970,13 +956,11 @@ class _AdapterHarness:
 
     async def prepared_fixture(self) -> PreparedAdapterFixture:
         scenario = await self._fresh_prepared()
-        kinds = self._event_kinds(scenario.ledger)
         activity = self._activity(scenario)
         assert activity is not None
         payload = thaw_json(scenario.request.input)
         return PreparedAdapterFixture(
             provider_calls=self._count_on_provider(scenario.provider, "dispatch"),
-            initial_event_kinds=kinds,
             request_bytes=canonical_json_bytes(payload),
             expected_request_bytes=self._expected_request_bytes,
             request_payload=payload,

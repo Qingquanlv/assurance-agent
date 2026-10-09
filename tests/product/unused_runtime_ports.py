@@ -4,10 +4,11 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from graph_engine.plugin_api import WorkspaceProvider
+
 from graph_engine.application.runtime_context import (
     AttemptKernelPort,
     SecretResolverPort,
-    WorkspaceProviderPort,
 )
 from graph_engine.attempts.models.context import AttemptExecutionContext
 from graph_engine.attempts.models.contracts import ResolvedAttemptContract
@@ -58,5 +59,5 @@ class UnusedAttemptKernel:
 
 
 UNUSED_SECRET_RESOLVER: SecretResolverPort = UnusedSecretResolver()
-UNUSED_WORKSPACE_PROVIDER: WorkspaceProviderPort = UnusedWorkspaceProvider()
+UNUSED_WORKSPACE_PROVIDER: WorkspaceProvider = UnusedWorkspaceProvider()
 UNUSED_ATTEMPT_KERNEL: AttemptKernelPort = UnusedAttemptKernel()
