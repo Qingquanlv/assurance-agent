@@ -9,7 +9,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import cast
 
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostCancelCall,

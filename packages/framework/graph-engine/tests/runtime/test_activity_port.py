@@ -34,7 +34,7 @@ from graph_engine.attempts.activity import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity, current_bound_identity
+from graph_engine.attempts.execution_host.host_protocol import TaskActivityRpcIdentity, current_bound_identity
 from graph_engine.attempts.activity import Ledger, LedgerConflictError
 from graph_engine.attempts.activity import fold_events
 

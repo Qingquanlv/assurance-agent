@@ -39,7 +39,7 @@ from graph_engine.evidence.events import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     TaskActivityRpcIdentity,
     TaskHostCancelCall,

@@ -52,7 +52,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
@@ -64,7 +64,7 @@ from graph_engine.attempts.host_protocol import (
     authorized_secret_port,
     current_bound_identity,
 )
-from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
+from graph_engine.attempts.execution_host.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.attempts.activity import Ledger
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 

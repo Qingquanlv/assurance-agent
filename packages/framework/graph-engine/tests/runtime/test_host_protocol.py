@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from graph_engine.attempts import production_worker
+from graph_engine.attempts.execution_host import production_worker
 from graph_engine.attempts.activity import CheckpointBackedTaskActivityPort, TaskActivityConflict
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.canonical import canonical_json_bytes
@@ -33,7 +33,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskExecutionHost,
@@ -459,8 +459,8 @@ def test_activity_port_protocol_exposes_snapshot_dispatch_and_bind() -> None:
 
 
 def test_runtime_exports_frozen_host_protocol_not_phase2_execute() -> None:
-    from graph_engine.attempts import host_protocol as runtime
-    from graph_engine.attempts.host_protocol import TaskExecutionHost as FrozenHost
+    from graph_engine.attempts.execution_host import host_protocol as runtime
+    from graph_engine.attempts.execution_host.host_protocol import TaskExecutionHost as FrozenHost
 
     assert runtime.TaskExecutionHost is FrozenHost
     parameters = tuple(inspect.signature(runtime.TaskExecutionHost.execute).parameters)

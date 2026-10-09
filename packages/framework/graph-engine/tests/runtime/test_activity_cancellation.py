@@ -22,12 +22,12 @@ from graph_engine.attempts.activity import (
     fold_events,
     recovery_decision_for_status,
 )
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TaskActivityRpcIdentity,
     TaskHostCallResult,
     current_bound_identity,
 )
-from graph_engine.attempts.host_receipts import TerminalReceiptStore
+from graph_engine.attempts.execution_host.host_receipts import TerminalReceiptStore
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 from graph_engine.canonical import canonical_digest
 from graph_engine.evidence.models import activity_id_for_attempt

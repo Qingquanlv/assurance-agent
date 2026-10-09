@@ -93,6 +93,21 @@ dependency. Technical retries remain in the node factory and business repair in
 Flow. LangGraph anchors and resource authorizations remain separate stores.
 See the [Attempt checkpoint design](docs/superpowers/specs/2026-10-09-attempt-checkpoints-design.md).
 
+Attempt subprocess execution lives in
+[`graph_engine/attempts/execution_host/`](packages/framework/graph-engine/graph_engine/attempts/execution_host/):
+
+- `production_host.py` starts the worker, manages timeouts and cancellation, and
+  checks that descendants and workspace writers have stopped.
+- `production_worker.py` is the subprocess entry point. It loads the installed
+  business handler, executes the request, and returns the result.
+- `host_protocol.py` defines request/result envelopes and authenticated transport.
+- `host_receipts.py` installs and verifies durable completion receipts.
+
+LangGraph, the Attempt runtime, and the host run in the AA main process. The host
+starts a worker only for a business call. Product runtime ports assemble this
+host, and retained-call cleanup uses it to cancel the same Attempt's activity.
+Invocation admission and stopping the AA worker remain product responsibilities.
+
 Nonempty databases written by the former Attempt journal format cannot execute
 under these wheels. Their bytes are preserved. Stop existing runs using their
 original version before upgrading, then use a fresh isolated run with rebuilt

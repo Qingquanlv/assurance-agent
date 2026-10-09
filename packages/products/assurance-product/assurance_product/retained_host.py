@@ -14,7 +14,7 @@ from typing import Any, cast
 
 from graph_engine.attempts.activity import CheckpointBackedTaskActivityPort
 from dataclasses import replace
-from graph_engine.attempts.host_protocol import TaskHostCancelCall, TaskHostExecuteCall
+from graph_engine.attempts.execution_host.host_protocol import TaskHostCancelCall, TaskHostExecuteCall
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.plugin_api import DirectoryIdentity

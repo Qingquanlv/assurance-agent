@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from graph_engine.attempts.activity import checkpoint_backed_activity_factory
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
@@ -20,9 +20,9 @@ from graph_engine.attempts.host_protocol import (
     TaskHostExecuteCall,
     current_bound_identity,
 )
-from graph_engine.attempts.host_receipts import TerminalReceiptStore
+from graph_engine.attempts.execution_host.host_receipts import TerminalReceiptStore
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.production_host import (
+from graph_engine.attempts.execution_host.production_host import (
     UnsupportedProductionPlatform,
     _ProcessSupervisor,
     create_production_task_execution_host,

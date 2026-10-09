@@ -18,7 +18,7 @@ from graph_engine.attempts.activity import (
     fold_events,
     recovery_decision_for_status,
 )
-from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity, current_bound_identity
+from graph_engine.attempts.execution_host.host_protocol import TaskActivityRpcIdentity, current_bound_identity
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 from graph_engine.evidence.models import activity_id_for_attempt
 from graph_engine.plugin_api import (

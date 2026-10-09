@@ -10,7 +10,7 @@ from graph_engine.plugin_api import (
     TaskActivityReconcileResult,
     TaskOutcome,
 )
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostCallResult,
     TaskHostCancelCall,
     TaskHostExecuteCall,

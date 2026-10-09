@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostCallIdentity,
     TaskHostTerminalReceipt,
     current_bound_identity,
 )
-from graph_engine.attempts.host_receipts import (
+from graph_engine.attempts.execution_host.host_receipts import (
     TerminalReceiptError,
     TerminalReceiptStore,
     _identity_filename,

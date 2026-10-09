@@ -11,15 +11,15 @@ from graph_engine.application.application import InvocationBoundExecution
 from graph_engine.application.runtime_context import AssuranceRuntimeContext
 from graph_engine.attempts.activity import CheckpointBackedTaskActivityPort
 from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
-from graph_engine.attempts.host_protocol import (
+from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostCancelCall,
     TaskHostExecuteCall,
     TaskHostReconcileCall,
 )
-from graph_engine.attempts.host_receipts import TerminalReceiptStore
+from graph_engine.attempts.execution_host.host_receipts import TerminalReceiptStore
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.production_host import (
+from graph_engine.attempts.execution_host.production_host import (
     create_production_task_execution_host,
     invocation_activity_receipts_root,
 )
