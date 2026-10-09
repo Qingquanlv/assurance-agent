@@ -12,11 +12,11 @@ import asyncio
 import json
 from typing import Any, cast
 
-from graph_engine.attempts.activity import CheckpointBackedTaskActivityPort
+from graph_engine.attempts.resources.activity import CheckpointBackedTaskActivityPort
 from dataclasses import replace
 from graph_engine.attempts.execution_host.host_protocol import TaskHostCancelCall, TaskHostExecuteCall
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
 from graph_engine.plugin_api import DirectoryIdentity
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
@@ -146,7 +146,10 @@ async def confirm_owned_calls(owner: WorkerRecord) -> bool:
         return not owner["calls"]
     authority = owner.get("stop_authority")
     if authority is not None:
-        from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization, SecretSourceBinding
+        from graph_engine.attempts.resources.secret_sources import (
+            InvocationRuntimeAuthorization,
+            SecretSourceBinding,
+        )
         from assurance_product.product import product_graph_revision, product_lock_from_composition
 
         composition, _ = _resolve_and_audit(

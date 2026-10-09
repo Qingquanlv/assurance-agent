@@ -17,7 +17,7 @@ from graph_engine.composition import (
     WheelPluginSource,
 )
 from graph_engine.errors import GraphEngineError
-from graph_engine.attempts.secret_sources import (
+from graph_engine.attempts.resources.secret_sources import (
     InvocationRuntimeAuthorization,
     RuntimeAuthorizationError,
     SecretSourceBinding,

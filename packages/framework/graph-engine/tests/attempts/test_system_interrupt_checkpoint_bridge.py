@@ -1,7 +1,7 @@
 from __future__ import annotations
 from tests.attempt_checkpoints import checkpoint
 from dataclasses import replace
-from graph_engine.attempts.checkpoint import ActiveSystemInterrupt
+from graph_engine.attempts.orchestration.checkpoint import ActiveSystemInterrupt
 
 import importlib.util
 from pathlib import Path
@@ -14,16 +14,16 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Interrupt
 from pydantic import BaseModel
 
-from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.orchestration.checkpoint_bridge import AttemptCheckpointObserver
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.resolutions import (
     CommittedTaskResult,
     PendingTaskResult,
     IndeterminateTaskResult,
@@ -717,11 +717,11 @@ async def test_resumed_node_writes_completion_markers_in_ordinal_order(
     with pytest.raises(GraphInterrupt):
         await node(state, runtime=runtime)
     kernel.push(PendingTaskResult(wakeup=SystemReference(reference_id="wake-2")))
-    monkeypatch.setattr("graph_engine.attempts.node_factory.interrupt", _ReplayThenRaise(1))
+    monkeypatch.setattr("graph_engine.attempts.orchestration.node_factory.interrupt", _ReplayThenRaise(1))
     with pytest.raises(GraphInterrupt):
         await node(state, runtime=runtime)
     journal.mark_kernel_now_committed(_attempt_key())
-    monkeypatch.setattr("graph_engine.attempts.node_factory.interrupt", _ReplayThenRaise(2))
+    monkeypatch.setattr("graph_engine.attempts.orchestration.node_factory.interrupt", _ReplayThenRaise(2))
     update = await node(state, runtime=runtime)
     markers = update[CHECKPOINT_MARKERS_STATE_KEY]
     expected = replace_checkpoint_marker_batch(
@@ -797,7 +797,7 @@ async def test_later_reentry_after_completion_does_not_replay_stale_ordinal(
         )
     )
     journal.mark_kernel_now_committed(_attempt_key())
-    monkeypatch.setattr("graph_engine.attempts.node_factory.interrupt", _ReplayThenRaise(1))
+    monkeypatch.setattr("graph_engine.attempts.orchestration.node_factory.interrupt", _ReplayThenRaise(1))
     update = await node(state, runtime=runtime)
     await observer.on_anchored(
         CheckpointAnchorNotice(

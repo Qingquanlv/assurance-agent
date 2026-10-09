@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-import graph_engine.attempts.workspace as task_workspace
-from graph_engine.attempts.keys import AttemptKey
+import graph_engine.attempts.resources.workspace as task_workspace
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.plugin_api import ResourceClaims, TaskWorkspaceBinding
-from graph_engine.attempts.workspace import (
+from graph_engine.attempts.resources.workspace import (
     TaskWorkspaceProvider,
     TaskWorkspaceStore,
     TaskWorkspaceViolation,
@@ -292,7 +292,7 @@ def test_ancestor_symlink_swap_cannot_redirect_descriptor_bound_target_replace(
                 project_parent.symlink_to(outside, target_is_directory=True)
         real_replace(source, target, *args, **kwargs)
 
-    monkeypatch.setattr("graph_engine.attempts.workspace.os.replace", swap_parent_then_replace)
+    monkeypatch.setattr("graph_engine.attempts.resources.workspace.os.replace", swap_parent_then_replace)
 
     with pytest.raises(TaskWorkspaceViolation):
         store.promote(binding.identity, staged)

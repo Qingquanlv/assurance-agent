@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import AwareDatetime, Field, field_validator, model_serializer, model_validator
 
 from agent_runtime_contracts import AgentRunResult
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.execution import ExecutionReceiptV1

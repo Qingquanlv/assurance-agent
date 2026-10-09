@@ -17,7 +17,7 @@ from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 from graph_engine.boot.generic import (
     boot_factory_product,
     contract_resolver_from_plugins,

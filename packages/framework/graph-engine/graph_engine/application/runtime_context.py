@@ -6,10 +6,10 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import ResolvedAttemptContract
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import AttemptResolution
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import AttemptResolution
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
     PreparedWorkspaceRef,

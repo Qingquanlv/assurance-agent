@@ -5,10 +5,10 @@ import asyncio
 import pytest
 from pydantic import BaseModel
 
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import PendingTaskResult
-from graph_engine.attempts.resource_arbiter import ResourceArbiter, ResourceAuthorization
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import PendingTaskResult
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter, ResourceAuthorization
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.resource_authorization import (
     MemoryResourceAuthorizationStore,

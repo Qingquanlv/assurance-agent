@@ -189,7 +189,7 @@ def test_history_capture_failure_does_not_block_promotion(tmp_path: Path, caplog
     import hashlib
 
     from assurance_product.run_history import RunOutputWorkspaceProvider
-    from graph_engine.attempts.workspace import TaskWorkspaceStore
+    from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
     project = tmp_path / "project"
     project.mkdir()
@@ -219,7 +219,7 @@ def test_workspace_promotion_captures_committed_bytes(tmp_path: Path) -> None:
     import asyncio
 
     from assurance_product.run_history import RunOutputWorkspaceProvider, publish_attempt_outputs
-    from graph_engine.attempts.workspace import TaskWorkspaceStore
+    from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
     project = tmp_path / "project"
     project.mkdir()

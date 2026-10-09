@@ -7,9 +7,13 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from graph_engine.artifacts import ArtifactRef
-from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
-from graph_engine.attempts.keys import BusinessActivation
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.contracts import (
+    AttemptRetryPolicy,
+    AttemptTimeoutPolicy,
+    TaskAttemptContract,
+)
+from graph_engine.attempts.models.keys import BusinessActivation
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.plugin_api import ResourceClaims
 from graph_engine.stategraph import AttemptGraph
 from graph_engine.stategraph.ledger import AttemptLedgerState, NamedWrite, ledger_refs

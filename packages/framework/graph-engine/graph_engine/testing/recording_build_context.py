@@ -7,8 +7,8 @@ from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
-from graph_engine.attempts.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
 from graph_engine.artifacts import ArtifactRef
 from graph_engine.boot.boot import BoundAttemptNode, ContractOwnershipError
 from graph_engine.stategraph.publish import call_publish

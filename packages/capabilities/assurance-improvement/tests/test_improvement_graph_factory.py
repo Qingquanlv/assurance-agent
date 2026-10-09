@@ -13,8 +13,8 @@ from assurance_improvement.graphs.factory import (
     ImprovementGraphs,
     build_improvement_graphs as _build_improvement_graphs,
 )
-from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.contracts import TaskAttemptContract
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed
 
 from graph_engine.testing.feature_bundle import compile_bundle

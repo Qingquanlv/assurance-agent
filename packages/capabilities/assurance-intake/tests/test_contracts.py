@@ -12,7 +12,7 @@ import yaml
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_intake.contracts import CaseReviewResultV1, CaseYaml, CaseYamlAuthoring, QaYaml

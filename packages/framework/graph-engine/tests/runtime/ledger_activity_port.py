@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from graph_engine.attempts.activity import (
+from graph_engine.attempts.resources.activity import (
     Ledger,
     MAX_ACTIVITY_VALUE_BYTES,
     TaskActivityConflict,

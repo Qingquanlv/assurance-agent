@@ -10,7 +10,7 @@ import pytest
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.composition import FrozenComposition
 from graph_engine.plugin_api import ResourceClaimTemplate, ResourceClaims
 from tests.product.cli_support import (
@@ -321,8 +321,8 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.invocation_identity import InvocationIdentityRecord
-    from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
-    from graph_engine.attempts.resource_arbiter import ResourceArbiter
+    from graph_engine.attempts.models.resolutions import PendingTaskResult, SystemReference
+    from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = opencode_composition

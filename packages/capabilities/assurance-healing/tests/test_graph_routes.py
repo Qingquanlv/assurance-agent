@@ -8,8 +8,8 @@ from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.contracts.proposal import FixProposalSummary
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_healing.graphs.factory import build_healing_graphs as _build_healing_graphs
-from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
+from graph_engine.attempts.models.contracts import TaskAttemptContract
+from graph_engine.attempts.models.resolutions import ReceiptRef, RejectedTaskResult
 from graph_engine.testing import GraphHarness, committed
 
 from test_healing_graph_factory import (  # type: ignore[import-not-found]
@@ -128,7 +128,7 @@ async def test_rejected_fix_proposal_terminates_failed_not_repaired() -> None:
 
 
 async def test_committed_fix_proposal_without_application_cannot_terminate_applied() -> None:
-    from graph_engine.attempts.resolutions import RejectedTaskResult
+    from graph_engine.attempts.models.resolutions import RejectedTaskResult
 
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())

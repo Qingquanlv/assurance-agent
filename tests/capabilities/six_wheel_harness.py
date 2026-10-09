@@ -24,8 +24,8 @@ from agent_runtime_contracts import AgentRunRequest, InstructionPart
 from agent_runtime_contracts.wire.schema import canonical_digest, canonical_json_bytes
 from graph_engine.application import AssuranceApplication, InvocationBoundExecutionFactory
 from graph_engine.application.status import InvocationStatus
-from graph_engine.attempts.context import AuthorizedAttemptScope
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.context import AuthorizedAttemptScope
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     ExecutedAttemptResult,

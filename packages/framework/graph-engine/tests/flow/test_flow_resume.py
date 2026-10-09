@@ -6,10 +6,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from graph_engine.attempts import node_factory
-from graph_engine.attempts.keys import AttemptIdentity, AttemptKey
+from graph_engine.attempts.orchestration import node_factory
+from graph_engine.attempts.models.keys import AttemptIdentity, AttemptKey
 from graph_engine.canonical import JSONValue
-from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
+from graph_engine.attempts.models.resolutions import PendingTaskResult, SystemReference
 from graph_engine.flow import Flow
 from graph_engine.testing import committed
 

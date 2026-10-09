@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from assurance_generation.graphs.factory import build_generation_graphs as _build_generation_graphs
-from graph_engine.attempts.resolutions import PermanentTaskFailure
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure
 from graph_engine.testing import GraphHarness, committed
 from test_generation_graph_factory import (  # pyright: ignore[reportMissingImports]
     _receipt,

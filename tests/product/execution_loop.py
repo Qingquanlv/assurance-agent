@@ -17,7 +17,7 @@ from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.attempts.activity import InvocationProjection
+from graph_engine.attempts.resources.activity import InvocationProjection
 from tests.product.product_runner import _PUBLIC_DIGEST
 
 _ADVANCE_ID = "assurance.healing.repair-round.advance"

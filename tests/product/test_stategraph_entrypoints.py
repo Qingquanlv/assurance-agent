@@ -47,7 +47,11 @@ from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_
 from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS as QUALITY_TASKS
 from assurance_quality.graphs.factory import QualityGraphs, build_quality_graphs
 from graph_engine.artifacts import ArtifactRef
-from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
+from graph_engine.attempts.models.contracts import (
+    AttemptRetryPolicy,
+    AttemptTimeoutPolicy,
+    TaskAttemptContract,
+)
 from graph_engine.boot.boot import EngineGraphBuildContext
 from graph_engine.flow import BoundFlow, Flow
 from graph_engine.plugin_api import FrozenModel, ResourceClaims
@@ -644,8 +648,8 @@ def test_intake_root_passes_the_application_family_policy_to_prepare() -> None:
 def test_thin_root_publishes_a_child_receipt() -> None:
     from pydantic import BaseModel
 
-    from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy
-    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.attempts.models.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy
+    from graph_engine.attempts.models.resolutions import ReceiptRef
     from graph_engine.flow import Flow
     from graph_engine.plugin_api import ResourceClaims
     from graph_engine.testing import committed

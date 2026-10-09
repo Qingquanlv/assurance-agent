@@ -212,7 +212,7 @@ def test_abnormal_registered_library_execution_stays_blocked(tmp_path: Path) -> 
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
     from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
-    from graph_engine.attempts.keys import AttemptKey
+    from graph_engine.attempts.models.keys import AttemptKey
 
     workspace = lifecycle.control_root(tmp_path)
 
@@ -249,7 +249,7 @@ from assurance_product.worker_lifecycle import acquire_execution
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
 from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 async def register(root):
  async with open_sqlite_checkpointer(ChangeWorkspace.prepare(root, "run")) as backend:
   if sys.argv[2] == "crash":
@@ -383,7 +383,7 @@ from assurance_product.worker_lifecycle import acquire_execution
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
 from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 root = Path(sys.argv[1])
 async def generation(adopt):
  async with open_sqlite_checkpointer(ChangeWorkspace.prepare(root, "run")) as backend:

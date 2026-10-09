@@ -357,7 +357,7 @@ def _bound_materialize(root: Path, request: dict[str, Any]) -> dict[str, Any]:
     """Stage the producer files and return the ref input the task validates."""
 
     from graph_engine.artifacts import stage_json_artifact
-    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.attempts.models.resolutions import ReceiptRef
 
     from assurance_execution.contracts.workflow import ExecutionCycleDocumentV1
     from assurance_generation.contracts.workflow import GenerationCycleResultV1

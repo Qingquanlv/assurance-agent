@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import replace
 from tests.attempt_checkpoints import checkpoint, completed_checkpoint
-from graph_engine.attempts.checkpoint import AttemptPhase, AttemptResult
+from graph_engine.attempts.orchestration.checkpoint import AttemptPhase, AttemptResult
 from graph_engine.canonical import canonical_digest
 
 import json
@@ -142,7 +142,7 @@ def test_history_rebuilds_stale_projection_from_journal_after_next_run(tmp_path:
     from assurance_product.operator_views import read_run_view
     from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-    from graph_engine.attempts.keys import AttemptKey
+    from graph_engine.attempts.models.keys import AttemptKey
 
     task = _task(tmp_path)
     _run(task, change_id="BOOT-OLD", number=1, phase="terminal", exit_code=0, root=None)
@@ -282,7 +282,7 @@ def test_run_view_reads_journal_attempt_sessions_without_a_hand_written_file(tmp
     from assurance_product.operator_views import publish_run_attempts, read_run_view
     from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-    from graph_engine.attempts.keys import AttemptKey
+    from graph_engine.attempts.models.keys import AttemptKey
 
     task = _task(tmp_path)
     change_id = "BOOT-J"

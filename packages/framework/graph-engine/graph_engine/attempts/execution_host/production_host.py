@@ -28,8 +28,8 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskWorkspaceBinding,
 )
-from graph_engine.attempts.context import AuthorizedAttemptScope
-from graph_engine.attempts.contracts import TerminalReceiptRef
+from graph_engine.attempts.models.context import AuthorizedAttemptScope
+from graph_engine.attempts.models.contracts import TerminalReceiptRef
 from graph_engine.attempts.execution_host.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     AttemptRootDescriptor,
@@ -57,11 +57,11 @@ from graph_engine.attempts.execution_host.host_receipts import (
     TerminalReceiptStore,
     prove_call_quiescent,
 )
-from graph_engine.attempts.secret_sources import (
+from graph_engine.attempts.resources.secret_sources import (
     InvocationRuntimeAuthorization,
     resolve_secret_source,
 )
-from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
 _CALL_TIMEOUT_SECONDS = 30.0
 _CANCEL_GRACE_SECONDS = 0.25

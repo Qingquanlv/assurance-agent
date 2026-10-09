@@ -5,7 +5,7 @@ from types import MappingProxyType
 import pytest
 from pydantic import BaseModel
 
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     TaskAttemptContract,

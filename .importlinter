@@ -420,16 +420,16 @@ allow_indirect_imports = True
 name = Attempt runtime routes through its protocol without domain operations
 type = forbidden
 source_modules =
-    graph_engine.attempts.runtime
+    graph_engine.attempts.orchestration.runtime
 forbidden_modules =
-    graph_engine.attempts.handlers
-    graph_engine.attempts.commit
-    graph_engine.attempts.workspace
-    graph_engine.attempts.resource_arbiter
+    graph_engine.attempts.orchestration.handlers
+    graph_engine.attempts.orchestration.commit
+    graph_engine.attempts.resources.workspace
+    graph_engine.attempts.resources.resource_arbiter
     graph_engine.persistence
     graph_engine.plugin_api
 # The dispatcher reloads full checkpoints through the storage protocol only.
 ignore_imports =
-    graph_engine.attempts.runtime -> graph_engine.persistence.attempt_checkpoint
+    graph_engine.attempts.orchestration.runtime -> graph_engine.persistence.attempt_checkpoint
 # Checkpoint/resolution models may indirectly import shared domain value types.
 allow_indirect_imports = True

@@ -12,11 +12,11 @@ from langgraph.graph import StateGraph
 from pydantic import BaseModel
 
 from graph_engine.artifacts import ArtifactRef, coerce_artifact_ref
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
-from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint, AttemptPhase
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.resolutions import (
     AttemptResolution,
     CommittedTaskResult,
     IndeterminateTaskResult,

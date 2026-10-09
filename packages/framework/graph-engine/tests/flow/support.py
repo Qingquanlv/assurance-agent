@@ -7,9 +7,13 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import AttemptResolution, ReceiptRef
+from graph_engine.attempts.models.contracts import (
+    AttemptRetryPolicy,
+    AttemptTimeoutPolicy,
+    TaskAttemptContract,
+)
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import AttemptResolution, ReceiptRef
 from graph_engine.plugin_api import ResourceClaims
 from graph_engine.stategraph.ledger import InputBinding, NamedWrite
 from graph_engine.testing import GraphHarness

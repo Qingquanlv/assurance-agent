@@ -151,7 +151,7 @@ def test_business_activation_constructors_and_rejections() -> None:
 )
 @pytest.mark.parametrize("ordinal", [1, 2])
 def test_retained_generation_uses_the_same_key_as_live_execution(activation, ordinal):
-    from graph_engine.attempts.keys import AttemptIdentity
+    from graph_engine.attempts.models.keys import AttemptIdentity
 
     identity = AttemptIdentity(
         invocation_id="inv-1",
@@ -181,7 +181,7 @@ def test_retained_generation_uses_the_same_key_as_live_execution(activation, ord
 
 
 def test_retained_scope_requires_complete_activation_identity():
-    from graph_engine.attempts.keys import AttemptIdentity
+    from graph_engine.attempts.models.keys import AttemptIdentity
 
     with pytest.raises(KeyError):
         AttemptIdentity.from_scope({"invocation_id": "inv-1"})

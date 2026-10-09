@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
-from graph_engine.attempts.runtime import AttemptRuntime, DurableProgress, ReturnResolution
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint, AttemptPhase
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import PendingTaskResult, SystemReference
+from graph_engine.attempts.orchestration.runtime import AttemptRuntime, DurableProgress, ReturnResolution
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 
 

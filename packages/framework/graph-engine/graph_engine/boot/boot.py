@@ -17,9 +17,9 @@ from graph_engine.application.runtime_context import (
     SecretResolverPort,
     WorkspaceProviderPort,
 )
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
 from graph_engine.boot.graph_revision import (
     BootArtifact,
     EntrypointGraphContract,

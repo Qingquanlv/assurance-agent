@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import replace
-from graph_engine.attempts.checkpoint import AttemptPhase
+from graph_engine.attempts.orchestration.checkpoint import AttemptPhase
 from graph_engine.canonical import canonical_digest
 
 import asyncio
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.attempts.activity import checkpoint_backed_activity_factory
+from graph_engine.attempts.resources.activity import checkpoint_backed_activity_factory
 from graph_engine.attempts.execution_host.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
@@ -21,15 +21,15 @@ from graph_engine.attempts.execution_host.host_protocol import (
     current_bound_identity,
 )
 from graph_engine.attempts.execution_host.host_receipts import TerminalReceiptStore
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.attempts.execution_host.production_host import (
     UnsupportedProductionPlatform,
     _ProcessSupervisor,
     create_production_task_execution_host,
     invocation_activity_receipts_root,
 )
-from graph_engine.attempts.secret_sources import empty_runtime_authorization
-from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.resources.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.plugin_api import (
     InvocationMetadata,
@@ -211,7 +211,7 @@ async def test_host_activity_rpc_uses_attempt_checkpoints(
 def test_host_persist_phase_delta_installs_receipt(
     production_host_fixture: ProductionHostFixture,
 ) -> None:
-    from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+    from graph_engine.attempts.models.context import AttemptExecutionContext, AuthorizedAttemptScope
     from graph_engine.canonical import canonical_digest
     from graph_engine.plugin_api import TaskOutcome
 
@@ -359,7 +359,7 @@ def test_stop_bridge_rebinds_envelope_and_requires_terminal_cancel(
     from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
     from assurance_product.retained_host import confirm_owned_calls
     from assurance_product.bootstrap.status import write_run_manifest
-    from graph_engine.attempts.resource_arbiter import ResourceArbiter
+    from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
     from graph_engine.plugin_api import TaskActivityCancelResult
     from graph_engine.canonical import canonical_json_bytes
 

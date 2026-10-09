@@ -8,7 +8,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel
 
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.flow import BoundFlow, Flow, FlowCheckError
 from graph_engine.testing import committed
 

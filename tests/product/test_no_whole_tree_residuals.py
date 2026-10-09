@@ -9,7 +9,7 @@ from typing import get_args
 
 import pytest
 
-from graph_engine.attempts.activity import RuntimeEvent
+from graph_engine.attempts.resources.activity import RuntimeEvent
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 

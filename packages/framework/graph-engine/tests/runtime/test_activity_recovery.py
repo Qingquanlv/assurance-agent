@@ -7,7 +7,7 @@ import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
 from ledger_activity_port import LedgerTaskActivityPort
-from graph_engine.attempts.activity import (
+from graph_engine.attempts.resources.activity import (
     GraphStarted,
     Ledger,
     NodeActivated,
@@ -19,7 +19,7 @@ from graph_engine.attempts.activity import (
     recovery_decision_for_status,
 )
 from graph_engine.attempts.execution_host.host_protocol import TaskActivityRpcIdentity, current_bound_identity
-from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 from graph_engine.evidence.models import activity_id_for_attempt
 from graph_engine.plugin_api import (
     RecoverableTaskHandler,

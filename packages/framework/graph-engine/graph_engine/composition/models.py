@@ -19,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.attempts.models.contracts import TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id

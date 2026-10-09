@@ -294,7 +294,7 @@ def publish_run_attempts(task_directory: Path, change_id: str) -> None:
 
 def write_attempt_projection(run_dir: Path, records: Sequence[object], invocation_id: str) -> None:
     from assurance_product.run_history import publish_attempt_outputs, write_projection_bytes
-    from graph_engine.attempts.checkpoint import AttemptCheckpoint
+    from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint
 
     rows: list[dict[str, object]] = []
     order = 0

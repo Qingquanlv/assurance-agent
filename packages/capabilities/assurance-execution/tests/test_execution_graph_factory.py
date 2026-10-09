@@ -24,23 +24,23 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1, Prepare
 from assurance_execution.operations.cycle import seal_execution
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_execution.operations.agent_skills import assemble_execution_input
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.contracts import (
     ExecutedAttemptResult,
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.flow.activation import activation_value
 from graph_engine.flow.control import ROUTE_SENTINEL
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.resolutions import (
     PendingTaskResult,
     ReceiptRef,
     RejectedTaskResult,
     SystemReference,
 )
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
@@ -51,7 +51,7 @@ from graph_engine.plugin_api import (
     SealedWriteSet,
     TaskWorkspaceBinding,
 )
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext, committed
 from tests.acg_plan_fixture import install_plan
 

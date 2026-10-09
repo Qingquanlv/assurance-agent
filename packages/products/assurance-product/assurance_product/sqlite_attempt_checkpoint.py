@@ -4,8 +4,8 @@ import json
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from graph_engine.attempts.checkpoint import AttemptCheckpoint
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.persistence.attempt_checkpoint import (
     ATTEMPT_CHECKPOINT_SCHEMA_VERSION,

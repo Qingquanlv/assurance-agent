@@ -8,8 +8,8 @@ from typing import Any, Self
 
 from pydantic import Field, model_validator
 
-from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.contracts import TaskAttemptContract
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.boot.boot import CapabilityBuildContext
 from graph_engine.flow import BoundFlow, Flow
 from graph_engine.plugin_api import FrozenModel

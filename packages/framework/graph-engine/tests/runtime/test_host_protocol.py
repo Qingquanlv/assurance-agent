@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import replace
 from tests.attempt_checkpoints import checkpoint
-from graph_engine.attempts.checkpoint import AttemptPhase
+from graph_engine.attempts.orchestration.checkpoint import AttemptPhase
 from graph_engine.canonical import canonical_digest
 
 import asyncio
@@ -13,8 +13,8 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine.attempts.execution_host import production_worker
-from graph_engine.attempts.activity import CheckpointBackedTaskActivityPort, TaskActivityConflict
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.resources.activity import CheckpointBackedTaskActivityPort, TaskActivityConflict
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
@@ -46,7 +46,7 @@ from graph_engine.attempts.execution_host.host_protocol import (
     authorized_secret_port,
     current_bound_identity,
 )
-from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
 
 _LOCK_DIGEST = "a" * 64

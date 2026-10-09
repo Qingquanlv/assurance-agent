@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.attempts.models.keys import BusinessActivation
 from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.boot.generic import entrypoint_digest
 from graph_engine.boot.graph_revision import EntrypointGraphContract

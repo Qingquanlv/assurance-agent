@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from pydantic_core import InitErrorDetails
 
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.attempts.secret_sources import (
+from graph_engine.attempts.resources.secret_sources import (
     EMPTY_RUNTIME_AUTHORIZATION,
     EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
 )

@@ -23,7 +23,7 @@ from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.attempts.secret_sources import (
+from graph_engine.attempts.resources.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     runtime_authorization_digest,

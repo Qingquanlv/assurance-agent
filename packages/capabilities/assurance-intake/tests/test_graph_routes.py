@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
+from graph_engine.attempts.models.contracts import TaskAttemptContract
+from graph_engine.attempts.models.resolutions import ReceiptRef, RejectedTaskResult
 from graph_engine.testing import GraphHarness, committed
 
 from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS

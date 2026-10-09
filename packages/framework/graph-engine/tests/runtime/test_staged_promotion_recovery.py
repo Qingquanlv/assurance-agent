@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.attempts.workspace import TaskWorkspaceStore, TaskWorkspaceViolation
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore, TaskWorkspaceViolation
 
 
 class _PromotionCrash(RuntimeError):
@@ -34,7 +34,7 @@ def test_recovery_consumes_durable_promotion_without_reexecuting_handler(
         real_replace(source, target, *args, **kwargs)
         raise _PromotionCrash("after_promotion")
 
-    monkeypatch.setattr("graph_engine.attempts.workspace.os.replace", crash_after_first_replace)
+    monkeypatch.setattr("graph_engine.attempts.resources.workspace.os.replace", crash_after_first_replace)
     with pytest.raises(_PromotionCrash, match="after_promotion"):
         store.promote(binding.identity, staged)
     monkeypatch.undo()

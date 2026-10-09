@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from graph_engine.attempts.resolutions import PermanentTaskFailure
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure
 from graph_engine.testing.graph_harness import committed
 
 from tests.product.test_execute_tail_flow import _SHA

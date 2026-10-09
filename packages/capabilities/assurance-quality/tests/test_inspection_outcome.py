@@ -122,7 +122,7 @@ def _inspect_bound(
     """Stage the producer files and return the ref input Inspect validates."""
 
     from graph_engine.artifacts import stage_json_artifact
-    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.attempts.models.resolutions import ReceiptRef
 
     from assurance_execution.contracts.workflow import (
         EXECUTION_CYCLE_PATH,

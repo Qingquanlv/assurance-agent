@@ -74,7 +74,7 @@ def cleanup_owned_resources(owner: WorkerRecord) -> None:
             decoded = json.loads(bytes(scope))
             if decoded.get("invocation_id") != owner["invocation"]:
                 raise ExecutionConflict("generation owner disagrees with Invocation")
-            from graph_engine.attempts.keys import AttemptIdentity
+            from graph_engine.attempts.models.keys import AttemptIdentity
 
             try:
                 identity = AttemptIdentity.from_scope(decoded)

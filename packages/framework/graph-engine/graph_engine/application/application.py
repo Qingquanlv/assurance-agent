@@ -27,7 +27,7 @@ from graph_engine.application.status import (
     normalize_runtime_error,
     normalize_terminal_envelope,
 )
-from graph_engine.attempts.resolutions import IndeterminateTaskResult, PendingTaskResult
+from graph_engine.attempts.models.resolutions import IndeterminateTaskResult, PendingTaskResult
 from graph_engine.boot.graph_revision import BootArtifact
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError

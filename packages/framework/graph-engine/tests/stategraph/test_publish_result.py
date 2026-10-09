@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from graph_engine.artifacts import ArtifactRef
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.stategraph.ledger import NamedWrite, ledger_refs
 from graph_engine.stategraph.publish import bind_produced_artifacts, publish_outcome, publish_result
 

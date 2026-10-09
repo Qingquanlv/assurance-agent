@@ -7,8 +7,8 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from graph_engine.attempts import RUNTIME_EVIDENCE
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     AuthorizedAttemptScope,
@@ -16,11 +16,11 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.keys import BusinessActivation, derive_attempt_key
-from graph_engine.attempts.resolutions import CommittedTaskResult, PermanentTaskFailure
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.models.keys import BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.resolutions import CommittedTaskResult, PermanentTaskFailure
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore

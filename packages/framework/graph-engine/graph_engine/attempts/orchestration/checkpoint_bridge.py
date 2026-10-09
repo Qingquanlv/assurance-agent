@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import replace
 
-from graph_engine.attempts.checkpoint import ActiveSystemInterrupt, AttemptCheckpoint
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.orchestration.checkpoint import ActiveSystemInterrupt, AttemptCheckpoint
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.persistence.checkpoint_observer import CheckpointAnchorNotice
 from graph_engine.persistence.journal import CheckpointAnchor

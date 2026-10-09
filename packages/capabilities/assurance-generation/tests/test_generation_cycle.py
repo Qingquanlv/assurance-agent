@@ -13,12 +13,12 @@ from assurance_generation.operations.codegen import CodegenFinalizeHandler
 from assurance_generation.contracts.workflow import CompleteGenerationInputV1, GENERATION_CYCLE_PATH
 from assurance_generation.operations.cycle import complete_generation_cycle
 from assurance_intake.contracts.case_selection import CaseSelectionV1, SelectedCaseV1
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
-from graph_engine.attempts.contracts import resolve_contract
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.models.contracts import resolve_contract
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.resolutions import ReceiptRef
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
 from graph_engine.boot.boot import EngineGraphBuildContext
 from graph_engine.flow import BoundFlow
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore

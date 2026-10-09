@@ -256,7 +256,7 @@ def _quality_gate_for(
 ) -> dict[str, object]:
     from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
     from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
-    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.attempts.models.resolutions import ReceiptRef
 
     prefix = "qa"
     results = f"{prefix}/results"

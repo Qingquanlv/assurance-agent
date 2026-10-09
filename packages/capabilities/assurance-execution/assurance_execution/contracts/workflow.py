@@ -9,7 +9,7 @@ from typing import Literal, Self
 from pydantic import Field, model_validator
 from pydantic.types import AwareDatetime
 
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.evidence import FamilyExecutionOutcomeV1

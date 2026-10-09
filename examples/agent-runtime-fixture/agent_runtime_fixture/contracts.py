@@ -5,8 +5,8 @@ import json
 from pydantic import BaseModel, Field
 
 from agent_runtime_contracts import AgentRunRequest
-from graph_engine.attempts.context import AuthorizedAttemptScope
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.context import AuthorizedAttemptScope
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     ExecutedAttemptResult,

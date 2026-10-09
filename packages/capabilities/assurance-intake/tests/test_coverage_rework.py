@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from agent_runtime_contracts.ops import InputError, PrepareContext
 from agent_runtime_contracts.wire.models import prompt_model_json
 from graph_engine.artifacts import stage_json_artifact
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 
 from assurance_intake.contracts.coverage_rework import (
     COVERAGE_REWORK_HANDOFF_PATH,

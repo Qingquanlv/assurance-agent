@@ -1,6 +1,6 @@
 from __future__ import annotations
 from tests.attempt_checkpoints import completed_checkpoint
-from graph_engine.attempts.checkpoint import AttemptResult
+from graph_engine.attempts.orchestration.checkpoint import AttemptResult
 from graph_engine.canonical import canonical_digest
 
 import hashlib
@@ -758,7 +758,7 @@ def test_run_view_projects_journal_sessions_without_a_synthetic_attempts_file(tm
     from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
     from assurance_product.task_records import define_task
-    from graph_engine.attempts.keys import AttemptKey
+    from graph_engine.attempts.models.keys import AttemptKey
 
     project = _project(tmp_path)
     task = tmp_path / "task"

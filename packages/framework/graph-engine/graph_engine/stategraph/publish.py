@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from graph_engine.artifacts import ArtifactRef
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.stategraph.ledger import NamedWrite, fill_artifact_ledger, ledger_key, merge_refs_by_path
 
 

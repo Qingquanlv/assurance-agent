@@ -3,13 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.attempts.checkpoint import (
+from graph_engine.attempts.orchestration.checkpoint import (
     ActiveSystemInterrupt,
     AttemptCheckpoint,
     AttemptPhase,
     AttemptResult,
 )
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_checkpoint import (
     AttemptCheckpointIntegrityError,

@@ -7,8 +7,8 @@ from typing import Any
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.types import Command
 
-from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.contracts import TaskAttemptContract
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.graph_harness import _prepare_anchored_backend
 

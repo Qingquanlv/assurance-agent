@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from graph_engine.application.application import _system_wake_command
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     AuthorizedAttemptScope,
@@ -16,12 +16,12 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation
-from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.resolutions import PendingTaskResult, SystemReference
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import ResourceClaims

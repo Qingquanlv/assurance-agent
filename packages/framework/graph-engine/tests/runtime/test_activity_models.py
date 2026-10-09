@@ -13,7 +13,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskWorkspaceIdentity,
 )
-from graph_engine.attempts.activity import (
+from graph_engine.attempts.resources.activity import (
     AttemptWorkspaceLost,
     TaskActivityConflict,
     TaskActivityIndeterminate,
@@ -21,7 +21,7 @@ from graph_engine.attempts.activity import (
     TaskActivityRecoveryUnsupported,
     TaskActivityReferenceInvalid,
 )
-from graph_engine.attempts.activity import (
+from graph_engine.attempts.resources.activity import (
     EventEnvelope,
     TaskActivityBound,
     TaskActivityCancelRequested,

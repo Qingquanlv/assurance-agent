@@ -4,8 +4,8 @@ import inspect
 
 import pytest
 
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resource_arbiter import ResourceArbiter, ResourceAuthorization
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter, ResourceAuthorization
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.resource_authorization import (
     RESOURCE_AUTHORIZATION_SCHEMA_VERSION,

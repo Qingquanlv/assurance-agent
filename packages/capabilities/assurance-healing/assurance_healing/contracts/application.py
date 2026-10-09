@@ -7,7 +7,7 @@ from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_intake.contracts.workflow import (

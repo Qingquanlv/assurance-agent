@@ -17,7 +17,7 @@ from graph_engine.application import (
     InvalidResume,
     InvocationStatus,
 )
-from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
+from graph_engine.attempts.models.resolutions import PendingTaskResult, SystemReference
 from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from pydantic import Field
 
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.canonical import JSONValue
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import FrozenModel, TaskWorkspaceBinding

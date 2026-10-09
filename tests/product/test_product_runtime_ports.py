@@ -9,9 +9,9 @@ import pytest
 
 from pydantic import BaseModel
 
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import ResolvedAttemptContract
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract
+from graph_engine.attempts.models.keys import AttemptKey
 from tests.product.cli_support import lifecycle_authorization, write_project_dir
 
 if TYPE_CHECKING:
@@ -100,7 +100,7 @@ def test_managed_run_uses_output_capture_workspace(opencode_composition, tmp_pat
 async def _register_observer(composition, tmp_path: Path) -> None:
     from assurance_product.product import prepare_change_workspace
     from assurance_product.runtime_ports import ProductRuntimePorts
-    from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
+    from graph_engine.attempts.orchestration.checkpoint_bridge import AttemptCheckpointObserver
     from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
 
     project = write_project_dir(tmp_path / "project")

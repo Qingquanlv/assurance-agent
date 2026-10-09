@@ -6,13 +6,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import fields, replace
 from typing import Any, Protocol
 
-from graph_engine.attempts.checkpoint import (
+from graph_engine.attempts.orchestration.checkpoint import (
     ActiveSystemInterrupt,
     AttemptCheckpoint,
     AttemptPhase,
     AttemptResult,
 )
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.persistence.runner_lease import StaleFencingToken
 

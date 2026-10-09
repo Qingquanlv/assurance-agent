@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.flow.errors import FlowCheckError
 from graph_engine.stategraph.ledger import InputBinding, NamedWrite
 

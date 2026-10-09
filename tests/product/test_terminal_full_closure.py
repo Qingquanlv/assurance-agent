@@ -15,7 +15,7 @@ from tests.product.test_achieved_terminal import (
 )
 
 
-from graph_engine.attempts.checkpoint import AttemptResult
+from graph_engine.attempts.orchestration.checkpoint import AttemptResult
 from tests.attempt_checkpoints import completed_checkpoint
 
 
