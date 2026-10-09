@@ -13,7 +13,7 @@ import yaml
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.plugin_api import ResourceClaims, ResourceClaimTemplate
 from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskRequest
-from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 

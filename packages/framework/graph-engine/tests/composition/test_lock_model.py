@@ -782,7 +782,7 @@ def test_product_lock_rejects_legacy_workflow_fields() -> None:
 
 
 def test_product_lock_v3_and_attempt_registry_digests_change_with_contract_data() -> None:
-    from graph_engine.attempts.contracts import (
+    from graph_engine.attempts.models.contracts import (
         AttemptRetryPolicy,
         AttemptTimeoutPolicy,
         TaskAttemptContract,
@@ -868,7 +868,7 @@ def test_product_lock_v3_and_attempt_registry_digests_change_with_contract_data(
 
 
 def test_attempt_projection_stays_stable_when_only_callables_swap() -> None:
-    from graph_engine.attempts.contracts import (
+    from graph_engine.attempts.models.contracts import (
         AttemptRetryPolicy,
         AttemptTimeoutPolicy,
         TaskAttemptContract,

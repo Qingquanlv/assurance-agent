@@ -23,7 +23,7 @@ from assurance_improvement.contracts.review import (
     auto_review_route,
     human_review_route,
 )
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from pydantic import ValidationError
 from graph_engine.flow import BoundFlow
 from graph_engine.testing import GraphHarness, committed

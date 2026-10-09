@@ -23,10 +23,10 @@ from assurance_intake.contracts.agent import ArtifactDigestV1
 from assurance_intake.ops.case_design import CaseDesignInputV1, CaseDesignOutputV1
 from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs as _build_intake_graphs
-from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
-from graph_engine.attempts.contracts import ExecutedAttemptResult, TaskAttemptContract
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
+from graph_engine.attempts.models.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.models.contracts import ExecutedAttemptResult, TaskAttemptContract
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import ReceiptRef, RejectedTaskResult
 from graph_engine.plugin_api import (
     DirectoryIdentity,
     ResourceClaims,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import replace
 from tests.attempt_checkpoints import checkpoint
-from graph_engine.attempts.checkpoint import AttemptPhase
+from graph_engine.attempts.orchestration.checkpoint import AttemptPhase
 from graph_engine.canonical import canonical_digest
 
 import asyncio
@@ -13,17 +13,17 @@ import pytest
 
 from graph_engine.plugin_api import TaskActivityPort, TaskOutcome, TaskWorkspaceIdentity
 from ledger_activity_port import LedgerTaskActivityPort
-from graph_engine.attempts.activity import (
+from graph_engine.attempts.resources.activity import (
     CheckpointBackedTaskActivityPort,
     MAX_ACTIVITY_VALUE_BYTES,
     TaskActivityConflict,
     TaskActivityIndeterminate,
     TaskActivityReferenceInvalid,
 )
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
-from graph_engine.attempts.activity import (
+from graph_engine.attempts.resources.activity import (
     GraphStarted,
     NodeActivated,
     TaskActivityPrepared,
@@ -35,8 +35,8 @@ from graph_engine.attempts.activity import (
     TokenOffered,
 )
 from graph_engine.attempts.execution_host.host_protocol import TaskActivityRpcIdentity, current_bound_identity
-from graph_engine.attempts.activity import Ledger, LedgerConflictError
-from graph_engine.attempts.activity import fold_events
+from graph_engine.attempts.resources.activity import Ledger, LedgerConflictError
+from graph_engine.attempts.resources.activity import fold_events
 
 
 _LOCK = "a" * 64

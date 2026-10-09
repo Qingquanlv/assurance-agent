@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     AuthorizedAttemptScope,
@@ -14,11 +14,11 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.checkpoint import AttemptPhase
-from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIdentityDrift
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.resolutions import CommittedTaskResult, PermanentTaskFailure
-from graph_engine.attempts.resource_arbiter import ResourceArbiter, ResourceArbiterPort
+from graph_engine.attempts.orchestration.checkpoint import AttemptPhase
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel, AttemptIdentityDrift
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.resolutions import CommittedTaskResult, PermanentTaskFailure
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter, ResourceArbiterPort
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore, MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import (
@@ -27,7 +27,7 @@ from graph_engine.persistence.resource_authorization import (
 )
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import ResourceClaims, TaskWorkspaceBinding
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 
 
 class RunInput(BaseModel):
@@ -619,7 +619,7 @@ async def test_post_promotion_restart_uses_artifacts_without_executing_business_
 async def test_production_regenerates_after_file_promotion_without_graph_completion(tmp_path: Path) -> None:
     from dataclasses import replace
     from types import SimpleNamespace
-    from graph_engine.attempts.node_factory import AttemptNodeFactory
+    from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
 
     def cut(name):
         if name == "after_promotion_before_receipt":

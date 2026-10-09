@@ -7,7 +7,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from graph_engine.attempts.resolutions import PermanentTaskFailure
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure
 from graph_engine.flow import Flow, FlowCheckError
 from graph_engine.testing import committed
 

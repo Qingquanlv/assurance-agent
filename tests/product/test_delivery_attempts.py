@@ -8,12 +8,12 @@ import pytest
 
 from assurance_improvement.contracts.delivery import artifact_digest
 from assurance_improvement.contracts.improvements import ImprovementProjection
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.keys import BusinessActivation, derive_attempt_key
-from graph_engine.attempts.resolutions import CommittedTaskResult
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.models.keys import BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.resolutions import CommittedTaskResult
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 

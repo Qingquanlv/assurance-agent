@@ -5,19 +5,19 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import (
     ResolvedAttemptContract,
 )
-from graph_engine.attempts.errors import AttemptIdentityDrift, AttemptIntegrityError
-from graph_engine.attempts.handlers import AttemptHandlers
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.errors import AttemptIdentityDrift, AttemptIntegrityError
+from graph_engine.attempts.orchestration.handlers import AttemptHandlers
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import (
     AttemptResolution,
 )
-from graph_engine.attempts.resource_arbiter import ResourceArbiterPort
-from graph_engine.attempts.runtime import AttemptRuntime
-from graph_engine.attempts.runtime_evidence import RuntimeEvidenceSource
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiterPort
+from graph_engine.attempts.orchestration.runtime import AttemptRuntime
+from graph_engine.attempts.models.runtime_evidence import RuntimeEvidenceSource
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.plugin_api import (
     CommitValidator,

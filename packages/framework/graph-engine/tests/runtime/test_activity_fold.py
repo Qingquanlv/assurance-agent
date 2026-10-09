@@ -6,7 +6,7 @@ import pytest
 
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import StagedWriteSet, TaskOutcome, TaskWorkspaceIdentity
-from graph_engine.attempts.activity import (
+from graph_engine.attempts.resources.activity import (
     EventEnvelope,
     GraphStarted,
     InvocationStarted,
@@ -28,8 +28,8 @@ from graph_engine.attempts.activity import (
     TokenOffered,
     write_checkpoint,
 )
-from graph_engine.attempts.activity import Ledger
-from graph_engine.attempts.activity import FoldCursor, ProjectionError, fold_events
+from graph_engine.attempts.resources.activity import Ledger
+from graph_engine.attempts.resources.activity import FoldCursor, ProjectionError, fold_events
 
 from bootstrap_fixtures import synthetic_invocation_started
 

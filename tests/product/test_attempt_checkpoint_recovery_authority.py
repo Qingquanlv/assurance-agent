@@ -11,9 +11,9 @@ from langgraph.checkpoint.base import Checkpoint
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-from graph_engine.attempts.checkpoint import ActiveSystemInterrupt
-from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.orchestration.checkpoint import ActiveSystemInterrupt
+from graph_engine.attempts.orchestration.checkpoint_bridge import AttemptCheckpointObserver
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.persistence.journal import InvocationStarted
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.stategraph.checkpoint_bridge import CHECKPOINT_MARKERS_STATE_KEY, CheckpointBridgeMarker

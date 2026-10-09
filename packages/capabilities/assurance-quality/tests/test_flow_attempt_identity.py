@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from graph_engine.attempts.keys import BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.keys import BusinessActivation, derive_attempt_key
 from graph_engine.flow.activation import activation_value
 from graph_engine.testing import GraphHarness, committed
 

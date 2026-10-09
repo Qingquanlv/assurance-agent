@@ -29,7 +29,7 @@ from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_JOBS
 from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS as QUALITY_TASKS
 from assurance_quality.graphs.factory import build_quality_graphs
-from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.attempts.models.contracts import TaskAttemptContract
 from graph_engine.boot.graph_revision import FeatureFactoryRef
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext

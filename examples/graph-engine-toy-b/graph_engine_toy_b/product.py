@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.attempts.models.keys import BusinessActivation
 from graph_engine.boot.boot import CapabilityBuildContext, GraphBuildContext
 from graph_engine.boot.generic import entrypoint_digest
 from graph_engine.boot.graph_revision import EntrypointGraphContract

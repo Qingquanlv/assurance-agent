@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field, model_serializer
 
 from graph_engine.stategraph.ledger import InputBinding, LedgerArtifact, NamedWrite, ledger_key
 
-from graph_engine.attempts.context import AuthorizedAttemptScope
-from graph_engine.attempts.runtime_evidence import RUNTIME_EVIDENCE
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.context import AuthorizedAttemptScope
+from graph_engine.attempts.models.runtime_evidence import RUNTIME_EVIDENCE
+from graph_engine.attempts.models.resolutions import (
     IndeterminateTaskResult,
     PendingTaskResult,
     PermanentTaskFailure,

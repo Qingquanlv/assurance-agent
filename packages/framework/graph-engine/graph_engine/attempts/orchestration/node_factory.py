@@ -10,11 +10,11 @@ from langgraph.errors import GraphInterrupt
 from langgraph.types import Interrupt, interrupt as langgraph_interrupt
 from pydantic import BaseModel, ValidationError
 
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
-from graph_engine.attempts.checkpoint import ActiveSystemInterrupt, AttemptCheckpoint
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, AttemptIdentity
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.orchestration.checkpoint import ActiveSystemInterrupt, AttemptCheckpoint
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, AttemptIdentity
+from graph_engine.attempts.models.resolutions import (
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,

@@ -5,8 +5,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import PendingTaskResult, SystemReference
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.resource_authorization import (
     ResourceAuthorizationAction,

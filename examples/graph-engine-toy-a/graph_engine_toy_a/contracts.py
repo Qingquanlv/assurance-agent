@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from graph_engine.attempts.context import AuthorizedAttemptScope
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.context import AuthorizedAttemptScope
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     ExecutedAttemptResult,
@@ -12,7 +12,7 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.resolutions import PermanentTaskFailure
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, WorkspaceProvider
 

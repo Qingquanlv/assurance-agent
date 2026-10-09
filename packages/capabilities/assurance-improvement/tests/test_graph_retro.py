@@ -22,7 +22,7 @@ from assurance_improvement.contracts.retro import (
 from assurance_improvement.contracts.agent import RetroAnalysisInputV1, RetroSynthesisInputV1
 from assurance_improvement.contracts.retro import RetroReconcileInputV1
 from assurance_improvement.graphs.factory import build_improvement_graphs as _build_improvement_graphs
-from graph_engine.attempts.resolutions import AttemptResolution, ReceiptRef, RejectedTaskResult
+from graph_engine.attempts.models.resolutions import AttemptResolution, ReceiptRef, RejectedTaskResult
 from graph_engine.testing import GraphHarness, committed
 
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]

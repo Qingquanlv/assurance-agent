@@ -9,7 +9,7 @@ from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from langgraph.graph import END, START, StateGraph
 
 from assurance_healing.graphs.factory import build_healing_graphs as _build_healing_graphs
-from graph_engine.attempts.resolutions import AttemptResolution, PermanentTaskFailure
+from graph_engine.attempts.models.resolutions import AttemptResolution, PermanentTaskFailure
 from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.graph_harness import _prepare_anchored_backend
 
@@ -74,7 +74,7 @@ def _config() -> RunnableConfig:
 
 
 async def test_published_receipt_refs_come_from_kernel_receipt_not_output_extras() -> None:
-    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.attempts.models.resolutions import ReceiptRef
 
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
@@ -102,7 +102,7 @@ async def test_published_receipt_refs_come_from_kernel_receipt_not_output_extras
 
 
 async def _run_repair(apply: AttemptResolution):
-    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.attempts.models.resolutions import ReceiptRef
 
     harness = GraphHarness()
     backend = harness.anchored_memory_checkpointer()
@@ -141,7 +141,7 @@ async def _run_repair(apply: AttemptResolution):
     [("committed", "applied"), ("invalid_output", "needs_review"), ("invalid_input", "failed")],
 )
 async def test_repair_runs_without_approval_and_routes_apply_result(apply, expected) -> None:
-    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.attempts.models.resolutions import ReceiptRef
 
     if apply == "committed":
         resolution = committed(application_output(), ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA))

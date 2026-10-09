@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from graph_engine.artifacts import ArtifactRef
-from graph_engine.attempts.resolutions import PermanentTaskFailure
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure
 from graph_engine.flow import Flow
 from graph_engine.stategraph.ledger import InputBinding, NamedWrite, ledger_refs
 from graph_engine.testing import committed

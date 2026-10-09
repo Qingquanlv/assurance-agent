@@ -11,7 +11,7 @@ from assurance_intake.contracts.workflow import (
     ReviewedCaseV1,
     require_same_plan,
 )
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from assurance_generation.contracts.codegen import CodegenMapping
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.families import LayerName

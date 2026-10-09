@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.attempts.models.contracts import TaskAttemptContract
 from graph_engine.testing import GraphHarness
 
 from assurance_intake.feature import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS

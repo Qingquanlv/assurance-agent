@@ -155,7 +155,7 @@ def _langgraph_snapshot_fields(
 def _checkpoint_adapter_evidence(
     invocation_id: str, records: Sequence[object]
 ) -> tuple[AdapterEvidenceRefV1, ...]:
-    from graph_engine.attempts.checkpoint import AttemptCheckpoint
+    from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint
 
     refs = []
     for record in records:
@@ -185,7 +185,7 @@ def _checkpoint_adapter_evidence(
 def _checkpoint_attempt_fields(
     invocation_id: str, records: Sequence[object]
 ) -> tuple[tuple[GraphStatusV1, ...], tuple[NodeStatusV1, ...]]:
-    from graph_engine.attempts.checkpoint import AttemptCheckpoint
+    from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint
 
     projected: dict[str, tuple[GraphStatusV1, NodeStatusV1]] = {}
     precedence = {"failed": 1, "stopped": 2, "succeeded": 3}

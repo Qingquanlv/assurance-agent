@@ -13,7 +13,7 @@ from langgraph.types import Command
 
 from assurance_intake.graphs.factory import build_intake_graphs
 from assurance_product.graphs.full import build_full_flow
-from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.boot.boot import EngineGraphBuildContext
 from graph_engine.testing.graph_harness import GraphHarness, _prepare_anchored_backend, committed
 from tests.product.test_execute_tail_flow import (

@@ -50,7 +50,7 @@ def _config() -> RunnableConfig:
 
 @pytest.mark.parametrize("action", ("approve", "reject", "request_rework", "supersede"))
 async def test_apply_human_review_resume_reuses_interrupt_identity(action: str) -> None:
-    from graph_engine.attempts.resolutions import ReceiptRef
+    from graph_engine.attempts.models.resolutions import ReceiptRef
 
     harness = GraphHarness()
     backend = harness.anchored_memory_checkpointer()

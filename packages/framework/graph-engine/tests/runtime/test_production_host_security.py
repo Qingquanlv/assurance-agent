@@ -30,13 +30,13 @@ from graph_engine.attempts.execution_host.production_host import (
     _ProductionTaskExecutionHost,
     create_production_task_execution_host,
 )
-from graph_engine.attempts.secret_sources import (
+from graph_engine.attempts.resources.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     empty_runtime_authorization,
     runtime_authorization_digest,
 )
-from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
 
 _CANARY = b"canary-secret-material"

@@ -10,12 +10,12 @@ import pytest
 from pydantic import BaseModel
 
 from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     TaskAttemptContract,
 )
-from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.attempts.models.keys import BusinessActivation
 from graph_engine.boot.boot import (
     BootRequest,
     BootValidationError,

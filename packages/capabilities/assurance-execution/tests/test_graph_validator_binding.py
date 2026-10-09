@@ -18,17 +18,17 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.plugin import ExecutionPlugin
 from assurance_product.agent_contracts import all_feature_agent_contracts
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.contracts import (
     ExecutedAttemptResult,
     ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.attempts.resolutions import RejectedTaskResult
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.resolutions import RejectedTaskResult
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
 from graph_engine.boot.graph_revision import GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.models import AttemptContractClaim
@@ -47,7 +47,7 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
 
 from graph_engine.testing.feature_bundle import compile_bundle

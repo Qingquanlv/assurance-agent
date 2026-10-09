@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from graph_engine.application.application import _status_from_snapshot
-from graph_engine.attempts.resolutions import PermanentTaskFailure
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure
 from graph_engine.boot.boot import EngineGraphBuildContext
 from graph_engine.testing.graph_harness import GraphHarness
 
@@ -20,7 +20,7 @@ from assurance_improvement.contracts.retro import (
 from assurance_improvement.contracts.retro_identity import prepare_retro_identity
 from assurance_improvement.graphs.retro import RetroFlowInput
 from assurance_intake.contracts import EvidenceArtifactRefV1
-from graph_engine.attempts.keys import BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.keys import BusinessActivation, derive_attempt_key
 from assurance_product.graphs.entrypoints import _RETRO_INPUTS, thin_root_flows
 from assurance_product.graphs.factory import ProductFeatureBundles
 from tests.product.test_execute_tail_flow import _features

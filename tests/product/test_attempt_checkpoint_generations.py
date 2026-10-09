@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from tests.product.test_sqlite_attempt_checkpoint import workspace as workspace
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.canonical import canonical_digest
 from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer

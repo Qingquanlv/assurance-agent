@@ -83,7 +83,7 @@ def test_graph_recursion_error_normalizes_to_runtime_failure() -> None:
 def test_business_budget_exhaustion_is_a_distinct_terminal() -> None:
     import asyncio
 
-    from graph_engine.attempts.resolutions import PermanentTaskFailure
+    from graph_engine.attempts.models.resolutions import PermanentTaskFailure
 
     from tests.product.test_full_flow import _case, _front, _invoke, _tail_until_inspect
 

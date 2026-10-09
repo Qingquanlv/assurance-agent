@@ -37,7 +37,7 @@ from assurance_quality.contracts.surface import (
     ApiDiscoveryDocument,
     UiExplorationDocument,
 )
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.boot.boot import EngineGraphBuildContext
 from tests.architecture.exclusive_route_inventory import EXCLUSIVE_ROUTE_INVENTORY
 from tests.product.test_product_input import valid_product_input

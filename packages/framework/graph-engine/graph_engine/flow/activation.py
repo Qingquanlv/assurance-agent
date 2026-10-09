@@ -6,7 +6,7 @@ import hashlib
 import re
 from collections.abc import Mapping
 
-from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.attempts.models.keys import BusinessActivation
 from graph_engine.flow.control import control_table, read_round
 
 _TRIGGER = re.compile(r"^[a-z0-9][a-z0-9.-]*$")

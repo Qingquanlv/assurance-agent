@@ -6,17 +6,17 @@ from typing import Any, cast
 from pydantic import BaseModel, ValidationError
 
 from graph_engine.artifacts import refs_from_write_set
-from graph_engine.attempts.commit import AttemptTransactions, CommitHandler, _CommitRejected
-from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.orchestration.commit import AttemptTransactions, CommitHandler, _CommitRejected
+from graph_engine.attempts.models.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.models.contracts import (
     ExecutedAttemptResult,
     ResolvedAttemptContract,
     TerminalReceiptRef,
 )
-from graph_engine.attempts.errors import AttemptIdentityDrift, AttemptIntegrityError
-from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.errors import AttemptIdentityDrift, AttemptIntegrityError
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import (
     AttemptResolution,
     CommittedTaskResult,
     IndeterminateTaskResult,
@@ -26,9 +26,14 @@ from graph_engine.attempts.resolutions import (
     RejectedTaskResult,
     SystemReference,
 )
-from graph_engine.attempts.resource_arbiter import ResourceArbiterPort, ResourceAuthorization
-from graph_engine.attempts.runtime import DurableProgress, HandlerResult, PhaseHandler, ReturnResolution
-from graph_engine.attempts.runtime_evidence import RUNTIME_EVIDENCE, RuntimeEvidenceSource
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiterPort, ResourceAuthorization
+from graph_engine.attempts.orchestration.runtime import (
+    DurableProgress,
+    HandlerResult,
+    PhaseHandler,
+    ReturnResolution,
+)
+from graph_engine.attempts.models.runtime_evidence import RUNTIME_EVIDENCE, RuntimeEvidenceSource
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import ResourceAuthorizationError

@@ -28,7 +28,7 @@ async def _seed_history(project: Path, history: str) -> None:
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-    from graph_engine.attempts.checkpoint import AttemptPhase
+    from graph_engine.attempts.orchestration.checkpoint import AttemptPhase
     from graph_engine.canonical import JSONValue, canonical_digest
     from tests.attempt_checkpoints import checkpoint
 

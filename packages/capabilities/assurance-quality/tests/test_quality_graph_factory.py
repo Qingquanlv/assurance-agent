@@ -22,8 +22,8 @@ from assurance_quality.contracts.metrics import (
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.graphs.factory import QualityGraphs, build_quality_graphs as _build_quality_graphs
 from assurance_quality.operations.metrics import BoundRisk
-from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
+from graph_engine.attempts.models.contracts import TaskAttemptContract
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.stategraph.ledger import ledger_refs
 from graph_engine.testing import GraphHarness, committed
 

@@ -8,7 +8,7 @@ import pytest
 
 from agent_runtime_contracts.ops import InputError
 from graph_engine.artifacts import stage_json_artifact
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 
 from assurance_execution.contracts.agent import PreparedExecutionV1, RerunPrepareInputV1
 from assurance_execution.contracts.workflow import APPLIED_REPAIR_PATH, AppliedRepairHandoffV1

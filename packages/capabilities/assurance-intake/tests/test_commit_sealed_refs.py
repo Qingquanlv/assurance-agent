@@ -12,10 +12,10 @@ from graph_engine.attempts import (
     derive_attempt_key,
     resolve_contract,
 )
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.models.resolutions import ReceiptRef
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore

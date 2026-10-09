@@ -7,13 +7,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import BaseModel
 
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     TaskAttemptContract,
 )
-from graph_engine.attempts.keys import BusinessActivation
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.keys import BusinessActivation
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.boot.boot import ContractOwnershipError
 from graph_engine.boot.graph_revision import GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest

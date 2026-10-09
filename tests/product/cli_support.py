@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from graph_engine.composition import FrozenComposition
-from graph_engine.attempts.secret_sources import (
+from graph_engine.attempts.resources.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     runtime_authorization_digest,

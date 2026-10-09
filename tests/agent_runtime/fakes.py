@@ -65,8 +65,8 @@ from graph_engine.attempts.execution_host.host_protocol import (
     current_bound_identity,
 )
 from graph_engine.attempts.execution_host.host_receipts import TerminalReceiptStore, prove_call_quiescent
-from graph_engine.attempts.activity import Ledger
-from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.resources.activity import Ledger
+from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
 from tests.agent_runtime.conformance import (
     AdapterCut,

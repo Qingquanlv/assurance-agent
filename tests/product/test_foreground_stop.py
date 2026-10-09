@@ -188,7 +188,10 @@ def test_foreground_dead_owner_reconstructs_authenticated_cancel(
         if mutation == "missing":
             changed.pop("stop_authority")
         elif mutation == "secret":
-            from graph_engine.attempts.secret_sources import SecretSourceBinding, runtime_authorization_digest
+            from graph_engine.attempts.resources.secret_sources import (
+                SecretSourceBinding,
+                runtime_authorization_digest,
+            )
 
             source = changed["stop_authority"]["authorization"]["secret_sources"][0]
             source["source_locator"] = "AA_CHANGED_TOKEN"

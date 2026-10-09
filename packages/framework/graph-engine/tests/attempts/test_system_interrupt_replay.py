@@ -1,6 +1,6 @@
 from __future__ import annotations
 from tests.attempt_checkpoints import checkpoint
-from graph_engine.attempts.checkpoint import ActiveSystemInterrupt
+from graph_engine.attempts.orchestration.checkpoint import ActiveSystemInterrupt
 
 from types import SimpleNamespace
 from typing import Any
@@ -11,16 +11,16 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.canonical import canonical_digest
-from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.resolutions import (
     CommittedTaskResult,
     PendingTaskResult,
     IndeterminateTaskResult,
@@ -178,7 +178,7 @@ async def resume_after_crash_before_checkpoint(
 ) -> dict[str, object]:
     del first
     monkeypatch.setattr(
-        "graph_engine.attempts.node_factory.interrupt",
+        "graph_engine.attempts.orchestration.node_factory.interrupt",
         _ReplayThenRaise(replay_count),
     )
     result = await node(state, runtime=runtime)
@@ -402,7 +402,7 @@ async def test_active_generation_bound_is_enforced_before_another_interrupt(
     )
     kernel.push(PendingTaskResult(wakeup=SystemReference(reference_id="wake-overflow")))
     monkeypatch.setattr(
-        "graph_engine.attempts.node_factory.interrupt",
+        "graph_engine.attempts.orchestration.node_factory.interrupt",
         _ReplayThenRaise(MAX_ACTIVE_GENERATIONS),
     )
     with pytest.raises(ValueError, match="active-generation"):

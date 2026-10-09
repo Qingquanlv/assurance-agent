@@ -7,8 +7,8 @@ import pytest
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointIntegrityError
 from graph_engine.persistence.runner_lease import StaleFencingToken

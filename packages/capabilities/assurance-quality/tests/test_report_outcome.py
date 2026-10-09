@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.wire.schema import canonical_digest
-from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskHandler
 from graph_engine.testing import GraphHarness, committed

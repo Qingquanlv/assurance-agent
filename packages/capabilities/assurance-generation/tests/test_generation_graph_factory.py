@@ -13,8 +13,8 @@ from assurance_generation.graphs.factory import (
     GenerationGraphs,
     build_generation_graphs as _build_generation_graphs,
 )
-from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
+from graph_engine.attempts.models.contracts import TaskAttemptContract
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.testing import GraphHarness, committed
 
 from graph_engine.testing.feature_bundle import compile_bundle

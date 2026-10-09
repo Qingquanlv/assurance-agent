@@ -7,21 +7,21 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from graph_engine.artifacts import ArtifactRef, refs_from_write_set
-from graph_engine.attempts import workspace as task_workspace_runtime
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.resources import workspace as task_workspace_runtime
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import (
     ExecutedAttemptResult,
     ResolvedAttemptContract,
 )
-from graph_engine.attempts.errors import AttemptIdentityDrift
-from graph_engine.attempts.checkpoint import AttemptCheckpoint
+from graph_engine.attempts.models.errors import AttemptIdentityDrift
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint
 
-from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.keys import AttemptKey
+from graph_engine.attempts.models.resolutions import (
     PermanentTaskFailure,
     RejectedTaskResult,
 )
-from graph_engine.attempts.resource_arbiter import ResourceArbiterPort
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiterPort
 from graph_engine.canonical import JSONValue
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.plugin_api import (

@@ -253,7 +253,7 @@ class _HandlerExecutor:
         self.calls = 0
 
     async def execute(self, validated_input: BaseModel, scope):
-        from graph_engine.attempts.contracts import ExecutedAttemptResult
+        from graph_engine.attempts.models.contracts import ExecutedAttemptResult
         from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskRequest
 
         from assurance_execution.operations.runner import RunTestsHandler
@@ -301,11 +301,11 @@ async def test_real_execution_commits_and_recovers_without_replaying_tests(
 ) -> None:
     from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
     from assurance_execution.graphs.factory import build_execution_graphs
-    from graph_engine.attempts.contracts import resolve_contract
-    from graph_engine.attempts.kernel import AssuranceAttemptKernel
-    from graph_engine.attempts.node_factory import AttemptNodeFactory
-    from graph_engine.attempts.resource_arbiter import ResourceArbiter
-    from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+    from graph_engine.attempts.models.contracts import resolve_contract
+    from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+    from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+    from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
+    from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
     from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
     from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
     from graph_engine.testing import RecordingCapabilityBuildContext

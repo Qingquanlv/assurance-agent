@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 from typing import Any
-from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
+from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.canonical import canonical_digest
 
 

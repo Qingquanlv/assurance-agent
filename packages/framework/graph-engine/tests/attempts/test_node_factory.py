@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import replace
 from tests.attempt_checkpoints import checkpoint
-from graph_engine.attempts.checkpoint import ActiveSystemInterrupt
+from graph_engine.attempts.orchestration.checkpoint import ActiveSystemInterrupt
 from graph_engine.canonical import canonical_digest
 
 from types import SimpleNamespace
@@ -10,19 +10,19 @@ from typing import Any, TypedDict
 import pytest
 from pydantic import BaseModel, ValidationError, model_validator
 
-from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.orchestration.checkpoint_bridge import AttemptCheckpointObserver
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.orchestration.node_factory import AttemptNodeFactory
+from graph_engine.attempts.models.resolutions import (
     AttemptResolution,
     CommittedTaskResult,
     IndeterminateTaskResult,
@@ -999,7 +999,7 @@ async def test_completion_batch_goes_through_replace_checkpoint_marker_batch(
         fencing_token=4,
     )
     kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
-    monkeypatch.setattr("graph_engine.attempts.node_factory.interrupt", _ReplayThenRaise(1))
+    monkeypatch.setattr("graph_engine.attempts.orchestration.node_factory.interrupt", _ReplayThenRaise(1))
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",

@@ -1,6 +1,6 @@
-from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
-from graph_engine.attempts.runtime_evidence import RUNTIME_EVIDENCE, RuntimeEvidenceSource
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.models.runtime_evidence import RUNTIME_EVIDENCE, RuntimeEvidenceSource
+from graph_engine.attempts.models.contracts import (
     AttemptExecutor,
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
@@ -12,9 +12,9 @@ from graph_engine.attempts.contracts import (
     TerminalReceiptRef,
     resolve_contract,
 )
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint, AttemptPhase, AttemptResult
+from graph_engine.attempts.models.resolutions import (
     AttemptResolution,
     CommittedTaskResult,
     IndeterminateTaskResult,

@@ -8,8 +8,8 @@ import pytest
 from pydantic import BaseModel
 
 from graph_engine.application.runtime_context import AttemptKernelPort
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import (
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     AuthorizedAttemptScope,
@@ -18,16 +18,16 @@ from graph_engine.attempts.contracts import (
     TerminalReceiptRef,
     resolve_contract,
 )
-from graph_engine.attempts.checkpoint import AttemptPhase
-from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIntegrityError
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.orchestration.checkpoint import AttemptPhase
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel, AttemptIntegrityError
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.resolutions import (
     CommittedTaskResult,
     PendingTaskResult,
     PermanentTaskFailure,
     RejectedTaskResult,
 )
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_checkpoint import (
     MemoryAttemptCheckpointStore,
@@ -48,7 +48,7 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
     ValidationResult,
 )
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from assurance_intake.validators import SEALED_ARTIFACT_REFS_VALIDATOR_ID, SealedArtifactRefsValidator
 
 

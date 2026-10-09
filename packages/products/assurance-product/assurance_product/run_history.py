@@ -10,7 +10,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.plugin_api import PreparedWorkspaceRef, PromotionReceipt
 
 from assurance_product.operator_views import RunOutputRefV1

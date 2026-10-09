@@ -14,9 +14,9 @@ from graph_engine.application import (
     FixedExecutionFactory,
     InvocationBoundExecutionFactory,
 )
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
 from graph_engine.boot.boot import BootRequest, GraphEngineBoot, RuntimePorts
 from graph_engine.boot.graph_revision import BootArtifact, FeatureFactoryRef
 from graph_engine.boot.source_authentication import (
@@ -31,7 +31,7 @@ from graph_engine.composition.models import FrozenComposition, SourceKey, Source
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
-from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.resources.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.plugin_api import PluginDescriptor, ResourceClaims, WorkspaceProvider
 
 

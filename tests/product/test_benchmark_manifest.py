@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
-from graph_engine.attempts.checkpoint import AttemptResult
+from graph_engine.attempts.orchestration.checkpoint import AttemptResult
 from tests.attempt_checkpoints import completed_checkpoint
 from assurance_product.configuration import capability_leafs_from_knowledge
 

@@ -29,8 +29,8 @@ from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 
 if TYPE_CHECKING:
-    from graph_engine.attempts.keys import AttemptKey
-    from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
+    from graph_engine.attempts.models.keys import AttemptKey
+    from graph_engine.attempts.models.resolutions import PermanentTaskFailure, RejectedTaskResult
     from graph_engine.canonical import JSONValue
 else:
     JSONValue = JsonValue
@@ -1018,7 +1018,7 @@ def run_validators(
 ) -> RejectedTaskResult | PermanentTaskFailure | None:
     """Run contract validators in declared order. An empty tuple is an explicit no-op."""
 
-    from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
+    from graph_engine.attempts.models.resolutions import PermanentTaskFailure, RejectedTaskResult
 
     if validator_ids == ():
         return None

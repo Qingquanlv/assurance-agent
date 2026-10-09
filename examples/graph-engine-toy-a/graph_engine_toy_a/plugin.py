@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.models.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.plugin_api import (
     AttemptContractRef,
     PluginContribution,

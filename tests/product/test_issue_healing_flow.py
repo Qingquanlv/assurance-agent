@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from graph_engine.testing.graph_harness import committed
-from graph_engine.attempts.resolutions import RejectedTaskResult
+from graph_engine.attempts.models.resolutions import RejectedTaskResult
 
 from tests.product.test_execute_tail_flow import (
     _RECEIPT,

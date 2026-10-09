@@ -4,8 +4,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias
 
-from graph_engine.attempts.checkpoint import AttemptCheckpoint, AttemptPhase
-from graph_engine.attempts.resolutions import AttemptResolution
+from graph_engine.attempts.orchestration.checkpoint import AttemptCheckpoint, AttemptPhase
+from graph_engine.attempts.models.resolutions import AttemptResolution
 from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 
 

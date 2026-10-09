@@ -477,7 +477,7 @@ def test_bound_agent_runtime_executes_through_host_with_runtime_authority(
         AuthorizedAttemptScope,
         PermanentTaskFailure,
     )
-    from graph_engine.attempts.workspace import TaskWorkspaceStore
+    from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
 
     from agent_runtime_fixture.contracts import frozen_run_request
 
@@ -538,7 +538,7 @@ def test_bound_case_design_runs_phases_through_installed_host(
         ExecutedAttemptResult,
     )
     from graph_engine.attempts.execution_host.host_protocol import TaskHostCallResult, TaskHostExecuteCall
-    from graph_engine.attempts.workspace import TaskWorkspaceStore
+    from graph_engine.attempts.resources.workspace import TaskWorkspaceStore
     from graph_engine.plugin_api import TaskOutcome
 
     from agent_runtime_fixture.contracts import frozen_run_request

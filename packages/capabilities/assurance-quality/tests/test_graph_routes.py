@@ -8,7 +8,7 @@ from typing import Any
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.decisions import FailureClassification, triage_route
 from assurance_quality.graphs.factory import build_quality_graphs as _build_quality_graphs
-from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.attempts.models.contracts import TaskAttemptContract
 from graph_engine.testing import GraphHarness
 
 from graph_engine.testing.feature_bundle import compile_bundle

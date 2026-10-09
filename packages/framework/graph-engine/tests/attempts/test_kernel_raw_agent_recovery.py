@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import replace
-from graph_engine.attempts.checkpoint import AttemptPhase
+from graph_engine.attempts.orchestration.checkpoint import AttemptPhase
 
 from pathlib import Path
 
@@ -19,23 +19,23 @@ from agent_runtime_contracts.wire.schema import canonical_digest, thaw_json
 from agent_runtime_opencode.observe.state import parse_closed_terminal_result
 from agent_runtime_opencode.security import reject_canaries_in_payload, scan_for_canaries
 from agent_runtime_opencode.session.binding import reject_isolated_root_discovery
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
-from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.resolutions import (
+from graph_engine.attempts.models.context import AttemptExecutionContext
+from graph_engine.attempts.models.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy
+from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.models.keys import AttemptKey, BusinessActivation, derive_attempt_key
+from graph_engine.attempts.models.resolutions import (
     CommittedTaskResult,
     IndeterminateTaskResult,
     PermanentTaskFailure,
     SystemReference,
 )
-from graph_engine.attempts.resource_arbiter import ResourceArbiter
+from graph_engine.attempts.resources.resource_arbiter import ResourceArbiter
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import ResourceClaims, TaskWorkspaceBinding
-from graph_engine.attempts.activity import BoundedCanonicalJson, bounded_canonical_json
-from graph_engine.attempts.workspace import (
+from graph_engine.attempts.resources.activity import BoundedCanonicalJson, bounded_canonical_json
+from graph_engine.attempts.resources.workspace import (
     TaskWorkspaceProvider,
     TaskWorkspaceStore,
     TaskWorkspaceViolation,

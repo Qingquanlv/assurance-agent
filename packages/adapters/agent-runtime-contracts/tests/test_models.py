@@ -32,9 +32,9 @@ _SHA_D = "4" * 64
 _ALLOWED_GRAPH_ENGINE_MODULES = (
     "graph_engine.plugin_api",
     "graph_engine.attempts",
-    "graph_engine.attempts.contracts",
-    "graph_engine.attempts.context",
-    "graph_engine.attempts.keys",
+    "graph_engine.attempts.models.contracts",
+    "graph_engine.attempts.models.context",
+    "graph_engine.attempts.models.keys",
     "graph_engine.identifiers",
     "graph_engine.artifacts",
     "graph_engine.stategraph.ledger",

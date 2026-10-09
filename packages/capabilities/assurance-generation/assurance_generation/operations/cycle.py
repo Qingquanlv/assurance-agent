@@ -12,7 +12,7 @@ import yaml
 from pydantic import ValidationError
 
 from graph_engine.artifacts import stage_json_artifact
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from agent_runtime_contracts.qa_paths import qa_join

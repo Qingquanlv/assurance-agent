@@ -15,7 +15,7 @@ from graph_engine.application.status import TerminalEnvelope
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import ProductLock
-from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
+from graph_engine.attempts.resources.secret_sources import InvocationRuntimeAuthorization
 
 from assurance_product.worker_entrypoints import exclusive_application
 from assurance_product.binding_builder import build_deployment_wheel
@@ -453,11 +453,11 @@ class AssuranceProductApplication:
         else:
             resume_payload = {"action": action, "reason": reason}
         if isinstance(resume_payload, dict) and "wakeup" in resume_payload:
-            from graph_engine.attempts.resolutions import PendingTaskResult
+            from graph_engine.attempts.models.resolutions import PendingTaskResult
 
             resume_payload = PendingTaskResult.model_validate(resume_payload)
         elif isinstance(resume_payload, dict) and "reconciliation" in resume_payload:
-            from graph_engine.attempts.resolutions import IndeterminateTaskResult
+            from graph_engine.attempts.models.resolutions import IndeterminateTaskResult
 
             resume_payload = IndeterminateTaskResult.model_validate(resume_payload)
         status = asyncio.run(

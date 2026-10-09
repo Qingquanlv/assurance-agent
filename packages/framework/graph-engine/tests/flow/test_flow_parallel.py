@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from graph_engine.artifacts import ArtifactRef
-from graph_engine.attempts.resolutions import PermanentTaskFailure
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure
 from graph_engine.flow import Flow, FlowCheckError
 from graph_engine.stategraph.ledger import NamedWrite, ledger_refs
 from graph_engine.testing import committed

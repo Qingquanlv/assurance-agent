@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.attempts.resolutions import IndeterminateTaskResult, PermanentTaskFailure
-from graph_engine.attempts.workspace import TaskWorkspaceViolation
+from graph_engine.attempts.models.resolutions import IndeterminateTaskResult, PermanentTaskFailure
+from graph_engine.attempts.resources.workspace import TaskWorkspaceViolation
 
 _HELPER_SPEC = importlib.util.spec_from_file_location(
     "test_kernel_raw_agent_recovery",

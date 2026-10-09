@@ -23,7 +23,7 @@ from assurance_intake.handoff import REVIEWED_CASE
 from assurance_product.graphs.execute_tail import ExecuteTailFlowInput, build_execute_tail_flow
 from assurance_quality.graphs.factory import build_quality_graphs
 from assurance_quality.ops.issue_analysis.hooks import require_issue_analysis_ready
-from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
+from graph_engine.attempts.models.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.boot.boot import EngineGraphBuildContext
 from graph_engine.flow.sources import LoopTarget
 from graph_engine.testing.graph_harness import GraphHarness, _prepare_anchored_backend, committed

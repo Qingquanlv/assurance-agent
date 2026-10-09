@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from graph_engine.attempts.checkpoint import AttemptResult
-from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.orchestration.checkpoint import AttemptResult
+from graph_engine.attempts.models.keys import AttemptKey
 from tests.attempt_checkpoints import checkpoint, completed_checkpoint
 from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV2
 from assurance_product.change_workspace import ChangeWorkspace

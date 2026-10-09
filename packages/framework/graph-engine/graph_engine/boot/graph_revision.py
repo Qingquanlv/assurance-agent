@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
     from pydantic import BaseModel
 
-    from graph_engine.attempts.contracts import ResolvedAttemptContract
+    from graph_engine.attempts.models.contracts import ResolvedAttemptContract
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
