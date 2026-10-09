@@ -1,5 +1,9 @@
 # Attempt Runtime Production Closure Design
 
+> Historical design: the Attempt event/journal and action-runtime descriptions
+> are superseded by [persisted Attempt checkpoints](2026-10-09-attempt-checkpoints-design.md).
+
+
 > **Status:** implemented architecture; amended 2026-09-17.
 >
 > **Date:** 2026-09-03.

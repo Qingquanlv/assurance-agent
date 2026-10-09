@@ -511,10 +511,10 @@ async def test_typed_runtime_failures_are_preserved_after_recovery(
         "qa/results/workflow/inv-1/workflow-evidence.json",
         _json_bytes(
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "change_id": _CHANGE,
                 "invocation_id": "inv-1",
-                "journal_digest": _SHA,
+                "checkpoint_digest": _SHA,
                 "entries": entries,
                 "integrity": {"status": "complete", "reasons": []},
             }

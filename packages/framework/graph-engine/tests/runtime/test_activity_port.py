@@ -1,4 +1,8 @@
 from __future__ import annotations
+from dataclasses import replace
+from tests.attempt_checkpoints import checkpoint
+from graph_engine.attempts.checkpoint import AttemptPhase
+from graph_engine.canonical import canonical_digest
 
 import asyncio
 import threading
@@ -7,19 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import TaskActivityPort, TaskOutcome, TaskWorkspaceIdentity
 from ledger_activity_port import LedgerTaskActivityPort
 from graph_engine.attempts.activity import (
-    JournalBackedTaskActivityPort,
+    CheckpointBackedTaskActivityPort,
     MAX_ACTIVITY_VALUE_BYTES,
     TaskActivityConflict,
     TaskActivityIndeterminate,
     TaskActivityReferenceInvalid,
 )
-from graph_engine.attempts.events import ActivityPrepared, AttemptOpened, ResourcesAuthorized
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.attempts.activity import (
     GraphStarted,
@@ -360,16 +362,17 @@ def _start_loop() -> asyncio.AbstractEventLoop:
 def _journal_port(
     *,
     identity_overrides: dict[str, object] | None = None,
-) -> tuple[JournalBackedTaskActivityPort, MemoryAttemptJournal, AttemptKey]:
-    journal = MemoryAttemptJournal()
+) -> tuple[CheckpointBackedTaskActivityPort, MemoryAttemptCheckpointStore, AttemptKey]:
+    journal = MemoryAttemptCheckpointStore()
     attempt_key = AttemptKey(digest="a" * 64)
     authorization_id = "b" * 64
     graph_revision = "c" * 64
     future = asyncio.run_coroutine_threadsafe(
-        journal.append(
-            attempt_key,
-            (
-                AttemptOpened(
+        journal.commit(
+            replace(
+                checkpoint(
+                    attempt_key,
+                    fencing_token=1,
                     contract_digest="d" * 64,
                     input_digest="e" * 64,
                     graph_revision=graph_revision,
@@ -377,8 +380,11 @@ def _journal_port(
                     public_entrypoint="main",
                     semantic_node_id="run",
                 ),
-                ResourcesAuthorized(authorization_id=authorization_id),
-                ActivityPrepared(activity_id="activity-1"),
+                fencing_token=1,
+                authorization_id=authorization_id,
+                phase=AttemptPhase.RECONCILE,
+                activity_id="activity-1",
+                activity_state="prepared",
             ),
             expected_revision=0,
             fencing_token=1,
@@ -411,8 +417,8 @@ def _journal_port(
         activity_id="activity-1",
         **fields,  # type: ignore[arg-type]
     )
-    port = JournalBackedTaskActivityPort(
-        journal=journal,
+    port = CheckpointBackedTaskActivityPort(
+        checkpoints=journal,
         attempt_key=attempt_key,
         identity=identity,
         workspace_identity=workspace,
@@ -470,13 +476,14 @@ def test_journal_backed_port_rejects_mismatched_bound_fields(field: str, value: 
 
 
 def test_journal_backed_port_rejects_stale_fence() -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     attempt_key = AttemptKey(digest="a" * 64)
     asyncio.run_coroutine_threadsafe(
-        journal.append(
-            attempt_key,
-            (
-                AttemptOpened(
+        journal.commit(
+            replace(
+                checkpoint(
+                    attempt_key,
+                    fencing_token=2,
                     contract_digest="d" * 64,
                     input_digest="e" * 64,
                     graph_revision="c" * 64,
@@ -484,8 +491,11 @@ def test_journal_backed_port_rejects_stale_fence() -> None:
                     public_entrypoint="main",
                     semantic_node_id="run",
                 ),
-                ResourcesAuthorized(authorization_id="b" * 64),
-                ActivityPrepared(activity_id="activity-1"),
+                fencing_token=2,
+                authorization_id="b" * 64,
+                phase=AttemptPhase.RECONCILE,
+                activity_id="activity-1",
+                activity_state="prepared",
             ),
             expected_revision=0,
             fencing_token=2,
@@ -497,8 +507,8 @@ def test_journal_backed_port_rejects_stale_fence() -> None:
     async def _assert_live_fence() -> None:
         raise StaleFencingToken("fencing token is stale")
 
-    port = JournalBackedTaskActivityPort(
-        journal=journal,
+    port = CheckpointBackedTaskActivityPort(
+        checkpoints=journal,
         attempt_key=attempt_key,
         identity=TaskActivityRpcIdentity(
             invocation_id="inv-1",

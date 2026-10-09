@@ -1,5 +1,9 @@
 # Python-native LangGraph Assurance Runtime
 
+> Historical design: the Attempt event/journal and action-runtime descriptions
+> are superseded by [persisted Attempt checkpoints](2026-10-09-attempt-checkpoints-design.md).
+
+
 > **2026-09-02 amendment:** Agent transport and cutover are governed by
 > [Permanent Raw Agent Runtime Cutover](./2026-09-02-raw-agent-runtime-cutover-design.md).
 > Where the historical baseline below mentions provider-schema negotiation, Structured Output,

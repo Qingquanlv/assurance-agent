@@ -1,5 +1,9 @@
 # Semantic Attempt Kernel Implementation Plan
 
+> Historical implementation plan: Attempt event/journal and action-runtime steps
+> are superseded by the [Attempt checkpoint migration](2026-10-09-attempt-checkpoints.md).
+
+
 > **2026-09-02 continuation note:** this completed Attempt plan records the original baseline.
 > Its provider-schema and `CompositeAttemptExecutor` references are superseded by
 > [Permanent Raw Agent Runtime Cutover](../specs/2026-09-02-raw-agent-runtime-cutover-design.md)

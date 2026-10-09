@@ -45,7 +45,7 @@ async def test_kernel_raw_security_faults_fail_before_promote(tmp_path: Path, fa
             assert isinstance(result, (PermanentTaskFailure, IndeterminateTaskResult))
             assert getattr(result, "writes_promoted", False) is False
         if fault == "secret_leakage":
-            snapshot = await kernel.journal.load(key)
+            snapshot = await kernel.checkpoints.load(key)
             assert snapshot is not None
             encoded = str(snapshot.activity_reference) + str(snapshot.terminal)
             assert _SECRET not in encoded

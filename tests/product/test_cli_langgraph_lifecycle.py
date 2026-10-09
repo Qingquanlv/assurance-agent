@@ -205,14 +205,10 @@ def _durable_chain(
             assert anchor.graph_revision == identity.revision_id
             assert anchor.root_input_digest == identity.root_input_digest
             assert started.fencing_token >= anchor.fencing_token >= 1
-            records = await ports.attempt_journal.read_records()
+            records = await ports.attempt_checkpoints.read_checkpoints()
             if expect_attempt_records:
                 assert records
-                assert any(
-                    getattr(event, "receipt_digest", None) or getattr(event, "envelope_digest", None)
-                    for record in records
-                    for event in record.events
-                )
+                assert any(record.promotion_receipt_digest or record.active_interrupts for record in records)
             assert ports.network.allow_opencode is False
             return started
 

@@ -1,4 +1,8 @@
 from __future__ import annotations
+from dataclasses import replace
+from tests.attempt_checkpoints import checkpoint, completed_checkpoint
+from graph_engine.attempts.checkpoint import AttemptPhase, AttemptResult
+from graph_engine.canonical import canonical_digest
 
 import json
 from pathlib import Path
@@ -37,10 +41,8 @@ def test_concurrent_attempt_projections_publish_complete_json(tmp_path: Path, mo
     import os
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
-    from types import SimpleNamespace
 
     from assurance_product.operator_views import write_attempt_projection
-    from graph_engine.attempts.events import ActivityPrepared, AttemptOpened, AttemptTerminated
 
     barrier = Barrier(2)
     replace = os.replace
@@ -51,22 +53,14 @@ def test_concurrent_attempt_projections_publish_complete_json(tmp_path: Path, mo
         return replace(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(os, "replace", simultaneous_replace)
-    records: list[object] = [
-        SimpleNamespace(
-            attempt_key_digest="a" * 64,
-            fencing_token=1,
-            events=(
-                AttemptOpened(
-                    contract_digest="b" * 64,
-                    input_digest="c" * 64,
-                    graph_revision="d" * 64,
-                    invocation_id="run",
-                    public_entrypoint="full",
-                    semantic_node_id="intake.intake",
-                ),
-                ActivityPrepared(activity_id="a" * 64),
-                AttemptTerminated(resolution_kind="committed"),
+    records = [
+        completed_checkpoint(
+            terminal=AttemptResult(
+                resolution_kind="committed", receipt_id="receipt", receipt_digest="f" * 64
             ),
+            invocation_id="run",
+            public_entrypoint="full",
+            semantic_node_id="intake.intake",
         )
     ]
     with ThreadPoolExecutor(max_workers=2) as workers:
@@ -146,9 +140,8 @@ def test_history_rebuilds_stale_projection_from_journal_after_next_run(tmp_path:
 
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.operator_views import read_run_view
-    from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+    from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-    from graph_engine.attempts.events import ActivityPrepared, AttemptOpened, AttemptTerminated
     from graph_engine.attempts.keys import AttemptKey
 
     task = _task(tmp_path)
@@ -158,12 +151,14 @@ def test_history_rebuilds_stale_projection_from_journal_after_next_run(tmp_path:
 
     async def record() -> None:
         async with open_sqlite_checkpointer(workspace) as backend:
-            journal = SqliteAttemptJournal(backend)
+            journal = SqliteAttemptCheckpointStore(backend)
             for change_id, digit in (("BOOT-OLD", "1"), ("BOOT-NEW", "2")):
-                await journal.append(
-                    AttemptKey(digest=digit * 64),
-                    (
-                        AttemptOpened(
+                await backend.lease.acquire(change_id, owner_id="fixture")
+                await journal.commit(
+                    replace(
+                        checkpoint(
+                            AttemptKey(digest=digit * 64),
+                            fencing_token=1,
                             contract_digest="b" * 64,
                             input_digest="c" * 64,
                             graph_revision="d" * 64,
@@ -171,8 +166,20 @@ def test_history_rebuilds_stale_projection_from_journal_after_next_run(tmp_path:
                             public_entrypoint="full",
                             semantic_node_id="intake.intake",
                         ),
-                        ActivityPrepared(activity_id=digit * 64),
-                        AttemptTerminated(resolution_kind="committed"),
+                        fencing_token=1,
+                        activity_id=AttemptKey(digest=digit * 64).digest,
+                        phase=AttemptPhase.RELEASE,
+                        activity_state="terminal_observed",
+                        authorization_id="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                        terminal=AttemptResult(
+                            resolution_kind="committed", receipt_id="receipt", receipt_digest="f" * 64
+                        ),
+                        activity_outcome=None,
+                        activity_outcome_digest=canonical_digest(None),
+                        prepared_digest="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                        promotion_receipt_id="receipt",
+                        promotion_receipt_digest="ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                        promotion_staged_digest="ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
                     ),
                     expected_revision=0,
                     fencing_token=1,
@@ -273,9 +280,8 @@ def test_run_view_reads_journal_attempt_sessions_without_a_hand_written_file(tmp
 
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.operator_views import publish_run_attempts, read_run_view
-    from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+    from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
-    from graph_engine.attempts.events import ActivityBound, ActivityPrepared, AttemptOpened, AttemptTerminated
     from graph_engine.attempts.keys import AttemptKey
 
     task = _task(tmp_path)
@@ -283,80 +289,56 @@ def test_run_view_reads_journal_attempt_sessions_without_a_hand_written_file(tmp
     _run(task, change_id=change_id, number=1, phase="terminal", exit_code=0, root=None)
     workspace = ChangeWorkspace.prepare(task, change_id)
 
-    def opened(node_id: str) -> AttemptOpened:
-        return AttemptOpened(
-            contract_digest="b" * 64,
-            input_digest="c" * 64,
-            graph_revision="d" * 64,
-            invocation_id=change_id,
-            public_entrypoint=node_id,
-            semantic_node_id=node_id,
-        )
-
     async def record() -> None:
         async with open_sqlite_checkpointer(workspace) as backend:
-            journal = SqliteAttemptJournal(backend)
-            await journal.append(
-                AttemptKey(digest="1" * 64),
+            store = SqliteAttemptCheckpointStore(backend)
+            await backend.lease.acquire(change_id, owner_id="fixture")
+            await backend.lease.acquire("OTHER", owner_id="fixture")
+            for digit, node, activity, reference, committed in (
                 (
-                    opened("intake"),
-                    ActivityPrepared(activity_id="a1"),
-                    ActivityBound(
-                        activity_id="a1",
-                        reference={"session_id": "ses-a", "parent_session_id": None, "attempt_key": "try-1"},
-                        reference_digest="e" * 64,
-                    ),
-                    AttemptTerminated(resolution_kind="committed"),
+                    "1",
+                    "intake",
+                    "a1",
+                    {"session_id": "ses-a", "parent_session_id": None, "attempt_key": "try-1"},
+                    True,
                 ),
-                expected_revision=0,
-                fencing_token=1,
-            )
-            await journal.append(
-                AttemptKey(digest="2" * 64),
-                (
-                    opened("intake"),
-                    ActivityBound(
-                        activity_id="a2",
-                        reference={"session_id": "ses-b", "attempt_key": "try-2"},
-                        reference_digest="f" * 64,
-                    ),
-                ),
-                expected_revision=0,
-                fencing_token=1,
-            )
-            await journal.append(
-                AttemptKey(digest="3" * 64),
-                (
-                    opened("execute"),
-                    ActivityBound(
-                        activity_id="a3",
-                        reference={"attempt_key": "try-1"},
-                        reference_digest="9" * 64,
-                    ),
-                ),
-                expected_revision=0,
-                fencing_token=1,
-            )
-            await journal.append(
-                AttemptKey(digest="4" * 64),
-                (
-                    AttemptOpened(
-                        contract_digest="b" * 64,
-                        input_digest="c" * 64,
-                        graph_revision="d" * 64,
-                        invocation_id="OTHER",
-                        public_entrypoint="intake",
-                        semantic_node_id="intake",
-                    ),
-                    ActivityBound(
-                        activity_id="a9",
-                        reference={"session_id": "ses-other"},
-                        reference_digest="a" * 64,
-                    ),
-                ),
-                expected_revision=0,
-                fencing_token=1,
-            )
+                ("2", "intake", "a2", {"session_id": "ses-b", "attempt_key": "try-2"}, False),
+                ("3", "execute", "a3", {"attempt_key": "try-1"}, False),
+                ("4", "intake", "a9", {"session_id": "ses-other"}, False),
+            ):
+                key = AttemptKey(digest=digit * 64)
+                data = dict(
+                    invocation_id="OTHER" if digit == "4" else change_id,
+                    semantic_node_id=node,
+                    activity_id=activity,
+                    activity_reference=reference,
+                    activity_reference_digest=canonical_digest(dict(reference)),
+                    fencing_token=1,
+                    revision=0,
+                    terminal_fencing_token=None,
+                    terminal_revision=None,
+                )
+                if committed:
+                    candidate = completed_checkpoint(
+                        key,
+                        terminal=AttemptResult(
+                            resolution_kind="committed", receipt_id="receipt", receipt_digest="f" * 64
+                        ),
+                        **data,
+                    )
+                else:
+                    data.pop("terminal_fencing_token")
+                    data.pop("terminal_revision")
+                    candidate = checkpoint(
+                        key,
+                        phase=AttemptPhase.RECONCILE,
+                        authorization_id="e" * 64,
+                        activity_state="bound",
+                        activity_dispatch_fingerprint={"sent": True},
+                        activity_dispatch_fingerprint_digest=canonical_digest({"sent": True}),
+                        **data,
+                    )
+                await store.commit(candidate, expected_revision=0, fencing_token=1)
 
     asyncio.run(record())
     assert not (task / ".aa" / "runs" / change_id / "attempts.json").exists()

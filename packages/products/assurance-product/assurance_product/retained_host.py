@@ -12,14 +12,14 @@ import asyncio
 import json
 from typing import Any, cast
 
-from graph_engine.attempts.activity import JournalBackedTaskActivityPort
-from graph_engine.attempts.events import ResourcesAuthorized
+from graph_engine.attempts.activity import CheckpointBackedTaskActivityPort
+from dataclasses import replace
 from graph_engine.attempts.host_protocol import TaskHostCancelCall, TaskHostExecuteCall
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.plugin_api import DirectoryIdentity
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
-from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend
 from assurance_product.worker_lifecycle import ExecutionConflict, ExecutionOwner, current_owner, update_owner
 
@@ -68,10 +68,12 @@ def retain_stop_authority(
 
 
 class RetainedHost:
-    def __init__(self, inner: Any, backend: AssuranceSqliteBackend, journal: AttemptJournalPort) -> None:
+    def __init__(
+        self, inner: Any, backend: AssuranceSqliteBackend, checkpoints: AttemptCheckpointStore
+    ) -> None:
         self._inner = inner
         self._backend = backend
-        self._journal = journal
+        self._checkpoints = checkpoints
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -82,7 +84,7 @@ class RetainedHost:
             raise ExecutionConflict("production dispatch requires the current Invocation owner")
         if owner.stop_authority_digest is None:
             raise ExecutionConflict("production dispatch requires retained cancellation authority")
-        snapshot = await self._journal.load(AttemptKey(digest=call.identity.attempt_key_digest))
+        snapshot = await self._checkpoints.load(AttemptKey(digest=call.identity.attempt_key_digest))
         if (
             snapshot is None
             or snapshot.invocation_id != owner.invocation
@@ -224,14 +226,14 @@ async def confirm_owned_calls(owner: WorkerRecord) -> bool:
                 ):
                     raise ExecutionConflict("retained call pinned runtime identity drifted")
                 key = AttemptKey(digest=identity.attempt_key_digest)
-                snapshot = await ports.attempt_journal.load(key)
+                snapshot = await ports.attempt_checkpoints.load(key)
                 if (
                     snapshot is None
                     or snapshot.invocation_id != owner["invocation"]
                     or snapshot.authorization_id != identity.authorization_id
                     or snapshot.graph_revision != identity.graph_revision
                 ):
-                    raise ExecutionConflict("retained call disagrees with Attempt journal")
+                    raise ExecutionConflict("retained call disagrees with Attempt checkpoint")
                 if identity.phase != "runtime" or confirmed:
                     continue
                 # Authenticate old receipts against the exact old identity before
@@ -244,9 +246,8 @@ async def confirm_owned_calls(owner: WorkerRecord) -> bool:
                     return False
                 await arbiter.adopt(key, fencing_token=lease.fencing_token)
                 if snapshot.fencing_token != lease.fencing_token:
-                    snapshot = await ports.attempt_journal.append(
-                        key,
-                        (ResourcesAuthorized(authorization_id=identity.authorization_id),),
+                    snapshot = await ports.attempt_checkpoints.commit(
+                        replace(snapshot, fencing_token=lease.fencing_token),
                         expected_revision=snapshot.revision,
                         fencing_token=lease.fencing_token,
                     )
@@ -258,8 +259,8 @@ async def confirm_owned_calls(owner: WorkerRecord) -> bool:
                 async def assert_fence() -> None:
                     await backend.lease.assert_current(owner["invocation"], lease.fencing_token)
 
-                activity = JournalBackedTaskActivityPort(
-                    journal=ports.attempt_journal,
+                activity = CheckpointBackedTaskActivityPort(
+                    checkpoints=ports.attempt_checkpoints,
                     attempt_key=key,
                     identity=rpc,
                     workspace_identity=call.attempt_root.workspace_identity,

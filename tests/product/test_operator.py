@@ -1,4 +1,7 @@
 from __future__ import annotations
+from tests.attempt_checkpoints import completed_checkpoint
+from graph_engine.attempts.checkpoint import AttemptResult
+from graph_engine.canonical import canonical_digest
 
 import hashlib
 import json
@@ -752,10 +755,9 @@ def test_run_view_projects_journal_sessions_without_a_synthetic_attempts_file(tm
 
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.operator_views import read_run_view
-    from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+    from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
     from assurance_product.task_records import define_task
-    from graph_engine.attempts.events import ActivityBound, ActivityPrepared, AttemptOpened, AttemptTerminated
     from graph_engine.attempts.keys import AttemptKey
 
     project = _project(tmp_path)
@@ -796,7 +798,9 @@ def test_run_view_projects_journal_sessions_without_a_synthetic_attempts_file(tm
 
     async def record() -> None:
         async with open_sqlite_checkpointer(workspace) as backend:
-            journal = SqliteAttemptJournal(backend)
+            journal = SqliteAttemptCheckpointStore(backend)
+            await backend.lease.acquire(change_id, owner_id="fixture")
+            await backend.lease.acquire("BOOT-other", owner_id="fixture")
             specs = (
                 ("1" * 64, "intake", "a1", "try-1", {"session_id": "ses-a"}),
                 ("2" * 64, "intake", "a2", "try-2", {"session_id": "ses-b"}),
@@ -804,49 +808,27 @@ def test_run_view_projects_journal_sessions_without_a_synthetic_attempts_file(tm
                 ("4" * 64, "intake", "other", "try-9", {"session_id": "ses-other"}),
             )
             for key, node_id, activity_id, attempt_key, reference in specs:
-                if reference is None:
-                    events = (
-                        AttemptOpened(
-                            contract_digest=digest,
-                            input_digest=digest,
-                            graph_revision=digest,
-                            invocation_id=change_id,
-                            public_entrypoint="full",
-                            semantic_node_id=node_id,
-                        ),
-                        ActivityPrepared(activity_id=activity_id),
-                        ActivityBound(
-                            activity_id=activity_id,
-                            reference={"attempt_key": attempt_key},
-                            reference_digest=digest,
-                        ),
-                        AttemptTerminated(resolution_kind="committed"),
-                    )
-                else:
-                    invocation = "BOOT-other" if reference["session_id"] == "ses-other" else change_id
-                    events = (
-                        AttemptOpened(
-                            contract_digest=digest,
-                            input_digest=digest,
-                            graph_revision=digest,
-                            invocation_id=invocation,
-                            public_entrypoint="full",
-                            semantic_node_id=node_id,
-                        ),
-                        ActivityPrepared(activity_id=activity_id),
-                        ActivityBound(
-                            activity_id=activity_id,
-                            reference={**reference, "attempt_key": attempt_key},
-                            reference_digest=digest,
-                        ),
-                        AttemptTerminated(resolution_kind="committed"),
-                    )
-                await journal.append(
-                    AttemptKey(digest=key),
-                    events,  # type: ignore[arg-type]
-                    expected_revision=0,
-                    fencing_token=1,
+                invocation = (
+                    "BOOT-other" if reference and reference["session_id"] == "ses-other" else change_id
                 )
+                payload = {**(reference or {}), "attempt_key": attempt_key}
+                candidate = completed_checkpoint(
+                    AttemptKey(digest=key),
+                    terminal=AttemptResult(
+                        resolution_kind="committed", receipt_id="receipt", receipt_digest=digest
+                    ),
+                    invocation_id=invocation,
+                    public_entrypoint="full",
+                    semantic_node_id=node_id,
+                    activity_id=activity_id,
+                    activity_reference=payload,
+                    activity_reference_digest=canonical_digest(dict(payload)),
+                    fencing_token=1,
+                    revision=0,
+                    terminal_fencing_token=None,
+                    terminal_revision=None,
+                )
+                await journal.commit(candidate, expected_revision=0, fencing_token=1)
 
     asyncio.run(record())
     assert not (run_dir / "attempts.json").exists()

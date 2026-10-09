@@ -108,7 +108,7 @@ async def _register_observer(composition, tmp_path: Path) -> None:
     async with ProductRuntimePorts.open(workspace, composition) as ports:
         assert ports.kernel is not None
         assert isinstance(ports.observer, AttemptCheckpointObserver)
-        assert ports.attempt_journal is ports.observer._journal
+        assert ports.attempt_checkpoints is ports.observer._checkpoints
         checkpointer = ports.checkpointer_for(
             invocation_id="inv-ports-001",
             revision_id="a" * 64,
@@ -235,7 +235,7 @@ async def _shutdown_order(composition, tmp_path: Path) -> None:
     order = held.shutdown_order()
     assert order[0] == "observer_outbox_recovery"
     assert order[-1] == "sqlite"
-    assert "attempt_journal" in order
+    assert "attempt_checkpoints" in order
     assert "kernel" in order
 
 

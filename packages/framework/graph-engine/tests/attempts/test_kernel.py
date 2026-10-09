@@ -18,7 +18,7 @@ from graph_engine.attempts.contracts import (
     TerminalReceiptRef,
     resolve_contract,
 )
-from graph_engine.attempts.events import ActivityTerminalObserved, CommitPrepared
+from graph_engine.attempts.checkpoint import AttemptPhase
 from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIntegrityError
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import (
@@ -28,10 +28,9 @@ from graph_engine.attempts.resolutions import (
     RejectedTaskResult,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.canonical import canonical_digest, canonical_json_bytes
-from graph_engine.persistence.attempt_journal import (
-    ATTEMPT_JOURNAL_SCHEMA_VERSION,
-    MemoryAttemptJournal,
+from graph_engine.canonical import canonical_digest
+from graph_engine.persistence.attempt_checkpoint import (
+    MemoryAttemptCheckpointStore,
 )
 from graph_engine.persistence.resource_authorization import (
     MemoryResourceAuthorizationStore,
@@ -244,7 +243,7 @@ def make_kernel(
         executor=writer,
     )
     kernel = AssuranceAttemptKernel(
-        journal=MemoryAttemptJournal(),
+        checkpoints=MemoryAttemptCheckpointStore(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=workspace,
         graph_revision=graph_revision(),
@@ -283,7 +282,7 @@ async def test_pause_before_fresh_attempt_preserves_identity_and_replays(tmp_pat
         assert result.wakeup.reference_id == "operator_stop"
         assert executor.calls == 0
         assert not (project / "out.txt").exists()
-        snapshot = await kernel.journal.load(key)
+        snapshot = await kernel.checkpoints.load(key)
         assert snapshot is not None and snapshot.activity_state is None
         paused = False
         assert isinstance(
@@ -337,7 +336,7 @@ async def test_committed_replay_rejects_changed_staging(tmp_path: Path, change: 
         assert isinstance(first, CommittedTaskResult)
         assert executor.workspace.binding is not None
         restarted = AssuranceAttemptKernel(
-            journal=kernel.journal,
+            checkpoints=kernel.checkpoints,
             arbiter=kernel.arbiter,
             workspace=kernel.workspace,
             graph_revision=graph_revision(),
@@ -380,7 +379,7 @@ def inspect_execute_or_recover() -> set[str]:
 
 
 async def _assert_released(kernel: AssuranceAttemptKernel, key: AttemptKey, fencing_token: int) -> None:
-    snapshot = await kernel.journal.load(key)
+    snapshot = await kernel.checkpoints.load(key)
     assert snapshot is not None
     assert snapshot.terminal is not None
     assert snapshot.released is True
@@ -434,27 +433,17 @@ async def test_rejected_terminal_replay_returns_same_rejection(tmp_path: Path) -
         assert first.reason == "policy rejected"
         assert first.writes_promoted is False
         await _assert_released(kernel, key, context.fencing_token)
-        first_snapshot = await kernel.journal.load(key)
+        first_snapshot = await kernel.checkpoints.load(key)
         assert first_snapshot is not None
         assert first_snapshot.prepared_digest is None
-        assert not any(
-            isinstance(event, CommitPrepared)
-            for record in kernel.journal.records(key)
-            for event in record.events
-        )
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
         assert isinstance(replay, RejectedTaskResult)
         assert executor.calls == 1
         await _assert_released(kernel, key, context.fencing_token)
-        replay_snapshot = await kernel.journal.load(key)
+        replay_snapshot = await kernel.checkpoints.load(key)
         assert replay_snapshot is not None
         assert replay_snapshot.prepared_digest is None
-        assert not any(
-            isinstance(event, CommitPrepared)
-            for record in kernel.journal.records(key)
-            for event in record.events
-        )
     finally:
         store.close()
 
@@ -472,29 +461,19 @@ async def test_permanent_validator_terminal_replay_returns_same_failure(tmp_path
         assert first.kind == "internal"
         assert "validator crashed" in first.message
         await _assert_released(kernel, key, context.fencing_token)
-        first_snapshot = await kernel.journal.load(key)
+        first_snapshot = await kernel.checkpoints.load(key)
         assert first_snapshot is not None
         assert first_snapshot.terminal is not None
         assert first_snapshot.terminal.output == {"status": "ok"}
         assert first_snapshot.prepared_digest is None
-        assert not any(
-            isinstance(event, CommitPrepared)
-            for record in kernel.journal.records(key)
-            for event in record.events
-        )
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
         assert isinstance(replay, PermanentTaskFailure)
-        replay_snapshot = await kernel.journal.load(key)
+        replay_snapshot = await kernel.checkpoints.load(key)
         assert replay_snapshot is not None
         assert replay_snapshot.terminal is not None
         assert replay_snapshot.terminal.output == {"status": "ok"}
         assert replay_snapshot.prepared_digest is None
-        assert not any(
-            isinstance(event, CommitPrepared)
-            for record in kernel.journal.records(key)
-            for event in record.events
-        )
         assert executor.calls == 1
     finally:
         store.close()
@@ -512,7 +491,7 @@ async def test_retryable_terminal_replay_preserves_retry_classification(tmp_path
             message="provider TLS failed",
             retryable=True,
         )
-        snapshot = await kernel.journal.load(key)
+        snapshot = await kernel.checkpoints.load(key)
         assert snapshot is not None
         assert snapshot.terminal is not None
         assert snapshot.terminal.resolution_kind == "retryable"
@@ -535,13 +514,13 @@ async def test_invalid_output_terminates_releases_and_replays(tmp_path: Path) ->
         assert isinstance(first, PermanentTaskFailure)
         assert first.kind == "invalid_output"
         await _assert_released(kernel, key, context.fencing_token)
-        first_snapshot = await kernel.journal.load(key)
+        first_snapshot = await kernel.checkpoints.load(key)
         assert first_snapshot is not None
         assert first_snapshot.terminal is not None
         assert first_snapshot.terminal.output is None
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
-        replay_snapshot = await kernel.journal.load(key)
+        replay_snapshot = await kernel.checkpoints.load(key)
         assert replay_snapshot is not None
         assert replay_snapshot.terminal is not None
         assert replay_snapshot.terminal.output is None
@@ -569,16 +548,16 @@ async def test_noncanonical_valid_output_terminates_releases_and_replays(tmp_pat
             kind="configuration",
             message="Out of range float values are not JSON compliant",
         )
-        assert trace == ["adopt_or_create", "authorize_resources", "begin_workspace", "execute"]
+        assert trace[:4] == ["adopt_or_create", "authorize_resources", "begin_workspace", "execute"]
         await _assert_released(kernel, key, context.fencing_token)
-        first_snapshot = await kernel.journal.load(key)
+        first_snapshot = await kernel.checkpoints.load(key)
         assert first_snapshot is not None
         assert first_snapshot.terminal is not None
         assert first_snapshot.terminal.output is None
 
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
-        replay_snapshot = await kernel.journal.load(key)
+        replay_snapshot = await kernel.checkpoints.load(key)
         assert replay_snapshot is not None
         assert replay_snapshot.terminal is not None
         assert replay_snapshot.terminal.output is None
@@ -743,7 +722,7 @@ class _KernelFixture:
         store: TaskWorkspaceStore,
     ) -> None:
         self.kernel = kernel
-        self.journal = kernel.journal
+        self.journal = kernel.checkpoints
         self.attempt_key = attempt_key
         self.resolved = resolved
         self.validated = validated
@@ -831,7 +810,7 @@ def kernel_fixture(tmp_path: Path) -> Any:
         executor=executor,
     )
     kernel = AssuranceAttemptKernel(
-        journal=MemoryAttemptJournal(),
+        checkpoints=MemoryAttemptCheckpointStore(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=workspace,
         graph_revision=graph_revision(),
@@ -876,15 +855,11 @@ async def test_output_and_source_receipt_share_one_journal_revision(kernel_fixtu
         ),
     )
     await kernel_fixture.run_until_cut("after_observed_result")
-    records = kernel_fixture.journal.records(kernel_fixture.attempt_key)
-    assert [event.kind for event in records[-1].events] == [
-        "activity_terminal_observed",
-    ]
-    event = records[-1].events[0]
-    assert isinstance(event, ActivityTerminalObserved)
-    assert event.outcome == {"value": "done"}
-    assert event.source_identity_digest == "a" * 64
-    assert event.source_receipt_digest == "b" * 64
+    saved = await kernel_fixture.journal.load(kernel_fixture.attempt_key)
+    assert saved is not None and saved.phase is AttemptPhase.COMMIT
+    assert saved.activity_outcome == {"value": "done"}
+    assert saved.source_identity_digest == "a" * 64
+    assert saved.source_receipt_digest == "b" * 64
 
 
 async def test_terminal_state_with_active_grant_is_cleaned_before_replay(kernel_fixture) -> None:
@@ -911,7 +886,7 @@ async def test_release_proof_with_active_grant_fails_integrity(kernel_fixture) -
 
 def _canonical_journal_scenario() -> tuple[
     AssuranceAttemptKernel,
-    MemoryAttemptJournal,
+    MemoryAttemptCheckpointStore,
     AttemptKey,
     Any,
     RunInput,
@@ -932,9 +907,9 @@ def _canonical_journal_scenario() -> tuple[
         ),
         executor=executor,
     )
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     kernel = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=journal,
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=_CanonicalJournalWorkspace(),
         graph_revision=graph_revision(),
@@ -959,52 +934,79 @@ def _canonical_journal_scenario() -> tuple[
     return kernel, journal, attempt_key, resolved, validated, context
 
 
-def _canonical_journal_bytes(journal: MemoryAttemptJournal, attempt_key: AttemptKey) -> bytes:
-    return canonical_json_bytes(
-        [
-            {
-                "schema_version": ATTEMPT_JOURNAL_SCHEMA_VERSION,
-                "record_digest": record.record_digest,
-                "payload": record.canonical_projection(),
-            }
-            for record in journal.records(attempt_key)
-        ]
-    )
-
-
-async def _run_canonical_journal_scenario(*, replay_prepared_state: bool) -> bytes:
-    kernel, journal, attempt_key, resolved, validated, context = _canonical_journal_scenario()
-
+async def _run_canonical_checkpoint_scenario(*, replay_prepared_state: bool):
+    kernel, checkpoints, key, resolved, validated, context = _canonical_journal_scenario()
     if replay_prepared_state:
 
         def cut(name: str) -> None:
             if name == "after_prepare_before_promotion":
                 raise TransactionCrash(name)
 
-        with pytest.raises(TransactionCrash, match="after_prepare_before_promotion"):
-            await kernel.execute_or_recover(
-                attempt_key,
-                resolved,
-                validated,
-                context,
-                transaction_cut=cut,
-            )
-
-    result = await kernel.execute_or_recover(
-        attempt_key,
-        resolved,
-        validated,
-        context,
-        transaction_cut=None,
-    )
+        with pytest.raises(TransactionCrash):
+            await kernel.execute_or_recover(key, resolved, validated, context, transaction_cut=cut)
+    result = await kernel.execute_or_recover(key, resolved, validated, context, transaction_cut=None)
     assert isinstance(result, CommittedTaskResult)
-    return _canonical_journal_bytes(journal, attempt_key)
+    saved = await checkpoints.load(key)
+    assert saved is not None and saved.phase is AttemptPhase.DONE
+    assert saved.released and saved.terminal is not None
+    assert saved.promotion_receipt_digest == result.receipt.receipt_digest
+    return saved
 
 
-async def test_attempt_journal_bytes_match_golden() -> None:
-    fresh = await _run_canonical_journal_scenario(replay_prepared_state=False)
-    replay = await _run_canonical_journal_scenario(replay_prepared_state=True)
+async def test_fresh_and_recovered_commits_have_identical_durable_business_proofs() -> None:
+    fresh = await _run_canonical_checkpoint_scenario(replay_prepared_state=False)
+    recovered = await _run_canonical_checkpoint_scenario(replay_prepared_state=True)
+    assert fresh.activity_outcome == recovered.activity_outcome == {"value": "done"}
+    assert fresh.terminal == recovered.terminal
+    assert fresh.prepared_digest == recovered.prepared_digest
+    assert fresh.promotion_receipt_digest == recovered.promotion_receipt_digest
+    assert fresh.source_receipt_digest == recovered.source_receipt_digest
 
-    assert fresh == replay
-    golden = Path(__file__).with_name("attempt-kernel-phase-p.golden.json").read_bytes()
-    assert fresh == golden
+
+async def test_null_business_output_restart_enters_commit_without_dispatch(tmp_path: Path) -> None:
+    from pydantic import RootModel
+
+    executor = _ConfigurableExecutor()
+    executor.result = ExecutedAttemptResult(output=RootModel[None](None))
+    kernel, key, resolved, validated, context, _, _, store = make_kernel(
+        tmp_path, executor=executor, output_model=RootModel[None]
+    )
+
+    def cut(name: str) -> None:
+        if name == "after_observed_result":
+            raise TransactionCrash(name)
+
+    try:
+        with pytest.raises(TransactionCrash):
+            await kernel.execute_or_recover(key, resolved, validated, context, transaction_cut=cut)
+        saved = await kernel.checkpoints.load(key)
+        assert saved is not None and saved.phase is AttemptPhase.COMMIT
+        assert saved.activity_outcome is None and saved.activity_outcome_digest == canonical_digest(None)
+        result = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(result, CommittedTaskResult)
+        assert result.output.root is None
+        assert executor.calls == 1
+    finally:
+        store.close()
+
+
+async def test_release_entry_with_durable_release_proof_advances_to_done(kernel_fixture) -> None:
+    from dataclasses import replace
+
+    assert isinstance(await kernel_fixture.restart(), CommittedTaskResult)
+    saved = await kernel_fixture.snapshot()
+    replacement = MemoryAttemptCheckpointStore()
+    # An adapter may save release proof at the release entry before the done entry.
+    await replacement.commit(
+        replace(
+            saved, phase=AttemptPhase.RELEASE, revision=0, terminal_fencing_token=None, terminal_revision=None
+        ),
+        expected_revision=0,
+        fencing_token=saved.fencing_token,
+    )
+    kernel_fixture.kernel.checkpoints = replacement
+    result = await kernel_fixture.restart()
+    assert isinstance(result, CommittedTaskResult)
+    latest = await replacement.load(kernel_fixture.attempt_key)
+    assert latest is not None and latest.phase is AttemptPhase.DONE
+    assert kernel_fixture.executor.calls == 1

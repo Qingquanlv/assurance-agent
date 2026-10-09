@@ -1,6 +1,7 @@
 """Typed task, run, and node projections for managed operator reads."""
 
 from __future__ import annotations
+from collections.abc import Sequence
 
 import json
 import logging
@@ -261,7 +262,7 @@ def publish_run_attempts(task_directory: Path, change_id: str) -> None:
     import asyncio
 
     from assurance_product.change_workspace import ChangeWorkspace
-    from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+    from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
     from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
     from assurance_product.task_records import _managed_run
 
@@ -282,7 +283,7 @@ def publish_run_attempts(task_directory: Path, change_id: str) -> None:
 
     async def _read() -> tuple[object, ...]:
         async with open_sqlite_checkpointer(workspace) as backend:
-            return await SqliteAttemptJournal(backend).read_records()
+            return await SqliteAttemptCheckpointStore(backend).read_checkpoints()
 
     records = asyncio.run(_read())
     try:
@@ -291,31 +292,16 @@ def publish_run_attempts(task_directory: Path, change_id: str) -> None:
         _logger.warning("run_attempt_projection_failed: %s", error)
 
 
-def write_attempt_projection(
-    run_dir: Path, records: tuple[object, ...] | list[object], invocation_id: str
-) -> None:
+def write_attempt_projection(run_dir: Path, records: Sequence[object], invocation_id: str) -> None:
     from assurance_product.run_history import publish_attempt_outputs, write_projection_bytes
-    from graph_engine.attempts.events import fold_attempt_events
-    from graph_engine.attempts.keys import AttemptKey
+    from graph_engine.attempts.checkpoint import AttemptCheckpoint
 
-    grouped: dict[str, list[object]] = {}
-    for record in records:
-        digest = getattr(record, "attempt_key_digest", None)
-        events = getattr(record, "events", None)
-        if not isinstance(digest, str) or not isinstance(events, tuple):
-            raise ProjectionError("invalid_input", "attempt journal record is unreadable")
-        grouped.setdefault(digest, []).append(record)
     rows: list[dict[str, object]] = []
     order = 0
-    for digest, batch in grouped.items():
-        events = tuple(event for record in batch for event in getattr(record, "events"))
-        token = getattr(batch[-1], "fencing_token", 1)
-        snapshot = fold_attempt_events(
-            AttemptKey(digest=digest),
-            events,
-            revision=len(batch),
-            fencing_token=token if isinstance(token, int) else 1,
-        )
+    for snapshot in records:
+        if not isinstance(snapshot, AttemptCheckpoint):
+            raise ProjectionError("invalid_input", "Attempt checkpoint record is unreadable")
+        digest = snapshot.attempt_key.digest
         if snapshot.invocation_id != invocation_id:
             continue
         reference = snapshot.activity_reference if isinstance(snapshot.activity_reference, dict) else {}
@@ -327,9 +313,12 @@ def write_attempt_projection(
         attempt_key = recorded_attempt if isinstance(recorded_attempt, str) and recorded_attempt else None
         terminal = snapshot.terminal
         if terminal is not None:
-            state = {"committed": "completed", "failed": "failed", "stopped": "stopped"}.get(
-                terminal.resolution_kind, "unknown"
-            )
+            state = {
+                "committed": "completed",
+                "permanent": "failed",
+                "retryable": "failed",
+                "rejected": "stopped",
+            }.get(terminal.resolution_kind, "unknown")
         elif snapshot.activity_state == "bound":
             state = "running"
         else:

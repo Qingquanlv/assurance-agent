@@ -1,5 +1,9 @@
 # Attempt Kernel Internal Refactor Design Note
 
+> Historical design: the Attempt event/journal and action-runtime descriptions
+> are superseded by [persisted Attempt checkpoints](2026-10-09-attempt-checkpoints-design.md).
+
+
 > **Status:** implemented private shape recorded; it is not a frozen public contract or prescribed
 > class/module count.
 >

@@ -306,7 +306,7 @@ async def test_real_execution_commits_and_recovers_without_replaying_tests(
     from graph_engine.attempts.node_factory import AttemptNodeFactory
     from graph_engine.attempts.resource_arbiter import ResourceArbiter
     from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
-    from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+    from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
     from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
     from graph_engine.testing import RecordingCapabilityBuildContext
     from langgraph.checkpoint.memory import InMemorySaver
@@ -316,7 +316,7 @@ async def test_real_execution_commits_and_recovers_without_replaying_tests(
     project = tmp_path / "project"
     payload = _prepared_project(project, passing=passing)
     store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     executor = _HandlerExecutor()
     cuts = ["after_promotion_before_receipt"]
 
@@ -326,7 +326,7 @@ async def test_real_execution_commits_and_recovers_without_replaying_tests(
             raise RuntimeError("crash after promotion")
 
     kernel = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=journal,
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision=_revision(),
@@ -337,7 +337,7 @@ async def test_real_execution_commits_and_recovers_without_replaying_tests(
         contracts={
             c.contract_id: resolve_contract(c, executor=executor) for c in TASK_ATTEMPT_CONTRACTS.values()
         },
-        attempt_factory=AttemptNodeFactory(journal=journal, kernel=kernel),
+        attempt_factory=AttemptNodeFactory(checkpoints=journal, kernel=kernel),
     )
     try:
         reached_quality: list[str] = []

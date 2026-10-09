@@ -22,7 +22,7 @@ from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import ResourceClaims
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
@@ -69,7 +69,7 @@ def _graph(tmp_path: Path, executor: _Executor, names: tuple[str, ...]):
     project.mkdir()
     store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
     kernel = AssuranceAttemptKernel(
-        journal=MemoryAttemptJournal(),
+        checkpoints=MemoryAttemptCheckpointStore(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision="a" * 64,
@@ -89,7 +89,7 @@ def _graph(tmp_path: Path, executor: _Executor, names: tuple[str, ...]):
         ),
         executor=executor,
     )
-    factory = AttemptNodeFactory(journal=kernel.journal, kernel=kernel)
+    factory = AttemptNodeFactory(checkpoints=kernel.checkpoints, kernel=kernel)
     builder = StateGraph(_State)
     previous = START
     for name in names:
@@ -135,7 +135,7 @@ async def test_operator_stop_checkpoints_before_next_node_and_resumes_same_attem
         assert payload["kind"] == "system_wake"
         assert payload["reason"] == "operator_stop"
         paused_key = AttemptKey(digest=payload["attempt_key"])
-        paused = await kernel.journal.load(paused_key)
+        paused = await kernel.checkpoints.load(paused_key)
         assert paused is not None
         assert paused.invocation_id == "inv-operator-pause"
         assert paused.activity_state is None
@@ -164,7 +164,7 @@ async def test_operator_stop_allows_pending_activity_to_reconcile_and_commit(tmp
         assert executor.paused is True
         assert not (project / "out/first.txt").exists()
         key = executor.dispatched[0][1]
-        pending = await kernel.journal.load(key)
+        pending = await kernel.checkpoints.load(key)
         assert pending is not None and pending.activity_state == "prepared"
 
         command = _system_wake_command(checkpoint.interrupts)

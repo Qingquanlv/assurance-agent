@@ -146,26 +146,13 @@ def test_corrupted_rows_are_never_loaded_or_replaced(workspace, column, value):
 
 
 def test_new_store_refuses_old_journal_without_changing_its_bytes(workspace):
-    from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
-    from graph_engine.attempts.events import AttemptOpened
-
     async def scenario():
         async with open_sqlite_checkpointer(workspace) as backend:
-            await SqliteAttemptJournal(backend).append(
-                record().attempt_key,
-                (
-                    AttemptOpened(
-                        contract_digest="b" * 64,
-                        input_digest="c" * 64,
-                        graph_revision="d" * 64,
-                        invocation_id="inv-1",
-                        public_entrypoint="execute",
-                        semantic_node_id="execution.run",
-                    ),
-                ),
-                expected_revision=0,
-                fencing_token=1,
+            await backend._conn.execute("CREATE TABLE assurance_attempt_batches (payload BLOB NOT NULL)")
+            await backend._conn.execute(
+                "INSERT INTO assurance_attempt_batches VALUES (?)", (b"legacy-proof",)
             )
+            await backend._conn.commit()
             cursor = await backend._conn.execute("SELECT payload FROM assurance_attempt_batches")
             before = await cursor.fetchone()
             store = SqliteAttemptCheckpointStore(backend)

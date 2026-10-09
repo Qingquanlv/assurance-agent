@@ -1,4 +1,7 @@
 from __future__ import annotations
+from tests.attempt_checkpoints import checkpoint
+from dataclasses import replace
+from graph_engine.attempts.checkpoint import ActiveSystemInterrupt
 
 import importlib.util
 from pathlib import Path
@@ -18,22 +21,18 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.events import (
-    AttemptOpened,
-    SystemInterruptIssuanceAnchored,
-    SystemInterruptIssued,
-)
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
     CommittedTaskResult,
     PendingTaskResult,
+    IndeterminateTaskResult,
     ReceiptRef,
     SystemReference,
 )
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.checkpoint_observer import CheckpointAnchorNotice
 from graph_engine.persistence.checkpoint_store import MemoryCheckpointStore
 from graph_engine.persistence.journal import CheckpointAnchor
@@ -82,18 +81,27 @@ class ScriptedKernel:
     async def execute_or_recover(
         self, attempt_key: AttemptKey, contract: object, validated_input: object, context: object
     ) -> object:
-        del contract, validated_input, context
         self.seen_key = attempt_key
         self.calls += 1
         if not self.resolutions:
             raise AssertionError("scripted kernel has no queued resolution")
-        return self.resolutions.pop(0)
+        resolution = self.resolutions.pop(0)
+        if isinstance(resolution, (PendingTaskResult, IndeterminateTaskResult)):
+            store = self.checkpoints
+            if await store.load(attempt_key) is None:
+                await store.commit(
+                    checkpoint(attempt_key, fencing_token=context.fencing_token, graph_revision=REVISION),
+                    expected_revision=0,
+                    fencing_token=context.fencing_token,
+                )
+        return resolution
 
 
-class ScriptedJournal(MemoryAttemptJournal):
+class ScriptedCheckpoints(MemoryAttemptCheckpointStore):
     def __init__(self, kernel: ScriptedKernel) -> None:
         super().__init__()
         self.kernel = kernel
+        kernel.checkpoints = self
 
     def mark_kernel_now_committed(self, attempt_key: AttemptKey) -> None:
         del attempt_key
@@ -157,19 +165,8 @@ def publish_output(_state: dict[str, object], output: RunOutput, receipt: Receip
     return {"execution": output, "receipts": (receipt,)}
 
 
-def _open_event() -> AttemptOpened:
-    return AttemptOpened(
-        contract_digest=canonical_digest({"c": 1}),
-        input_digest=canonical_digest({"i": 1}),
-        graph_revision=REVISION,
-        invocation_id="inv-1",
-        public_entrypoint="execute",
-        semantic_node_id="execution.run",
-    )
-
-
-def _issued(*, generation: int, ordinal: int, envelope_digest: str) -> SystemInterruptIssued:
-    return SystemInterruptIssued(generation=generation, ordinal=ordinal, envelope_digest=envelope_digest)
+def _issued(*, generation: int, ordinal: int, envelope_digest: str) -> ActiveSystemInterrupt:
+    return ActiveSystemInterrupt(generation=generation, ordinal=ordinal, envelope_digest=envelope_digest)
 
 
 def _marker(
@@ -206,7 +203,7 @@ def _anchor(*, checkpoint_id: str = "cp-interrupt") -> CheckpointAnchor:
 
 
 async def _seed_issued(
-    journal: MemoryAttemptJournal,
+    journal: MemoryAttemptCheckpointStore,
     *,
     key: AttemptKey,
     generation: int = 1,
@@ -214,11 +211,12 @@ async def _seed_issued(
     envelope_digest: str | None = None,
 ) -> str:
     digest = envelope_digest or canonical_digest({"generation": generation, "ordinal": ordinal})
-    events: list[object] = [
-        _open_event(),
-        _issued(generation=generation, ordinal=ordinal, envelope_digest=digest),
-    ]
-    await journal.append(key, tuple(events), expected_revision=0, fencing_token=4)  # type: ignore[arg-type]
+    issued = _issued(generation=generation, ordinal=ordinal, envelope_digest=digest)
+    await journal.commit(
+        checkpoint(key, active_interrupt=issued, active_interrupts=(issued,)),
+        expected_revision=0,
+        fencing_token=4,
+    )
     return digest
 
 
@@ -235,7 +233,7 @@ class _ReplayThenRaise:
 
 
 async def test_issuance_observer_proves_exposure_and_leaves_generation_active() -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     key = _attempt_key()
     digest = await _seed_issued(journal, key=key)
     observer = AttemptCheckpointObserver(journal)
@@ -254,13 +252,11 @@ async def test_issuance_observer_proves_exposure_and_leaves_generation_active() 
     assert snapshot.active_interrupt.issuance_anchored is True
     assert snapshot.active_interrupt.retired is False
     assert snapshot.active_interrupt.generation == 1
-    kinds = [type(event).__name__ for record in journal._logs[key.digest] for event in record.events]
-    assert "SystemInterruptIssuanceAnchored" in kinds
-    assert "SystemInterruptCompletionCheckpointed" not in kinds
+    assert snapshot.active_interrupt.completion_checkpoint_id is None
 
 
 async def test_issuance_observer_is_idempotent_on_duplicate_delivery() -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     key = _attempt_key()
     digest = await _seed_issued(journal, key=key)
     observer = AttemptCheckpointObserver(journal)
@@ -283,29 +279,23 @@ async def test_issuance_observer_is_idempotent_on_duplicate_delivery() -> None:
     second = await journal.load(key)
     assert first is not None and second is not None
     assert first.active_interrupt == second.active_interrupt
-    anchored = [
-        event
-        for record in journal._logs[key.digest]
-        for event in record.events
-        if isinstance(event, SystemInterruptIssuanceAnchored)
-    ]
-    assert len(anchored) == 1
+    assert second.revision == first.revision
 
 
 async def test_completion_observer_retires_only_matching_generations() -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     key = _attempt_key()
     digest_one = canonical_digest({"generation": 1})
     digest_two = canonical_digest({"generation": 2})
     unrelated = canonical_digest({"generation": 9})
-    await journal.append(
-        key,
-        (
-            _open_event(),
-            _issued(generation=1, ordinal=0, envelope_digest=digest_one),
-            _issued(generation=2, ordinal=1, envelope_digest=digest_two),
-            _issued(generation=9, ordinal=2, envelope_digest=unrelated),
-        ),
+    retained = tuple(
+        ActiveSystemInterrupt(
+            generation=generation, ordinal=ordinal, envelope_digest=digest, issuance_checkpoint_id="cp-issued"
+        )
+        for generation, ordinal, digest in ((1, 0, digest_one), (2, 1, digest_two), (9, 2, unrelated))
+    )
+    await journal.commit(
+        checkpoint(key, active_interrupt=retained[-1], active_interrupts=retained),
         expected_revision=0,
         fencing_token=4,
     )
@@ -342,7 +332,7 @@ async def test_completion_observer_retires_only_matching_generations() -> None:
 
 
 async def test_pending_write_completion_markers_never_retire() -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     key = _attempt_key()
     digest = await _seed_issued(journal, key=key)
     observer = AttemptCheckpointObserver(journal)
@@ -369,7 +359,7 @@ async def test_pending_write_completion_markers_never_retire() -> None:
 
 
 async def test_mismatched_digest_or_generation_is_rejected() -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     key = _attempt_key()
     digest = await _seed_issued(journal, key=key)
     observer = AttemptCheckpointObserver(journal)
@@ -408,7 +398,7 @@ async def test_mismatched_digest_or_generation_is_rejected() -> None:
 
 
 async def test_human_interrupt_without_attempt_marker_is_ignored() -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     key = _attempt_key()
     await _seed_issued(journal, key=key)
     observer = AttemptCheckpointObserver(journal)
@@ -498,7 +488,7 @@ def _sample_checkpoint(*, checkpoint_id: str, markers: list[CheckpointBridgeMark
 
 async def _crashing_saver(
     *,
-    attempt_journal: MemoryAttemptJournal,
+    attempt_checkpoints: MemoryAttemptCheckpointStore,
     fault: str,
     store: MemoryCheckpointStore | None = None,
     checkpoint_journal: object | None = None,
@@ -507,7 +497,7 @@ async def _crashing_saver(
     checkpoint_journal = checkpoint_journal or MemoryCheckpointAnchorJournal()
     if not getattr(checkpoint_journal, "_started", None):
         await checkpoint_journal.start_invocation(started(), fencing_token=4)
-    observer = FaultingObserver(AttemptCheckpointObserver(attempt_journal), fault)
+    observer = FaultingObserver(AttemptCheckpointObserver(attempt_checkpoints), fault)
     saver = AnchoredCheckpointer(
         store=FaultingStore(store, fault),
         journal=checkpoint_journal,
@@ -541,20 +531,26 @@ def _successor(
 
 @pytest.mark.parametrize("fault", ["after_mark_journal_anchored", "after_observer_delivery"])
 async def test_arecover_redelivers_issuance_observer_and_keeps_generation_active(fault: str) -> None:
-    attempt_journal = MemoryAttemptJournal()
+    attempt_checkpoints = MemoryAttemptCheckpointStore()
     key = _attempt_key()
-    digest = await _seed_issued(attempt_journal, key=key)
+    digest = await _seed_issued(attempt_checkpoints, key=key)
     unrelated = canonical_digest({"generation": 9})
-    snapshot = await attempt_journal.load(key)
+    snapshot = await attempt_checkpoints.load(key)
     assert snapshot is not None
-    await attempt_journal.append(
-        key,
-        (_issued(generation=9, ordinal=1, envelope_digest=unrelated),),
+    await attempt_checkpoints.commit(
+        replace(
+            (await attempt_checkpoints.load(key)),
+            active_interrupt=_issued(generation=9, ordinal=1, envelope_digest=unrelated),
+            active_interrupts=(
+                *(await attempt_checkpoints.load(key)).active_interrupts,
+                _issued(generation=9, ordinal=1, envelope_digest=unrelated),
+            ),
+        ),
         expected_revision=snapshot.revision,
         fencing_token=4,
     )
     crashing, store, checkpoint_journal, observer = await _crashing_saver(
-        attempt_journal=attempt_journal, fault=fault
+        attempt_checkpoints=attempt_checkpoints, fault=fault
     )
     issued = _marker(
         kind="system_interrupt_issued",
@@ -570,7 +566,7 @@ async def test_arecover_redelivers_issuance_observer_and_keeps_generation_active
             task_id="task-issue",
             task_path="push-0",
         )
-    before = await attempt_journal.load(key)
+    before = await attempt_checkpoints.load(key)
     assert before is not None
     issued_one = next(item for item in before.active_interrupts if item.generation == 1)
     unrelated_active = next(item for item in before.active_interrupts if item.generation == 9)
@@ -588,7 +584,7 @@ async def test_arecover_redelivers_issuance_observer_and_keeps_generation_active
     recording = RecordingObserver()
     recovered = _successor(store, checkpoint_journal, observer._inner, recording)
     await recovered.arecover(thread_id="inv-1")
-    after = await attempt_journal.load(key)
+    after = await attempt_checkpoints.load(key)
     assert after is not None
     recovered_one = next(item for item in after.active_interrupts if item.generation == 1)
     recovered_unrelated = next(item for item in after.active_interrupts if item.generation == 9)
@@ -608,19 +604,25 @@ async def test_arecover_redelivers_issuance_observer_and_keeps_generation_active
 async def test_arecover_redelivers_completion_observer_and_does_not_retire_unrelated(
     fault: str,
 ) -> None:
-    attempt_journal = MemoryAttemptJournal()
+    attempt_checkpoints = MemoryAttemptCheckpointStore()
     key = _attempt_key()
-    digest = await _seed_issued(attempt_journal, key=key)
+    digest = await _seed_issued(attempt_checkpoints, key=key)
     unrelated = canonical_digest({"generation": 9})
-    snapshot = await attempt_journal.load(key)
+    snapshot = await attempt_checkpoints.load(key)
     assert snapshot is not None
-    await attempt_journal.append(
-        key,
-        (_issued(generation=9, ordinal=1, envelope_digest=unrelated),),
+    await attempt_checkpoints.commit(
+        replace(
+            (await attempt_checkpoints.load(key)),
+            active_interrupt=_issued(generation=9, ordinal=1, envelope_digest=unrelated),
+            active_interrupts=(
+                *(await attempt_checkpoints.load(key)).active_interrupts,
+                _issued(generation=9, ordinal=1, envelope_digest=unrelated),
+            ),
+        ),
         expected_revision=snapshot.revision,
         fencing_token=4,
     )
-    issuance_observer = AttemptCheckpointObserver(attempt_journal)
+    issuance_observer = AttemptCheckpointObserver(attempt_checkpoints)
     await issuance_observer.on_anchored(
         CheckpointAnchorNotice(
             anchor=_anchor(),
@@ -637,7 +639,7 @@ async def test_arecover_redelivers_completion_observer_and_does_not_retire_unrel
         )
     )
     crashing, store, checkpoint_journal, observer = await _crashing_saver(
-        attempt_journal=attempt_journal, fault=fault
+        attempt_checkpoints=attempt_checkpoints, fault=fault
     )
     completed = _marker(
         kind="system_interrupt_completed",
@@ -653,7 +655,7 @@ async def test_arecover_redelivers_completion_observer_and_does_not_retire_unrel
             {"source": "loop", "step": 1, "parents": {}},
             {"result": 2},
         )
-    before = await attempt_journal.load(key)
+    before = await attempt_checkpoints.load(key)
     assert before is not None
     if fault == "after_mark_journal_anchored":
         assert before.retired_generations == ()
@@ -668,7 +670,7 @@ async def test_arecover_redelivers_completion_observer_and_does_not_retire_unrel
     recording = RecordingObserver()
     recovered = _successor(store, checkpoint_journal, observer._inner, recording)
     await recovered.arecover(thread_id="inv-1")
-    after = await attempt_journal.load(key)
+    after = await attempt_checkpoints.load(key)
     assert after is not None
     assert 1 in after.retired_generations
     assert 9 not in after.retired_generations
@@ -689,8 +691,9 @@ async def test_resumed_node_writes_completion_markers_in_ordinal_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=[])
+    journal = ScriptedCheckpoints(kernel)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=[])
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -747,8 +750,9 @@ async def test_later_reentry_after_completion_does_not_replay_stale_ordinal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = ScriptedKernel()
-    journal = ScriptedJournal(kernel)
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=[])
+    journal = ScriptedCheckpoints(kernel)
+    kernel.checkpoints = journal
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel, trace=[])
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -804,16 +808,16 @@ async def test_later_reentry_after_completion_does_not_replay_stale_ordinal(
 async def test_invocation_wide_pending_barrier_keeps_sibling_write() -> None:
     left_kernel = ScriptedKernel()
     right_kernel = ScriptedKernel()
-    left_journal = ScriptedJournal(left_kernel)
-    right_journal = ScriptedJournal(right_kernel)
-    left = AttemptNodeFactory(journal=left_journal, kernel=left_kernel, trace=[]).attempt(
+    left_journal = ScriptedCheckpoints(left_kernel)
+    right_journal = ScriptedCheckpoints(right_kernel)
+    left = AttemptNodeFactory(checkpoints=left_journal, kernel=left_kernel, trace=[]).attempt(
         _resolved(),
         semantic_node_id="execution.left",
         activation=select_activation,
         select=select_input,
         publish=lambda _state, output, receipt: {"left": output.status},
     )
-    right = AttemptNodeFactory(journal=right_journal, kernel=right_kernel, trace=[]).attempt(
+    right = AttemptNodeFactory(checkpoints=right_journal, kernel=right_kernel, trace=[]).attempt(
         _resolved(),
         semantic_node_id="execution.right",
         activation=select_activation,

@@ -34,7 +34,7 @@ from graph_engine.boot.graph_revision import GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.models import AttemptContractClaim
 from graph_engine.composition.registries import build_attempt_registry
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import (
     CommitValidator,
@@ -335,9 +335,9 @@ async def _run_langgraph_candidate(tmp_path: Path, *, relative: str) -> Validato
     writer = _StagedWriteExecutor(workspace, relative, _output())
     runnable = resolve_contract(clone, executor=writer)
     counter = _CountingValidator(evidence)
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     kernel = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=journal,
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=workspace,
         graph_revision=canonical_digest({"revision": "product-validator-parity"}),
@@ -355,7 +355,7 @@ async def _run_langgraph_candidate(tmp_path: Path, *, relative: str) -> Validato
     _execution.execute.compile(outcome_field="status")
     _execution.rerun.compile(outcome_field="status")
     assert TEST_CONTRACT_ID not in shipped.bound_contract_ids
-    factory = AttemptNodeFactory(journal=journal, kernel=kernel)
+    factory = AttemptNodeFactory(checkpoints=journal, kernel=kernel)
     context = RecordingCapabilityBuildContext(
         owner_id="assurance.execution",
         contracts={

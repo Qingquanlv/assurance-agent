@@ -28,7 +28,7 @@ from graph_engine.boot.source_authentication import (
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import ProductLock
 from graph_engine.composition.models import FrozenComposition, SourceKey, SourceRole
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
@@ -92,9 +92,9 @@ def boot_factory_product(
     symbol = composition.manifest.graph_factory_symbol
     if symbol is None:
         raise TypeError("composition manifest has no graph factory symbol")
-    journal = MemoryAttemptJournal()
+    checkpoints = MemoryAttemptCheckpointStore()
     kernel = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=checkpoints,
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=workspace,
         graph_revision="0" * 64,

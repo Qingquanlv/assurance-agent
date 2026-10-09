@@ -1,5 +1,9 @@
 # LangGraph Product Cutover Implementation Plan
 
+> Historical implementation plan: Attempt event/journal and action-runtime steps
+> are superseded by the [Attempt checkpoint migration](2026-10-09-attempt-checkpoints.md).
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Compose the six Feature bundles into 14 revision-pinned Product `StateGraph` roots, close the permanent Raw Agent production path, move the `aa` lifecycle to `AssuranceApplication`, prove semantic parity through isolated shadow Invocations, cut over every entrypoint, drain legacy revisions, and physically delete Workflow YAML plus the custom Graph Runtime.

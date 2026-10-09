@@ -23,7 +23,7 @@ from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import ResourceClaims
 
@@ -97,7 +97,7 @@ async def _run(
     reader = _Reader()
     resolved = resolve_contract(_contract(capabilities=capabilities), executor=reader)
     kernel = AssuranceAttemptKernel(
-        journal=MemoryAttemptJournal(),
+        checkpoints=MemoryAttemptCheckpointStore(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision=canonical_digest({"revision": "runtime-evidence"}),

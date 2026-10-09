@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from graph_engine.artifacts import stage_json_artifact
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
-from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV1
+from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV2
 from assurance_improvement.contracts.runtime_snapshot import (
     RetroRuntimeSnapshotInputV1,
     pre_retro_evidence_path,
@@ -23,7 +23,7 @@ class RetroRuntimeSnapshotHandler:
             return TaskOutcome.failed("configuration", _MISSING, retryable=False)
         try:
             payload = validate_input(RetroRuntimeSnapshotInputV1, request.input)
-            document = WorkflowRuntimeEvidenceV1.model_validate(await context.runtime_evidence())
+            document = WorkflowRuntimeEvidenceV2.model_validate(await context.runtime_evidence())
             if document.invocation_id != request.invocation_id:
                 raise ValueError("runtime evidence invocation does not match this attempt")
             if document.change_id != payload.change_id:

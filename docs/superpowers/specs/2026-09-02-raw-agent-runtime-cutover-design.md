@@ -1,5 +1,9 @@
 # Permanent Raw Agent Runtime Cutover
 
+> Historical design: the Attempt event/journal and action-runtime descriptions
+> are superseded by [persisted Attempt checkpoints](2026-10-09-attempt-checkpoints-design.md).
+
+
 **Status:** Accepted design amendment; amended 2026-09-04
 
 **Date:** 2026-09-02

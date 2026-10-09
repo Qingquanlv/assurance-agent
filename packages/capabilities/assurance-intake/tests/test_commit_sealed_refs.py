@@ -17,7 +17,7 @@ from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.canonical import canonical_digest
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 
 from assurance_intake.contracts.coverage_rework import (
@@ -50,7 +50,7 @@ def _kernel(
 ) -> tuple[AssuranceAttemptKernel, TaskWorkspaceStore]:
     store = TaskWorkspaceStore(project, attempts, receipts)
     kernel = AssuranceAttemptKernel(
-        journal=MemoryAttemptJournal(),
+        checkpoints=MemoryAttemptCheckpointStore(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision=_REVISION,

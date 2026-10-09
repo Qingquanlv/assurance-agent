@@ -12,7 +12,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from assurance_improvement.contracts.retro import RetroIntegrity, WorkflowRuntimeEvidenceV1
+from assurance_improvement.contracts.retro import RetroIntegrity, WorkflowRuntimeEvidenceV2
 from assurance_improvement.contracts.runtime_snapshot import (
     RetroRuntimeSnapshotOutputV1,
     pre_retro_evidence_path,
@@ -22,11 +22,11 @@ from assurance_improvement.operations.runtime_snapshot import RetroRuntimeSnapsh
 _SHA = "a" * 64
 
 
-def _document() -> WorkflowRuntimeEvidenceV1:
-    return WorkflowRuntimeEvidenceV1(
+def _document() -> WorkflowRuntimeEvidenceV2:
+    return WorkflowRuntimeEvidenceV2(
         change_id="CH-A",
         invocation_id="inv-full",
-        journal_digest=_SHA,
+        checkpoint_digest=_SHA,
         entries=(),
         integrity=RetroIntegrity(status="complete"),
     )

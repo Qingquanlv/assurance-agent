@@ -9,7 +9,7 @@ from pydantic import Field
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV1
+from assurance_improvement.contracts.retro import WorkflowRuntimeEvidenceV2
 from assurance_intake.contracts import EvidenceArtifactRefV1
 
 RUNTIME_EVIDENCE_ROOT = "qa/results/workflow"
@@ -23,7 +23,7 @@ class RetroRuntimeSnapshotOutputV1(FrozenModel):
     evidence_ref: EvidenceArtifactRefV1
 
 
-def pre_retro_evidence_path(document: WorkflowRuntimeEvidenceV1) -> tuple[str, bytes]:
+def pre_retro_evidence_path(document: WorkflowRuntimeEvidenceV2) -> tuple[str, bytes]:
     """Same relative path and bytes as ``publish_runtime_evidence(stage='pre-retro')``."""
     encoded = canonical_json_bytes(document.model_dump(mode="json")) + b"\n"
     content_digest = hashlib.sha256(encoded).hexdigest()

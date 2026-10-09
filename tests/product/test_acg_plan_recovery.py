@@ -25,7 +25,7 @@ from assurance_intake.domain.obligations import normalize_obligation_drafts
 from assurance_product.change_workspace import ChangeWorkspace
 from tests.op_handlers import op_handler
 from assurance_product.runtime_bindings import DeterministicTaskExecutor
-from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
 from graph_engine.attempts import (
     AttemptExecutionContext,
@@ -40,7 +40,7 @@ from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 
 from assurance_intake.feature import TASK_ATTEMPT_CONTRACTS
@@ -160,7 +160,7 @@ def _plan_scenario(tmp_path: Path) -> _PlanScenario:
     )
     store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
     kernel = AssuranceAttemptKernel(
-        journal=MemoryAttemptJournal(),
+        checkpoints=MemoryAttemptCheckpointStore(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=TaskWorkspaceProvider(store),
         graph_revision=_REVISION,
@@ -217,7 +217,7 @@ async def _committed_plan_replay_survives_sqlite_restart(tmp_path: Path) -> None
     try:
         async with open_sqlite_checkpointer(workspace) as backend:
             first_kernel = AssuranceAttemptKernel(
-                journal=SqliteAttemptJournal(backend),
+                checkpoints=SqliteAttemptCheckpointStore(backend),
                 arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
                 workspace=TaskWorkspaceProvider(scenario.store),
                 graph_revision=_REVISION,
@@ -232,7 +232,7 @@ async def _committed_plan_replay_survives_sqlite_restart(tmp_path: Path) -> None
 
         async with open_sqlite_checkpointer(workspace) as reopened:
             replay_kernel = AssuranceAttemptKernel(
-                journal=SqliteAttemptJournal(reopened),
+                checkpoints=SqliteAttemptCheckpointStore(reopened),
                 arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
                 workspace=TaskWorkspaceProvider(scenario.store),
                 graph_revision=_REVISION,

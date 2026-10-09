@@ -40,7 +40,7 @@ Neither stop nor UI projections fabricate a graph terminal state.
 A full workflow does not create a root session: `root_session_id` stays null,
 and each agent attempt is its own top-level session in the run worktree.
 Operator run and history views publish those session links from the attempt
-journal. `origin_session_id` correlates the operator chat and is not a parent.
+checkpoints. `origin_session_id` correlates the operator chat and is not a parent.
 A session that already has a parent cannot start another run.
 Bounded leaf agents have the `assurance` tool disabled.
 

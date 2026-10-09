@@ -109,6 +109,11 @@ class SqliteAttemptCheckpointStore:
                 raise
 
     async def _assert_supported_unlocked(self) -> None:
+        cursor = await self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assurance_attempt_batches'"
+        )
+        if await cursor.fetchone() is None:
+            return
         cursor = await self._conn.execute("SELECT 1 FROM assurance_attempt_batches LIMIT 1")
         if await cursor.fetchone() is not None:
             raise AttemptCheckpointIntegrityError(

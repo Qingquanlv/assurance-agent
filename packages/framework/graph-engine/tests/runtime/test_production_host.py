@@ -1,4 +1,7 @@
 from __future__ import annotations
+from dataclasses import replace
+from graph_engine.attempts.checkpoint import AttemptPhase
+from graph_engine.canonical import canonical_digest
 
 import asyncio
 import sys
@@ -8,8 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.attempts.activity import journal_backed_activity_factory
-from graph_engine.attempts.events import ActivityPrepared, AttemptOpened, ResourcesAuthorized
+from graph_engine.attempts.activity import checkpoint_backed_activity_factory
 from graph_engine.attempts.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
@@ -28,8 +30,7 @@ from graph_engine.attempts.production_host import (
 )
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.attempts.workspace import TaskWorkspaceStore
-from graph_engine.canonical import canonical_digest
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.plugin_api import (
     InvocationMetadata,
     ResourceClaims,
@@ -51,7 +52,7 @@ class _OpenCodeLikeHandler:
 
 @dataclass
 class ProductionHostFixture:
-    attempt_journal: MemoryAttemptJournal
+    attempt_checkpoints: MemoryAttemptCheckpointStore
     attempt_key: AttemptKey
     legacy_ledger_path: Path
     host: object
@@ -63,19 +64,22 @@ class ProductionHostFixture:
 
 @pytest.fixture
 def production_host_fixture(tmp_path: Path) -> ProductionHostFixture:
+    from tests.attempt_checkpoints import checkpoint
+
     project_root = tmp_path / "project"
     project_root.mkdir()
     store = TaskWorkspaceStore(project_root, tmp_path / "attempts", tmp_path / "promotion-receipts")
     workspace = store.begin(task_id="task-1", attempt=1, output_paths=("done.txt",))
     attempt_key = AttemptKey(digest="a" * 64)
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     authorization_id = "b" * 64
     graph_revision = "c" * 64
     asyncio.run(
-        journal.append(
-            attempt_key,
-            (
-                AttemptOpened(
+        journal.commit(
+            replace(
+                checkpoint(
+                    attempt_key,
+                    fencing_token=1,
                     contract_digest="d" * 64,
                     input_digest="e" * 64,
                     graph_revision=graph_revision,
@@ -83,8 +87,11 @@ def production_host_fixture(tmp_path: Path) -> ProductionHostFixture:
                     public_entrypoint="main",
                     semantic_node_id="run",
                 ),
-                ResourcesAuthorized(authorization_id=authorization_id),
-                ActivityPrepared(activity_id="activity-1"),
+                fencing_token=1,
+                authorization_id=authorization_id,
+                phase=AttemptPhase.RECONCILE,
+                activity_id="activity-1",
+                activity_state="prepared",
             ),
             expected_revision=0,
             fencing_token=1,
@@ -165,8 +172,8 @@ def production_host_fixture(tmp_path: Path) -> ProductionHostFixture:
         handlers={"runtime.opencode.execute": _OpenCodeLikeHandler()},
         store=store,
         receipts=receipts,
-        activity_factory=journal_backed_activity_factory(
-            journal=journal,
+        activity_factory=checkpoint_backed_activity_factory(
+            checkpoints=journal,
             attempt_key=attempt_key,
             owner_loop=loop,
             assert_live_fence=_assert_live_fence,
@@ -176,7 +183,7 @@ def production_host_fixture(tmp_path: Path) -> ProductionHostFixture:
     thread = __import__("threading").Thread(target=loop.run_forever, daemon=True)
     thread.start()
     return ProductionHostFixture(
-        attempt_journal=journal,
+        attempt_checkpoints=journal,
         attempt_key=attempt_key,
         legacy_ledger_path=tmp_path / "invocations" / "inv-1" / "ledger",
         host=host,
@@ -184,9 +191,11 @@ def production_host_fixture(tmp_path: Path) -> ProductionHostFixture:
     )
 
 
-async def test_host_activity_rpc_uses_attempt_journal(production_host_fixture: ProductionHostFixture) -> None:
+async def test_host_activity_rpc_uses_attempt_checkpoints(
+    production_host_fixture: ProductionHostFixture,
+) -> None:
     result = await production_host_fixture.execute_one_opencode_call()
-    snapshot = await production_host_fixture.attempt_journal.load(production_host_fixture.attempt_key)
+    snapshot = await production_host_fixture.attempt_checkpoints.load(production_host_fixture.attempt_key)
     assert result.outcome is not None
     assert snapshot is not None
     assert snapshot.activity_state == "bound"
@@ -317,7 +326,7 @@ def test_runtime_envelope_is_durable_before_dispatch(
                     assert record["calls"]
                     raise RuntimeError("dispatch crash")
 
-            host = RetainedHost(CrashingHost(), backend, fixture.attempt_journal)
+            host = RetainedHost(CrashingHost(), backend, fixture.attempt_checkpoints)
             if has_authority:
                 with pytest.raises(RuntimeError, match="dispatch crash"):
                     await host.execute(fixture.call)
@@ -383,11 +392,11 @@ def test_stop_bridge_rebinds_envelope_and_requires_terminal_cancel(
             await backend.lease.release(previous)
             arbiter = ResourceArbiter(SqliteResourceAuthorizationStore(backend))
             grant = await arbiter.acquire(fixture.attempt_key, ResourceClaims(), fencing_token=1)
-            snap = await fixture.attempt_journal.load(fixture.attempt_key)
-            await fixture.attempt_journal.append(
-                fixture.attempt_key,
-                (ResourcesAuthorized(authorization_id=grant.authorization_id),),
-                expected_revision=snap.revision,
+            snap = await fixture.attempt_checkpoints.load(fixture.attempt_key)
+            fixture.attempt_checkpoints = MemoryAttemptCheckpointStore()
+            await fixture.attempt_checkpoints.commit(
+                replace(snap, revision=0, authorization_id=grant.authorization_id),
+                expected_revision=0,
                 fencing_token=1,
             )
             call = fixture.call.model_copy(
@@ -430,7 +439,7 @@ def test_stop_bridge_rebinds_envelope_and_requires_terminal_cancel(
 
             fake = SimpleNamespace(
                 backend=backend,
-                attempt_journal=fixture.attempt_journal,
+                attempt_checkpoints=fixture.attempt_checkpoints,
                 host=StopHost(),
                 revision_id=call.identity.graph_revision,
                 product_lock_digest=call.identity.product_lock_digest,

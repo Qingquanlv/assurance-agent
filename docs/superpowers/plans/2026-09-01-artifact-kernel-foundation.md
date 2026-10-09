@@ -1,5 +1,9 @@
 # Artifact Foundation and Structured Attempt Kernel Implementation Plan
 
+> Historical implementation plan: Attempt event/journal and action-runtime steps
+> are superseded by the [Attempt checkpoint migration](2026-10-09-attempt-checkpoints.md).
+
+
 > ## CANCELLED / SUPERSEDED — Historical Record Only
 >
 > **Effective 2026-09-02:** this plan is permanently cancelled and superseded by

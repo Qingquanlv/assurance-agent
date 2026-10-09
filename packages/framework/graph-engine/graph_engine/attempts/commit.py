@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -14,20 +14,16 @@ from graph_engine.attempts.contracts import (
     ResolvedAttemptContract,
 )
 from graph_engine.attempts.errors import AttemptIdentityDrift
-from graph_engine.attempts.events import (
-    ActivityTerminalObserved,
-    AttemptSnapshot,
-    CommitPrepared,
-    WorkspacePromoted,
-)
+from graph_engine.attempts.checkpoint import AttemptCheckpoint
+
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resolutions import (
     PermanentTaskFailure,
     RejectedTaskResult,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiterPort
-from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.canonical import JSONValue
+from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore
 from graph_engine.plugin_api import (
     CommitValidator,
     PromotionReceipt,
@@ -41,14 +37,14 @@ from graph_engine.plugin_api import (
 
 @dataclass(frozen=True, slots=True)
 class _CommitRejected:
-    snapshot: AttemptSnapshot
+    snapshot: AttemptCheckpoint
     resolution: RejectedTaskResult | PermanentTaskFailure
     terminal_output: JSONValue = None
 
 
 @dataclass(frozen=True, slots=True)
 class _PromotedCommit:
-    snapshot: AttemptSnapshot
+    snapshot: AttemptCheckpoint
     output: JSONValue
     receipt: PromotionReceipt
     artifacts: tuple[ArtifactRef, ...]
@@ -57,8 +53,8 @@ class _PromotedCommit:
 class AttemptTransactions:
     """Shared fence/reload primitives; transaction owners choose their ordering."""
 
-    def __init__(self, journal: AttemptJournalPort, arbiter: ResourceArbiterPort) -> None:
-        self.journal = journal
+    def __init__(self, checkpoints: AttemptCheckpointStore, arbiter: ResourceArbiterPort) -> None:
+        self.checkpoints = checkpoints
         self.arbiter = arbiter
 
     async def _assert_fence(
@@ -71,22 +67,31 @@ class AttemptTransactions:
         cut(f"fence:{name}")
         await self.arbiter.assert_usable(attempt_key, fencing_token=context.fencing_token)
 
-    async def _reload(self, attempt_key: AttemptKey, snapshot: AttemptSnapshot) -> AttemptSnapshot:
-        latest = await self.journal.load(attempt_key)
+    async def _reload(self, attempt_key: AttemptKey, snapshot: AttemptCheckpoint) -> AttemptCheckpoint:
+        latest = await self.checkpoints.load(attempt_key)
         return latest if latest is not None else snapshot
+
+    async def _save(
+        self, snapshot: AttemptCheckpoint, context: AttemptExecutionContext, **changes: Any
+    ) -> AttemptCheckpoint:
+        return await self.checkpoints.commit(
+            replace(snapshot, fencing_token=context.fencing_token, **changes),
+            expected_revision=snapshot.revision,
+            fencing_token=context.fencing_token,
+        )
 
 
 class CommitHandler(AttemptTransactions):
-    """Own output observation, validation, durable prepare and promotion."""
+    """Own persisted-output validation, durable prepare and promotion."""
 
     def __init__(
         self,
-        journal: AttemptJournalPort,
+        checkpoints: AttemptCheckpointStore,
         arbiter: ResourceArbiterPort,
         workspace: WorkspaceProvider,
         validators: Mapping[str, CommitValidator],
     ) -> None:
-        super().__init__(journal, arbiter)
+        super().__init__(checkpoints, arbiter)
         self.workspace = workspace
         self.validators = validators
 
@@ -100,7 +105,7 @@ class CommitHandler(AttemptTransactions):
         claims: ResourceClaims,
         binding: TaskWorkspaceBinding,
         step: object,
-        snapshot: AttemptSnapshot,
+        snapshot: AttemptCheckpoint,
         trace: list[str],
         cut: Callable[[str], None],
     ) -> _CommitRejected | _PromotedCommit:
@@ -112,7 +117,6 @@ class CommitHandler(AttemptTransactions):
                     message="executor did not return ExecutedAttemptResult",
                 ),
             )
-        trace.append("execute")
 
         try:
             validated_output = contract.contract.output_model.model_validate(
@@ -120,14 +124,6 @@ class CommitHandler(AttemptTransactions):
                 context=contract.validation_context,
             )
             output: JSONValue = validated_output.model_dump(mode="json")
-            source_receipt = step.source_terminal_receipt
-            observed = ActivityTerminalObserved(
-                activity_id=snapshot.activity_id or attempt_key.digest,
-                outcome=output,
-                outcome_digest=canonical_digest(output),
-                source_identity_digest=(source_receipt.identity_digest if source_receipt is not None else ""),
-                source_receipt_digest=(source_receipt.receipt_digest if source_receipt is not None else ""),
-            )
         except ValidationError as error:
             return _CommitRejected(
                 snapshot=snapshot,
@@ -138,17 +134,6 @@ class CommitHandler(AttemptTransactions):
                 snapshot=snapshot,
                 resolution=PermanentTaskFailure(kind="configuration", message=str(error)),
             )
-
-        trace.append("validate_output")
-        if snapshot.activity_state != "terminal_observed":
-            snapshot = await self.journal.append(
-                attempt_key,
-                (observed,),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
-            )
-        cut("after_observed_result")
-        cut("after_finalize_before_seal")
 
         if snapshot.prepared_digest is None:
             sealed = await self.workspace.seal(binding)
@@ -178,13 +163,8 @@ class CommitHandler(AttemptTransactions):
             cut("before_durable_prepare")
             await self._assert_fence(attempt_key, context, "durable_prepare", cut)
             prepared = await self.workspace.prepare(binding, sealed)
-            snapshot = await self.journal.append(
-                attempt_key,
-                (CommitPrepared(prepared_digest=prepared.prepared_digest),),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
-            )
-            await self.journal.ensure_durable(attempt_key)
+            snapshot = await self._save(snapshot, context, prepared_digest=prepared.prepared_digest)
+            await self.checkpoints.ensure_durable(attempt_key)
             trace.append("durable_prepare")
             cut("after_prepare_before_promotion")
         else:
@@ -213,17 +193,12 @@ class CommitHandler(AttemptTransactions):
             finally:
                 task_workspace_runtime._promotion_transaction_cut = previous_cut
             if snapshot.promotion_receipt_digest is None:
-                snapshot = await self.journal.append(
-                    attempt_key,
-                    (
-                        WorkspacePromoted(
-                            receipt_id=receipt.identity_digest,
-                            receipt_digest=receipt.receipt_digest,
-                            staged_digest=receipt.staged_digest,
-                        ),
-                    ),
-                    expected_revision=snapshot.revision,
-                    fencing_token=context.fencing_token,
+                snapshot = await self._save(
+                    snapshot,
+                    context,
+                    promotion_receipt_id=receipt.identity_digest,
+                    promotion_receipt_digest=receipt.receipt_digest,
+                    promotion_staged_digest=receipt.staged_digest,
                 )
         trace.append("promote")
         cut("after_promotion_before_receipt")

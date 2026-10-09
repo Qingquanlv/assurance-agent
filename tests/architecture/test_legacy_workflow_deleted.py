@@ -61,7 +61,7 @@ PERMANENT_MODULES = (
     "graph_engine.attempts.production_host",
     "graph_engine.attempts.secret_sources",
     "graph_engine.attempts.workspace",
-    "graph_engine.persistence.attempt_journal",
+    "graph_engine.persistence.attempt_checkpoint",
     "assurance_product.application",
     "assurance_product.cli",
     "assurance_product.runtime_ports",

@@ -14,13 +14,13 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.events import ActivityPrepared, ActivityTerminalObserved
+from graph_engine.attempts.checkpoint import AttemptPhase
 from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIdentityDrift
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import CommittedTaskResult, PermanentTaskFailure
 from graph_engine.attempts.resource_arbiter import ResourceArbiter, ResourceArbiterPort
 from graph_engine.canonical import canonical_digest
-from graph_engine.persistence.attempt_journal import AttemptJournalPort, MemoryAttemptJournal
+from graph_engine.persistence.attempt_checkpoint import AttemptCheckpointStore, MemoryAttemptCheckpointStore
 from graph_engine.persistence.resource_authorization import (
     MemoryResourceAuthorizationStore,
     ResourceAuthorizationError,
@@ -126,21 +126,18 @@ class _AdoptThenInvalidExecutor:
 
 
 class _CrashAfterObserveJournal:
-    def __init__(self, inner: MemoryAttemptJournal) -> None:
+    def __init__(self, inner: MemoryAttemptCheckpointStore) -> None:
         self.inner = inner
         self.crash_after_observe = True
 
     async def load(self, attempt_key: AttemptKey):
         return await self.inner.load(attempt_key)
 
-    async def append(self, attempt_key, events, *, expected_revision, fencing_token):
-        snapshot = await self.inner.append(
-            attempt_key,
-            events,
-            expected_revision=expected_revision,
-            fencing_token=fencing_token,
+    async def commit(self, checkpoint, *, expected_revision, fencing_token):
+        snapshot = await self.inner.commit(
+            checkpoint, expected_revision=expected_revision, fencing_token=fencing_token
         )
-        if self.crash_after_observe and any(isinstance(event, ActivityTerminalObserved) for event in events):
+        if self.crash_after_observe and checkpoint.phase is AttemptPhase.COMMIT:
             self.crash_after_observe = False
             raise TransactionCrash("after activity terminal observed")
         return snapshot
@@ -230,7 +227,7 @@ def _build(
     writes: tuple[str, ...] = ("out.txt",),
     files: dict[str, bytes] | None = None,
     transaction_cut=None,
-    journal: AttemptJournalPort | None = None,
+    journal: AttemptCheckpointStore | None = None,
     authorization_store: MemoryResourceAuthorizationStore | None = None,
     fencing_token: int = 4,
     graph_revision: str | None = None,
@@ -243,9 +240,9 @@ def _build(
     writer.workspace = workspace
     resolved = resolve_contract(_contract(writes=writes), executor=writer)
     revision = graph_revision or _revision()
-    owned_journal = journal if journal is not None else MemoryAttemptJournal()
+    owned_journal = journal if journal is not None else MemoryAttemptCheckpointStore()
     kernel = AssuranceAttemptKernel(
-        journal=owned_journal,
+        checkpoints=owned_journal,
         arbiter=ResourceArbiter(
             authorization_store if authorization_store is not None else MemoryResourceAuthorizationStore()
         ),
@@ -378,7 +375,7 @@ async def test_replay_rejects_input_contract_and_revision_drift(tmp_path: Path) 
         with pytest.raises(AttemptIdentityDrift, match="contract"):
             await kernel.execute_or_recover(key, other_contract, validated, context)
         drifted = AssuranceAttemptKernel(
-            journal=journal,
+            checkpoints=journal,
             arbiter=kernel.arbiter,
             workspace=kernel.workspace,
             graph_revision=canonical_digest({"revision": "other"}),
@@ -402,11 +399,8 @@ async def test_in_flight_recoverable_handler_is_adopted_with_same_key(tmp_path: 
             await kernel.execute_or_recover(key, resolved, validated, context)
         snapshot = await journal.load(key)
         assert snapshot is not None
-        assert snapshot.activity_state in {
-            ActivityPrepared.kind,
-            "prepared",
-            "activity_prepared",
-        }
+        assert snapshot.activity_state == "prepared"
+        assert snapshot.phase is AttemptPhase.RECONCILE
         recoverable.crash_during_execute = False
         result = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(result, CommittedTaskResult)
@@ -442,7 +436,7 @@ async def test_fence_is_checked_at_irreversible_boundaries(tmp_path: Path) -> No
 
 
 async def test_stale_runner_can_observe_but_cannot_commit_after_lease_loss(tmp_path: Path) -> None:
-    journal = MemoryAttemptJournal()
+    journal = MemoryAttemptCheckpointStore()
     authorization = MemoryResourceAuthorizationStore()
     project = tmp_path / "project"
     project.mkdir()
@@ -452,7 +446,7 @@ async def test_stale_runner_can_observe_but_cannot_commit_after_lease_loss(tmp_p
     executor.workspace = workspace
     resolved = resolve_contract(_contract(), executor=executor)
     old = AssuranceAttemptKernel(
-        journal=journal,
+        checkpoints=journal,
         arbiter=ResourceArbiter(authorization),
         workspace=workspace,
         graph_revision=_revision(),
@@ -512,7 +506,7 @@ async def test_stale_runner_can_observe_but_cannot_commit_after_lease_loss(tmp_p
 
 
 async def test_invalid_output_is_not_journaled_as_observed(tmp_path: Path) -> None:
-    journal = _CrashAfterObserveJournal(MemoryAttemptJournal())
+    journal = _CrashAfterObserveJournal(MemoryAttemptCheckpointStore())
     kernel, key, resolved, validated, context, executor, _workspace, _project, store, owned_journal = _build(
         tmp_path,
         executor=_InvalidOutputExecutor(),
@@ -606,7 +600,7 @@ async def test_post_promotion_restart_uses_artifacts_without_executing_business_
         assert (project / "out.txt").read_bytes() == b"committed"
 
         restarted = AssuranceAttemptKernel(
-            journal=journal, arbiter=kernel.arbiter, workspace=workspace, graph_revision=_revision()
+            checkpoints=journal, arbiter=kernel.arbiter, workspace=workspace, graph_revision=_revision()
         )
         replay = await restarted.execute_or_recover(key, resolved, validated, context)
         assert isinstance(replay, CommittedTaskResult)
@@ -646,7 +640,7 @@ async def test_production_regenerates_after_file_promotion_without_graph_complet
     )
 
     def node_for(selected_kernel):
-        return AttemptNodeFactory(journal=journal, kernel=selected_kernel, regenerate=True).attempt(
+        return AttemptNodeFactory(checkpoints=journal, kernel=selected_kernel, regenerate=True).attempt(
             resolved,
             semantic_node_id="execution.run",
             activation=lambda state: BusinessActivation.one_shot(),
@@ -664,7 +658,7 @@ async def test_production_regenerates_after_file_promotion_without_graph_complet
         await kernel.arbiter.release(key, fencing_token=context.fencing_token)
         writer.files = {"out.txt": b"regenerated"}
         restarted = AssuranceAttemptKernel(
-            journal=journal, arbiter=kernel.arbiter, workspace=workspace, graph_revision=_revision()
+            checkpoints=journal, arbiter=kernel.arbiter, workspace=workspace, graph_revision=_revision()
         )
         runtime.attempt_kernel = restarted
         await node_for(restarted)({}, runtime)

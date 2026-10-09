@@ -1,5 +1,9 @@
 # Attempt Runtime Separation Implementation Plan
 
+> Historical implementation plan: Attempt event/journal and action-runtime steps
+> are superseded by the [Attempt checkpoint migration](2026-10-09-attempt-checkpoints.md).
+
+
 > **For agentic workers:** Use superpowers:subagent-driven-development for implementation and independent review. The user already approved completing the original refactor; proceed within that scope without another approval gate.
 
 **Goal:** Complete the omitted internal separation of Attempt state progression and domain transactions.

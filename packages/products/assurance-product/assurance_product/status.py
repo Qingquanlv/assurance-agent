@@ -53,7 +53,7 @@ def render_status_from_langgraph(
     change_id: str,
     status: str,
     snapshot: object | None = None,
-    journal_events: Sequence[object] = (),
+    attempt_checkpoints: Sequence[object] = (),
     project_root: Path,
 ) -> StatusV1:
     mapped = "completed" if status in {"succeeded", "completed"} else status
@@ -65,7 +65,7 @@ def render_status_from_langgraph(
     if change_state == "completed":
         change_state = "stopped"
     active_hierarchy, active_nodes, pending = _langgraph_snapshot_fields(invocation_id, snapshot)
-    journal_hierarchy, journal_nodes = _journal_attempt_fields(invocation_id, journal_events)
+    attempt_hierarchy, attempt_nodes = _checkpoint_attempt_fields(invocation_id, attempt_checkpoints)
     execution_gate = _execution_gate_from_snapshot(snapshot, project_root)
     quality_gate = _quality_gate_from_snapshot(snapshot, change_id, project_root, execution_gate)
     return StatusV1.model_validate(
@@ -76,11 +76,11 @@ def render_status_from_langgraph(
             "root_input_digest": root_input_digest,
             "status": mapped,
             "entrypoint": entrypoint,
-            "graph_hierarchy": journal_hierarchy + active_hierarchy,
-            "node_states": journal_nodes + active_nodes,
+            "graph_hierarchy": attempt_hierarchy + active_hierarchy,
+            "node_states": attempt_nodes + active_nodes,
             "selected_test_families": _selected_test_families_from_snapshot(snapshot),
             "coverage_progress": _coverage_progress_from_snapshot(snapshot, project_root),
-            "adapter_evidence": _journal_adapter_evidence(invocation_id, journal_events),
+            "adapter_evidence": _checkpoint_adapter_evidence(invocation_id, attempt_checkpoints),
             "execution_gate": execution_gate,
             "quality_gate": quality_gate,
             "pending_interrupt": pending,
@@ -152,104 +152,74 @@ def _langgraph_snapshot_fields(
     return hierarchy, nodes, pending
 
 
-def _journal_adapter_evidence(
-    invocation_id: str,
-    events: Sequence[object],
+def _checkpoint_adapter_evidence(
+    invocation_id: str, records: Sequence[object]
 ) -> tuple[AdapterEvidenceRefV1, ...]:
-    from graph_engine.attempts.events import (
-        ActivityBound,
-        ActivityTerminalObserved,
-        AttemptOpened,
-        AttemptTerminated,
-    )
+    from graph_engine.attempts.checkpoint import AttemptCheckpoint
 
-    opened: AttemptOpened | None = None
-    pending: dict[str, AdapterEvidenceRefV1] = {}
-    refs: list[AdapterEvidenceRefV1] = []
-    for event in events:
-        if isinstance(event, AttemptOpened):
-            refs.extend(pending.values())
-            pending = {}
-            opened = event
+    refs = []
+    for record in records:
+        if not isinstance(record, AttemptCheckpoint) or record.invocation_id != invocation_id:
             continue
-        if opened is None or opened.invocation_id != invocation_id:
+        reference = record.activity_reference
+        if not isinstance(reference, Mapping):
             continue
-        if isinstance(event, ActivityBound) and isinstance(event.reference, Mapping):
-            session_id = event.reference.get("session_id")
-            if isinstance(session_id, str) and session_id:
-                pending[event.activity_id] = AdapterEvidenceRefV1(
-                    activation_id=event.activity_id,
+        session_id = reference.get("session_id")
+        if (
+            isinstance(session_id, str)
+            and session_id
+            and record.activity_id
+            and record.activity_reference_digest
+        ):
+            refs.append(
+                AdapterEvidenceRefV1(
+                    activation_id=record.activity_id,
                     activity_id=session_id,
-                    reference_digest=event.reference_digest,
-                    terminal_receipt_digest=None,
+                    reference_digest=record.activity_reference_digest,
+                    terminal_receipt_digest=record.source_receipt_digest,
                 )
-        elif isinstance(event, ActivityTerminalObserved) and event.activity_id in pending:
-            prior = pending[event.activity_id]
-            pending[event.activity_id] = prior.model_copy(
-                update={
-                    "terminal_receipt_digest": event.source_receipt_digest or None,
-                }
             )
-        elif isinstance(event, AttemptTerminated):
-            refs.extend(pending.values())
-            pending = {}
-            opened = None
-    refs.extend(pending.values())
     return tuple(refs)
 
 
-def _journal_attempt_fields(
-    invocation_id: str,
-    events: Sequence[object],
+def _checkpoint_attempt_fields(
+    invocation_id: str, records: Sequence[object]
 ) -> tuple[tuple[GraphStatusV1, ...], tuple[NodeStatusV1, ...]]:
-    from graph_engine.attempts.events import ActivityBound, AttemptOpened, AttemptTerminated
+    from graph_engine.attempts.checkpoint import AttemptCheckpoint
 
-    opened: AttemptOpened | None = None
-    activity_reference_digest: str | None = None
     projected: dict[str, tuple[GraphStatusV1, NodeStatusV1]] = {}
     precedence = {"failed": 1, "stopped": 2, "succeeded": 3}
-    for event in events:
-        if isinstance(event, AttemptOpened):
-            opened = event
-            activity_reference_digest = None
+    for record in records:
+        if (
+            not isinstance(record, AttemptCheckpoint)
+            or record.invocation_id != invocation_id
+            or record.terminal is None
+        ):
             continue
-        if opened is None:
-            continue
-        if isinstance(event, ActivityBound):
-            activity_reference_digest = event.reference_digest
-            continue
-        if not isinstance(event, AttemptTerminated):
-            continue
-        if opened.invocation_id == invocation_id:
-            node_state, graph_state, failure = _attempt_terminal_state(event)
-            semantic_node_id = opened.semantic_node_id
-            graph_instance_id = f"{invocation_id}:attempt:{semantic_node_id}"
-            candidate = (
-                GraphStatusV1(
-                    graph_instance_id=graph_instance_id,
-                    graph_id=semantic_node_id,
-                    parent_graph_instance_id=None,
-                    state=graph_state,
-                ),
-                NodeStatusV1(
-                    graph_instance_id=graph_instance_id,
-                    node_id=f"{semantic_node_id}/finalize",
-                    state=node_state,
-                    attempt=None,
-                    lease_state=None,
-                    failure_category=failure,
-                    activity_reference_digest=activity_reference_digest,
-                ),
-            )
-            previous = projected.get(semantic_node_id)
-            if previous is None or precedence[node_state] > precedence[previous[1].state]:
-                projected[semantic_node_id] = candidate
-        opened = None
-        activity_reference_digest = None
-    return (
-        tuple(graph for graph, _node in projected.values()),
-        tuple(node for _graph, node in projected.values()),
-    )
+        node_state, graph_state, failure = _attempt_terminal_state(record.terminal)
+        semantic_node_id = record.semantic_node_id
+        graph_instance_id = f"{invocation_id}:attempt:{semantic_node_id}"
+        candidate = (
+            GraphStatusV1(
+                graph_instance_id=graph_instance_id,
+                graph_id=semantic_node_id,
+                parent_graph_instance_id=None,
+                state=graph_state,
+            ),
+            NodeStatusV1(
+                graph_instance_id=graph_instance_id,
+                node_id=f"{semantic_node_id}/finalize",
+                state=node_state,
+                attempt=None,
+                lease_state=None,
+                failure_category=failure,
+                activity_reference_digest=record.activity_reference_digest,
+            ),
+        )
+        previous = projected.get(semantic_node_id)
+        if previous is None or precedence[node_state] > precedence[previous[1].state]:
+            projected[semantic_node_id] = candidate
+    return tuple(graph for graph, _ in projected.values()), tuple(node for _, node in projected.values())
 
 
 def _attempt_terminal_state(

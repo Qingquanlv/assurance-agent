@@ -496,7 +496,7 @@ class AssuranceProductApplication:
     ) -> None:
         if status != "completed" or record.entrypoint != "full":
             return
-        observed, snapshot, journal_events = asyncio.run(
+        observed, snapshot, attempt_checkpoints = asyncio.run(
             self._status_langgraph(
                 workspace,
                 composition,
@@ -546,7 +546,7 @@ class AssuranceProductApplication:
             change_id=change_id,
             status=observed,
             snapshot=snapshot,
-            journal_events=journal_events,
+            attempt_checkpoints=attempt_checkpoints,
             project_root=workspace.paths.project_root,
         )
         if not rendered.selected_test_families:
@@ -593,7 +593,7 @@ class AssuranceProductApplication:
             composition=composition,
             authorization=authorization,
         )
-        status_name, snapshot, journal_events = asyncio.run(
+        status_name, snapshot, attempt_checkpoints = asyncio.run(
             self._status_langgraph(
                 workspace,
                 composition,
@@ -610,7 +610,7 @@ class AssuranceProductApplication:
             change_id=change_id,
             status=status_name,
             snapshot=snapshot,
-            journal_events=journal_events,
+            attempt_checkpoints=attempt_checkpoints,
             project_root=workspace.paths.project_root,
         )
         if record.entrypoint != "full" or status_name != "completed":
@@ -830,7 +830,7 @@ class AssuranceProductApplication:
 
                 await export_runtime_evidence(
                     workspace,
-                    ports.attempt_journal.read_records,
+                    ports.attempt_checkpoints.read_checkpoints,
                     invocation_id=invocation_id,
                 )
             return result.status
@@ -872,7 +872,7 @@ class AssuranceProductApplication:
 
                 await export_runtime_evidence(
                     workspace,
-                    ports.attempt_journal.read_records,
+                    ports.attempt_checkpoints.read_checkpoints,
                     invocation_id=invocation_id,
                 )
             return result.status
@@ -908,8 +908,8 @@ class AssuranceProductApplication:
                 runtime_context=bound.runtime_context,
             )
             snapshot = await _graph_snapshot(bound.artifact, record.entrypoint, invocation_id)
-            await ports._publish_journal_snapshot()
-            return result.status, snapshot, ProductRuntimePorts.last_journal_events()
+            await ports._publish_checkpoint_snapshot()
+            return result.status, snapshot, ProductRuntimePorts.last_attempt_checkpoints()
 
     async def _pending_interrupt_ids(
         self,

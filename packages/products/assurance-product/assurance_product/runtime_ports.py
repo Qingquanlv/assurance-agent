@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from graph_engine.application.application import InvocationBoundExecution
 from graph_engine.application.runtime_context import AssuranceRuntimeContext
-from graph_engine.attempts.activity import JournalBackedTaskActivityPort
+from graph_engine.attempts.activity import CheckpointBackedTaskActivityPort
 from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
 from graph_engine.attempts.host_protocol import (
     TaskHostCancelCall,
@@ -53,7 +53,7 @@ from graph_engine.persistence.runner_lease import RunnerLease
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.product import product_graph_manifest, product_lock_from_composition
 from assurance_product.runtime_bindings import runtime_bindings_from_composition
-from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+from assurance_product.sqlite_attempt_checkpoint import SqliteAttemptCheckpointStore
 from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend, open_sqlite_checkpointer
 from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
 
@@ -185,7 +185,7 @@ class _ProductExecutionFactory:
 
 
 class ProductRuntimePorts:
-    _last_events: tuple[object, ...] = ()
+    _last_checkpoints: tuple[object, ...] = ()
     _last_active: int = 0
     _last_replayed: tuple[int, ...] = ()
 
@@ -195,7 +195,7 @@ class ProductRuntimePorts:
         workspace: ChangeWorkspace,
         composition: object,
         backend: AssuranceSqliteBackend,
-        journal: SqliteAttemptJournal,
+        checkpoints: SqliteAttemptCheckpointStore,
         observer: AttemptCheckpointObserver,
         kernel: AssuranceAttemptKernel,
         product_lock_digest: str,
@@ -211,7 +211,7 @@ class ProductRuntimePorts:
         self.workspace = workspace
         self.composition = composition
         self.backend = backend
-        self.attempt_journal = journal
+        self.attempt_checkpoints = checkpoints
         self.observer = observer
         self.kernel = kernel
         self.product_lock_digest = product_lock_digest
@@ -254,8 +254,8 @@ class ProductRuntimePorts:
             retain_stop_authority(owner, workspace, typed_composition, auth)
         reachable = tuple(reachable_contract_ids or ())
         async with open_sqlite_checkpointer(workspace) as backend:
-            journal = SqliteAttemptJournal(backend)
-            observer = AttemptCheckpointObserver(journal)
+            checkpoints = SqliteAttemptCheckpointStore(backend)
+            observer = AttemptCheckpointObserver(checkpoints)
             if observers is not None:
                 if not observers or any(
                     not isinstance(item, AttemptCheckpointObserver) for item in observers
@@ -298,9 +298,9 @@ class ProductRuntimePorts:
                 call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
                 *,
                 remaining_deadline: float,
-            ) -> JournalBackedTaskActivityPort:
-                return JournalBackedTaskActivityPort(
-                    journal=journal,
+            ) -> CheckpointBackedTaskActivityPort:
+                return CheckpointBackedTaskActivityPort(
+                    checkpoints=checkpoints,
                     attempt_key=AttemptKey(digest=call.identity.attempt_key_digest),
                     identity=call.activity_rpc,
                     workspace_identity=call.attempt_root.workspace_identity,
@@ -326,7 +326,7 @@ class ProductRuntimePorts:
                 invocation_root=workspace.paths.qa_root,
                 process_observer=observe_child,
             )
-            host = RetainedHost(raw_host, backend, journal)
+            host = RetainedHost(raw_host, backend, checkpoints)
             network = _preflight_selected_root(typed_composition, auth, reachable)
             expected_allow = any(".agent." in contract_id for contract_id in reachable)
             if network.allow_opencode != expected_allow:
@@ -334,19 +334,19 @@ class ProductRuntimePorts:
             from assurance_product.retro_evidence import ProjectedRuntimeEvidence
 
             kernel = AssuranceAttemptKernel(
-                journal=journal,
+                checkpoints=checkpoints,
                 arbiter=ResourceArbiter(SqliteResourceAuthorizationStore(backend)),
                 workspace=workspace_provider,
                 graph_revision=manifest.revision.revision_id,
                 validators=typed_composition.registries.capabilities.commit_validators,
                 pause_requested=pause_requested,
-                runtime_evidence=ProjectedRuntimeEvidence(workspace, journal.read_records),
+                runtime_evidence=ProjectedRuntimeEvidence(workspace, checkpoints.read_checkpoints),
             )
             ports = cls(
                 workspace=workspace,
                 composition=composition,
                 backend=backend,
-                journal=journal,
+                checkpoints=checkpoints,
                 observer=observer,
                 kernel=kernel,
                 product_lock_digest=product_lock.digest,
@@ -368,10 +368,10 @@ class ProductRuntimePorts:
                 ports._close_log.append("observer_outbox_recovery")
                 try:
                     await backend.recover_handshake("")
-                    await ports._publish_journal_snapshot()
+                    await ports._publish_checkpoint_snapshot()
                 finally:
                     task_store.close()
-                    ports._close_log.extend(("kernel", "attempt_journal", "sqlite"))
+                    ports._close_log.extend(("kernel", "attempt_checkpoints", "sqlite"))
 
     def shutdown_order(self) -> tuple[str, ...]:
         return tuple(self._close_log)
@@ -514,12 +514,8 @@ class ProductRuntimePorts:
             runtime_context=self.runtime_context(started.fencing_token),
         )
 
-    async def _publish_journal_snapshot(self) -> None:
-        from graph_engine.attempts.events import SystemInterruptIssued
-
-        events: list[object] = []
-        replayed: list[int] = []
-        records = await self.attempt_journal.read_records()
+    async def _publish_checkpoint_snapshot(self) -> None:
+        records = await self.attempt_checkpoints.read_checkpoints()
         run_dir = self.workspace.paths.project_root / ".aa" / "runs" / self.invocation_id
         if run_dir.is_dir():
             from assurance_product.operator_views import write_attempt_projection
@@ -528,26 +524,18 @@ class ProductRuntimePorts:
                 write_attempt_projection(run_dir, records, self.invocation_id)
             except (OSError, ValueError) as error:
                 _logger.warning("run_attempt_projection_failed: %s", error)
-        for record in records:
-            events.extend(record.events)
-            replayed.extend(
-                getattr(event, "ordinal", 0)
-                for event in record.events
-                if type(event).__name__ == "SystemInterruptCompletionCheckpointed"
-            )
-        issued = [event for event in events if isinstance(event, SystemInterruptIssued)]
-        completed = {
-            getattr(event, "generation", None)
-            for event in events
-            if type(event).__name__ == "SystemInterruptCompletionCheckpointed"
-        }
-        type(self)._last_events = tuple(events)
-        type(self)._last_active = len({getattr(event, "generation", None) for event in issued} - completed)
-        type(self)._last_replayed = tuple(replayed)
+        selected = tuple(record for record in records if record.invocation_id == self.invocation_id)
+        type(self)._last_checkpoints = selected
+        type(self)._last_active = sum(
+            not item.retired for record in selected for item in record.active_interrupts
+        )
+        type(self)._last_replayed = tuple(
+            item.ordinal for record in selected for item in record.active_interrupts if item.retired
+        )
 
     @classmethod
-    def last_journal_events(cls) -> tuple[object, ...]:
-        return cls._last_events
+    def last_attempt_checkpoints(cls) -> tuple[object, ...]:
+        return cls._last_checkpoints
 
     @classmethod
     def last_active_generations(cls) -> int:
