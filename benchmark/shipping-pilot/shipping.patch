@@ -1,0 +1,681 @@
+--- /dev/null
++++ b/app/models/shipping.py
+@@ -0,0 +1,22 @@
++from tortoise import fields
++
++from .base import BaseModel, TimestampMixin
++
++
++class ShippingOrder(BaseModel, TimestampMixin):
++    client_ref = fields.CharField(max_length=36, unique=True)
++    order_no = fields.CharField(max_length=64, unique=True)
++    recipient = fields.CharField(max_length=80)
++    phone = fields.CharField(max_length=24)
++    address = fields.CharField(max_length=300)
++    item_name = fields.CharField(max_length=100)
++    quantity = fields.IntField()
++    status = fields.CharField(max_length=16, default="DRAFT", index=True)
++    waybill_no = fields.CharField(max_length=64, null=True)
++    reason = fields.CharField(max_length=300, default="")
++    events = fields.JSONField(default=list)
++    operation_token = fields.CharField(max_length=32, null=True)
++    lease_until = fields.FloatField(default=0)
++
++    class Meta:
++        table = "shipping_order"
+--- /dev/null
++++ b/app/schemas/shipping.py
+@@ -0,0 +1,27 @@
++from typing import Literal
++from uuid import UUID
++
++from pydantic import BaseModel, ConfigDict, Field, StrictInt
++
++
++class ShippingCreate(BaseModel):
++    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
++    client_ref: UUID
++    recipient: str = Field(min_length=1, max_length=80)
++    phone: str = Field(pattern=r"^\+?[0-9 -]{7,24}$")
++    address: str = Field(min_length=5, max_length=300)
++    item_name: str = Field(min_length=1, max_length=100)
++    quantity: StrictInt = Field(ge=1, le=1000)
++
++
++class CarrierReceipt(BaseModel):
++    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
++    reference: str = Field(min_length=1, max_length=64)
++    waybill_no: str = Field(min_length=1, max_length=64)
++    status: Literal["ACCEPTED"]
++
++
++class CarrierRejection(BaseModel):
++    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
++    code: Literal["QUANTITY_LIMIT", "ADDRESS_UNSUPPORTED"]
++    message: str = Field(min_length=1, max_length=300)
+--- /dev/null
++++ b/app/controllers/shipping.py
+@@ -0,0 +1,122 @@
++import asyncio
++import time
++from datetime import datetime, timezone
++from uuid import uuid4
++
++import httpx
++from fastapi import HTTPException
++
++from app.models.shipping import ShippingOrder
++from app.schemas.shipping import CarrierReceipt, CarrierRejection, ShippingCreate
++from app.settings import settings
++
++PARCEL_FIELDS = ("recipient", "phone", "address", "item_name", "quantity")
++
++
++def event(action, status, message, attempts=0):
++    return {
++        "at": datetime.now(timezone.utc).isoformat(),
++        "action": action,
++        "status": status,
++        "message": message,
++        "attempts": attempts,
++    }
++
++
++async def data(order):
++    result = await order.to_dict(exclude_fields=["operation_token", "lease_until", "client_ref"])
++    result["busy"] = order.lease_until > time.time()
++    return result
++
++
++async def get_order(order_id):
++    order = await ShippingOrder.get_or_none(id=order_id)
++    if order is None:
++        raise HTTPException(404, "发货单不存在")
++    return order
++
++
++async def create_order(body: ShippingCreate):
++    values = body.model_dump(mode="json")
++    order, _ = await ShippingOrder.get_or_create(
++        client_ref=values["client_ref"],
++        defaults={
++            **{key: values[key] for key in PARCEL_FIELDS},
++            "order_no": f"SP-{uuid4().hex}",
++            "events": [event("create", "DRAFT", "发货单已创建，尚未申请运单")],
++        },
++    )
++    if any(getattr(order, key) != values[key] for key in PARCEL_FIELDS):
++        raise HTTPException(409, "创建标识已用于其他发货内容，请重新新建")
++    return await data(order)
++
++
++async def contact_carrier(order, action):
++    if not settings.CARRIER_TOKEN:
++        return "UNKNOWN", None, "物流服务未配置，请联系管理员后查询或重试", 0
++    headers = {"Authorization": f"Bearer {settings.CARRIER_TOKEN}", "Idempotency-Key": order.order_no}
++    payload = {"reference": order.order_no, **{key: getattr(order, key) for key in PARCEL_FIELDS}}
++    async with httpx.AsyncClient(
++        base_url=str(settings.CARRIER_URL), timeout=settings.CARRIER_TIMEOUT, trust_env=False, follow_redirects=False
++    ) as client:
++        for attempt in range(1, 4):
++            try:
++                if action == "submit":
++                    response = await client.post("/shipments", json=payload, headers=headers)
++                else:
++                    response = await client.get(f"/shipments/{order.order_no}", headers=headers)
++            except httpx.DecodingError:
++                return "UNKNOWN", None, "物流响应无法解码，请查询结果或联系管理员", attempt
++            except httpx.TransportError:
++                response = None
++            if response is None or response.status_code >= 500:
++                if attempt < 3:
++                    await asyncio.sleep(0.05 * 2 ** (attempt - 1))
++                    continue
++                return "UNKNOWN", None, "物流服务未确认结果，请查询结果或使用原单重试", attempt
++            if response.status_code == 200:
++                try:
++                    receipt = CarrierReceipt.model_validate(response.json())
++                    if receipt.reference != order.order_no:
++                        raise ValueError("reference mismatch")
++                    return "ACCEPTED", receipt.waybill_no, "物流已受理，运单号已确认", attempt
++                except ValueError:
++                    return "UNKNOWN", None, "物流响应格式或业务单号不符，请联系管理员", attempt
++            if action == "submit" and response.status_code == 422:
++                try:
++                    rejection = CarrierRejection.model_validate(response.json())
++                    return "REJECTED", None, rejection.message, attempt
++                except ValueError:
++                    pass
++            if action == "reconcile" and response.status_code == 404:
++                return "UNKNOWN", None, "物流暂未查到运单，可使用原单重新申请", attempt
++            return "UNKNOWN", None, f"物流服务返回异常状态 {response.status_code}，请联系管理员", attempt
++
++
++async def operate(order_id, action):
++    order = await get_order(order_id)
++    if order.status in ("ACCEPTED", "REJECTED") or (action == "reconcile" and order.status == "DRAFT"):
++        return await data(order)
++    token = uuid4().hex
++    # A DB lease survives process restarts and serializes requests across workers.
++    claimed = await ShippingOrder.filter(id=order.id, status=order.status, lease_until__lte=time.time()).update(
++        status="PENDING",
++        operation_token=token,
++        lease_until=time.time() + 30,
++        reason="正在联系物流服务；若处理被中断，请稍后查询结果",
++    )
++    if not claimed:
++        return await data(await get_order(order.id))
++    try:
++        state, waybill, reason, attempts = await asyncio.wait_for(contact_carrier(order, action), timeout=15)
++    except TimeoutError:
++        state, waybill, reason, attempts = "UNKNOWN", None, "处理超过时限，请查询物流结果", 0
++    await ShippingOrder.filter(id=order.id, operation_token=token).update(
++        status=state,
++        waybill_no=waybill,
++        reason=reason,
++        operation_token=None,
++        lease_until=0,
++        events=[*order.events, event(action, state, reason, attempts)],
++    )
++    return await data(await get_order(order.id))
+--- /dev/null
++++ b/app/api/v1/shipping.py
+@@ -0,0 +1,45 @@
++from typing import Literal
++
++from fastapi import APIRouter, Query
++
++from app.controllers.shipping import create_order, data, get_order, operate
++from app.models.shipping import ShippingOrder
++from app.schemas.base import Success, SuccessExtra
++from app.schemas.shipping import ShippingCreate
++
++router = APIRouter(tags=["发货管理"])
++
++
++@router.get("/list", summary="查看发货单列表")
++async def list_orders(
++    page: int = Query(1, ge=1),
++    page_size: int = Query(10, ge=1, le=100),
++    status: Literal["DRAFT", "PENDING", "UNKNOWN", "ACCEPTED", "REJECTED"] | None = None,
++    order_no: str = Query("", max_length=64),
++):
++    query = ShippingOrder.filter(order_no__contains=order_no)
++    if status:
++        query = query.filter(status=status)
++    total = await query.count()
++    rows = await query.order_by("-id").offset((page - 1) * page_size).limit(page_size)
++    return SuccessExtra(data=[await data(row) for row in rows], total=total, page=page, page_size=page_size)
++
++
++@router.get("/get", summary="查看发货单详情")
++async def detail(id: int = Query(..., gt=0)):
++    return Success(data=await data(await get_order(id)))
++
++
++@router.post("/create", summary="创建发货单")
++async def create(body: ShippingCreate):
++    return Success(data=await create_order(body))
++
++
++@router.post("/submit", summary="申请物流运单")
++async def submit(id: int = Query(..., gt=0)):
++    return Success(data=await operate(id, "submit"))
++
++
++@router.post("/reconcile", summary="查询物流受理结果")
++async def reconcile(id: int = Query(..., gt=0)):
++    return Success(data=await operate(id, "reconcile"))
+--- /dev/null
++++ b/app/core/shipping_seed.py
+@@ -0,0 +1,36 @@
++from app.models.admin import Api, Menu, Role
++from app.schemas.menus import MenuType
++
++
++async def init_shipping():
++    # Incremental setup for existing databases; never reset the existing menu tree.
++    menu, created = await Menu.get_or_create(
++        path="/shipping",
++        parent_id=0,
++        defaults={
++            "name": "发货管理",
++            "menu_type": MenuType.MENU,
++            "component": "/shipping",
++            "icon": "carbon:delivery",
++            "order": 2,
++            "keepalive": False,
++        },
++    )
++    for method, suffix, summary in (
++        ("GET", "list", "查看发货单列表"),
++        ("GET", "get", "查看发货单详情"),
++        ("POST", "create", "创建发货单"),
++        ("POST", "submit", "申请物流运单"),
++        ("POST", "reconcile", "查询物流受理结果"),
++    ):
++        api, api_created = await Api.get_or_create(
++            path=f"/api/v1/shipping/{suffix}", method=method, defaults={"summary": summary, "tags": "发货管理"}
++        )
++        for role_name in ["管理员", "普通用户"] if method == "GET" else ["管理员"]:
++            role = await Role.get_or_none(name=role_name)
++            if role:
++                if created:
++                    await role.menus.add(menu)
++                # Do not restore an explicitly revoked grant on every restart.
++                if api_created or created:
++                    await role.apis.add(api)
+--- a/app/models/__init__.py
++++ b/app/models/__init__.py
+@@ -1,2 +1,3 @@
+ # 新增model需要在这里导入
+ from .admin import *
++from .shipping import ShippingOrder
+--- a/app/api/v1/__init__.py
++++ b/app/api/v1/__init__.py
+@@ -9,6 +9,7 @@
+ from .menus import menus_router
+ from .roles import roles_router
+ from .users import users_router
++from .shipping import router as shipping_router
+ 
+ v1_router = APIRouter()
+ 
+@@ -19,3 +20,4 @@
+ v1_router.include_router(apis_router, prefix="/api", dependencies=[DependPermission])
+ v1_router.include_router(depts_router, prefix="/dept", dependencies=[DependPermission])
+ v1_router.include_router(auditlog_router, prefix="/auditlog", dependencies=[DependPermission])
++v1_router.include_router(shipping_router, prefix="/shipping", dependencies=[DependPermission])
+--- a/app/core/init_app.py
++++ b/app/core/init_app.py
+@@ -231,3 +231,6 @@
+     await init_menus()
+     await init_apis()
+     await init_roles()
++    from app.core.shipping_seed import init_shipping
++
++    await init_shipping()
+--- a/app/settings/config.py
++++ b/app/settings/config.py
+@@ -2,9 +2,13 @@
+ import typing
+ 
+ from pydantic_settings import BaseSettings
++from pydantic import AnyHttpUrl, Field
+ 
+ 
+ class Settings(BaseSettings):
++    CARRIER_URL: AnyHttpUrl = "http://127.0.0.1:20000"
++    CARRIER_TOKEN: str = ""
++    CARRIER_TIMEOUT: float = Field(default=2, gt=0, le=5)
+     VERSION: str = "0.1.0"
+     APP_TITLE: str = "Vue FastAPI Admin"
+     PROJECT_NAME: str = "Vue FastAPI Admin"
+--- a/web/src/api/index.js
++++ b/web/src/api/index.js
+@@ -1,6 +1,13 @@
+ import { request } from '@/utils'
+ 
+ export default {
++  getShippingList: (params = {}) => request.get('/shipping/list', { params }),
++  getShipping: (id) => request.get('/shipping/get', { params: { id } }),
++  createShipping: (data) => request.post('/shipping/create', data),
++  submitShipping: (id) =>
++    request.post('/shipping/submit', null, { params: { id }, timeout: 20000 }),
++  reconcileShipping: (id) =>
++    request.post('/shipping/reconcile', null, { params: { id }, timeout: 20000 }),
+   login: (data) => request.post('/base/access_token', data, { noNeedToken: true }),
+   getUserInfo: () => request.get('/base/userinfo'),
+   getUserMenu: () => request.get('/base/usermenu'),
+--- a/web/build/constant.js
++++ b/web/build/constant.js
+@@ -17,7 +17,7 @@
+    * @转发路径  http://localhost:9999/api/v1/user
+    */
+   '/api/v1': {
+-    target: 'http://127.0.0.1:9999',
++    target: process.env.PILOT_BACKEND_URL || 'http://127.0.0.1:9999',
+     changeOrigin: true,
+   },
+ }
+--- /dev/null
++++ b/web/src/views/shipping/index.vue
+@@ -0,0 +1,328 @@
++<script setup>
++import { h, onMounted, onUnmounted, ref, resolveDirective, withDirectives } from 'vue'
++import { NButton, NTag, NSpace } from 'naive-ui'
++import CommonPage from '@/components/page/CommonPage.vue'
++import CrudTable from '@/components/table/CrudTable.vue'
++import CrudModal from '@/components/table/CrudModal.vue'
++import QueryBarItem from '@/components/query-bar/QueryBarItem.vue'
++import api from '@/api'
++
++defineOptions({ name: '发货管理' })
++
++const table = ref(null)
++const filters = ref({})
++const createVisible = ref(false)
++const detailVisible = ref(false)
++const saving = ref(false)
++const activeId = ref(null)
++const selected = ref(null)
++const form = ref({})
++const formRef = ref(null)
++const vPermission = resolveDirective('permission')
++const labels = {
++  DRAFT: '待申请',
++  PENDING: '处理中',
++  UNKNOWN: '待确认',
++  ACCEPTED: '已受理',
++  REJECTED: '已拒绝',
++}
++const colors = {
++  DRAFT: 'default',
++  PENDING: 'info',
++  UNKNOWN: 'warning',
++  ACCEPTED: 'success',
++  REJECTED: 'error',
++}
++const statuses = Object.entries(labels).map(([value, label]) => ({ value, label }))
++const rules = {
++  recipient: { required: true, message: '请输入收件人', trigger: 'blur' },
++  phone: {
++    required: true,
++    pattern: /^\+?[0-9 -]{7,24}$/,
++    message: '请输入有效联系电话',
++    trigger: 'blur',
++  },
++  address: { required: true, min: 5, message: '请填写至少 5 个字符的详细地址', trigger: 'blur' },
++  item_name: { required: true, message: '请输入物品名称', trigger: 'blur' },
++  quantity: {
++    type: 'number',
++    required: true,
++    min: 1,
++    max: 1000,
++    message: '数量应为 1～1000',
++    trigger: 'change',
++  },
++}
++
++function openCreate() {
++  form.value = {
++    client_ref: crypto.randomUUID(),
++    recipient: '',
++    phone: '',
++    address: '',
++    item_name: '',
++    quantity: 1,
++  }
++  createVisible.value = true
++}
++
++async function createOrder() {
++  if (saving.value) return
++  try {
++    await formRef.value?.validate()
++  } catch {
++    return
++  }
++  saving.value = true
++  try {
++    const { data } = await api.createShipping(form.value)
++    createVisible.value = false
++    selected.value = data
++    detailVisible.value = true
++    window.$message?.success('发货单已创建，可申请物流运单')
++    table.value?.handleSearch()
++  } catch {
++    // The shared HTTP interceptor shows errors; retain the form and creation key.
++  } finally {
++    saving.value = false
++  }
++}
++
++async function showDetails(row) {
++  try {
++    const { data } = await api.getShipping(row.id)
++    selected.value = data
++    detailVisible.value = true
++  } catch {
++    // Shared interceptor displays the error.
++  }
++}
++
++async function operate(row, action) {
++  if (activeId.value !== null) return
++  activeId.value = row.id
++  try {
++    const { data } = await (action === 'submit'
++      ? api.submitShipping(row.id)
++      : api.reconcileShipping(row.id))
++    selected.value = data
++    detailVisible.value = true
++    if (data.status === 'ACCEPTED') window.$message?.success(data.reason)
++    else if (data.status === 'REJECTED') window.$message?.error(data.reason)
++    else window.$message?.warning(data.reason)
++  } catch {
++    // A browser timeout does not prove carrier failure. Read persisted state again.
++    if (selected.value?.id === row.id) {
++      try {
++        selected.value = (await api.getShipping(row.id)).data
++      } catch {
++        /* interceptor */
++      }
++    }
++  } finally {
++    activeId.value = null
++    table.value?.handleSearch()
++  }
++}
++
++function actionButton(row, action, text) {
++  return withDirectives(
++    h(
++      NButton,
++      {
++        size: 'small',
++        type: action === 'submit' ? 'primary' : 'default',
++        loading: activeId.value === row.id,
++        disabled: activeId.value !== null || row.busy,
++        onClick: () => operate(row, action),
++      },
++      { default: () => text }
++    ),
++    [[vPermission, `post/api/v1/shipping/${action}`]]
++  )
++}
++
++const columns = [
++  { title: '发货单号', key: 'order_no', width: 230, ellipsis: { tooltip: true } },
++  { title: '收件人', key: 'recipient', width: 110 },
++  { title: '物品', key: 'item_name', width: 140 },
++  { title: '数量', key: 'quantity', width: 70 },
++  {
++    title: '状态',
++    key: 'status',
++    width: 100,
++    render: (row) =>
++      h(NTag, { type: colors[row.status], bordered: false }, { default: () => labels[row.status] }),
++  },
++  {
++    title: '运单号',
++    key: 'waybill_no',
++    width: 220,
++    ellipsis: { tooltip: true },
++    render: (row) => row.waybill_no || '—',
++  },
++  {
++    title: '处理说明',
++    key: 'reason',
++    width: 220,
++    ellipsis: { tooltip: true },
++    render: (row) => row.reason || '等待申请物流运单',
++  },
++  {
++    title: '操作',
++    key: 'actions',
++    width: 260,
++    fixed: 'right',
++    render(row) {
++      const buttons = [
++        h(NButton, { size: 'small', onClick: () => showDetails(row) }, { default: () => '详情' }),
++      ]
++      if (['DRAFT', 'UNKNOWN', 'PENDING'].includes(row.status)) {
++        buttons.push(actionButton(row, 'submit', row.status === 'DRAFT' ? '申请运单' : '重新申请'))
++        if (row.status !== 'DRAFT') buttons.push(actionButton(row, 'reconcile', '查询结果'))
++      }
++      return h(NSpace, { size: 'small' }, { default: () => buttons })
++    },
++  },
++]
++
++let poll
++onMounted(() => {
++  table.value?.handleSearch()
++  poll = setInterval(async () => {
++    if (table.value?.tableData?.some((row) => row.status === 'PENDING')) table.value.refresh()
++    if (detailVisible.value && selected.value?.status === 'PENDING') {
++      try {
++        selected.value = (await api.getShipping(selected.value.id)).data
++      } catch {
++        /* interceptor */
++      }
++    }
++  }, 3000)
++})
++onUnmounted(() => clearInterval(poll))
++</script>
++
++<template>
++  <CommonPage title="发货管理">
++    <template #action>
++      <n-button v-permission="'post/api/v1/shipping/create'" type="primary" @click="openCreate"
++        >新建发货单</n-button
++      >
++    </template>
++    <n-alert type="info" :show-icon="true" class="mb-20">
++      创建发货单后申请物流运单。“待确认”表示尚未确认受理结果，请先查询；重新申请会沿用原业务单号。
++    </n-alert>
++    <CrudTable
++      ref="table"
++      v-model:query-items="filters"
++      :columns="columns"
++      :get-data="api.getShippingList"
++      :scroll-x="1450"
++    >
++      <template #queryBar>
++        <QueryBarItem label="发货单号"
++          ><n-input
++            v-model:value="filters.order_no"
++            clearable
++            placeholder="输入发货单号"
++            @keypress.enter="table?.handleSearch()"
++        /></QueryBarItem>
++        <QueryBarItem label="状态"
++          ><n-select
++            v-model:value="filters.status"
++            :options="statuses"
++            clearable
++            placeholder="全部状态"
++            class="w-160"
++        /></QueryBarItem>
++      </template>
++    </CrudTable>
++
++    <CrudModal
++      v-model:visible="createVisible"
++      title="新建发货单"
++      :loading="saving"
++      @save="createOrder"
++    >
++      <n-form ref="formRef" :model="form" :rules="rules" label-placement="left" :label-width="90">
++        <n-form-item label="收件人" path="recipient"
++          ><n-input v-model:value="form.recipient" :maxlength="80" placeholder="收件人姓名"
++        /></n-form-item>
++        <n-form-item label="联系电话" path="phone"
++          ><n-input v-model:value="form.phone" :maxlength="24" placeholder="手机或固定电话"
++        /></n-form-item>
++        <n-form-item label="详细地址" path="address"
++          ><n-input
++            v-model:value="form.address"
++            type="textarea"
++            :maxlength="300"
++            placeholder="省市区、街道及门牌号"
++        /></n-form-item>
++        <n-form-item label="物品名称" path="item_name"
++          ><n-input v-model:value="form.item_name" :maxlength="100" placeholder="例如：办公文具"
++        /></n-form-item>
++        <n-form-item label="数量" path="quantity"
++          ><n-input-number v-model:value="form.quantity" :min="1" :max="1000" :precision="0"
++        /></n-form-item>
++      </n-form>
++    </CrudModal>
++
++    <n-drawer v-model:show="detailVisible" :width="560">
++      <n-drawer-content title="发货单详情" closable>
++        <template v-if="selected">
++          <n-space class="mb-20" align="center"
++            ><n-tag :type="colors[selected.status]">{{ labels[selected.status] }}</n-tag
++            ><span>{{ selected.order_no }}</span></n-space
++          >
++          <n-descriptions label-placement="left" :column="1" bordered>
++            <n-descriptions-item label="收件人">{{ selected.recipient }}</n-descriptions-item>
++            <n-descriptions-item label="联系电话">{{ selected.phone }}</n-descriptions-item>
++            <n-descriptions-item label="地址">{{ selected.address }}</n-descriptions-item>
++            <n-descriptions-item label="物品"
++              >{{ selected.item_name }} × {{ selected.quantity }}</n-descriptions-item
++            >
++            <n-descriptions-item label="运单号">{{
++              selected.waybill_no || '尚未确认'
++            }}</n-descriptions-item>
++          </n-descriptions>
++          <n-alert
++            v-if="selected.reason"
++            :type="selected.status === 'REJECTED' ? 'error' : 'info'"
++            class="mt-20"
++            >{{ selected.reason }}</n-alert
++          >
++          <n-space class="mt-20">
++            <n-button
++              v-if="['DRAFT', 'UNKNOWN', 'PENDING'].includes(selected.status)"
++              v-permission="'post/api/v1/shipping/submit'"
++              type="primary"
++              :disabled="selected.busy || activeId !== null"
++              :loading="activeId === selected.id"
++              @click="operate(selected, 'submit')"
++              >{{ selected.status === 'DRAFT' ? '申请运单' : '重新申请' }}</n-button
++            >
++            <n-button
++              v-if="['UNKNOWN', 'PENDING'].includes(selected.status)"
++              v-permission="'post/api/v1/shipping/reconcile'"
++              :disabled="selected.busy || activeId !== null"
++              @click="operate(selected, 'reconcile')"
++              >查询结果</n-button
++            >
++          </n-space>
++          <h3 class="mb-15 mt-30">处理记录</h3>
++          <n-timeline>
++            <n-timeline-item
++              v-for="(entry, index) in [...selected.events].reverse()"
++              :key="index"
++              :type="colors[entry.status]"
++              :title="labels[entry.status]"
++              :content="entry.message"
++              :time="new Date(entry.at).toLocaleString()"
++            />
++          </n-timeline>
++        </template>
++      </n-drawer-content>
++    </n-drawer>
++  </CommonPage>
++</template>
+--- a/web/src/components/table/CrudTable.vue
++++ b/web/src/components/table/CrudTable.vue
+@@ -145,6 +145,7 @@
+ 
+ defineExpose({
+   handleSearch,
++  refresh: handleQuery,
+   handleReset,
+   tableData,
+ })
