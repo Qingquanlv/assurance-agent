@@ -24,7 +24,6 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.composition.provenance import StandardLoader
-from graph_engine.composition.semantic_agent_ids import is_semantic_agent_contract_id
 from graph_engine.plugin_api import (
     AttemptContractRef,
     CommitValidator,
@@ -51,7 +50,6 @@ class SourceKind(str, Enum):
     WHEEL_PLUGIN = "wheel_plugin"
     EDITABLE_PRODUCT = "editable_product"
     EDITABLE_PLUGIN = "editable_plugin"
-    PRODUCT_FILE = "product_file"
     CONFIG_TREE = "config_tree"
     ENGINE = "engine"
 
@@ -164,7 +162,6 @@ class SourceIdentity:
         if self.kind != SourceKind.ENGINE and self.engine_installation is not None:
             raise ValueError("engine installation is allowed only for engine source identities")
         if self.kind in {
-            SourceKind.PRODUCT_FILE,
             SourceKind.WHEEL_PRODUCT,
             SourceKind.EDITABLE_PRODUCT,
         }:
@@ -182,7 +179,7 @@ class SourceIdentity:
                 if normalized_product_version != self.product_version:
                     raise ValueError("product source identity requires a normalized product version")
         elif any(value is not None for value in product_coordinates):
-            raise ValueError("product coordinates are allowed only for product file source identities")
+            raise ValueError("product coordinates are allowed only for product source identities")
         if self.kind in {SourceKind.CONFIG_TREE, SourceKind.WHEEL_PLUGIN, SourceKind.EDITABLE_PLUGIN}:
             if any(value is not None for value in plugin_coordinates):
                 if any(not isinstance(value, str) or not value for value in plugin_coordinates):
@@ -756,9 +753,7 @@ class CapabilityBindingEntry:
     contract_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.capability_id.startswith(f"{self.owner_id}.") or is_semantic_agent_contract_id(
-            self.capability_id
-        ):
+        if self.capability_id == self.contract_id:
             _validate_registry_id(self.capability_id, "binding id")
         else:
             _validate_owned_registry_id(self.capability_id, self.owner_id, "binding")
@@ -984,7 +979,6 @@ def _snapshot_source_key(snapshot: SourceSnapshot) -> SourceKey:
         SourceKind.ENGINE: SourceRole.ENGINE,
         SourceKind.WHEEL_PRODUCT: SourceRole.PRODUCT,
         SourceKind.EDITABLE_PRODUCT: SourceRole.PRODUCT,
-        SourceKind.PRODUCT_FILE: SourceRole.PRODUCT,
         SourceKind.WHEEL_PLUGIN: SourceRole.PLUGIN,
         SourceKind.EDITABLE_PLUGIN: SourceRole.PLUGIN,
         SourceKind.CONFIG_TREE: SourceRole.CONFIG,
@@ -1007,8 +1001,6 @@ def _snapshot_owner_id(snapshot: SourceSnapshot) -> str:
             if identity.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.EDITABLE_PRODUCT}
             else identity.plugin_id
         )
-    elif identity.kind == SourceKind.PRODUCT_FILE:
-        value = identity.product_id
     elif identity.kind == SourceKind.ENGINE:
         value = "graph.engine"
     else:  # pragma: no cover - SourceKind is closed, defensive against unsafe construction.
@@ -1665,20 +1657,6 @@ def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) ->
         if identity.engine_installation == "editable":
             engine_identity["root"] = str(identity.root)
         return canonical_digest({"identity": engine_identity, "files": file_document})
-    if identity.kind == SourceKind.PRODUCT_FILE:
-        if identity.product_id is None:
-            return canonical_digest(file_document)
-        return canonical_digest(
-            {
-                "identity": {
-                    "kind": identity.kind.value,
-                    "root": str(identity.root),
-                    "product_id": identity.product_id,
-                    "product_version": identity.product_version,
-                },
-                "files": file_document,
-            }
-        )
     if identity.kind == SourceKind.CONFIG_TREE:
         if identity.plugin_id is None:
             return canonical_digest(file_document)

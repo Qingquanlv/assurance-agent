@@ -12,10 +12,11 @@ from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Checkpointer
 
+from graph_engine.plugin_api import WorkspaceProvider
+
 from graph_engine.application.runtime_context import (
     AttemptKernelPort,
     SecretResolverPort,
-    WorkspaceProviderPort,
 )
 from graph_engine.attempts.models.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.attempts.orchestration.kernel import AssuranceAttemptKernel
@@ -113,7 +114,7 @@ class GraphBuildContext(Protocol):
 class RuntimePorts:
     attempt_kernel: AttemptKernelPort
     secret_resolver: SecretResolverPort
-    workspace_provider: WorkspaceProviderPort
+    workspace_provider: WorkspaceProvider
 
 
 @dataclass(frozen=True, slots=True)

@@ -406,12 +406,7 @@ def test_lock_values_reject_non_finite_floats(bad_float: float) -> None:
             product_version="1.0.0",
             manifest={"ratio": bad_float},
             manifest_digest=_A,
-            source=LockedSource(
-                kind="product_file",
-                identity={"product_id": "toy.a"},
-                digest=_B,
-                files=(),
-            ),
+            source=_lock().product.source,
         )
 
 

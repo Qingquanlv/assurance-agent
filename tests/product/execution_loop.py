@@ -17,7 +17,6 @@ from graph_engine.attempts.execution_host.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.attempts.resources.activity import InvocationProjection
 from tests.product.product_runner import _PUBLIC_DIGEST
 
 _ADVANCE_ID = "assurance.healing.repair-round.advance"
@@ -47,7 +46,7 @@ class ExecutionLoopTrace:
     status: str
     advance_outputs: tuple[dict[str, int | str], ...]
     task_capabilities: tuple[str, ...]
-    projection: InvocationProjection
+    projection: _SyntheticProjection
 
 
 def drive_failed_execution(
@@ -264,7 +263,7 @@ def _synthesize_loop_trace(
         status=status,
         advance_outputs=tuple(host.advance_outputs),
         task_capabilities=tuple(capabilities),
-        projection=cast(InvocationProjection, projection),
+        projection=projection,
     )
 
 
@@ -487,7 +486,7 @@ class _ExecutionLoopHost:
         return ()
 
 
-def _public_exports(projection: InvocationProjection, composition) -> tuple[str, ...]:
+def _public_exports(projection: _SyntheticProjection, composition) -> tuple[str, ...]:
     del composition
     seen: list[str] = []
     for activation in projection.activations:
@@ -498,7 +497,7 @@ def _public_exports(projection: InvocationProjection, composition) -> tuple[str,
     return tuple(seen)
 
 
-def _task_capabilities(projection: InvocationProjection, composition) -> tuple[str, ...]:
+def _task_capabilities(projection: _SyntheticProjection, composition) -> tuple[str, ...]:
     del composition
     capabilities: list[str] = []
     for activation in projection.activations:
@@ -508,7 +507,7 @@ def _task_capabilities(projection: InvocationProjection, composition) -> tuple[s
     return tuple(capabilities)
 
 
-def _terminal_name(projection: InvocationProjection, status: str) -> str:
+def _terminal_name(projection: _SyntheticProjection, status: str) -> str:
     graphs = {item.graph_instance_id: item for item in projection.graph_instances}
     ends: list[str] = []
     for activation in projection.activations:
@@ -531,19 +530,21 @@ def _terminal_name(projection: InvocationProjection, status: str) -> str:
     return status
 
 
-def completed_node_ids(projection: InvocationProjection) -> frozenset[str]:
+def completed_node_ids(projection: _SyntheticProjection) -> frozenset[str]:
     return frozenset(
         activation.node_id for activation in projection.activations if activation.status == "completed"
     )
 
 
-def execute_tail_coverage_state(projection: InvocationProjection) -> str | None:
+def execute_tail_coverage_state(projection: _SyntheticProjection) -> str | None:
     for activation in projection.activations:
         if activation.node_id != "execute-tail" or activation.status != "completed":
             continue
         payload = activation.output
-        if isinstance(payload, Mapping) and isinstance(payload.get("coverage_state"), str):
-            return payload["coverage_state"]
+        if isinstance(payload, Mapping):
+            coverage_state = payload.get("coverage_state")
+            if isinstance(coverage_state, str):
+                return coverage_state
     return None
 
 

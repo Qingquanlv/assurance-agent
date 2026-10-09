@@ -217,12 +217,3 @@ def test_composition_harness_is_factory_product_lock() -> None:
     source = (_REPO_ROOT / "tests" / "product" / "composition_harness.py").read_text(encoding="utf-8")
     assert "CompiledWorkflow" not in source
     assert "compiled_product_workflow" not in source
-
-
-def test_semantic_agent_ids_match_product_contracts() -> None:
-    from graph_engine.composition.semantic_agent_ids import SEMANTIC_AGENT_CONTRACT_IDS
-
-    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
-
-    assert SEMANTIC_AGENT_CONTRACT_IDS == frozenset(AGENT_EXECUTION_CONTRACTS)
-    assert len(SEMANTIC_AGENT_CONTRACT_IDS) == 26

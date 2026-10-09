@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -114,15 +114,6 @@ class _FrozenList(list[Any]):
 
 class DeclarativePluginRejected(GraphEngineError):
     """Raised when an untrusted config tree is not closed data."""
-
-
-class DeclarativeProductRejected(GraphEngineError):
-    """Raised when an untrusted product file is not a closed manifest."""
-
-
-class ProductFileSource(FrozenModel):
-    kind: Literal["product_file"] = "product_file"
-    path: Path
 
 
 class ConfigTreePluginSource(FrozenModel):
@@ -252,110 +243,11 @@ class DeclarativePluginDocument(FrozenModel):
         return self
 
 
-class DeclarativeProductRequirement(FrozenModel):
-    plugin_id: str
-    version_specifier: str
-
-    @field_validator("plugin_id")
-    @classmethod
-    def _validate_plugin_id(cls, value: str) -> str:
-        return _qualified_id(value, "plugin id")
-
-    @field_validator("version_specifier")
-    @classmethod
-    def _validate_version_specifier(cls, value: str) -> str:
-        return _specifier(value, "plugin version specifier")
-
-
-class DeclarativeProductDocument(FrozenModel):
-    schema_version: Literal["1"]
-    product_id: str
-    product_version: str
-    engine_api: str
-    plugins: tuple[DeclarativeProductRequirement, ...]
-    entrypoints: dict[str, str]
-    configuration: dict[str, dict[str, JSONValue]]
-    config_plugin_paths: tuple[str, ...] = ()
-    graph_factory_symbol: str
-
-    @field_validator("product_id")
-    @classmethod
-    def _validate_product_id(cls, value: str) -> str:
-        return _qualified_id(value, "product id")
-
-    @field_validator("product_version")
-    @classmethod
-    def _validate_product_version(cls, value: str) -> str:
-        return _version(value, "product version")
-
-    @field_validator("engine_api")
-    @classmethod
-    def _validate_engine_api(cls, value: str) -> str:
-        return _version_or_specifier(value, "engine API")
-
-    @field_validator("entrypoints")
-    @classmethod
-    def _validate_entrypoints(cls, values: dict[str, str]) -> dict[str, str]:
-        if not values:
-            raise ValueError("product entrypoints must not be empty")
-        if any(not name.strip() or not graph_id.strip() for name, graph_id in values.items()):
-            raise ValueError("product entrypoints must map non-empty names to graph ids")
-        return values
-
-    @field_validator("configuration")
-    @classmethod
-    def _validate_configuration(
-        cls, values: dict[str, dict[str, JSONValue]]
-    ) -> dict[str, dict[str, JSONValue]]:
-        for plugin_id in values:
-            _qualified_id(plugin_id, "configuration plugin id")
-        return values
-
-    @field_validator("config_plugin_paths")
-    @classmethod
-    def _validate_config_plugin_paths(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        validated: list[str] = []
-        for value in values:
-            try:
-                validated.append(_validate_canonical_relative_path(value))
-            except (TypeError, ValueError) as error:
-                raise ValueError(f"invalid config plugin path: {value!r}") from error
-        if len(set(validated)) != len(validated):
-            raise ValueError("config plugin paths must be unique")
-        return tuple(validated)
-
-    @model_validator(mode="after")
-    def _validate_manifest_closure(self) -> Self:
-        from graph_engine.composition.models import _validate_product_graph_factory_symbol
-
-        _validate_product_graph_factory_symbol(self.graph_factory_symbol, None)
-        plugin_ids = tuple(requirement.plugin_id for requirement in self.plugins)
-        if not plugin_ids:
-            raise ValueError("product manifest must require at least one plugin")
-        if len(set(plugin_ids)) != len(plugin_ids):
-            raise ValueError("product plugin requirements must be unique")
-        unknown_configuration = set(self.configuration) - set(plugin_ids)
-        if unknown_configuration:
-            raise ValueError(f"configuration targets an unrequired plugin: {min(unknown_configuration)}")
-        return self
-
-    @property
-    def required_plugin_ids(self) -> tuple[str, ...]:
-        return tuple(requirement.plugin_id for requirement in self.plugins)
-
-
 @dataclass(frozen=True, slots=True)
 class DeclarativePlugin:
     document: DeclarativePluginDocument
     descriptor: PluginDescriptor
     contribution: PluginContribution
-    snapshot: SourceSnapshot
-
-
-@dataclass(frozen=True, slots=True)
-class DeclarativeProduct:
-    manifest: DeclarativeProductDocument
-    config_plugin_paths: tuple[Path, ...]
     snapshot: SourceSnapshot
 
 
@@ -416,41 +308,6 @@ def load_config_tree(source: ConfigTreePluginSource) -> DeclarativePlugin:
         raise DeclarativePluginRejected(str(error)) from error
 
 
-def load_product_file(source: ProductFileSource) -> DeclarativeProduct:
-    try:
-        path = source.path.absolute()
-        if path.suffix.lower() not in {".yaml", ".yml"}:
-            raise ValueError("product file must be YAML data")
-        captured = capture_explicit_file(
-            path.parent,
-            path.name,
-            DeclaredTreePolicy.product_file(),
-        )
-        manifest = _parse_product_document(_only_file(captured).content)
-        snapshot = SourceSnapshot.from_identity(
-            SourceIdentity(
-                kind=SourceKind.PRODUCT_FILE,
-                root=captured.identity.root,
-                product_id=manifest.product_id,
-                product_version=manifest.product_version,
-            ),
-            captured.files,
-        )
-        resolved_paths = tuple(
-            (snapshot.identity.root / PurePosixPath(relative_path)).absolute()
-            for relative_path in manifest.config_plugin_paths
-        )
-        return DeclarativeProduct(
-            manifest=manifest,
-            config_plugin_paths=resolved_paths,
-            snapshot=snapshot,
-        )
-    except DeclarativeProductRejected:
-        raise
-    except (OSError, SourceSnapshotError, ValidationError, PluginContractError, ValueError) as error:
-        raise DeclarativeProductRejected(str(error)) from error
-
-
 def _parse_plugin_document(content: bytes) -> DeclarativePluginDocument:
     try:
         raw = _safe_yaml_mapping(content, "plugin.yaml")
@@ -458,15 +315,6 @@ def _parse_plugin_document(content: bytes) -> DeclarativePluginDocument:
         return cast(DeclarativePluginDocument, _freeze_nested_values(document))
     except (ValidationError, PluginContractError, ValueError) as error:
         raise DeclarativePluginRejected(f"invalid plugin.yaml: {error}") from error
-
-
-def _parse_product_document(content: bytes) -> DeclarativeProductDocument:
-    try:
-        raw = _safe_yaml_mapping(content, "product manifest")
-        document = DeclarativeProductDocument.model_validate(raw)
-        return cast(DeclarativeProductDocument, _freeze_nested_values(document))
-    except (ValidationError, PluginContractError, ValueError) as error:
-        raise DeclarativeProductRejected(f"invalid product manifest: {error}") from error
 
 
 def _safe_yaml_mapping(
@@ -772,9 +620,5 @@ __all__ = [
     "ConfigTreePluginSource",
     "DeclarativePlugin",
     "DeclarativePluginRejected",
-    "DeclarativeProduct",
-    "DeclarativeProductRejected",
-    "ProductFileSource",
     "load_config_tree",
-    "load_product_file",
 ]

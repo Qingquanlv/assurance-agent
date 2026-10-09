@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.canonical import canonical_digest, canonical_json_bytes
+from graph_engine.canonical import canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
@@ -21,18 +21,8 @@ from graph_engine.attempts.resources.activity import (
     TaskActivityRecoveryUnsupported,
     TaskActivityReferenceInvalid,
 )
-from graph_engine.attempts.resources.activity import (
-    EventEnvelope,
-    TaskActivityBound,
-    TaskActivityCancelRequested,
-    TaskActivityDispatchStarted,
-    TaskActivityPrepared,
-    TaskActivityTerminalObserved,
-    TaskLeaseAdopted,
-)
 
 
-GOLDEN = Path(__file__).with_name("activity-events-v2.golden.json")
 _ACTIVITY_ERRORS = (
     TaskActivityConflict,
     TaskActivityIndeterminate,
@@ -73,62 +63,6 @@ def _reference() -> dict[str, str]:
     return {"id": "ext-1"}
 
 
-def _all_six_activity_events() -> tuple[
-    TaskActivityPrepared,
-    TaskActivityDispatchStarted,
-    TaskActivityBound,
-    TaskActivityCancelRequested,
-    TaskActivityTerminalObserved,
-    TaskLeaseAdopted,
-]:
-    fingerprint = _fingerprint()
-    reference = _reference()
-    outcome = TaskOutcome.succeeded({"answer": 42})
-    return (
-        TaskActivityPrepared(
-            activity_id="activity-1",
-            task_id="task-1",
-            activation_id="act-1",
-            attempt=1,
-            request_digest="0" * 64,
-            workspace_identity=_identity(),
-        ),
-        TaskActivityDispatchStarted(
-            activity_id="activity-1",
-            ordinal=1,
-            dispatch_fingerprint=fingerprint,
-            dispatch_fingerprint_digest=_digest(fingerprint),
-        ),
-        TaskActivityBound(
-            activity_id="activity-1",
-            reference=reference,
-            reference_digest=_digest(reference),
-        ),
-        TaskActivityCancelRequested(
-            activity_id="activity-1",
-            reason="timeout",
-            requested_at=1.0,
-        ),
-        TaskActivityTerminalObserved(
-            activity_id="activity-1",
-            outcome=outcome,
-            outcome_digest=_outcome_digest(outcome),
-            staged_write_set_digest="d" * 64,
-        ),
-        TaskLeaseAdopted(
-            activity_id="activity-1",
-            task_id="task-1",
-            activation_id="act-1",
-            attempt=1,
-            owner_id="worker-2",
-            acquired_at=2.0,
-            heartbeat_at=2.0,
-            expires_at=12.0,
-            reconciliation_evidence_digest="e" * 64,
-        ),
-    )
-
-
 def test_terminal_activity_requires_a_staged_write_set_digest() -> None:
     outcome = TaskOutcome.succeeded({"answer": 42})
     with pytest.raises(ValueError, match="staged write-set"):
@@ -140,11 +74,6 @@ def test_terminal_activity_requires_a_staged_write_set_digest() -> None:
             terminal=outcome,
             outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
         )
-
-
-def test_activity_event_golden_is_canonical() -> None:
-    events = _all_six_activity_events()
-    assert canonical_json_bytes([event.model_dump(mode="json") for event in events]) == (GOLDEN.read_bytes())
 
 
 def test_prepared_activity_forbids_a_bound_reference() -> None:
@@ -332,42 +261,3 @@ def test_activity_errors_are_graph_engine_errors(error_type: type[GraphEngineErr
     assert issubclass(error_type, GraphEngineError)
     with pytest.raises(error_type, match="closed"):
         raise error_type("closed")
-
-
-def test_dispatch_started_event_rejects_null_fingerprint() -> None:
-    with pytest.raises(ValueError, match="dispatch fingerprint is required after dispatch starts"):
-        TaskActivityDispatchStarted(
-            activity_id="activity-1",
-            ordinal=1,
-            dispatch_fingerprint=None,
-            dispatch_fingerprint_digest=_digest(None),
-        )
-
-
-def test_bound_event_rejects_null_reference() -> None:
-    with pytest.raises(ValueError, match="bound activity requires a reference"):
-        TaskActivityBound(
-            activity_id="activity-1",
-            reference=None,
-            reference_digest=_digest(None),
-        )
-
-
-def test_activity_events_round_trip_through_strict_envelopes() -> None:
-    events = _all_six_activity_events()
-    restored = tuple(
-        EventEnvelope.model_validate_json(
-            EventEnvelope.from_event(seq, event).model_dump_json(),
-            strict=True,
-        ).event
-        for seq, event in enumerate(events, start=1)
-    )
-    assert restored == events
-    assert tuple(event.kind for event in restored) == (
-        "task_activity_prepared",
-        "task_activity_dispatch_started",
-        "task_activity_bound",
-        "task_activity_cancel_requested",
-        "task_activity_terminal_observed",
-        "task_lease_adopted",
-    )

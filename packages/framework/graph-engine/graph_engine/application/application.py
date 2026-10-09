@@ -10,12 +10,13 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import START
 from langgraph.types import Command
 
+from graph_engine.plugin_api import WorkspaceProvider
+
 from graph_engine.application.revision_guard import require_revision
 from graph_engine.application.runtime_context import (
     AssuranceRuntimeContext,
     AttemptKernelPort,
     SecretResolverPort,
-    WorkspaceProviderPort,
 )
 from graph_engine.application.status import (
     GraphSnapshotEnvelope,
@@ -106,7 +107,7 @@ class FixedExecutionFactory:
     artifact: BootArtifact
     attempt_kernel: AttemptKernelPort
     secret_resolver: SecretResolverPort
-    workspace_provider: WorkspaceProviderPort
+    workspace_provider: WorkspaceProvider
 
     def bind(self, runner_lease: RunnerLease) -> InvocationBoundExecution:
         if not isinstance(runner_lease, RunnerLease):

@@ -27,7 +27,6 @@ from graph_engine.composition import (
     FrozenComposition,
     LockedProduct,
     PluginRequirement,
-    ProductFileSource,
     ProductLock,
     ProductManifest,
     RegistryPlatform,
@@ -2099,29 +2098,6 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
     assert composition.providers[domain_id]._provider is plugin
 
 
-def _write_mixed_product(path: Path) -> None:
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": "1",
-                "product_id": "toy.mixed",
-                "product_version": "1.0.0",
-                "engine_api": ENGINE_API_VERSION,
-                "plugins": [
-                    {"plugin_id": "toy.runtime", "version_specifier": "==1.0.0"},
-                    {"plugin_id": "toy.flow", "version_specifier": "==1.0.0"},
-                ],
-                "entrypoints": {"hello": "root"},
-                "configuration": {"toy.runtime": {"greeting": "你好"}},
-                "graph_factory_symbol": "toy.product:build",
-            },
-            sort_keys=False,
-            allow_unicode=True,
-        ),
-        encoding="utf-8",
-    )
-
-
 def _write_flow_plugin(path: Path) -> None:
     path.mkdir()
     (path / "role.txt").write_text("friendly\n", encoding="utf-8")
@@ -2159,18 +2135,26 @@ def _write_flow_plugin(path: Path) -> None:
 def test_resolution_is_identical_for_permuted_explicit_sources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    product_file = tmp_path / "product.yaml"
     flow_root = tmp_path / "flow"
-    _write_mixed_product(product_file)
     _write_flow_plugin(flow_root)
-    platform, plugin_sources, _product_source = _platform(
+    platform, plugin_sources, product = _platform(
         tmp_path / "wheels",
         monkeypatch,
+        product=_ProductProvider(
+            _manifest(
+                product_id="toy.mixed",
+                plugins=(
+                    PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.0.0"),
+                    PluginRequirement(plugin_id="toy.flow", version_specifier="==1.0.0"),
+                ),
+                configuration={"toy.runtime": {"greeting": "你好"}},
+            )
+        ),
         plugins={"toy.runtime": _PluginProvider("toy.runtime")},
     )
+    assert product is not None
     runtime = plugin_sources["toy.runtime"]
     flow = ConfigTreePluginSource(path=flow_root)
-    product = ProductFileSource(path=product_file)
 
     first = platform.resolve(ResolutionRequest(product=product, plugins=(flow, runtime)))
     second = platform.resolve(ResolutionRequest(product=product, plugins=(runtime, flow)))

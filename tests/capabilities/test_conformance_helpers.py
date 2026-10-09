@@ -8,7 +8,6 @@ import pytest
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
-from graph_engine.composition import ProductFileSource, load_product_file
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
     CandidateFile,
@@ -42,7 +41,6 @@ from tests.capabilities.conformance import (
 )
 from tests.capabilities.wheel_isolation import ALLOWED_PACKAGES, isolate_package
 
-MINIMAL_PRODUCT = Path(__file__).resolve().parent / "fixtures" / "minimal-product.yaml"
 _SHA = "a" * 64
 
 
@@ -305,13 +303,6 @@ def test_assert_validator_rejects_requires_exact_reason() -> None:
         assert_validator_rejects(_RejectingValidator(), reason="other.reason")
     with pytest.raises(AssertionError):
         assert_validator_rejects(_AcceptingValidator(), reason="test.bad.reason")
-
-
-def test_minimal_product_fixture_is_closed_declarative_product() -> None:
-    product = load_product_file(ProductFileSource(path=MINIMAL_PRODUCT))
-    assert product.manifest.product_id == "toy.a"
-    assert product.manifest.engine_api == ENGINE_API_VERSION
-    assert tuple(item.plugin_id for item in product.manifest.plugins) == ("toy.a",)
 
 
 def test_wheel_isolation_rejects_unknown_package() -> None:

@@ -1,125 +1,137 @@
 # graph-engine
 
-`graph-engine` is a business-neutral, deterministic graph runtime. The wheel
-ships the engine and its structural graph language only: it has no default
-product, graph, plugin, entrypoint, workspace, Assurance package, or toy
-package. A caller must select an installed product and its exact plugin bundle
-for each invocation.
+`graph-engine` is a business-neutral runtime for graphs supplied by explicitly
+selected, installed Python wheels. It has no default product, capability bundle,
+entrypoint or workspace. Python wheels own `StateGraph` topology and Attempt
+contracts. Project `.aa/` contains closed organization data only. The engine
+does not load executable plugins, graphs, handlers, schemas, validators, or
+runtime bindings from the system under test.
 
-YAML replaces graph and contract text. Python wheels add installed capability.
-Project `.aa/` holds organization configuration only. The engine does not load
-executable plugins from the system under test.
+## Composition and boot
 
-## Public composition interfaces
+`RegistryPlatform.resolve(ResolutionRequest(...))` captures the selected product
+and plugin sources, validates dependency versions and contributed definitions,
+and produces a `FrozenComposition` with an authenticated `ProductLock`.
+Products come from installed wheels or explicitly selected editable wheel
+sources. `ConfigTreePluginSource` supplies data-only organization configuration;
+it cannot define Attempt contracts or executable handlers. YAML product-file
+sources are not supported.
 
-`Engine(root, *, clock=None, host=None)` owns invocation ledgers, checkpoints,
-leases, and immutable snapshot workspaces. `start()` binds an explicit
-`ResolvedProduct`; `run_until_blocked()` deterministically advances it;
-`resume()` resolves an explicit interrupt action; and `open()` replays an
-existing invocation against the same product digest. Constructing `Engine`
-without a `TaskExecutionHost` is fail-closed: task handlers are never called.
+Plugins publish a `PluginDescriptor` and a matching immutable
+`PluginContribution`. A contribution can declare handlers, commit validators,
+schemas, resources, bindings and Attempt contract references. Registry assembly
+checks ownership, uniqueness and references against the selected contributions.
 
-`ProductProvider` has one side-effect-free method:
+A binding in another plugin's namespace must explicitly link its capability ID
+to the same declared Attempt contract ID. The contract must be present in the
+selected contributions. Owned aliases can also reference a selected contract.
+The binding and that contract can share an ID across contributions; duplicate
+bindings and unrelated category collisions are rejected. These rules use the
+published declarations, not a list of product-specific names.
 
-```python
-class ProductProvider(Protocol):
-    def manifest(self) -> ProductManifest: ...
+`GraphEngineBoot` authenticates the selected graph factories and binds contract
+resolution, Attempt execution and checkpointing into their build contexts.
+Factories may use the `Flow` API or native LangGraph `StateGraph` builders.
+`Flow.compile(context)` checks a flow and compiles it into LangGraph nodes,
+routes, subgraphs and interrupts. Native builders can use `add_attempt_node`,
+`add_attempt_edge`, `add_route`, and `human_gate` from `graph_engine.stategraph`.
+The separate `AttemptGraph` subclass has been removed.
+
+## Execution
+
+`AssuranceApplication` starts and resumes a named entrypoint under an invocation
+lease, checks its graph revision and returns normalized invocation status.
+LangGraph chooses the graph node. An Attempt node then follows this call chain:
+
+```text
+Flow or StateGraph node
+  → AttemptNodeFactory
+  → AssuranceAttemptKernel
+  → AttemptRuntime
+  → phase handler
+  → contract executor
 ```
 
-The manifest identifies the product, engine API, exact plugin requirements,
-entrypoints, and structural workflow. `resolve_product()` creates a fresh,
-invocation-scoped capability registry; importing or merely installing a wheel
-does not mutate a global registry.
+The runtime loads a complete `AttemptCheckpoint` and dispatches the handler for
+its saved phase: `authorize`, `execute`, `reconcile`, `commit`, `terminate`,
+`release`, or `done`. Handlers own the durable boundaries. The runtime reloads
+saved progress before dispatching again and returns when execution must wait.
 
-`PluginProvider` declares and contributes one reviewed wheel plugin:
+The commit handler validates output, runs commit validators, seals authorized
+writes and promotes them through the workspace provider. Validation protocols
+and data types are public plugin interfaces; execution and conversion to
+Attempt failure results belong to the commit handler.
 
-```python
-class PluginProvider(Protocol):
-    def descriptor(self) -> PluginDescriptor: ...
-    def contribute(self, ports: RegistryPorts) -> PluginContribution: ...
-```
+Business handlers use `TaskRequest`, `TaskContext`, and `TaskOutcome`. Where
+subprocess execution is selected, `attempts/execution_host` manages the worker,
+its deadline, resource cleanup and authenticated receipts. These facilities
+serve reviewed wheel code; the module CLI also has an explicit in-process
+host for the installed demonstration products.
 
-The descriptor and immutable contribution must expose exactly the same task-handler and
-commit-validator IDs. Entry-point discovery is inventory only;
-`load_product_entrypoint()` and `load_plugin_entrypoint()` load only the name
-the caller supplies.
+See [the Attempt module map](ATTEMPTS.md) for file-level responsibilities.
 
-`TaskHandler` exposes one asynchronous execution method:
+## Persistence
 
-```python
-class TaskHandler(Protocol):
-    async def execute(
-        self,
-        request: TaskRequest,
-        context: TaskContext,
-    ) -> TaskOutcome: ...
-```
+`persistence` contains storage protocols, memory implementations, revision and
+fencing checks, and the LangGraph checkpoint adapter. The product package
+supplies production SQLite implementations.
 
-Production execution requires a `TaskExecutionHost` that confines plugin code
-to the supplied attempt workspace. Phase 1 trusts reviewed Python wheel
-plugins and does not implement hostile-code sandboxing. The module CLI's
-`run` command therefore constructs a visibly CLI-local, in-process adapter for
-trusted Phase 1 demonstrations only; it is not a default Engine host or a
-production confinement boundary.
+Two kinds of progress remain distinct:
 
-## Phase 1 graph language
+- LangGraph checkpoints preserve graph state and pending writes. The anchored
+  checkpointer records their durable confirmation and delivers interrupt
+  notices through its outbox.
+- Attempt checkpoints preserve one Attempt's phase, activity, output, promotion,
+  terminal result and release state. Updates use compare-and-swap revisions and
+  fencing checks.
 
-The closed node-kind set is:
+The old `graph_engine.evidence` event ledger and event-folded checkpoints have
+been removed. `persistence/journal.py` still defines the active LangGraph
+checkpoint anchor records; it is not the deleted event-ledger mechanism.
+Retro evidence is supplied through the read-only runtime evidence port.
 
-- `task`: invoke one registered capability with retry, timeout, resource, and
-  optional commit-validator declarations;
-- `gate`: choose outgoing edges using the closed expression language;
-- `join`: wait for `all` or `any` inbound tokens;
-- `subgraph`: invoke another graph in the compiled product;
-- `interrupt`: stop at an explicit human/action boundary until `resume()`; and
-- `end`: terminate a graph instance.
-
-Phase 1 also includes conditional routing, bounded activations, resource-aware
-waves, leases, immutable snapshots, atomic ledger batches, and checkpoints. It
-does not expose Phase 2 configuration-plugin syntax, dependency solving,
-wheel/source hashing, or an invocation lock.
+Old nonempty Attempt journal databases require their original version to stop
+existing runs and a fresh isolated run on rebuilt wheels; they are not migrated.
 
 ## Explicit module CLI
 
-The CLI emits one JSON document. There are no implicit product, entrypoint,
-workspace, or run-plugin choices:
+The module CLI emits JSON and requires explicit installed product and plugin
+selections. From the repository workspace:
 
 ```bash
-python -m graph_engine compile --product toy-a
-python -m graph_engine run \
-  --product toy-a \
-  --plugin toy-a \
+uv run python -m graph_engine compile \
+  --product-dist graph-engine-toy-a \
+  --product-entrypoint toy-a \
+  --plugin-dist graph-engine-toy-a \
+  --plugin-entrypoint toy-a
+
+uv run python -m graph_engine run \
+  --product-dist graph-engine-toy-a \
+  --product-entrypoint toy-a \
+  --plugin-dist graph-engine-toy-a \
+  --plugin-entrypoint toy-a \
   --entrypoint hello \
   --invocation-id smoke \
   --root /tmp/graph-engine-smoke
 ```
 
-The Phase 1 toy products use the same explicit entry-point name for their
-product and sole plugin, so `compile --product toy-a` resolves that named pair.
-`run` always requires one or more explicit `--plugin` options and rejects a set
-that differs from the product manifest.
+The `aa` command belongs to `assurance-product`, not this framework wheel.
 
-## Phase 1 acceptance gate
+## Validation
 
 From the repository root:
 
 ```bash
-uv run ruff check packages/framework/graph-engine examples/graph-engine-toy-a examples/graph-engine-toy-b tests/architecture/test_graph_engine_boundaries.py
-uv run ruff format --check packages/framework/graph-engine examples/graph-engine-toy-a examples/graph-engine-toy-b tests/architecture/test_graph_engine_boundaries.py
-uv run pyright packages/framework/graph-engine/graph_engine examples/graph-engine-toy-a examples/graph-engine-toy-b
+uv run ruff check .
+uv run ruff format --check .
+uv run pyright
 uv run lint-imports
-uv run pytest packages/framework/graph-engine/tests tests/architecture/test_graph_engine_boundaries.py -q
+uv run pytest
 bash scripts/graph_engine_smoke_test.sh
+bash scripts/assurance_capability_wheel_smoke_test.sh
+bash scripts/assurance_product_wheel_smoke_test.sh
 ```
 
-The smoke test archives committed `HEAD`, builds all three Phase 1 wheels
-offline, inspects their contents and dependencies, and exercises isolated
-engine-only, toy-A, and toy-B environments.
-
-Attempt execution stores full `AttemptCheckpoint` records and dispatches their
-persisted `AttemptPhase` handler entry. The store enforces CAS revisions and
-fencing; handlers own dispatch, output, promotion, terminal and release barriers.
-Recovery reconstructs transient authorization/workspace handles without changing
-the saved phase. The LangGraph checkpoint-anchor journal remains independent.
-Old nonempty Attempt journal databases require their original version to stop
-existing runs and a fresh isolated run on rebuilt wheels; they are not migrated.
+The smoke scripts build committed `HEAD` and exercise isolated installations.
+Commit the source under test before running them; the capability smoke script
+rejects a dirty tracked worktree.

@@ -11,13 +11,9 @@ import yaml
 from graph_engine.composition import (
     ConfigTreePluginSource,
     DeclarativePluginRejected,
-    DeclarativeProductRejected,
-    ProductFileSource,
     SourceIdentity,
     SourceKind,
-    SourceSnapshot,
     load_config_tree,
-    load_product_file,
 )
 
 
@@ -71,33 +67,6 @@ def _write_plugin_tree(
             path.write_text("value: data\n", encoding="utf-8")
         else:
             path.write_text("role instructions\n", encoding="utf-8")
-
-
-def _write_product_file(
-    path: Path,
-    *,
-    extra: dict[str, object] | None = None,
-    graph_factory_symbol: str = "toy.product:build",
-    config_plugin_paths: list[str] | None = None,
-) -> None:
-    document: dict[str, object] = {
-        "schema_version": "1",
-        "product_id": "toy.product",
-        "product_version": "1.0.0",
-        "engine_api": ">=0.2,<0.3",
-        "plugins": [
-            {"plugin_id": "toy.runtime", "version_specifier": ">=1,<2"},
-            {"plugin_id": "toy.flow", "version_specifier": "==1.2.3"},
-        ],
-        "entrypoints": {"main": "root"},
-        "configuration": {"toy.runtime": {"greeting": "hello"}},
-        "config_plugin_paths": config_plugin_paths or [],
-        "graph_factory_symbol": graph_factory_symbol,
-    }
-    if extra:
-        document.update(extra)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 
 
 def test_config_plugin_loads_frozen_descriptor_and_contribution(tmp_path: Path) -> None:
@@ -554,81 +523,14 @@ def test_config_plugin_rejects_non_closed_local_references(tmp_path: Path, fault
         load_config_tree(ConfigTreePluginSource(path=tmp_path))
 
 
-def test_product_file_resolves_only_explicit_manifest_relative_config_paths(
+def test_config_source_identity_requires_complete_normalized_coordinates(
     tmp_path: Path,
 ) -> None:
-    product_path = tmp_path / "products" / "product.yaml"
-    config = product_path.parent / "config" / "flow"
-    config.mkdir(parents=True)
-    (product_path.parent / "unrelated.txt").write_text("ignored sibling\n", encoding="utf-8")
-    _write_product_file(product_path, config_plugin_paths=["config/flow"])
-
-    loaded = load_product_file(ProductFileSource(path=product_path))
-
-    assert loaded.manifest.product_id == "toy.product"
-    assert loaded.manifest.required_plugin_ids == ("toy.runtime", "toy.flow")
-    assert loaded.config_plugin_paths == (config.absolute(),)
-    assert loaded.manifest.config_plugin_paths == ("config/flow",)
-    assert loaded.snapshot.identity.kind == SourceKind.PRODUCT_FILE
-    assert loaded.snapshot.identity.root == product_path.parent.resolve()
-    assert tuple(file.path for file in loaded.snapshot.files) == ("product.yaml",)
-
-
-def test_product_file_normalizes_and_binds_complete_source_identity(tmp_path: Path) -> None:
-    product_path = tmp_path / "product.yaml"
-    _write_product_file(product_path)
-    document = yaml.safe_load(product_path.read_text(encoding="utf-8"))
-    document["product_version"] = "01.002.0000"
-    product_path.write_text(yaml.safe_dump(document), encoding="utf-8")
-
-    loaded = load_product_file(ProductFileSource(path=product_path))
-    identity = loaded.snapshot.identity
-
-    assert loaded.manifest.product_version == "1.2.0"
-    assert identity.product_id == "toy.product"
-    assert identity.product_version == "1.2.0"
-    assert loaded.snapshot == SourceSnapshot.from_identity(identity, loaded.snapshot.files)
-    provisional = SourceSnapshot.from_files(
-        SourceKind.PRODUCT_FILE,
-        identity.root,
-        loaded.snapshot.files,
-    )
-    assert loaded.snapshot.digest != provisional.digest
-
-
-def test_equivalent_product_version_spellings_share_identity_but_not_raw_digest(
-    tmp_path: Path,
-) -> None:
-    product_path = tmp_path / "product.yaml"
-    _write_product_file(product_path)
-    first_document = yaml.safe_load(product_path.read_text(encoding="utf-8"))
-    first_document["product_version"] = "1.2.0"
-    product_path.write_text(yaml.safe_dump(first_document), encoding="utf-8")
-    first = load_product_file(ProductFileSource(path=product_path))
-    first_document["product_version"] = "01.002.0000"
-    product_path.write_text(yaml.safe_dump(first_document), encoding="utf-8")
-
-    second = load_product_file(ProductFileSource(path=product_path))
-
-    assert first.snapshot.identity == second.snapshot.identity
-    assert first.snapshot.digest != second.snapshot.digest
-
-
-def test_declarative_source_identity_requires_complete_normalized_coordinates(
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(ValueError, match="complete product coordinates"):
+    with pytest.raises(ValueError, match="complete plugin coordinates"):
         SourceIdentity(
-            kind=SourceKind.PRODUCT_FILE,
+            kind=SourceKind.CONFIG_TREE,
             root=tmp_path.resolve(),
-            product_id="toy.product",
-        )
-    with pytest.raises(ValueError, match="normalized product version"):
-        SourceIdentity(
-            kind=SourceKind.PRODUCT_FILE,
-            root=tmp_path.resolve(),
-            product_id="toy.product",
-            product_version="01.002.0000",
+            plugin_id="toy.flow",
         )
     with pytest.raises(ValueError, match="normalized plugin version"):
         SourceIdentity(
@@ -637,103 +539,6 @@ def test_declarative_source_identity_requires_complete_normalized_coordinates(
             plugin_id="toy.flow",
             plugin_version="01.002.0003",
         )
-
-
-def test_product_manifest_nested_configuration_is_immutable(
-    tmp_path: Path,
-) -> None:
-    product_path = tmp_path / "product.yaml"
-    _write_product_file(product_path)
-    loaded = load_product_file(ProductFileSource(path=product_path))
-
-    assert loaded.manifest.graph_factory_symbol == "toy.product:build"
-    with pytest.raises(TypeError, match="frozen"):
-        loaded.manifest.entrypoints["other"] = "root"
-    with pytest.raises(TypeError, match="frozen"):
-        loaded.manifest.configuration["toy.runtime"]["greeting"] = "changed"
-
-
-@pytest.mark.parametrize("bad_path", ("../config", "/tmp/config", "a/../config", "a\\config"))
-def test_product_file_rejects_out_of_root_config_paths(tmp_path: Path, bad_path: str) -> None:
-    product_path = tmp_path / "product.yaml"
-    _write_product_file(product_path, config_plugin_paths=[bad_path])
-
-    with pytest.raises(DeclarativeProductRejected, match="config plugin path"):
-        load_product_file(ProductFileSource(path=product_path))
-
-
-@pytest.mark.parametrize(
-    "extra",
-    (
-        {"unknown": True},
-        {"python": "pkg.product:provider"},
-        {"command": ["sh", "-c", "bad"]},
-        {"shell": "bad"},
-        {"template": "{{ bad() }}"},
-    ),
-)
-def test_product_file_rejects_unknown_and_executable_fields(tmp_path: Path, extra: dict[str, object]) -> None:
-    product_path = tmp_path / "product.yaml"
-    _write_product_file(product_path, extra=extra)
-
-    with pytest.raises(DeclarativeProductRejected, match="invalid product manifest"):
-        load_product_file(ProductFileSource(path=product_path))
-
-
-@pytest.mark.parametrize("fault", ("symlink", "executable", "fifo"))
-def test_product_file_rejects_non_data_file_forms(tmp_path: Path, fault: str) -> None:
-    product_path = tmp_path / "product.yaml"
-    _write_product_file(product_path)
-    if fault == "symlink":
-        outside = tmp_path / "outside.yaml"
-        outside.write_bytes(product_path.read_bytes())
-        product_path.unlink()
-        product_path.symlink_to(outside)
-    elif fault == "executable":
-        product_path.chmod(product_path.stat().st_mode | stat.S_IXUSR)
-    else:
-        product_path.unlink()
-        os.mkfifo(product_path)
-
-    with pytest.raises(DeclarativeProductRejected):
-        load_product_file(ProductFileSource(path=product_path))
-
-
-@pytest.mark.parametrize(
-    "extra",
-    (
-        {
-            "imports": {
-                "run": {
-                    "owner_id": "toy.feature",
-                    "module_id": "toy.feature.workflow",
-                    "export": "run",
-                }
-            }
-        },
-        {
-            "configuration": {
-                "toy.runtime": {
-                    "imports": {
-                        "run": {
-                            "owner_id": "toy.feature",
-                            "module_id": "toy.feature.workflow",
-                            "export": "run",
-                        }
-                    }
-                }
-            }
-        },
-    ),
-)
-def test_product_file_rejects_imports_outside_workflow_module_path(
-    tmp_path: Path, extra: dict[str, object]
-) -> None:
-    product_path = tmp_path / "product.yaml"
-    _write_product_file(product_path, extra=extra)
-
-    with pytest.raises(DeclarativeProductRejected, match="executable declaration"):
-        load_product_file(ProductFileSource(path=product_path))
 
 
 def test_plugin_document_rejects_imports_even_at_workflow_module_path(tmp_path: Path) -> None:
@@ -801,19 +606,3 @@ def test_config_tree_rejects_workflow_module_media_type(tmp_path: Path) -> None:
 
     with pytest.raises(DeclarativePluginRejected, match="media type"):
         load_config_tree(ConfigTreePluginSource(path=tmp_path))
-
-
-@pytest.mark.parametrize(
-    "extra",
-    (
-        {"workflow": {"name": "toy"}},
-        {"workflow_resource_id": "toy.flow.workflow"},
-        {"workflow_module": {"owner_id": "toy.product"}},
-    ),
-)
-def test_product_file_rejects_leftover_workflow_keys(tmp_path: Path, extra: dict[str, object]) -> None:
-    product_path = tmp_path / "product.yaml"
-    _write_product_file(product_path, extra=extra)
-
-    with pytest.raises(DeclarativeProductRejected, match="invalid product manifest"):
-        load_product_file(ProductFileSource(path=product_path))

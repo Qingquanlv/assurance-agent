@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from bootstrap_fixtures import synthetic_invocation_started
 from graph_engine.attempts.execution_host import production_host
 from graph_engine.attempts.execution_host import production_worker
 from graph_engine.plugin_api import (
@@ -45,21 +44,11 @@ from graph_engine.attempts.execution_host.production_host import (
     ProductionHostError,
     create_production_task_execution_host,
 )
-from graph_engine.attempts.resources.activity import (
-    GraphStarted,
-    NodeActivated,
-    TaskActivityPrepared,
-    TaskAttemptStarted,
-    TaskLeaseAcquired,
-    TokenConsumed,
-    TokenOffered,
-)
 from graph_engine.attempts.execution_host.host_receipts import (
     TerminalReceiptError,
     TerminalReceiptStore,
     prove_call_quiescent,
 )
-from graph_engine.attempts.resources.activity import Ledger
 from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.persistence.attempt_checkpoint import MemoryAttemptCheckpointStore
 from graph_engine.attempts.resources.secret_sources import empty_runtime_authorization
@@ -1345,57 +1334,13 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
     assert promoted[0].outcome == outcome
 
 
-def _prepare_activity_ledger(root: Path, workspace: TaskWorkspaceBinding) -> None:
-    _prepare_activity_journal(root)
-    ledger = Ledger(root / "invocations" / "inv-1" / "ledger")
-    ledger.append_batch(
-        (
-            synthetic_invocation_started(),
-            GraphStarted(graph_instance_id="root", graph_id="root"),
-            TokenOffered(
-                token_id="tok-1",
-                graph_instance_id="root",
-                source=None,
-                target="run",
-                payload=None,
-            ),
-            TokenConsumed(token_id="tok-1", graph_instance_id="root", node_id="run"),
-            NodeActivated(
-                activation_id="activation-run",
-                graph_instance_id="root",
-                node_id="run",
-                token_ids=("tok-1",),
-            ),
-            TaskAttemptStarted(activation_id="activation-run", attempt=1, lease_expires_at="11"),
-            TaskLeaseAcquired(
-                task_id="task-1",
-                activation_id="activation-run",
-                attempt=1,
-                owner_id="worker-1",
-                acquired_at=1.0,
-                heartbeat_at=1.0,
-                expires_at=11.0,
-            ),
-            TaskActivityPrepared(
-                activity_id="activity-1",
-                task_id="task-1",
-                activation_id="activation-run",
-                attempt=1,
-                request_digest="2" * 64,
-                workspace_identity=workspace.identity,
-            ),
-        ),
-        expected_next_seq=1,
-    )
-
-
 def test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _task_workspace_store(tmp_path)
     workspace = _begin_workspace(store)
-    _prepare_activity_ledger(tmp_path, workspace)
+    _prepare_activity_journal(tmp_path)
     receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
     entrypoint, roots = _write_handler(
         tmp_path,
@@ -1517,7 +1462,7 @@ def test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt(
 ) -> None:
     store = _task_workspace_store(tmp_path)
     workspace = _begin_workspace(store)
-    _prepare_activity_ledger(tmp_path, workspace)
+    _prepare_activity_journal(tmp_path)
     receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
     entrypoint, roots = _write_handler(
         tmp_path,
@@ -1564,7 +1509,7 @@ def test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely(
 ) -> None:
     store = _task_workspace_store(tmp_path)
     workspace = _begin_workspace(store)
-    _prepare_activity_ledger(tmp_path, workspace)
+    _prepare_activity_journal(tmp_path)
     receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
     execute_entrypoint, roots = _write_handler(
         tmp_path,
@@ -1637,7 +1582,7 @@ def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
 ) -> None:
     store = _task_workspace_store(tmp_path)
     workspace = _begin_workspace(store)
-    _prepare_activity_ledger(tmp_path, workspace)
+    _prepare_activity_journal(tmp_path)
     receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
     execute_entrypoint, roots = _write_handler(
         tmp_path,
@@ -1705,7 +1650,7 @@ def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
 def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None:
     store = _task_workspace_store(tmp_path)
     workspace = _begin_workspace(store)
-    _prepare_activity_ledger(tmp_path, workspace)
+    _prepare_activity_journal(tmp_path)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="SnapshotHandler",

@@ -11,7 +11,6 @@ from pathlib import Path
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
-from graph_engine.evidence.events import TaskActivityTerminalObserved
 from graph_engine.attempts.execution_host.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     TaskHostCallIdentity,
@@ -260,31 +259,6 @@ class TerminalReceiptStore:
         finally:
             os.close(directory_fd)
 
-    def delete_authenticated(
-        self,
-        identity: TaskHostCallIdentity,
-        expected: TaskHostTerminalReceipt,
-        terminal: TaskActivityTerminalObserved,
-    ) -> None:
-        if terminal.activity_id != expected.activity_id:
-            raise TerminalReceiptError("receipt cleanup requires the exact terminal event")
-        if terminal.outcome_digest != expected.outcome_digest:
-            raise TerminalReceiptError("receipt cleanup requires the exact terminal event")
-        found = self.authenticate(identity)
-        if found == ():
-            return
-        if found != (expected,):
-            raise TerminalReceiptError("receipt cleanup requires the exact terminal event")
-        directory_fd = self._open_root()
-        try:
-            try:
-                os.unlink(_identity_filename(identity), dir_fd=directory_fd)
-            except FileNotFoundError:
-                return
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-
     def _next_host_call_id(self, directory_fd: int) -> int:
         maximum = 0
         for name in _validated_names(directory_fd):
@@ -440,7 +414,6 @@ def _rename_no_replace_at(directory_fd: int, source: str, destination: str) -> N
 
 
 __all__ = [
-    "TaskActivityTerminalObserved",
     "TerminalReceiptError",
     "TerminalReceiptSink",
     "TerminalReceiptStore",

@@ -16,10 +16,7 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition.declarative import (
     ConfigTreePluginSource,
     DeclarativePlugin,
-    DeclarativeProduct,
-    ProductFileSource,
     load_config_tree,
-    load_product_file,
 )
 from graph_engine.composition.dependencies import resolve_dependency_order
 from graph_engine.composition.lock import build_product_lock
@@ -73,7 +70,7 @@ class ResolutionError(GraphEngineError):
 
 
 ProductSource: TypeAlias = Annotated[
-    WheelProductSource | EditableWheelProductSource | ProductFileSource,
+    WheelProductSource | EditableWheelProductSource,
     Field(discriminator="kind"),
 ]
 PluginSource: TypeAlias = Annotated[
@@ -95,12 +92,6 @@ class ResolutionRequest(FrozenModel):
 
 
 @dataclass(frozen=True, slots=True)
-class _ProductSeed:
-    source: ProductSource
-    declarative: DeclarativeProduct | None
-
-
-@dataclass(frozen=True, slots=True)
 class _PluginCapture:
     source: PluginSource
     snapshot: SourceSnapshot
@@ -116,7 +107,7 @@ class _PluginCapture:
 class _CapturedSources:
     engine: SourceSnapshot
     product: SourceSnapshot
-    product_manifest: ProductManifest | None
+    product_manifest: ProductManifest
     plugins: tuple[_PluginCapture, ...]
 
 
@@ -144,15 +135,14 @@ class RegistryPlatform:
         self._binding_cache = _AuthenticatedBindingCache()
 
     def resolve(self, request: ResolutionRequest) -> FrozenComposition:
-        # 1. Strictly parse the request and the data-only product source.
+        # 1. Strictly parse the explicit wheel product and plugin sources.
         request = self._parse_request(request)
-        seed = self._parse_product(request)
 
         # 2. Capture every explicit product, plugin, config, and engine source.
-        captured = self._snapshot_sources(request, seed)
+        captured = self._snapshot_sources(request)
 
-        # 3. Normalize only the authenticated, data-only product declaration.
-        declared_manifest = self._declared_product_manifest(seed, captured)
+        # 3. Validate the authenticated wheel product declaration.
+        declared_manifest = self._declared_product_manifest(captured)
         manifest = self._extend_manifest_with_explicit_configs(declared_manifest, captured.plugins)
 
         # 4. Validate the complete exact dependency closure and canonical topology
@@ -163,7 +153,7 @@ class RegistryPlatform:
         # 5-6. Load only providers selected by the already-validated topology and
         # require their live declarations to equal the pre-extend static data.
         # The extended manifest still drives lock, dependency order, and FrozenComposition.
-        product_provider = self._load_product_provider(seed, captured.product, declared_manifest)
+        product_provider = self._load_product_provider(request.product, captured.product, declared_manifest)
         loaded = self._load_plugin_descriptors(
             captured.plugins,
             descriptors,
@@ -223,40 +213,15 @@ class RegistryPlatform:
         except Exception as error:
             raise ResolutionError("invalid resolution request") from error
 
-    def _parse_product(self, request: ResolutionRequest) -> _ProductSeed:
-        if isinstance(request.product, ProductFileSource):
-            return _ProductSeed(request.product, load_product_file(request.product))
-        if isinstance(request.product, WheelProductSource | EditableWheelProductSource):
-            return _ProductSeed(request.product, None)
-        raise ResolutionError("unsupported product source kind")
-
-    def _snapshot_sources(
-        self,
-        request: ResolutionRequest,
-        seed: _ProductSeed,
-    ) -> _CapturedSources:
+    def _snapshot_sources(self, request: ResolutionRequest) -> _CapturedSources:
         engine_snapshot = _capture_engine_snapshot()
-        if seed.declarative is not None:
-            product_snapshot = seed.declarative.snapshot
-            product_manifest: ProductManifest | None = None
-        else:
-            assert isinstance(seed.source, WheelProductSource | EditableWheelProductSource)
-            resolved_product = _resolve_wheel_snapshot(seed.source, self._metadata_provider)
-            product_snapshot = resolved_product.snapshot
-            declaration = resolved_product.declaration
-            if not isinstance(declaration, WheelProductDeclaration):  # pragma: no cover - typed source.
-                raise ResolutionError("wheel product source returned a plugin declaration")
-            product_manifest = declaration.manifest
-
-        sources: list[PluginSource] = list(request.plugins)
-        if seed.declarative is not None:
-            sources.extend(ConfigTreePluginSource(path=path) for path in seed.declarative.config_plugin_paths)
-        keys = tuple(_source_reference_key(source) for source in sources)
-        if len(set(keys)) != len(keys):
-            raise ResolutionError("effective product repeats an explicit config source")
+        resolved_product = _resolve_wheel_snapshot(request.product, self._metadata_provider)
+        product_declaration = resolved_product.declaration
+        if not isinstance(product_declaration, WheelProductDeclaration):  # pragma: no cover - typed source.
+            raise ResolutionError("wheel product source returned a plugin declaration")
 
         captured: list[_PluginCapture] = []
-        for source in sorted(sources, key=_source_reference_key):
+        for source in sorted(request.plugins, key=_source_reference_key):
             if isinstance(source, ConfigTreePluginSource):
                 declarative = load_config_tree(source)
                 captured.append(
@@ -282,38 +247,25 @@ class RegistryPlatform:
                 )
         return _CapturedSources(
             engine=engine_snapshot,
-            product=product_snapshot,
-            product_manifest=product_manifest,
+            product=resolved_product.snapshot,
+            product_manifest=product_declaration.manifest,
             plugins=tuple(captured),
         )
 
-    def _declared_product_manifest(
-        self,
-        seed: _ProductSeed,
-        captured: _CapturedSources,
-    ) -> ProductManifest:
-        manifest = (
-            _normalize_declarative_product(seed.declarative)
-            if seed.declarative is not None
-            else captured.product_manifest
-        )
-        if manifest is None:  # pragma: no cover - captured wheel declarations are mandatory.
-            raise ResolutionError("captured product has no static declaration")
+    def _declared_product_manifest(self, captured: _CapturedSources) -> ProductManifest:
+        manifest = captured.product_manifest
         _validate_product_source_identity(manifest, captured.product)
         _validate_engine_api(manifest.engine_api, "product")
         return manifest
 
     def _load_product_provider(
         self,
-        seed: _ProductSeed,
+        source: ProductSource,
         snapshot: SourceSnapshot,
         manifest: ProductManifest,
-    ) -> object | None:
-        if seed.declarative is not None:
-            return None
-        assert isinstance(seed.source, WheelProductSource | EditableWheelProductSource)
+    ) -> AuthenticatedProviderBinding:
         binding = _load_snapshotted_entrypoint_binding(
-            seed.source,
+            source,
             snapshot,
             self._metadata_provider,
             self._binding_cache,
@@ -553,28 +505,6 @@ def _capture_engine_package_tree(package_root: Path) -> SourceSnapshot:
     )
 
 
-def _normalize_declarative_product(product: DeclarativeProduct) -> ProductManifest:
-    document = product.manifest
-    return ProductManifest(
-        schema_version=document.schema_version,
-        source=None,
-        product_id=document.product_id,
-        product_version=document.product_version,
-        engine_api=document.engine_api,
-        plugins=tuple(
-            PluginRequirement(
-                plugin_id=requirement.plugin_id,
-                version_specifier=requirement.version_specifier,
-            )
-            for requirement in document.plugins
-        ),
-        entrypoints=document.entrypoints,
-        configuration=document.configuration,
-        config_plugin_paths=tuple(str(path) for path in product.config_plugin_paths),
-        graph_factory_symbol=document.graph_factory_symbol,
-    )
-
-
 def _validate_product_source_identity(
     manifest: ProductManifest,
     snapshot: SourceSnapshot,
@@ -590,12 +520,9 @@ def _validate_product_source_identity(
         raise ResolutionError("selected product source has an invalid version") from error
     if manifest.product_version != selected_version:
         raise ResolutionError("product manifest version disagrees with selected source")
-    if identity.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.EDITABLE_PRODUCT}:
-        expected_source = _provider_source_from_identity(identity)
-        if manifest.source != expected_source:
-            raise ResolutionError("product manifest source disagrees with selected source")
-    elif manifest.source is not None:
-        raise ResolutionError("declarative product manifest cannot claim a wheel source")
+    expected_source = _provider_source_from_identity(identity)
+    if manifest.source != expected_source:
+        raise ResolutionError("product manifest source disagrees with selected source")
 
 
 def _validate_descriptor_source_identity(

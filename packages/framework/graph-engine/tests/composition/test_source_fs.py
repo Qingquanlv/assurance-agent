@@ -228,13 +228,13 @@ def test_declared_tree_returns_frozen_bytes_and_models(tmp_path: Path) -> None:
 def test_explicit_file_capture_rejects_unrescanned_directory_chains(tmp_path: Path) -> None:
     nested = tmp_path / "nested"
     nested.mkdir()
-    (nested / "product.yaml").write_text("product_id: toy.product\n", encoding="utf-8")
+    (nested / "plugin.yaml").write_text("plugin_id: toy.flow\n", encoding="utf-8")
 
     with pytest.raises(SourceSnapshotError, match="one path segment"):
         capture_explicit_file(
             tmp_path,
-            "nested/product.yaml",
-            DeclaredTreePolicy.product_file(),
+            "nested/plugin.yaml",
+            DeclaredTreePolicy.config_tree(),
         )
 
 

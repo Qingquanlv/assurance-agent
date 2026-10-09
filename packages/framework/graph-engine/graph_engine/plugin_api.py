@@ -30,7 +30,6 @@ from graph_engine.identifiers import IdentifierError, validate_qualified_id
 
 if TYPE_CHECKING:
     from graph_engine.attempts.models.keys import AttemptKey
-    from graph_engine.attempts.models.resolutions import PermanentTaskFailure, RejectedTaskResult
     from graph_engine.canonical import JSONValue
 else:
     JSONValue = JsonValue
@@ -1010,45 +1009,6 @@ class CommitValidator(Protocol):
     def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult: ...
 
 
-def run_validators(
-    validator_ids: tuple[str, ...],
-    registry: Mapping[str, CommitValidator],
-    write_set: PathWriteSet,
-    context: ValidationContext,
-) -> RejectedTaskResult | PermanentTaskFailure | None:
-    """Run contract validators in declared order. An empty tuple is an explicit no-op."""
-
-    from graph_engine.attempts.models.resolutions import PermanentTaskFailure, RejectedTaskResult
-
-    if validator_ids == ():
-        return None
-    for validator_id in validator_ids:
-        try:
-            validator = registry[validator_id]
-        except KeyError:
-            return PermanentTaskFailure(
-                kind="configuration",
-                message=f"validator {validator_id} is not registered",
-            )
-        try:
-            result = validator.validate(write_set, context)
-        except Exception as error:
-            return PermanentTaskFailure(
-                kind="internal",
-                message=f"validator {validator_id} failed: {error}",
-            )
-        if not isinstance(result, ValidationResult):
-            return PermanentTaskFailure(
-                kind="internal",
-                message=(
-                    f"validator {validator_id} returned {type(result).__name__}, expected ValidationResult"
-                ),
-            )
-        if not result.accepted:
-            return RejectedTaskResult(reason=result.reason or validator_id)
-    return None
-
-
 @dataclass(frozen=True, slots=True)
 class RegistryPorts:
     engine_api: str
@@ -1481,6 +1441,5 @@ __all__ = [
     "ValidationResult",
     "WorkspaceProvider",
     "realize_plugin",
-    "run_validators",
     "validate_contribution",
 ]

@@ -11,13 +11,7 @@ from graph_engine.attempts.models.contracts import ResolvedAttemptContract
 from graph_engine.attempts.models.keys import AttemptKey
 from graph_engine.attempts.models.resolutions import AttemptResolution
 from graph_engine.canonical import JSONValue
-from graph_engine.plugin_api import (
-    PreparedWorkspaceRef,
-    PromotionReceipt,
-    ResourceClaims,
-    SealedWriteSet,
-    TaskWorkspaceBinding,
-)
+from graph_engine.plugin_api import WorkspaceProvider
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -41,24 +35,6 @@ class SecretResolverPort(Protocol):
     def resolve(self, handle: str) -> bytes: ...
 
 
-class WorkspaceProviderPort(Protocol):
-    """Per-invocation workspace provider. Held by reference; never checkpointed."""
-
-    async def open_or_create(
-        self, attempt_key: AttemptKey, claims: ResourceClaims, *, seed_from: AttemptKey | None = None
-    ) -> TaskWorkspaceBinding: ...
-
-    async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet: ...
-
-    async def prepare(
-        self, binding: TaskWorkspaceBinding, sealed: SealedWriteSet
-    ) -> PreparedWorkspaceRef: ...
-
-    async def promote(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt: ...
-
-    async def recover_promotion(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt: ...
-
-
 def _revision_id(value: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ValueError("revision id must be a lowercase SHA-256 hex value")
@@ -77,7 +53,7 @@ class AssuranceRuntimeContext:
     fencing_token: int
     attempt_kernel: AttemptKernelPort
     secret_resolver: SecretResolverPort
-    workspace_provider: WorkspaceProviderPort
+    workspace_provider: WorkspaceProvider
 
     def __post_init__(self) -> None:
         _revision_id(self.revision_id)
@@ -94,5 +70,4 @@ __all__ = [
     "AssuranceRuntimeContext",
     "AttemptKernelPort",
     "SecretResolverPort",
-    "WorkspaceProviderPort",
 ]

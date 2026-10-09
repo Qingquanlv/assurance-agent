@@ -30,7 +30,6 @@ _FORBIDDEN_CONTEXT = {"ledger", "store", "lock", "checkpoint", "registry", "even
 class PreparedAdapterFixture:
     __slots__ = (
         "provider_calls",
-        "initial_event_kinds",
         "request_bytes",
         "expected_request_bytes",
         "request_payload",
@@ -44,7 +43,6 @@ class PreparedAdapterFixture:
         self,
         *,
         provider_calls: int,
-        initial_event_kinds: tuple[str, ...],
         request_bytes: bytes,
         expected_request_bytes: bytes,
         request_payload: object,
@@ -54,7 +52,6 @@ class PreparedAdapterFixture:
         secret_handles_resolved: tuple[str, ...],
     ) -> None:
         self.provider_calls = provider_calls
-        self.initial_event_kinds = initial_event_kinds
         self.request_bytes = request_bytes
         self.expected_request_bytes = expected_request_bytes
         self.request_payload = request_payload
@@ -67,7 +64,6 @@ class PreparedAdapterFixture:
 class CutResult:
     __slots__ = (
         "cut",
-        "event_kinds",
         "activity_state",
         "reconcile_status",
         "cancel_status",
@@ -86,7 +82,6 @@ class CutResult:
         self,
         *,
         cut: AdapterCut,
-        event_kinds: tuple[str, ...],
         activity_state: str | None,
         reconcile_status: ReconcileStatus | None,
         cancel_status: str | None,
@@ -101,7 +96,6 @@ class CutResult:
         context_exposed: tuple[str, ...] = (),
     ) -> None:
         self.cut = cut
-        self.event_kinds = event_kinds
         self.activity_state = activity_state
         self.reconcile_status = reconcile_status
         self.cancel_status = cancel_status

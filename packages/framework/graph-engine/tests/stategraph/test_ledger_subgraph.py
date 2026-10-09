@@ -15,7 +15,7 @@ from graph_engine.attempts.models.contracts import (
 from graph_engine.attempts.models.keys import BusinessActivation
 from graph_engine.attempts.models.resolutions import ReceiptRef
 from graph_engine.plugin_api import ResourceClaims
-from graph_engine.stategraph import AttemptGraph
+from graph_engine.stategraph import add_attempt_node, bind_produced_artifacts
 from graph_engine.stategraph.ledger import AttemptLedgerState, NamedWrite, ledger_refs
 from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.recording_build_context import RecordingCapabilityBuildContext
@@ -69,23 +69,25 @@ def _compile_writer(
     context: RecordingCapabilityBuildContext,
     contract: _NamedWrites,
 ) -> CompiledStateGraph:
-    builder: AttemptGraph[AttemptLedgerState] = AttemptGraph(
+    builder: StateGraph[AttemptLedgerState] = StateGraph(
         AttemptLedgerState,
-        context,
-        namespace="lane",
         output_schema=AttemptLedgerState,
     )
-    builder.add_attempt(
+    add_attempt_node(
+        builder,
+        context,
         "write",
-        contract,
+        contract_id=contract.contract_id,
         select=_select_write,
-        publish=_publish,
+        publish=bind_produced_artifacts(
+            _publish, namespace=contract.ledger_namespace(), writes=contract.ledger_writes()
+        ),
         activation=BusinessActivation.one_shot(),
         semantic_node_id="lane.write",
     )
     builder.add_edge(START, "write")
     builder.add_edge("write", END)
-    return builder.compile_subgraph()
+    return context.compile_subgraph(builder)
 
 
 def _compile_reader(
@@ -97,15 +99,15 @@ def _compile_reader(
         seen.append(ledger_refs(state.get("artifact_ledger"), "lane.note"))
         return _ProbeInput(marker="read")
 
-    builder: AttemptGraph[AttemptLedgerState] = AttemptGraph(
+    builder: StateGraph[AttemptLedgerState] = StateGraph(
         AttemptLedgerState,
-        context,
-        namespace="lane",
         output_schema=AttemptLedgerState,
     )
-    builder.add_attempt(
+    add_attempt_node(
+        builder,
+        context,
         "read",
-        contract,
+        contract_id=contract.contract_id,
         select=select,
         publish=_publish,
         activation=BusinessActivation.one_shot(),
@@ -113,7 +115,7 @@ def _compile_reader(
     )
     builder.add_edge(START, "read")
     builder.add_edge("read", END)
-    return builder.compile_subgraph()
+    return context.compile_subgraph(builder)
 
 
 async def test_artifact_ledger_crosses_subgraph_boundaries_and_last_write_wins() -> None:
