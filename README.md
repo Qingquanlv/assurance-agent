@@ -98,7 +98,7 @@ Attempt modules are grouped by responsibility under `graph_engine/attempts/`:
 authorization, secrets and external activity, `models/` owns identities, contracts,
 context and results, and `execution_host/` owns subprocess execution. The top-level
 `attempts` package continues to export the public types. See the
-[Attempt module map](packages/framework/graph-engine/graph_engine/attempts/README.md).
+[Attempt module map](packages/framework/graph-engine/ATTEMPTS.md).
 
 Attempt subprocess execution lives in
 [`graph_engine/attempts/execution_host/`](packages/framework/graph-engine/graph_engine/attempts/execution_host/):
