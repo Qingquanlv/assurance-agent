@@ -25,11 +25,13 @@ Reference: `earendil-works/pi` revision `56b25ff4ebbd8a119ef9185447c7b2416059dbc
 
 Introduce `AttemptCheckpoint` and a phase enum. A checkpoint holds Attempt identity, revision and fencing token; authorization; external activity identity, dispatch fingerprint, bound reference and observed result; workspace preparation/promotion proofs; terminal result; and system-interrupt records needed by the LangGraph bridge. Keep these fields typed and validate combinations before storage and on decode.
 
-Use a full-record compare-and-set commit, not event append. The memory adapter and SQLite adapter implement the same interface. A commit atomically changes the complete checkpoint and increments its revision. Revision and live fence validation prevent stale updates even though process admission is exclusive. Canonical payload validation detects corrupted stored data.
+Use a full-record compare-and-set commit, not event append. The memory adapter and SQLite adapter implement the same interface. A commit atomically changes the complete checkpoint and increments its revision. Both enforce revision and monotonic stored-fence checks. The production SQLite adapter also checks the current runner lease. The memory adapter accepts an optional live-fence callback and keeps no-argument construction for generic boot and graph harnesses; the existing runtime/resource-arbiter authority checks still apply. Canonical payload validation detects corrupted stored data.
 
 Keep durable generation allocation and ownership on the store: latest generation, bounded registration, saved validated input, abandoned state and owner identity. These duties cannot disappear with the journal class.
 
 SQLite stores one current checkpoint per Attempt and retains all distinct Attempts. Preserve generation and retained-call tables. New execution must not silently treat old nonempty journal-format databases as empty: reject unsupported old-format execution with a clear fresh-run instruction, preserve their bytes, and document that existing runs must be stopped with their original version before upgrading. No automatic legacy event-replay implementation is retained in the new runtime.
+
+Retain the fencing token at the first terminal commit as immutable result metadata. Later adoption, release or interruption updates may change the checkpoint's current fencing token; Retro must not mistake those later writes for the order in which results occurred.
 
 ## Runtime and handlers
 

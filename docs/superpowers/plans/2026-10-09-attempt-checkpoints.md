@@ -52,6 +52,8 @@ async def ensure_durable(self, attempt_key: AttemptKey) -> None: ...
 
 An absent record has revision zero; each successful commit returns revision `expected_revision + 1`. Retain the exact current `latest_generation` and `register_generation` call signatures on both adapters. The store validates complete records, immutable identity, monotonic lifecycle facts, CAS and live fencing. Snapshot replacement cannot erase a terminal outcome, promotion proof, release proof or acknowledged interruption. No event-list interface or `append` adapter is allowed.
 
+Memory storage keeps a no-argument constructor, enforces stored-fence monotonicity and accepts an optional live-fence assertion callback. SQLite always checks its backend runner lease. Runtime/resource-arbiter live checks remain in both execution paths; generic boot need not invent a runner lease before an invocation exists.
+
 - [ ] Read existing snapshots, terminal payloads, persistence CAS/fence checks, generation allocation and their tests.
 - [ ] Add tests that commit a checkpoint, reconstruct a new adapter, load the same phase/data and retain another Attempt's failed result; stale revision/token and malformed phase/data must fail without overwriting valid bytes.
 - [ ] Run those tests and record the expected missing-feature failure.

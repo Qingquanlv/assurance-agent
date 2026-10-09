@@ -139,6 +139,14 @@ CREATE TABLE IF NOT EXISTS assurance_attempt_generations (
     input_payload BLOB NOT NULL,
     PRIMARY KEY (scope_digest, ordinal)
 );
+CREATE TABLE IF NOT EXISTS assurance_attempt_checkpoints (
+    attempt_key_digest TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    schema_version TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    record_digest TEXT NOT NULL,
+    payload BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS assurance_host_calls (
     call_digest TEXT PRIMARY KEY,
     owner_nonce TEXT NOT NULL,
